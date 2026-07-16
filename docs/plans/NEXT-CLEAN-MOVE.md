@@ -1,14 +1,13 @@
 # Next Clean Move
 
-Status: recovery proven; private remote authentication pending
+Status: foundation baseline complete; first capped AI pilot is next
 Saved: 2026-07-16
 Owner: Daniel
 Maintainer: Codex
 
 ## Immediate Move
 
-Finish the recoverable clean baseline before connecting a model or creating an
-external business account.
+The recoverable clean baseline is complete.
 
 1. Completed: generated and stored a new permanent backup passphrase while
    preserving all older encrypted backup files.
@@ -19,14 +18,15 @@ external business account.
    healthy start, PDF preview, browser console, and desktop layouts.
 4. Completed: Daniel gave action-time approval for private GitHub creation and
    push on 2026-07-16.
-5. Current: create the empty private repository through an authenticated
-   repository-creation surface, push only the history-free baseline, and prove
-   a fresh checkout.
+5. Completed: created `DGR-Business/Jarvis-Codex-AI-Business` as a private
+   repository, pushed only history-free root `e3f7a81` to `main`, and proved a
+   fresh checkout through install, 81/81 tests, healthy startup, truthful empty
+   state, and a clean real-browser load.
 
 ## Following Move
 
-After the baseline gate passes, ask for separate action-time approval to run one
-real, tightly capped Demand Validator pilot through the OpenAI Agents SDK.
+Ask for separate action-time approval to run one real, tightly capped Demand
+Validator pilot through the OpenAI Agents SDK.
 
 - one versioned evidence fixture;
 - no tools;
@@ -60,6 +60,9 @@ over supplied evidence after five consecutive passes, or stop.
   been used for a live provider or external business action.
 - The fresh encrypted restore also recovered all five current outputs, and the
   five-page PDF opened successfully inside the restored cockpit.
+- The private remote has no legacy commit ancestry. Its first commit uses a
+  GitHub no-reply author identity and contains no private operator files,
+  runtime database, generated artifacts, environment secrets, or dependencies.
 
-This note records sequence only. It is not authorization to create a repository,
-connect a model, create a Gumroad account, publish, spend, or contact customers.
+This note records sequence only. It is not authorization to connect a model,
+create a Gumroad account, publish, spend, or contact customers.

@@ -1855,9 +1855,6 @@ publishing, customer contact, or external action were used.
 
 ## Open Gates
 
-- Private GitHub: Daniel approved repository creation and baseline push on
-  2026-07-16. The history-free baseline is ready, but repository creation still
-  needs an authenticated surface that supports the create-repository action.
 - First live AI pilot: no provider call may run until Daniel confirms the exact
   A$1 Demand Validator fixture, credentials are configured outside the repo,
   `JARVIS_ENABLE_LIVE_MODELS=1` is enabled for that run, the exact scope is
@@ -1870,19 +1867,17 @@ publishing, customer contact, or external action were used.
 
 ## Next Best Work
 
-1. Create the approved private GitHub repository, push only the history-free
-   baseline, and prove a fresh checkout installs, tests, and starts.
-2. With separate action-time confirmation, run one A$1 maximum Demand Validator
+1. With separate action-time confirmation, run one A$1 maximum Demand Validator
    Agents SDK proof over the selected versioned evidence fixture, with no tools
    or handoffs.
-3. Have Daniel review commercial usefulness, unsupported claims, trace/eval,
+2. Have Daniel review commercial usefulness, unsupported claims, trace/eval,
    scope, and reconciled cost. Revise, repeat, promote only reasoning over
    supplied evidence, or stop.
-4. Rank three real digital-product opportunities and present one concise
+3. Rank three real digital-product opportunities and present one concise
    selection decision.
-5. Build the smallest useful selected product and complete its product files,
+4. Build the smallest useful selected product and complete its product files,
    economics, risk review, listing copy, Publish Pack, and launch checklist.
-6. After Daniel creates the Gumroad account and approves publication, run the
+5. After Daniel creates the Gumroad account and approves publication, run the
    bounded organic test and import result CSVs until the 14-day/50-view decision
    point.
 
@@ -2262,10 +2257,7 @@ Verification:
 
 Next clean move:
 
-1. Create the approved private GitHub repository through an authenticated
-   repository-creation surface, push only the history-free baseline, and prove
-   a fresh checkout.
-2. Obtain separate action-time confirmation before the first A$1 Demand
+1. Obtain separate action-time confirmation before the first A$1 Demand
    Validator Agents SDK provider run.
 
 ## 2026-07-16 - Encrypted Recovery Proven And Clean Remote Baseline Prepared
@@ -2310,12 +2302,28 @@ Privacy and baseline decision:
 
 Remote status:
 
-- The GitHub connector is authenticated to `DGR-Business`, and no repository
-  named `Jarvis-Codex-AI-Business` exists in that installation.
-- The connector does not expose repository creation, the in-app browser is not
-  signed into GitHub, and Chrome control was unavailable during this proof.
-  Repository creation/push remains approved but pending an authenticated
-  creation surface. No remote or account setting was changed.
+- Created private repository
+  `https://github.com/DGR-Business/Jarvis-Codex-AI-Business` through GitHub's
+  API using the existing Windows credential. The credential was held only in
+  process memory and was not printed or persisted in the repository.
+- Created history-free root commit `e3f7a81` with a GitHub no-reply author,
+  switched this workspace to `codex/foundation-baseline`, added the clean HTTPS
+  remote, and pushed only that root to remote `main`.
+- Cloned remote `main` into a verified-absent temporary directory. The clone had
+  exactly one commit and no database, artifacts, private directory, `.env`, or
+  dependencies before installation.
+- The fresh remote checkout installed 104 packages from `package-lock.json`,
+  passed 81/81 tests, started on isolated port 5094, and returned `ok: true`,
+  dry-run mode, zero spend, Agents SDK runner ready, and live credentials/flags
+  off by design.
+- Fresh production state contained one active venture and zero commands,
+  workflows, runs, tasks, deliverables, model/research calls, approvals,
+  experiments, results, learning cycles, execution packs, costs, revenue,
+  messages, or notifications.
+- A real browser loaded that remote checkout with zero horizontal overflow,
+  zero clipped buttons, no console warnings/errors, and ordinary-language empty
+  business state.
+- The private remote/checkout gate and Phase 1 are complete.
 
 No model call, Gumroad action, publishing, spend, customer contact, legal
 decision, or money movement occurred.

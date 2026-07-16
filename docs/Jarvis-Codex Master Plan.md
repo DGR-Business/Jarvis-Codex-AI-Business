@@ -20,7 +20,7 @@ Current focus:
 - no second venture or broad capability expansion before that loop proves
   itself.
 
-Internal foundation status on 2026-07-14:
+Internal foundation status on 2026-07-16:
 
 - versioned migrations through migration 9, isolated tests/artifacts,
   deterministic outputs, atomic
@@ -46,11 +46,15 @@ Internal foundation status on 2026-07-14:
 - all three fresh backups passed authenticated restore, source-manifest,
   SQLite-integrity, current-output, clean-install, 81-test, healthy-start,
   PDF-preview, console, and desktop-layout proof;
-- the tracked baseline is being sealed as a new history-free root so the old
-  commits containing private metadata cannot be pushed;
-- private GitHub creation, push, and checkout proof remain the only open part
-  of the clean-baseline gate. Daniel approved those actions on 2026-07-16, but
-  an authenticated repository-creation surface is still required.
+- the tracked baseline is sealed as history-free root commit `e3f7a81`, so the
+  old commits containing private metadata were not pushed;
+- private repository `DGR-Business/Jarvis-Codex-AI-Business` now has that clean
+  baseline on `main`;
+- a fresh checkout from the private remote installed 104 lockfile packages,
+  passed 81/81 tests, started healthy, exposed one venture with zero synthetic
+  operating or commercial records, and passed a clean real-browser check;
+- the recoverable clean-baseline gate is complete. The next gated action is the
+  first A$1 maximum Demand Validator Agents SDK pilot.
 
 ## 1. North Star
 
@@ -190,7 +194,7 @@ improvement cycle:
 Goal: prove the runtime can plan, run safe internal work, record evidence, and
 prepare review outputs without spending money or touching external accounts.
 
-Current status: in progress. The protected worker runtime, 11-worker registry,
+Current status: complete as of 2026-07-16. The protected worker runtime, 11-worker registry,
 tool and approval policies, traces, eval fixtures, bounded handoffs, monitoring,
 cost controls, deterministic review outputs, one-venture scorecard, and PDF
 review path are implemented and tested. Demo proof records are test-only; a
@@ -682,25 +686,23 @@ Operator approval is required for:
 
 ### Now
 
-1. Finish the approved private GitHub gate: create the empty private repository,
-   push only the history-free baseline, and prove a fresh checkout.
-2. Preserve the proven recovery behavior: encrypted source/database/artifact
+1. With separate action-time approval, run exactly one A$1 maximum Demand
+   Validator Agents SDK pilot over one versioned evidence fixture, with no
+   tools or handoffs.
+2. Compare the SDK result with the protected baseline, have Daniel judge
+   commercial usefulness, reconcile cost, and decide revise, repeat, promote
+   only the exact capability, or stop.
+3. Preserve the proven recovery behavior: encrypted source/database/artifact
    backups, authenticated restore, retention, and private operator records.
-3. Preserve the already-proven clean-source behavior: lockfile install, 81/81
+4. Preserve the proven clean-source behavior: lockfile install, 81/81
    tests, healthy startup, and no synthetic production work or evidence.
 
 ### Next
 
-1. After action-time approval, run exactly one A$1 maximum Demand Validator
-   Agents SDK pilot over one versioned evidence fixture, with no tools or
-   handoffs.
-2. Compare the SDK result with the protected baseline, have Daniel judge
-   commercial usefulness, reconcile cost, and decide revise, repeat, promote
-   only the exact capability, or stop.
-3. Rank three digital-product opportunities and present one concise selection
+1. Rank three digital-product opportunities and present one concise selection
    decision.
-4. Build the smallest useful selected product and complete its Publish Pack.
-5. After Daniel creates the Gumroad account and approves publishing, run the
+2. Build the smallest useful selected product and complete its Publish Pack.
+3. After Daniel creates the Gumroad account and approves publishing, run the
    14-day or 50-qualified-view test and import results from Gumroad CSV.
 
 ### Later
