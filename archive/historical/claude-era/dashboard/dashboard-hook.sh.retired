@@ -1,0 +1,56 @@
+#!/bin/bash
+# Dashboard hook — reads Claude Code event JSON from stdin,
+# extracts key fields, and POSTs to the dashboard server.
+# Called by Claude Code hooks (PreToolUse, PostToolUse, SubagentStart, SubagentStop).
+
+JQ="/c/Users/radul/AppData/Local/Microsoft/WinGet/Packages/jqlang.jq_Microsoft.Winget.Source_8wekyb3d8bbwe/jq.exe"
+# Fallback to PATH if the full path doesn't exist
+if [ ! -f "$JQ" ]; then JQ="jq"; fi
+
+EVENT_TYPE="$1"
+INPUT=$(cat)  # read JSON from stdin
+
+TOOL=""
+DETAIL=""
+
+case "$EVENT_TYPE" in
+  pre-tool)
+    TOOL=$(echo "$INPUT" | "$JQ" -r '.tool_name // "unknown"')
+    DETAIL=$(echo "$INPUT" | "$JQ" -r '.tool_input | tostring' | head -c 100)
+    ;;
+  post-tool)
+    TOOL=$(echo "$INPUT" | "$JQ" -r '.tool_name // "unknown"')
+    DETAIL="completed"
+    ;;
+  agent-spawn)
+    TOOL="subagent"
+    DETAIL=$(echo "$INPUT" | "$JQ" -r '.agent_type // "subagent"')
+    ;;
+  agent-done)
+    TOOL="subagent"
+    DETAIL=$(echo "$INPUT" | "$JQ" -r '.agent_type // "subagent"')
+    ;;
+  *)
+    TOOL="unknown"
+    DETAIL="$EVENT_TYPE"
+    ;;
+esac
+
+# Build JSON safely with jq (handles quotes, special chars in tool input)
+PAYLOAD=$("$JQ" -n \
+  --arg src "claude-code" \
+  --arg type "$EVENT_TYPE" \
+  --arg detail "$TOOL: $DETAIL" \
+  '{source: $src, type: $type, agent: "main", status: "running", detail: $detail, timestamp: (now | strftime("%Y-%m-%dT%H:%M:%SZ"))}')
+
+# Auto-start dashboard server if not running
+if ! curl -s -o /dev/null --connect-timeout 1 http://localhost:5050/ 2>/dev/null; then
+  nohup node c:/ai-workspace/dashboard/dashboard-server.js > /dev/null 2>&1 &
+  sleep 1
+fi
+
+# POST to dashboard server
+curl -s -X POST http://localhost:5050/events \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD" \
+  > /dev/null 2>&1

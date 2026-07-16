@@ -1,0 +1,200 @@
+const CONFIG = require("../config");
+const { createProductDraft } = require("../adapters/gelato");
+const { sendEscalation } = require("../adapters/notifications");
+const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
+
+function hydrateTask(task) {
+  if (!task) return null;
+  return {
+    ...task,
+    payload: fromJson(task.payload),
+    result: fromJson(task.result),
+  };
+}
+
+function hydrateWorkflow(workflow) {
+  if (!workflow) return null;
+  return {
+    ...workflow,
+    metadata: fromJson(workflow.metadata),
+  };
+}
+
+function nextRunnableTask(db, workflowId) {
+  const params = [];
+  let clause = "status = 'queued'";
+  if (workflowId) {
+    clause += " AND workflow_id = ?";
+    params.push(workflowId);
+  }
+  return hydrateTask(
+    get(
+      db,
+      `SELECT * FROM tasks WHERE ${clause} ORDER BY priority ASC, created_at ASC LIMIT 1`,
+      params,
+    ),
+  );
+}
+
+function blockedTasks(db) {
+  return all(
+    db,
+    `SELECT tasks.*, approvals.status AS approval_status, approvals.title AS approval_title
+     FROM tasks
+     LEFT JOIN approvals ON approvals.id = tasks.approval_id
+     WHERE tasks.status = 'blocked'
+     ORDER BY tasks.priority ASC, tasks.created_at ASC`,
+  );
+}
+
+async function markBlocked(db, task, approval) {
+  const ts = now();
+  run(
+    db,
+    `UPDATE tasks SET status = 'blocked', result = ?, updated_at = ? WHERE id = ?`,
+    [toJson({ blockedBy: approval.id, approvalStatus: approval.status }), ts, task.id],
+  );
+  run(
+    db,
+    `UPDATE workflows SET status = 'blocked_for_approval', current_step = ?, updated_at = ? WHERE id = ?`,
+    [approval.title, ts, task.workflow_id],
+  );
+  insertEvent(db, {
+    level: "warn",
+    actor: "orchestrator",
+    type: "task.blocked_for_approval",
+    entityType: "task",
+    entityId: task.id,
+    message: `${task.title} is blocked until approval ${approval.id} is decided.`,
+  });
+  return sendEscalation({ subject: approval.title }, { channels: ["dashboard", "email"], dryRun: CONFIG.dryRun });
+}
+
+async function executeTask(db, task) {
+  const workflow = hydrateWorkflow(get(db, "SELECT * FROM workflows WHERE id = ?", [task.workflow_id]));
+  if (!workflow) throw new Error(`Workflow missing for task ${task.id}`);
+
+  if (task.kind === "publish_gelato_dry_run") {
+    const result = await createProductDraft(workflow, { dryRun: true });
+    run(
+      db,
+      `INSERT INTO costs (id, workflow_id, category, source, status, amount_cents, currency, occurred_at, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        `cost_${randomId()}`,
+        workflow.id,
+        "supplier_publish_proof",
+        "gelato",
+        "estimated",
+        0,
+        CONFIG.currency,
+        now(),
+        toJson({ dryRun: true, note: "No spend occurred." }),
+      ],
+    );
+    return result;
+  }
+
+  return {
+    mode: "simulated",
+    taskKind: task.kind,
+    note: "No specialized executor exists yet; task recorded as simulated proof work.",
+  };
+}
+
+async function runOnce(db, options = {}) {
+  const task = nextRunnableTask(db, options.workflowId);
+  if (!task) {
+    const blocked = blockedTasks(db);
+    if (blocked.length > 0) {
+      return {
+        status: "blocked",
+        message: "No runnable tasks. The next task needs operator approval.",
+        blocked,
+      };
+    }
+    return { status: "idle", message: "No queued tasks." };
+  }
+
+  const ts = now();
+  if (task.approval_id) {
+    const approval = get(db, "SELECT * FROM approvals WHERE id = ?", [task.approval_id]);
+    if (!approval || approval.status !== "approved") {
+      await markBlocked(db, task, approval || { id: task.approval_id, status: "missing", title: "Missing approval" });
+      return { status: "blocked", task, approval };
+    }
+  }
+
+  run(db, "UPDATE tasks SET status = 'running', started_at = ?, updated_at = ? WHERE id = ?", [ts, ts, task.id]);
+  insertEvent(db, {
+    actor: task.agent,
+    type: "task.started",
+    entityType: "task",
+    entityId: task.id,
+    message: `${task.agent} started ${task.title}.`,
+  });
+
+  try {
+    const result = await executeTask(db, task);
+    const done = now();
+    run(
+      db,
+      `UPDATE tasks SET status = 'completed', result = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+      [toJson(result), done, done, task.id],
+    );
+    run(
+      db,
+      `UPDATE workflows SET status = 'dry_run_complete', current_step = 'ready for live-publish approval design', approval_required = 1, updated_at = ? WHERE id = ?`,
+      [done, task.workflow_id],
+    );
+    insertEvent(db, {
+      actor: task.agent,
+      type: "task.completed",
+      entityType: "task",
+      entityId: task.id,
+      message: `${task.title} completed in dry-run mode. No external listing was created.`,
+      metadata: result,
+    });
+    return { status: "completed", task: { ...task, result }, result };
+  } catch (error) {
+    const retries = task.retries + 1;
+    const retryable = retries <= task.max_retries;
+    const status = retryable ? "queued" : "failed";
+    run(
+      db,
+      `UPDATE tasks SET status = ?, retries = ?, error = ?, updated_at = ? WHERE id = ?`,
+      [status, retries, error.message, now(), task.id],
+    );
+    if (!retryable) {
+      run(
+        db,
+        `INSERT INTO messages (id, task_id, severity, status, subject, body, created_at, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          `msg_${randomId()}`,
+          task.id,
+          "urgent",
+          "open",
+          `Task failed: ${task.title}`,
+          error.message,
+          now(),
+          toJson({ retries }),
+        ],
+      );
+    }
+    insertEvent(db, {
+      level: retryable ? "warn" : "error",
+      actor: task.agent,
+      type: retryable ? "task.retry" : "task.failed",
+      entityType: "task",
+      entityId: task.id,
+      message: `${task.title} ${retryable ? "will retry" : "failed"}: ${error.message}`,
+      metadata: { retries },
+    });
+    return { status, task, error: error.message, retries };
+  }
+}
+
+module.exports = {
+  runOnce,
+};

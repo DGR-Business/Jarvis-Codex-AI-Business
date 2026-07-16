@@ -1,0 +1,40 @@
+[
+  {
+    "id": "daily-strategic-pulse",
+    "cronJobId": null,
+    "name": "Daily Strategic Pulse",
+    "schedule": "On-demand only",
+    "cron": null,
+    "status": "disabled",
+    "lastRun": null,
+    "nextRun": null,
+    "lastReportPath": null,
+    "description": "Reads session log, checks ideas, dispatches business-advisor for strategic pulse",
+    "note": "Disabled to conserve Pro plan token budget. Request manually: 'run the daily pulse'"
+  },
+  {
+    "id": "weekly-system-health",
+    "cronJobId": "703bbb1b",
+    "name": "Weekly System Health",
+    "schedule": "Monday 10:07 AM local",
+    "cron": "7 10 * * 1",
+    "status": "active",
+    "lastRun": null,
+    "nextRun": "2026-04-06T10:07:00+11:00",
+    "lastReportPath": null,
+    "description": "Verifies MCP config, checks logs, flags stale reviews, produces health report",
+    "note": "CronCreate is session-only — recreated at each session start per standing instructions"
+  },
+  {
+    "id": "product-creation-cycle",
+    "cronJobId": null,
+    "name": "Product Creation Cycle",
+    "schedule": "Weekdays 2:00 PM local",
+    "cron": "0 14 * * 1-5",
+    "status": "disabled",
+    "lastRun": null,
+    "nextRun": null,
+    "lastReportPath": null,
+    "description": "Disabled until venture reaches Stage 1. Dispatches designer/writer/quality-checker"
+  }
+]

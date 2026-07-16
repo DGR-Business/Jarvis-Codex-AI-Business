@@ -1,0 +1,382 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - paragraph [ref=e5]: Operator Cockpit
+      - heading "V2 AI Business OS" [level=1] [ref=e6]
+      - paragraph [ref=e7]: A darker, more controllable command surface for running ventures, issuing instructions, and staying in charge.
+    - generic [ref=e8]:
+      - generic [ref=e9]: "Mode: Force Local"
+      - generic [ref=e10]: "Focus: V2 POD Store"
+      - generic [ref=e11]: Updated 3/18/2026, 11:35:13 AM
+  - generic [ref=e12]:
+    - complementary [ref=e13]:
+      - generic [ref=e14]:
+        - generic [ref=e15]:
+          - heading "Execution Core" [level=2] [ref=e16]
+          - generic [ref=e17]: Global override
+        - paragraph [ref=e18]: All model calls stay local. Cloud escalation is blocked until you explicitly switch mode or approve a change.
+        - generic [ref=e19]:
+          - button "Auto The orchestrator follows task-level routing policy and escalates when QA or complexity requires it." [ref=e20] [cursor=pointer]:
+            - strong [ref=e21]: Auto
+            - generic [ref=e22]: The orchestrator follows task-level routing policy and escalates when QA or complexity requires it.
+          - button "Force Local All model calls stay local. Cloud escalation is blocked until you explicitly switch mode or approve a change." [ref=e23] [cursor=pointer]:
+            - strong [ref=e24]: Force Local
+            - generic [ref=e25]: All model calls stay local. Cloud escalation is blocked until you explicitly switch mode or approve a change.
+          - button "Force Cloud All model calls use cloud providers only. Local models are bypassed completely." [ref=e26] [cursor=pointer]:
+            - strong [ref=e27]: Force Cloud
+            - generic [ref=e28]: All model calls use cloud providers only. Local models are bypassed completely.
+        - generic [ref=e29]:
+          - generic [ref=e30]:
+            - strong [ref=e31]: Forced-Local
+            - text: Local � forced-local
+            - generic [ref=e32]: Operator override requires local execution.
+          - generic [ref=e33]:
+            - strong [ref=e34]: Forced-Local
+            - text: Local � forced-local
+            - generic [ref=e35]: Operator override requires local execution.
+          - generic [ref=e36]:
+            - strong [ref=e37]: Forced-Local
+            - text: Local � forced-local
+            - generic [ref=e38]: Operator override requires local execution.
+          - generic [ref=e39]:
+            - strong [ref=e40]: Recent change
+            - text: 3/18/2026, 11:32:37 AM
+            - generic [ref=e41]: "Force Local by smoke-test: Smoke test mode change."
+          - generic [ref=e42]:
+            - strong [ref=e43]: Recent change
+            - text: 3/18/2026, 11:32:18 AM
+            - generic [ref=e44]: "Force Local by smoke-test: Smoke test mode change."
+      - generic [ref=e45]:
+        - generic [ref=e46]:
+          - heading "Control Surface" [level=2] [ref=e47]
+          - generic [ref=e48]: Live toggles
+        - generic [ref=e49]:
+          - generic [ref=e50]:
+            - generic [ref=e51]:
+              - strong [ref=e52]: Proactive Initiative
+              - text: Allow the system to self-start low-risk work, research, and backlog tasks without waiting for a new instruction.
+            - generic [ref=e53]:
+              - checkbox [checked]
+          - generic [ref=e55]:
+            - generic [ref=e56]:
+              - strong [ref=e57]: Strict Review
+              - text: Keep a tighter QA and approval posture when outputs are uncertain, outward-facing, or high consequence.
+            - generic [ref=e58]:
+              - checkbox [checked]
+          - generic [ref=e60]:
+            - generic [ref=e61]:
+              - strong [ref=e62]: Remote Alerts
+              - text: Send important approval and system alerts to the remote command surface when configured.
+            - generic [ref=e63]:
+              - checkbox [checked]
+          - generic [ref=e65]:
+            - generic [ref=e66]:
+              - strong [ref=e67]: Command Autostart
+              - text: Immediately queue newly submitted instructions unless you explicitly draft them for later.
+            - generic [ref=e68]:
+              - checkbox [checked]
+        - generic [ref=e70]: Focus venture
+        - combobox "Focus venture" [ref=e71]:
+          - option "Portfolio View"
+          - option "V2 POD Store" [selected]
+        - generic [ref=e72]:
+          - button "Pause Focus Venture" [ref=e73] [cursor=pointer]
+          - button "Resume Focus Venture" [ref=e74] [cursor=pointer]
+        - button "Emergency Stop All Work" [ref=e76] [cursor=pointer]
+      - generic [ref=e77]:
+        - generic [ref=e78]:
+          - heading "Quick Actions" [level=2] [ref=e79]
+          - generic [ref=e80]: Templates
+        - generic [ref=e81]:
+          - button "Niche Sweep Complex � High Research 10 promising POD niches for Etsy and Redbubble and rank them by opportunity, saturation, and fit with digital products." [ref=e82] [cursor=pointer]:
+            - strong [ref=e83]: Niche Sweep
+            - text: Complex � High
+            - generic [ref=e84]: Research 10 promising POD niches for Etsy and Redbubble and rank them by opportunity, saturation, and fit with digital products.
+          - button "Listing Sprint Draft-And-Polish � Normal Draft 10 approval-ready POD listing packages for the active venture, including titles, tags, and product description angles." [ref=e85] [cursor=pointer]:
+            - strong [ref=e86]: Listing Sprint
+            - text: Draft-And-Polish � Normal
+            - generic [ref=e87]: Draft 10 approval-ready POD listing packages for the active venture, including titles, tags, and product description angles.
+          - button "Review Blockers Standard � High Review all blocked runs and propose the shortest path to unblock them without increasing operator burden unnecessarily." [ref=e88] [cursor=pointer]:
+            - strong [ref=e89]: Review Blockers
+            - text: Standard � High
+            - generic [ref=e90]: Review all blocked runs and propose the shortest path to unblock them without increasing operator burden unnecessarily.
+          - button "Cost Audit Standard � Normal Audit current model and workflow cost posture and identify the top 5 opportunities to reduce spend without hurting output quality." [ref=e91] [cursor=pointer]:
+            - strong [ref=e92]: Cost Audit
+            - text: Standard � Normal
+            - generic [ref=e93]: Audit current model and workflow cost posture and identify the top 5 opportunities to reduce spend without hurting output quality.
+      - generic [ref=e94]:
+        - generic [ref=e95]:
+          - heading "Context Links" [level=2] [ref=e96]
+          - generic [ref=e97]: Session memory
+        - generic [ref=e98]:
+          - link "Open operator context" [ref=e99] [cursor=pointer]:
+            - /url: /api/context/file?name=OPERATOR_CONTEXT.md
+          - link "Open decision history" [ref=e100] [cursor=pointer]:
+            - /url: /api/context/file?name=DECISION_HISTORY.md
+          - link "Open context guide" [ref=e101] [cursor=pointer]:
+            - /url: /api/context/file?name=README.md
+    - generic [ref=e102]:
+      - generic [ref=e103]:
+        - generic [ref=e104]:
+          - generic [ref=e105]: Ventures
+          - generic [ref=e106]: "1"
+        - generic [ref=e107]:
+          - generic [ref=e108]: Commands
+          - generic [ref=e109]: "2"
+        - generic [ref=e110]:
+          - generic [ref=e111]: Queued Runs
+          - generic [ref=e112]: "2"
+        - generic [ref=e113]:
+          - generic [ref=e114]: Blocked Runs
+          - generic [ref=e115]: "2"
+        - generic [ref=e116]:
+          - generic [ref=e117]: Pending Approvals
+          - generic [ref=e118]: "1"
+        - generic [ref=e119]:
+          - generic [ref=e120]: Tracked Cost
+          - generic [ref=e121]: $0.00
+      - generic [ref=e122]:
+        - generic [ref=e123]:
+          - generic [ref=e124]:
+            - heading "Command Deck" [level=2] [ref=e125]
+            - paragraph [ref=e126]: Issue business instructions here. This is the future primary operator command surface.
+          - generic [ref=e127]: Instruction inbox
+        - generic [ref=e128]:
+          - generic [ref=e129]:
+            - generic [ref=e130]:
+              - heading "Recent Instructions" [level=3] [ref=e131]
+              - button "Refresh" [ref=e132] [cursor=pointer]
+            - generic [ref=e133]:
+              - article [ref=e134]:
+                - generic [ref=e135]:
+                  - generic [ref=e136]:
+                    - generic [ref=e137]: Operator
+                    - generic [ref=e138]: Normal
+                    - generic [ref=e139]: venture-01-pod-store
+                    - generic [ref=e140]: 3/18/2026, 11:32:37 AM
+                  - strong [ref=e141]: Smoke test command from verification.
+                - generic [ref=e142]:
+                  - generic [ref=e143]:
+                    - generic [ref=e144]: Queued
+                    - generic [ref=e145]: Force Local
+                    - generic [ref=e146]: Standard
+                    - generic [ref=e147]: Execute Low Risk
+                  - generic [ref=e148]: Queued for venture-01-pod-store using Force Local via forced-local.
+                  - generic [ref=e149]: "Approval boundary: On � Start immediately: Yes"
+              - article [ref=e150]:
+                - generic [ref=e151]:
+                  - generic [ref=e152]:
+                    - generic [ref=e153]: Operator
+                    - generic [ref=e154]: High
+                    - generic [ref=e155]: venture-01-pod-store
+                    - generic [ref=e156]: 3/18/2026, 11:30:31 AM
+                  - strong [ref=e157]: Build the first approval-ready Etsy and Redbubble listing workflow for POD and digital products.
+                - generic [ref=e158]:
+                  - generic [ref=e159]:
+                    - generic [ref=e160]: Queued
+                    - generic [ref=e161]: Force Local
+                    - generic [ref=e162]: Complex
+                    - generic [ref=e163]: Execute Low Risk
+                  - generic [ref=e164]: Queued for venture-01-pod-store using Force Local via forced-local.
+                  - generic [ref=e165]: "Approval boundary: On � Start immediately: Yes"
+          - generic [ref=e166]:
+            - generic [ref=e167]: Instruction
+            - textbox "Instruction" [ref=e168]:
+              - /placeholder: "Example: Research 5 promising POD niches for Etsy and prepare an approval-ready listing sprint plan."
+            - generic [ref=e169]:
+              - generic [ref=e170]:
+                - generic [ref=e171]: Scope
+                - combobox "Scope" [ref=e172]:
+                  - option "Portfolio" [selected]
+                  - option "Specific venture"
+              - generic [ref=e173]:
+                - generic [ref=e174]: Venture target
+                - combobox "Venture target" [disabled] [ref=e175]:
+                  - option "V2 POD Store" [selected]
+              - generic [ref=e176]:
+                - generic [ref=e177]: Routing
+                - combobox "Routing" [ref=e178]:
+                  - option "Inherit current mode" [selected]
+                  - option "Auto"
+                  - option "Force Local"
+                  - option "Force Cloud"
+              - generic [ref=e179]:
+                - generic [ref=e180]: Reasoning tier
+                - combobox "Reasoning tier" [ref=e181]:
+                  - option "Simple"
+                  - option "Standard" [selected]
+                  - option "Draft & Polish"
+                  - option "Complex"
+              - generic [ref=e182]:
+                - generic [ref=e183]: Priority
+                - combobox "Priority" [ref=e184]:
+                  - option "Low"
+                  - option "Normal" [selected]
+                  - option "High"
+                  - option "Critical"
+              - generic [ref=e185]:
+                - generic [ref=e186]: Execution style
+                - combobox "Execution style" [ref=e187]:
+                  - option "Execute low-risk work" [selected]
+                  - option "Propose first"
+                  - option "Research only"
+            - generic [ref=e188]:
+              - generic [ref=e189]:
+                - checkbox "Require approval boundary Keep externally meaningful outcomes review-gated." [checked]
+                - generic [ref=e191]:
+                  - strong [ref=e192]: Require approval boundary
+                  - text: Keep externally meaningful outcomes review-gated.
+              - generic [ref=e193]:
+                - checkbox "Start immediately Queue now unless the kill switch or control policy blocks it." [checked]
+                - generic [ref=e195]:
+                  - strong [ref=e196]: Start immediately
+                  - text: Queue now unless the kill switch or control policy blocks it.
+            - generic [ref=e197]:
+              - button "Queue Instruction" [ref=e198] [cursor=pointer]
+              - button "Clear Draft" [ref=e199] [cursor=pointer]
+      - generic [ref=e200]:
+        - generic [ref=e201]:
+          - generic [ref=e202]:
+            - heading "Run Queue" [level=2] [ref=e203]
+            - generic [ref=e204]: Execution status
+          - generic [ref=e205]:
+            - generic [ref=e206]:
+              - strong [ref=e207]: Smoke test command from verification.
+              - generic [ref=e208]:
+                - generic [ref=e209]: Queued
+                - generic [ref=e210]: Force Local
+                - generic [ref=e211]: Standard
+              - generic [ref=e212]: venture-01-pod-store � owner smoke-test � provider local / local-router
+              - generic [ref=e213]: Queued for venture-01-pod-store using Force Local via forced-local.
+            - generic [ref=e214]:
+              - strong [ref=e215]: Build approval-ready POD listing workflow
+              - generic [ref=e216]:
+                - generic [ref=e217]: Queued
+                - generic [ref=e218]: Auto
+                - generic [ref=e219]: Complex
+              - generic [ref=e220]: venture-01-pod-store � owner orchestrator � provider cloud / premium-router
+              - generic [ref=e221]: Core reusable launch workflow for POD and digital products.
+            - generic [ref=e222]:
+              - strong [ref=e223]: Create Redbubble seller account
+              - generic [ref=e224]:
+                - generic [ref=e225]: Blocked Human Only
+                - generic [ref=e226]: Auto
+                - generic [ref=e227]: Standard
+              - generic [ref=e228]: venture-01-pod-store � owner operator � provider none / none
+              - generic [ref=e229]: Account creation remains human-controlled.
+            - generic [ref=e230]:
+              - strong [ref=e231]: Create Etsy seller account
+              - generic [ref=e232]:
+                - generic [ref=e233]: Blocked Human Only
+                - generic [ref=e234]: Auto
+                - generic [ref=e235]: Standard
+              - generic [ref=e236]: venture-01-pod-store � owner operator � provider none / none
+              - generic [ref=e237]: Account creation remains human-controlled.
+        - generic [ref=e238]:
+          - generic [ref=e239]:
+            - heading "Venture Overview" [level=2] [ref=e240]
+            - generic [ref=e241]: Portfolio map
+          - generic [ref=e243]:
+            - strong [ref=e244]: V2 POD Store
+            - generic [ref=e245]:
+              - generic [ref=e246]: Active
+              - generic [ref=e247]: Planning
+            - generic [ref=e248]: venture-01-pod-store � commands 2 � runs 4 � pending approvals 1
+            - generic [ref=e249]: Launch-ready POD and digital-product workflow for Etsy and Redbubble.
+    - complementary [ref=e250]:
+      - generic [ref=e251]:
+        - generic [ref=e252]:
+          - heading "Approvals" [level=2] [ref=e253]
+          - generic [ref=e254]: Human gate
+        - generic [ref=e256]:
+          - strong [ref=e257]: Approve first external publish boundary
+          - generic [ref=e258]:
+            - generic [ref=e259]: Pending
+            - generic [ref=e260]: High
+          - generic [ref=e261]: venture-01-pod-store � 3/18/2026, 10:55:14 AM
+          - generic [ref=e262]: Confirm that publishing remains approval-gated while internal drafting proceeds automatically.
+      - generic [ref=e263]:
+        - generic [ref=e264]:
+          - heading "Strategy Pulse" [level=2] [ref=e265]
+          - generic [ref=e266]: Overarching context
+        - heading "Current priorities" [level=3] [ref=e267]
+        - list [ref=e268]:
+          - listitem [ref=e269]: "Build `v2` as a clean standalone system"
+        - heading "Mission" [level=3] [ref=e270]
+        - list [ref=e271]:
+          - listitem [ref=e272]: Build a highly capable, low-maintenance, always-on AI operating system that can help run and grow online businesses with human-in-the-loop approvals where needed.
+        - heading "Latest decisions" [level=3] [ref=e273]
+        - generic [ref=e274]:
+          - generic [ref=e275]:
+            - strong [ref=e276]: Use files plus a small database
+            - text: 2026-03-18T10:36:00+10:00 � system � active
+            - generic [ref=e277]: This gives strong control-plane behavior without losing portability or human-readable business context.
+          - generic [ref=e278]:
+            - strong [ref=e279]: External high-consequence actions remain approval-gated
+            - text: 2026-03-18T10:35:00+10:00 � system � active
+            - generic [ref=e280]: The operator wants autonomy for grunt work, not uncontrolled external impact.
+          - generic [ref=e281]:
+            - strong [ref=e282]: First venture focus is POD and digital products on Etsy + Redbubble
+            - text: 2026-03-18T10:34:00+10:00 � portfolio � active
+            - generic [ref=e283]: They are relatively simple, align with the operator's current goals, and offer a cleaner first path to a reusable operating layer.
+          - generic [ref=e284]:
+            - strong [ref=e285]: Keep stable context and chronological reasoning in separate files
+            - text: 2026-03-18T10:33:00+10:00 � system � active
+            - generic [ref=e286]: The operator needs both a fast-read strategic briefing and a durable explanation trail that prevents decision drift across sessions.
+          - generic [ref=e287]:
+            - strong [ref=e288]: Use a three-mode global routing override
+            - text: 2026-03-18T10:32:00+10:00 � system � active
+            - generic [ref=e289]: The operator wants easy manual control over cost, offline behavior, and maximum-capability operation without editing configs.
+      - generic [ref=e290]:
+        - generic [ref=e291]:
+          - heading "Remote Surface" [level=2] [ref=e292]
+          - generic [ref=e293]: Telegram
+        - paragraph [ref=e294]: Telegram is not configured yet. The remote command surface is ready and will activate once bot credentials are added.
+        - generic [ref=e295]:
+          - code [ref=e296]: /mode
+          - code [ref=e297]: /mode auto
+          - code [ref=e298]: /mode local
+          - code [ref=e299]: /mode cloud
+          - code [ref=e300]: /status
+          - code [ref=e301]: /decisions
+      - generic [ref=e302]:
+        - generic [ref=e303]:
+          - heading "Recent Events" [level=2] [ref=e304]
+          - generic [ref=e305]: Telemetry
+        - generic [ref=e306]:
+          - generic [ref=e307]:
+            - strong [ref=e308]: V2 workspace initialized
+            - generic [ref=e309]: 3/18/2026, 11:35:10 AM � system � INFO
+          - generic [ref=e310]:
+            - strong [ref=e311]: "Command queued: Smoke test command from verification."
+            - generic [ref=e312]: 3/18/2026, 11:32:37 AM � command � INFO
+          - generic [ref=e313]:
+            - strong [ref=e314]: "Control setting updated: focus_venture"
+            - generic [ref=e315]: 3/18/2026, 11:32:37 AM � control � INFO
+          - generic [ref=e316]:
+            - strong [ref=e317]: Mode changed from Force Local to Force Local
+            - generic [ref=e318]: 3/18/2026, 11:32:37 AM � mode � INFO
+          - generic [ref=e319]:
+            - strong [ref=e320]: V2 workspace initialized
+            - generic [ref=e321]: 3/18/2026, 11:32:36 AM � system � INFO
+          - generic [ref=e322]:
+            - strong [ref=e323]: Mode changed from Force Local to Force Local
+            - generic [ref=e324]: 3/18/2026, 11:32:18 AM � mode � INFO
+          - generic [ref=e325]:
+            - strong [ref=e326]: V2 workspace initialized
+            - generic [ref=e327]: 3/18/2026, 11:32:17 AM � system � INFO
+          - generic [ref=e328]:
+            - strong [ref=e329]: Mode changed from Force Local to Force Local
+            - generic [ref=e330]: 3/18/2026, 11:30:32 AM � mode � INFO
+          - generic [ref=e331]:
+            - strong [ref=e332]: Mode changed from Auto to Force Local
+            - generic [ref=e333]: 3/18/2026, 11:05:56 AM � mode � INFO
+          - generic [ref=e334]:
+            - strong [ref=e335]: Mode changed from Force Local to Auto
+            - generic [ref=e336]: 3/18/2026, 11:05:55 AM � mode � INFO
+          - generic [ref=e337]:
+            - strong [ref=e338]: Mode changed from Auto to Force Local
+            - generic [ref=e339]: 3/18/2026, 11:05:53 AM � mode � INFO
+          - generic [ref=e340]:
+            - strong [ref=e341]: Mode changed from Force Local to Auto
+            - generic [ref=e342]: 3/18/2026, 11:05:52 AM � mode � INFO

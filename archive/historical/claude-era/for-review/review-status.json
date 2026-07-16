@@ -1,0 +1,83 @@
+[
+  {
+    "file": "RESEARCH-pod-niche-validation-2026-04-01.md",
+    "venture": "venture-01-pod-store",
+    "type": "research",
+    "status": "archived",
+    "created": "2026-04-01T00:00:00Z",
+    "reviewed": "2026-04-03T09:10:50.306Z",
+    "archived": "2026-04-24T00:00:00Z",
+    "notes": "Nurse humour niche validation — approved and actioned. Canonical at ventures/venture-01-pod-store/outputs/RESEARCH-pod-niche-validation-2026-04-01.md"
+  },
+  {
+    "file": "PRODUCT-LISTING-etsy-nurse-2026-04-01.md",
+    "venture": "venture-01-pod-store",
+    "type": "product-listing",
+    "status": "archived",
+    "created": "2026-04-02T00:00:00Z",
+    "reviewed": "2026-04-03T09:10:10.814Z",
+    "archived": "2026-04-24T00:00:00Z",
+    "notes": "Superseded by LISTING-PACK-nurse-humour-2026-04-24.md (manual upload workflow). Canonical copy at ventures/venture-01-pod-store/outputs/COPY-etsy-listings-2026-04-01.md"
+  },
+  {
+    "file": "NICHE-BRIEF-nurse-humour-2026-04-02.pdf",
+    "venture": "venture-01-pod-store",
+    "type": "niche-brief",
+    "status": "archived",
+    "created": "2026-04-02T00:00:00Z",
+    "archived": "2026-04-24T00:00:00Z",
+    "notes": "Niche launch pipeline PDF — archived. Superseded by listing pack delivery model."
+  },
+  {
+    "file": "QC-etsy-listings-2026-04-01.md",
+    "venture": "venture-01-pod-store",
+    "type": "quality-check",
+    "status": "archived",
+    "created": "2026-04-02T00:00:00Z",
+    "reviewed": "2026-04-03T00:00:00Z",
+    "archived": "2026-04-24T00:00:00Z",
+    "notes": "QC fixes applied to listing copy. Archived — superseded by new listing pack."
+  },
+  {
+    "file": "LISTING-PACK-nurse-humour-2026-04-24.md",
+    "venture": "venture-01-pod-store",
+    "type": "listing-pack",
+    "status": "pending",
+    "created": "2026-04-24T00:00:00Z",
+    "notes": "Complete 3-product Etsy listing pack — Night Shift Sweatshirt, Nurse Mug, NICU Tee. All fields copy-paste ready. Includes ChatGPT image prompts. Awaiting operator: (1) generate images in ChatGPT when ready, (2) create products in Gelato, (3) upload listings to Etsy manually."
+  }
+  ,
+  {
+    "file": "RESEARCH-niche-pilates-mug-2026-04-24.md",
+    "venture": "venture-01-pod-store",
+    "type": "research",
+    "status": "pending",
+    "created": "2026-04-24T00:00:00Z",
+    "notes": "Pilates mug niche validation — Q2 2026. Verdict: GO. Score 72/100. Recommended design: 'I Do Pilates So I Don't Strangle People' on 11oz mug at AU$29. EverBee + live Etsy scrape used for validation. Awaiting operator decision on whether to build this as next product."
+  },
+  {
+    "file": "PRODUCT-LISTING-pilates-mug-2026-04-24.md",
+    "venture": "venture-01-pod-store",
+    "type": "product-listing",
+    "status": "archived",
+    "created": "2026-04-24T00:00:00Z",
+    "archived": "2026-04-24T00:00:00Z",
+    "notes": "Superseded by LISTING-PACK-pilates-mug-2026-04-24.md. QC fixes applied."
+  },
+  {
+    "file": "LISTING-PACK-pilates-mug-2026-04-24.md",
+    "venture": "venture-01-pod-store",
+    "type": "listing-pack",
+    "status": "pending",
+    "created": "2026-04-24T00:00:00Z",
+    "notes": "Pilates humor mug — 'I Do Pilates So I Don't Strangle People'. QC: CONDITIONAL PASS — all fixes applied. Design saved at outputs/pilates-mug-design-v1.png. Pre-publish: run USPTO trademark search + confirm POD supplier dishwasher/fade specs. Ready to list once those are cleared."
+  },
+  {
+    "file": "RESEARCH-niche-q2-2026-04-25.md",
+    "venture": "venture-01-pod-store",
+    "type": "research",
+    "status": "pending",
+    "created": "2026-04-25T00:00:00Z",
+    "notes": "Q2 2026 POD niche opportunity scan — fresh run, no constraints. TOP 3: (1) Dog/Cat Mom Watercolor Sweatshirt POS 74 — build first, Mother's Day window closes May 10; (2) Birth Flower/Wildflower Tote Bag POS 71 — build second, also Mother's Day; (3) BookTok/Dark Academia Mug POS 68 — evergreen, build third. EverBee DOM bridge was offline — revenue estimates from editorial sources. Recommend re-running EverBee validation when Chrome extension reconnects."
+  }
+]

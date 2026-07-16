@@ -1,0 +1,92 @@
+TIMESTAMP | LEVEL | SOURCE | Message
+2026-04-01T00:30:29Z | TOOL-FAILURE | Bash | Exit code 1
+2026-04-01T00:30:35Z | TOOL-FAILURE | Read | File does not exist. Note: your current working directory is c:\ai-workspace.
+2026-04-01T07:46:06Z | TOOL-FAILURE | Read | File does not exist. Note: your current working directory is c:\ai-workspace.
+2026-04-01T08:05:58Z | TOOL-FAILURE | Bash | Exit code 49
+2026-04-01T08:06:08Z | TOOL-FAILURE | Bash | Exit code 49
+2026-04-01T08:28:37Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-01T08:28:38Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-01T08:29:19Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-01T08:29:24Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-01T10:18:19Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-01T10:18:20Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-01T10:19:53Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-01T10:20:04Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-01T10:20:05Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-01T10:20:06Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-02T11:19:00Z | TOOL-FAILURE | Bash | Exit code 49
+Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.
+2026-04-02T11:28:40Z | TOOL-FAILURE | Bash | Exit code 2
+/usr/bin/bash: -c: line 131: unexpected EOF while looking for matching `''
+2026-04-02T11:40:21Z | TOOL-FAILURE | Read | File does not exist. Note: your current working directory is c:\ai-workspace.
+2026-04-02T11:40:22Z | TOOL-FAILURE | Read | File does not exist. Note: your current working directory is c:\ai-workspace.
+2026-04-02T11:45:20Z | TOOL-FAILURE | Bash | Exit code 2
+grep: -P supports only unibyte and UTF-8 locales
+2026-04-03T08:44:03Z | TOOL-FAILURE | Read | File content (10659 tokens) exceeds maximum allowed tokens (10000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole f
+2026-04-03T08:44:08Z | TOOL-FAILURE | Read | File content (10659 tokens) exceeds maximum allowed tokens (10000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole f
+2026-04-03T08:50:48Z | TOOL-FAILURE | Read | File content (10659 tokens) exceeds maximum allowed tokens (10000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole f
+2026-04-03T08:50:52Z | TOOL-FAILURE | Bash | Exit code 2
+ls: cannot access 'C:ai-workspaceholding-companyoperations 2': No such file or directory
+2026-04-03T08:51:04Z | TOOL-FAILURE | Read | File does not exist. Note: your current working directory is C:\ai-workspace.
+2026-04-03T08:51:43Z | TOOL-FAILURE | Bash | Exit code 2
+plans
+specs
+nested-gliding-rainbow.md
+ls: cannot access '/c/ai-workspace/docs/specs/': No such file or directory
+2026-04-03T08:51:50Z | TOOL-FAILURE | Bash | Exit code 1
+cat: /c/ai-workspace/docs/superpowers/nested-gliding-rainbow.md: No such file or directory
+2026-04-03T08:52:10Z | TOOL-FAILURE | Bash | Exit code 1
+0 total
+2026-04-03T08:52:14Z | TOOL-FAILURE | Bash | Exit code 1
+0 total
+2026-04-24T09:07:39Z | TOOL-FAILURE | mcp__Claude_in_Chrome__javascript_tool | JavaScript execution error: SyntaxError: await is only valid in async functions and the top level bodies of modules
+    at <anonymous>:5:13
+    at <anonymous>:9:11
+2026-04-24T09:08:56Z | TOOL-FAILURE | mcp__Claude_in_Chrome__computer | MCP error -32602: Input validation error: Invalid arguments for tool computer: [
+  {
+    "code": "too_big",
+    "maximum": 10,
+    "type": "number",
+    "inclusive": true,
+    "exact": false,
+ 
+2026-04-24T09:29:25Z | TOOL-FAILURE | mcp__Claude_in_Chrome__javascript_tool | Tab 730482569 no longer exists. Call tabs_context_mcp to get current tabs.
+2026-04-24T09:30:57Z | TOOL-FAILURE | Bash | Exit code 49
+Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.
+2026-04-24T09:40:02Z | TOOL-FAILURE | WebFetch | Request failed with status code 404
+2026-04-24T09:40:03Z | TOOL-FAILURE | WebFetch | Request failed with status code 429
+2026-04-24T09:49:13Z | TOOL-FAILURE | mcp__Claude_in_Chrome__get_page_text | MCP error -32602: Input validation error: Invalid arguments for tool get_page_text: [
+  {
+    "code": "invalid_type",
+    "expected": "number",
+    "received": "string",
+    "path": [
+      "tab
+2026-04-24T23:42:20Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-24T23:42:21Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-24T23:42:22Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-24T23:42:44Z | TOOL-FAILURE | WebFetch | Request failed with status code 403
+2026-04-24T23:51:17Z | TOOL-FAILURE | Bash | Exit code 2
+2026-07-02T08:31:23Z | TOOL-FAILURE | mcp__etsy__getMe | MCP error -32603: MCP error -32603: Failed to refresh Etsy access token
+2026-07-02T08:34:21Z | TOOL-FAILURE | Bash | Exit code 2
+/c/ai-workspace/tools/etsy-mcp-server/build/:
+total 24
+drwxr-xr-x 1 radul 197609    0 Mar 19 21:45 .
+drwxr-xr-x 1 radul 197609    0 Mar 19 21:45 ..
+-rw-r--r-- 1 radul 197609 1692 Mar 
+2026-07-02T08:34:27Z | TOOL-FAILURE | Bash | Exit code 2
+/c/ai-workspace/tools/etsy-mcp-server/build:
+total 24
+drwxr-xr-x 1 radul 197609    0 Mar 19 21:45 .
+drwxr-xr-x 1 radul 197609    0 Mar 19 21:45 ..
+-rw-r--r-- 1 radul 197609 1692 Mar 1
+2026-07-03T21:09:01Z | TOOL-FAILURE | Bash | Exit code 49
+
+[notice] A new release of pip is available: 25.1.1 -> 26.1.2
+[notice] To update, run: C:\Users\radul\AppData\Local\Programs\Python\Python313\python.exe -m pip install --upgrade pip
+2026-07-03T21:33:11Z | TOOL-FAILURE | Bash | Exit code 1
+  File "<stdin>", line 79
+    canv.convert('RGB').resize((900*len(files), 1080)).save(OUT + '\' + name)
+                                                                  ^
+SyntaxErr
+2026-07-03T21:47:37Z | TOOL-FAILURE | mcp__claude-in-chrome__find | There is no file upload input element visible in the accessibility tree of this page. The page contains a privacy preference dialog, navigation buttons, and cookie consent controls, but no `<input typ

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Jarvis Business Command</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/vendor/lucide.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <div class="brand-block">
+          <span class="brand-mark"><i data-lucide="command"></i></span>
+          <div>
+            <strong>JARVIS</strong>
+            <span>Business command</span>
+          </div>
+        </div>
+
+        <div class="venture-switcher">
+          <span>Active venture</span>
+          <div class="venture-control">
+            <i data-lucide="package-open"></i>
+            <select id="venture-select" aria-label="Active venture" disabled>
+              <option>Loading venture...</option>
+            </select>
+            <i data-lucide="chevron-down"></i>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <button type="button" class="nav-button active" data-view="cockpit">
+            <i data-lucide="layout-dashboard"></i><span>Command Center</span>
+          </button>
+          <button type="button" class="nav-button" data-view="decisions">
+            <i data-lucide="circle-check-big"></i><span>Decisions</span><b id="decision-count" hidden>0</b>
+          </button>
+          <button type="button" class="nav-button" data-view="tests">
+            <i data-lucide="flask-conical"></i><span>Business Tests</span>
+          </button>
+          <button type="button" class="nav-button" data-view="ai-team">
+            <i data-lucide="users"></i><span>AI Team</span>
+          </button>
+          <button type="button" class="nav-button" data-view="system">
+            <i data-lucide="settings-2"></i><span>System</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="connection-line"><span id="connection-dot"></span><b id="connection-label">Connecting</b></div>
+          <p>Local operator session</p>
+        </div>
+      </aside>
+
+      <main class="main-area">
+        <header class="topbar">
+          <div>
+            <p id="page-kicker">BUSINESS OVERVIEW</p>
+            <h1 id="page-title">Command Center</h1>
+          </div>
+          <div class="topbar-actions">
+            <span class="date-label" id="today-label"></span>
+            <button type="button" class="icon-button" data-action="refresh" title="Refresh current view" aria-label="Refresh current view">
+              <i data-lucide="refresh-cw"></i>
+            </button>
+          </div>
+        </header>
+
+        <div id="view" class="view" aria-live="polite">
+          <div class="loading-state"><span></span><p>Loading business state...</p></div>
+        </div>
+      </main>
+    </div>
+
+    <aside id="drawer" class="drawer" aria-hidden="true">
+      <div class="drawer-header">
+        <div><p id="drawer-kicker">DETAIL</p><h2 id="drawer-title">Details</h2></div>
+        <button type="button" class="icon-button" data-action="close-drawer" aria-label="Close details" title="Close details">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div id="drawer-body" class="drawer-body"></div>
+    </aside>
+    <div id="drawer-backdrop" class="drawer-backdrop" data-action="close-drawer"></div>
+
+    <div id="pdf-modal" class="modal" aria-hidden="true">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <div><p>REVIEW OUTPUT</p><h2 id="pdf-title">PDF preview</h2></div>
+          <button type="button" class="icon-button" data-action="close-pdf" aria-label="Close preview" title="Close preview"><i data-lucide="x"></i></button>
+        </div>
+        <iframe id="pdf-frame" title="Review output preview"></iframe>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status"></div>
+  </body>
+</html>

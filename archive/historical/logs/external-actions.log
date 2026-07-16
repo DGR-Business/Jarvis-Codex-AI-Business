@@ -1,0 +1,9 @@
+TIMESTAMP | LEVEL | ACTION-TYPE | Details | Venture | Approved: YES/NO
+2026-03-13T12:00:00Z | APPROVE | EMAIL-DRAFT | SYSTEM TEST — Draft email to test supplier (not sent) | venture-01-pod-store | Approved: NO (test only)
+2026-04-03T09:09:55.770Z | APPROVE | DASHBOARD-APPROVE | APPROVE: QC-etsy-listings-2026-04-01.md | — | Approved: YES
+2026-04-03T09:10:10.814Z | APPROVE | DASHBOARD-APPROVE | APPROVE: PRODUCT-LISTING-etsy-nurse-2026-04-01.md | — | Approved: YES
+2026-04-03T09:10:28.434Z | APPROVE | DASHBOARD-DENY | DENY: IDEA-smart-local-llm-routing-2026-03-15.md | — | Approved: NO
+2026-04-03T09:10:35.518Z | APPROVE | DASHBOARD-DENY | DENY: REPORT-pod-niche-research-notes-2026-03-13.md | — | Approved: NO
+2026-04-03T09:10:41.238Z | APPROVE | DASHBOARD-APPROVE | APPROVE: OPERATOR-ACTION-system-setup-2026-03-25.pdf | — | Approved: YES
+2026-04-03T09:10:50.307Z | APPROVE | DASHBOARD-APPROVE | APPROVE: RESEARCH-pod-niche-validation-2026-04-01.md | — | Approved: YES
+2026-04-03T09:10:52.688Z | APPROVE | DASHBOARD-APPROVE | APPROVE: NICHE-BRIEF-nurse-humour-2026-04-02.pdf | — | Approved: YES

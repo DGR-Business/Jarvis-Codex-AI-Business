@@ -1,0 +1,9 @@
+# Project-scoped Codex settings for this trusted local runtime.
+# Keep secrets and OAuth tokens out of this file.
+
+project_doc_max_bytes = 65536
+project_doc_fallback_filenames = ["AGENTS.md"]
+
+# MCP/tooling should be added only when a workflow has a concrete need and a
+# safe dry-run or read-only mode. Recommended candidates are documented in
+# docs/plans/CODEX-RUNTIME-ARCHITECTURE-2026-07-04.md.

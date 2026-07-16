@@ -1,0 +1,44 @@
+@echo off
+title Jarvis Dashboard
+echo.
+echo  ========================================
+echo   Jarvis AI Business OS — Dashboard
+echo  ========================================
+echo.
+
+:: Check if Node.js is available
+where node >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ERROR: Node.js not found. Install from https://nodejs.org
+    pause
+    exit /b 1
+)
+
+:: Check if server is already running on port 5050
+netstat -ano | findstr ":5050 " | findstr "LISTENING" >nul 2>&1
+if %errorlevel% equ 0 (
+    echo Dashboard already running. Opening browser...
+    start http://localhost:5050
+    exit /b 0
+)
+
+:: Start the dashboard server in background
+echo Starting server...
+cd /d C:\ai-workspace\dashboard
+start /b node dashboard-server.js
+
+:: Wait for server to be ready
+timeout /t 2 /nobreak >nul
+
+:: Open browser
+start http://localhost:5050
+
+echo.
+echo Dashboard running at http://localhost:5050
+echo.
+echo Close this window to stop the server.
+echo Press Ctrl+C to stop without closing.
+echo.
+
+:: Keep window open — closing it stops the background node process
+cmd /k

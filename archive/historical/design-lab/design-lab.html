@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jarvis-Codex Dashboard Design Lab</title>
+    <link rel="stylesheet" href="/design-lab.css" />
+  </head>
+  <body>
+    <div class="lab-shell">
+      <header class="lab-header">
+        <div>
+          <a class="back-link" href="/">Back to live dashboard</a>
+          <h1>Dashboard Design Lab</h1>
+          <p>Five cockpit directions for the Jarvis-Codex operator console.</p>
+        </div>
+        <div class="lab-actions">
+          <button id="refresh-state" class="lab-button" type="button">Refresh state</button>
+        </div>
+      </header>
+
+      <nav id="concept-tabs" class="concept-tabs" aria-label="Design concepts"></nav>
+      <main id="concept-root" class="concept-root" aria-live="polite">
+        <div class="loading-panel">Loading runtime state...</div>
+      </main>
+    </div>
+
+    <script src="/design-lab.js" defer></script>
+  </body>
+</html>
