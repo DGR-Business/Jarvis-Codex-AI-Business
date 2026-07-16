@@ -488,14 +488,17 @@ def build_pdf(payload, output_path):
         section_title("What happens next", styles, "Controlled execution"),
         bullet_rows(payload.get("nextActions"), styles, BLUE, "No next action was recorded."),
         Spacer(1, 9 * mm),
+        CondPageBreak(105 * mm),
         section_title("Work completed by the AI team", styles, "Accountability record"),
         team_work(payload, styles),
         Spacer(1, 7 * mm),
         section_title("Review outputs", styles, "Documents available in Jarvis"),
         output_list(payload, styles),
         Spacer(1, 7 * mm),
-        section_title("Your decision", styles, "One clear response"),
-        action_strip(payload, styles),
+        KeepTogether([
+            section_title("Your decision", styles, "One clear response"),
+            action_strip(payload, styles),
+        ]),
     ])
 
     doc.build(story, onFirstPage=page_footer, onLaterPages=page_footer)

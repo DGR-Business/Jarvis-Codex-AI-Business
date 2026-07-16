@@ -76,6 +76,9 @@ instead of shrinking or overflowing.
 - A short decision brief rendered to two pages and a dense 11-worker case to
   four pages. Every rendered page was visually inspected for clipping,
   overlap, hierarchy and legibility.
+- Both current production review PDFs were regenerated from live runtime state
+  after the redesign. Their eight pages were visually inspected, and the final
+  pagination rule keeps the decision heading and its three choices together.
 - Text extraction confirms the money move, decision, evidence and test sections
   while excluding raw paths, `file_path`, `approval gate` and `dry-run active`.
 - No live model, hosted tool, image generation, publishing, outreach, account

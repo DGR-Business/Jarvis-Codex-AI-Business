@@ -2646,6 +2646,11 @@ Operator document redesign:
   overlap and legibility. PDF text extraction confirmed the key decision
   sections and found no raw path, `file_path`, `approval gate` or
   `dry-run active` leakage.
+- Regenerated both current ready-for-review production PDFs from live runtime
+  state after the renderer change. Each now renders as a four-page Decision
+  Brief. A final pagination pass keeps the `Your decision` heading with its
+  action choices instead of orphaning it on the preceding page; all eight live
+  pages passed text extraction and visual inspection.
 - Historical stored names remain untouched for audit history, but focused
   dashboard APIs translate old `Approval Pack` labels to `Decision Brief` for
   ordinary user-facing language.
@@ -2670,11 +2675,12 @@ Browser and runtime proof:
 
 Verification and safety:
 
-- `npm.cmd test` passes 92/92 tests. `git diff --check` reports no whitespace
+- The post-pagination `npm.cmd test` run passes 92/92 tests. `git diff --check`
+  reports no whitespace
   errors; only the repository's existing Windows line-ending notices appear.
 - Created a fresh AES-256-GCM source, database and artifact checkpoint in the
   configured OneDrive backup folder. The database backup payload SHA-256 is
-  `34d0b52a3adc1276d68abd062169cf0762e040ff608a0fa256f30d244e86c2fa`.
+  `96d546c46335af34d7055e36333028297268e140b98b7639cf2659488a118b0f`.
   An authenticated restore matched that hash, returned `integrity_check: ok`
   and preserved the useful 4/5 review plus the 1/5 supervised capability state.
 - No live model call, hosted search, image generation, vision request,
