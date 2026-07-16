@@ -9,9 +9,17 @@ function claimNextTask(db, options = {}) {
   const token = `claim_${randomId()}`;
   const attemptId = `attempt_${randomId()}`;
   const claimedAt = now();
-  const workflowClause = options.workflowId ? "AND workflow_id = ?" : "";
-  const params = [token, claimedAt, claimedAt];
-  if (options.workflowId) params.push(options.workflowId);
+  const filters = [];
+  const filterParams = [];
+  if (options.workflowId) {
+    filters.push("candidate.workflow_id = ?");
+    filterParams.push(options.workflowId);
+  }
+  if (options.taskId) {
+    filters.push("candidate.id = ?");
+    filterParams.push(options.taskId);
+  }
+  const filterClause = filters.length ? `AND ${filters.join(" AND ")}` : "";
   db.exec("BEGIN IMMEDIATE");
   try {
     const task = db.prepare(
@@ -19,13 +27,25 @@ function claimNextTask(db, options = {}) {
        SET status = 'running', claim_token = ?, claimed_at = ?, started_at = COALESCE(started_at, ?),
            attempt_count = attempt_count + 1, outcome_status = 'not_started', updated_at = ?
        WHERE id = (
-         SELECT id FROM tasks
-         WHERE status IN ('queued', 'planned') ${workflowClause}
-         ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END, priority ASC, created_at ASC
+         SELECT candidate.id FROM tasks AS candidate
+         WHERE candidate.status IN ('queued', 'planned') ${filterClause}
+           AND NOT EXISTS (
+             SELECT 1 FROM tasks AS earlier
+             WHERE earlier.workflow_id = candidate.workflow_id
+               AND earlier.id <> candidate.id
+               AND earlier.status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
+               AND (
+                 earlier.priority < candidate.priority
+                 OR (earlier.priority = candidate.priority AND earlier.created_at < candidate.created_at)
+                 OR (earlier.priority = candidate.priority AND earlier.created_at = candidate.created_at AND earlier.id < candidate.id)
+               )
+           )
+         ORDER BY CASE candidate.status WHEN 'queued' THEN 0 ELSE 1 END,
+                  candidate.priority ASC, candidate.created_at ASC, candidate.id ASC
          LIMIT 1
        ) AND status IN ('queued', 'planned')
        RETURNING *`,
-    ).get(...[...params.slice(0, 3), claimedAt, ...params.slice(3)]);
+    ).get(token, claimedAt, claimedAt, claimedAt, ...filterParams);
     if (!task) {
       db.exec("COMMIT");
       return null;

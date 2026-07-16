@@ -1,4 +1,4 @@
-const { fromJson, get, insertEvent, now, run, toJson } = require("../db");
+const { all, fromJson, get, insertEvent, now, run, toJson } = require("../db");
 const { resolveAgentToolApproval } = require("./agent-tool-gate");
 const { ensureApprovalScope, validateApprovalScope } = require("./approval-scope");
 
@@ -18,6 +18,7 @@ function decideApproval(db, approvalId, decision, note = "", options = {}) {
   if (approval.status !== "pending") return { approval, changed: false };
 
   const ts = now();
+  let approvedTaskIds = [];
   run(
     db,
     `UPDATE approvals SET status = ?, decided_at = ?, decision_note = ? WHERE id = ?`,
@@ -39,6 +40,11 @@ function decideApproval(db, approvalId, decision, note = "", options = {}) {
        WHERE id = ?`,
       [ts, approval.workflow_id],
     );
+    approvedTaskIds = all(
+      db,
+      "SELECT id FROM tasks WHERE approval_id = ? AND status IN ('queued', 'planned') ORDER BY priority, created_at",
+      [approvalId],
+    ).map((task) => task.id);
   } else {
     run(
       db,
@@ -85,6 +91,7 @@ function decideApproval(db, approvalId, decision, note = "", options = {}) {
 
   return {
     approval: get(db, "SELECT * FROM approvals WHERE id = ?", [approvalId]),
+    approvedTaskIds,
     toolApproval,
     changed: true,
   };

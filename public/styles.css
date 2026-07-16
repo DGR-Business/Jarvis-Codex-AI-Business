@@ -284,6 +284,7 @@ h3 { margin: 0; font-size: 0.92rem; }
 .text-button { border: 0; background: transparent; color: var(--sky); padding-inline: 4px; }
 .primary-button svg, .secondary-button svg, .danger-button svg, .text-button svg { width: 15px; height: 15px; }
 button:disabled { cursor: not-allowed; opacity: 0.55; }
+.muted-text { color: var(--muted); font-size: 0.76rem; }
 
 .section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 13px; }
 .section-heading p { margin: 5px 0 0; color: var(--muted); font-size: 0.78rem; }

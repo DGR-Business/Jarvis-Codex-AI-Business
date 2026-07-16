@@ -19,6 +19,7 @@ const { getAgentToolPolicyForAgent } = require("./agent-tools");
 const { createResearchToExperimentPlanFromResearch } = require("./research-to-experiment");
 const { upsertDeliverableSection } = require("./deliverables");
 const { recordPilotRunReview } = require("./agent-pilot");
+const { prepareDemandInterestResearch } = require("./demand-interest-test");
 
 const AGENT_POLICIES = {
   goal_planning: {
@@ -162,15 +163,28 @@ function nextActionId(task) {
 
 function inferHandoffNextAction(task) {
   const payload = task.payload || {};
+  const source = payload.sourceBusinessDecision || {};
   const combined = [
     payload.handoffSummary,
     payload.decisionNeeded,
     payload.taskTitle,
     payload.workflowTitle,
+    source.nextAction,
+    source.evidenceSummary,
+    source.moneyMove,
   ].filter(Boolean).join(" ");
-  const highRisk = String(payload.riskLevel || "").toLowerCase() === "high"
-    || textIncludes(combined, ["risk", "legal", "trademark", "platform", "publish", "customer", "refund", "dispute"]);
-  if (highRisk) {
+  if (textIncludes(combined, ["interest test", "market-contact", "manual test", "execution pack", "buyer signal", "run the test"])) {
+    return {
+      type: "prepare_manual_market_test",
+      title: "Prepare the next non-paid interest test",
+      recommendation: "Turn the approved handoff into one bounded test with a defined buyer, concept message, evidence-selected channel, qualified-interest metric, audience or time limit, and stop rule before any outside action happens.",
+      action: "Complete the capped Demand Validator research step, review its sources, then prepare the public test for a separate publishing or outreach decision.",
+      successMetric: "A non-paid test is ready with a defined buyer and at least five qualified interest signals as the advance threshold.",
+      killCriteria: "Do not run the test if the buyer, concept message, channel, threshold, audience limit, or stop rule remains vague.",
+    };
+  }
+  const specificRisk = textIncludes(combined, ["legal", "trademark", "platform rule", "refund", "dispute", "compliance", "money movement"]);
+  if (specificRisk) {
     return {
       type: "resolve_risk_before_external_action",
       title: "Clear the risk before any outside action",
@@ -180,7 +194,7 @@ function inferHandoffNextAction(task) {
       killCriteria: "Stop or request changes if the risk, buyer claim, platform rule, or legal/compliance question is unclear.",
     };
   }
-  if (textIncludes(combined, ["market-contact", "manual test", "execution pack", "channel", "distribution", "buyer signal", "run the test"])) {
+  if (textIncludes(combined, ["channel", "distribution"])) {
     return {
       type: "prepare_manual_market_test",
       title: "Prepare the next manual market test",
@@ -212,6 +226,7 @@ function inferHandoffNextAction(task) {
 
 function commercialNextActionForHandoff(task, output) {
   const payload = task.payload || {};
+  const source = payload.sourceBusinessDecision || {};
   const inferred = inferHandoffNextAction(task);
   const costCapCents = Math.max(0, Number(task.cost_budget_cents || 0));
   return {
@@ -234,6 +249,10 @@ function commercialNextActionForHandoff(task, output) {
     sourceRunId: payload.sourceRunId || null,
     sourceAgent: payload.fromAgentId || null,
     nextOwner: payload.toAgentId || task.agent || "chief_of_staff",
+    buyer: source.buyer || null,
+    problem: source.problem || null,
+    offer: source.offer || null,
+    channel: source.channel || null,
     evidence: output.evidence || [],
     operatorDecisionRequired: true,
     externalActionsAllowed: false,
@@ -245,6 +264,18 @@ function commercialNextActionForHandoff(task, output) {
 function recordCommercialNextAction(db, agentRun, task, output) {
   const action = output?.commercialNextAction;
   if (task.kind !== "handoff_followup" || !action) return null;
+  const preparedResearch = prepareDemandInterestResearch(db, task, action);
+  if (preparedResearch) {
+    action.preparedWork = {
+      kind: "demand_validator_web_research",
+      taskId: preparedResearch.task.id,
+      approvalId: preparedResearch.approval?.id || null,
+      status: preparedResearch.status,
+      maxCostCents: preparedResearch.estimatedCostCents,
+      provider: preparedResearch.provider,
+      model: preparedResearch.model,
+    };
+  }
   const ts = now();
   const metadata = { commercialNextAction: action, workflowId: task.workflow_id || null, taskId: task.id };
   run(
@@ -281,7 +312,11 @@ function recordCommercialNextAction(db, agentRun, task, output) {
   return action;
 }
 
-function outputForTask(task, workflow, command) {
+function outputForTask(db, task, workflow, command) {
+  if (task.kind === "handoff_followup" && !task.payload.sourceBusinessDecision && task.payload.sourceRunId) {
+    const sourceRun = get(db, "SELECT metadata FROM agent_runs WHERE id = ?", [task.payload.sourceRunId]);
+    task.payload.sourceBusinessDecision = fromJson(sourceRun?.metadata, {}).businessDecision || null;
+  }
   const subject = task.payload.subject || workflow.metadata.subject || "the business idea";
   const channel = task.payload.channel || workflow.metadata.channel || "Business Idea";
   const instruction = workflow.metadata.originalInstruction || command?.raw_text || "No operator instruction captured.";
@@ -914,7 +949,7 @@ async function runAgentTask(db, task) {
       });
     }
 
-    output = outputForTask(task, workflow, command);
+    output = outputForTask(db, task, workflow, command);
     if (research) {
       output.evidence = [
         `Research run ${research.id} captured ${research.sources.length} source record${research.sources.length === 1 ? "" : "s"}.`,

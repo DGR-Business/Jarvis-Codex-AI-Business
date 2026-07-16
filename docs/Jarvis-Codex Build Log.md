@@ -25,8 +25,10 @@ actions, or other high-risk decisions.
 - 2026-07-16 operating status: the active database truth is one validating
   Digital Products venture, no active real-world market test, no verified
   buyers and no revenue. Controlled Agents SDK usage is reconciled at A$0.05.
-  One genuine item is waiting: Daniel's usefulness verdict on the successful
-  Demand Validator recommendation. Historical rehearsals remain archived.
+  Daniel rated the first result useful at 4/5 and approved its recommended
+  internal handoff. The Chief of Staff completed that protected step. One
+  genuine item is now waiting: an exact A$2 Demand Validator web-research
+  decision for the interest test. Historical rehearsals remain archived.
 - Database migrations are versioned through migration 10. They preserve the
   existing database, assign venture ownership, add commercial/evidence/pilot/
   digest state, archive unsupported legacy demo/review noise, mark old
@@ -51,7 +53,7 @@ actions, or other high-risk decisions.
 - A weekly executive digest records work, buyer proof, cash contribution,
   decisions, exceptions, learning, and the next money move without creating a
   routine interruption.
-- The full test suite passes 86/86. Real-browser proof passed at 1440x900,
+- The full test suite passes 95/95. Real-browser proof passed at 1440x900,
   1280x720, 1024x768, and 390x844 with zero horizontal overflow and no console
   warnings/errors. The proof ran internal work, previewed its five-page PDF,
   recorded a request-changes decision, updated Activity, and left the active
@@ -87,8 +89,9 @@ actions, or other high-risk decisions.
   commercial scorecard context when available.
 - Live research can now be requested as a capped task with approval, cost, event,
   provider-readiness records, a readiness checklist, a smoke-test preparation
-  path, and an OpenAI Responses API web-search execution adapter; real execution
-  still requires credentials and explicit approval.
+  path, and an OpenAI Responses API web-search execution adapter. The restricted
+  credential and live-research flag now load through the standalone launcher;
+  real execution still requires an exact explicit cost approval.
 - Live AI worker execution can now be requested as a capped approval-gated task
   with provider-readiness records, health/API visibility, and a dashboard smoke
   test path. Approved execution now runs through an internal `AgentRuntime`
@@ -99,7 +102,8 @@ actions, or other high-risk decisions.
   evidence. The first oversized-contract attempt is preserved as a known
   technical failure. One fresh approved retry using the lean contract completed
   successfully, passed the runtime eval at 100 and passed every deterministic
-  pilot criterion. Daniel's commercial-usefulness verdict is pending.
+  pilot criterion. Daniel rated it useful at 4/5, advancing only the supplied-
+  evidence reasoning capability to 1/5 supervised successes.
 - Direction correction on 2026-07-09: the OpenAI Responses worker adapter stays
   as lower-level provider infrastructure, but the first-class live AI Team
   execution path is now the OpenAI Agents SDK behind an internal `AgentRuntime`
@@ -181,6 +185,8 @@ actions, or other high-risk decisions.
 | 2026-07-14 | Archive unsupported legacy proof state instead of deleting it or presenting it as business truth. | Audit evidence remains available in System/SQLite while current decisions, reviews, tests, spend, and buyer metrics stay honest. |
 | 2026-07-16 | Preserve the failed Demand Validator attempt and allow one separately approved technical retry. | Unknown outcomes and consumed approvals must never be overwritten or silently reused. A corrected attempt needs a new task, approval, scope hash and explicit operator acknowledgement. |
 | 2026-07-16 | Treat Daniel's usefulness verdict as distinct from deterministic technical review. | Valid structure, scope and cost do not prove that an agent recommendation helps the business. Capability streaks advance only after both checks pass. |
+| 2026-07-16 | Load the restricted OpenAI key and approved AI/research flags through the standalone Windows launcher. | The dashboard must operate independently of a Codex chat while keeping secrets outside the repository and all publishing, contact, account, legal and money actions behind hard stops. |
+| 2026-07-16 | Make dashboard approval execute only the exact newly authorised task and surface every waiting next step. | Approval must cause visible progress, but it must never enable broad autopilot or allow later workflow steps to jump ahead. |
 | 2026-07-05 | Dashboard remains canonical even if email, Slack, ClickUp, or mobile views are added later. | Avoid scattered truth and keep operator control simple. |
 | 2026-07-05 | Dry-run proof stays ahead of live tool use. | Prevent fake autonomy, runaway spend, and accidental external actions. |
 
@@ -1860,29 +1866,28 @@ publishing, customer contact, or external action were used.
 
 ## Open Gates
 
-- Demand Validator capability review: the corrected first proof passed its
-  deterministic checks, but Daniel must still record whether it was useful.
-  No second fixture or model call is authorised yet.
-- Future live AI runs still require a distinct fixture, exact single-use
-  approval, capped scope, temporary live flag, trace/eval review and cost
-  reconciliation. The successful first proof grants no global autonomy.
+- Demand Validator interest research: one exact A$2 decision is visible for up
+  to three read-only searches, four turns and 1,800 output tokens. No additional
+  model or search call has run. Daniel may approve, request changes or decline
+  it from the dashboard.
+- Every live AI capability still requires its own exact single-use approval,
+  capped scope, trace/eval review and cost reconciliation. The successful first
+  supplied-evidence proof grants no web-search or global autonomy.
 - Gumroad: account creation, KYC, publishing, and any public channel post remain
   Daniel-confirmed actions. No account has been created and no listing has been
   published by this build.
-- Live search, email, POD/Gelato/Etsy, paid media, ChatKit, Xero, mobile redesign,
-  autopilot, and a second venture are deliberately deferred until first proof.
+- Email, POD/Gelato/Etsy, paid media, ChatKit, Xero, mobile redesign, autopilot,
+  and a second venture are deliberately deferred until first proof.
 
 ## Next Best Work
 
-1. Have Daniel review the successful Demand Validator recommendation for
-   commercial usefulness through the new local run-review drawer. Do not preset
-   the verdict before that evidence and process review is complete.
-2. If useful, prepare one distinct supplied-evidence fixture and request a new
-   capped approval for run 2/5. Any failed reviewed run resets the capability
-   streak.
-3. After the five-run supplied-evidence proof sequence, rank three real
-   digital-product opportunities and present one concise
-   selection decision.
+1. Daniel decides the visible A$2 Demand Validator research request. If
+   approved, the dashboard runs that exact Agents SDK task immediately.
+2. Review the resulting sources, observable judgement, trace, usage, cost and
+   usefulness. Do not treat sourced web research as buyer or payment proof.
+3. Convert accepted evidence into one bounded non-paid interest test, then rank
+   three real digital-product opportunities and present one concise selection
+   decision.
 4. Build the smallest useful selected product and complete its product files,
    economics, risk review, listing copy, Publish Pack, and launch checklist.
 5. After Daniel creates the Gumroad account and approves publication, run the
@@ -1891,8 +1896,9 @@ publishing, customer contact, or external action were used.
 
 ## Known Limits
 
-- The current agents are runtime task executors with dry-run model policies, not
-  live autonomous OpenAI/third-party agents yet.
+- The AI team has one supervised live Agents SDK capability and a connected
+  read-only research tool path. It is not broad autonomous operation; each
+  consequential capability remains separately capped, reviewed and promoted.
 - There is no always-on cloud deployment yet; the local PC/server must be
   running for the dashboard and runtime to operate.
 - The desktop cockpit is operational and browser-proven; mobile is a stable
@@ -2687,3 +2693,74 @@ Verification and safety:
   publishing, outreach, account action, legal decision or money movement ran.
 - All live flags remain off. The next model or tool call still requires a fresh,
   single-use approval and action-time credential connection.
+
+## 2026-07-16 - Standalone AI Connections And Actionable Approvals
+
+Diagnosis:
+
+- Daniel's approval of the Demand Validator recommendation did persist. It
+  changed the handoff state and queued one protected Chief of Staff follow-up.
+  That follow-up is deterministic internal coordination, so no OpenAI request
+  was expected at that point.
+- The old dashboard endpoint stopped after queueing the follow-up. The broad
+  safe-work scheduler was intentionally disabled, and Important Work omitted
+  ordinary queued items. Together those controls made a valid approval appear
+  to do nothing while the worker card misleadingly said `Ready`.
+- The one-click launcher deliberately removed the OpenAI key and forced both
+  provider flags off. That was appropriate before Daniel authorised a durable
+  connection, but it prevented the standalone dashboard from using the already
+  tested AI pathways.
+
+Implementation:
+
+- Stored the existing restricted OpenAI key and the approved AI-worker and
+  read-only-research flags in the Windows user environment outside Git and the
+  repository. The launcher imports those values into only the Jarvis child
+  process without displaying them. Global live mode remains off.
+- Dashboard approval now runs only the first exact task unlocked by that
+  single-use approval. Handoff approval similarly runs only its exact protected
+  Chief of Staff follow-up. A separate exact-task endpoint supports an explicit
+  `Run now` action for valid queued internal work.
+- Atomic claims now refuse to run a later planned step while any earlier step
+  in the same workflow is incomplete, blocked or under review. The queue marks
+  later work as following earlier work instead of exposing an unsafe action.
+- Important Work now includes the next valid queued internal item, the weekly
+  brief overlays live attention instead of repeating a stale generated count,
+  and System Queue sends approval-bound work directly to Decisions. Internal
+  database words such as `blocked` are translated to `Waiting for decision`.
+- Completing the approved Chief of Staff follow-up prepared one bounded Demand
+  Validator Agents SDK request: up to three read-only searches, four turns,
+  1,800 output tokens, 120 seconds and A$2. The requested output is one sourced
+  demand verdict and non-paid interest-test design. It cannot publish, contact
+  buyers, create accounts, make legal decisions or move money.
+
+Live state and proof:
+
+- Standalone health reports `ok: true`, protected mode, AI workers connected
+  and live research connected. The current database contains one pending A$2
+  decision and its exact task remains unstarted. No additional provider request
+  or charge was created during this work.
+- Created a final AES-256-GCM source, database and artifact checkpoint in the
+  approved OneDrive backup folder. The database restored to its exact
+  `dbdb0d738d594166dca3cf2d6f44d0771924ca7f07faf71fe6e9671ab0be7361`
+  payload hash, returned `integrity_check: ok`, preserved the pending A$2 task
+  and approval, reported one completed live SDK run and retained A$0.05
+  reconciled OpenAI usage.
+- The complete isolated test suite passes 95/95, including exact approval
+  execution, workflow ordering, approval scoping, concurrency, Agents SDK tool
+  interruption, provider failure, security, backup/restore and cost handling.
+- The real in-app browser proved the Command Center, Decisions, System Health
+  and System Queue paths. The same A$2 item appears consistently; the weekly
+  brief reports one item needing attention; both connections say `Connected`;
+  and a queue Review action opens the exact decision.
+- Visual checks passed at 1440x900, 1280x720 and 1024x768 with no horizontal
+  overflow, clipped action controls or overlapping content. No approval button
+  was pressed during verification.
+
+Next clean move:
+
+1. Daniel approves, changes or declines the visible A$2 research request.
+2. If approved, verify the actual Agents SDK trace, local process breakdown,
+   sources, tokens and charge before judging commercial usefulness.
+3. Only accepted evidence advances to the separate non-paid public interest-
+   test decision.

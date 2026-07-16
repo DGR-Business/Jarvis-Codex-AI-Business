@@ -21,7 +21,7 @@ function parseRows(rows, fields = ["metadata"]) {
 function humanTaskStatus(status) {
   return {
     planned: "Waiting",
-    queued: "Ready",
+    queued: "Waiting to start",
     running: "Working",
     blocked: "Needs attention",
     waiting_approval: "Needs attention",
@@ -161,6 +161,40 @@ function importantWork(db) {
       expectedUpside: "Resolve the issue that is stopping trusted progress.",
     });
   }
+  const waitingTasks = parseRows(all(
+    db,
+    `SELECT tasks.id, tasks.venture_id, tasks.workflow_id, tasks.title, tasks.kind,
+            tasks.agent, tasks.status, tasks.payload, tasks.result, tasks.created_at,
+            tasks.updated_at, agent_definitions.name AS worker_name
+     FROM tasks
+     LEFT JOIN agent_definitions ON agent_definitions.id = tasks.agent
+     WHERE tasks.status IN ('queued', 'planned')
+       AND NOT EXISTS (
+         SELECT 1 FROM tasks AS earlier
+         WHERE earlier.workflow_id = tasks.workflow_id
+           AND earlier.id <> tasks.id
+           AND earlier.status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
+           AND (
+             earlier.priority < tasks.priority
+             OR (earlier.priority = tasks.priority AND earlier.created_at < tasks.created_at)
+             OR (earlier.priority = tasks.priority AND earlier.created_at = tasks.created_at AND earlier.id < tasks.id)
+           )
+       )
+     ORDER BY CASE tasks.status WHEN 'queued' THEN 0 ELSE 1 END, tasks.priority, tasks.created_at
+     LIMIT 3`,
+  ), ["payload", "result"]);
+  for (const task of waitingTasks) {
+    if (items.some((item) => item.id === task.id)) continue;
+    items.push({
+      id: task.id,
+      type: "queued_work",
+      title: `${task.title} is waiting to start`,
+      risk: "low",
+      recommendation: `${task.worker_name || task.agent || "The AI team"} has a safe internal step queued. Run this exact item now or leave it queued without starting other work.`,
+      expectedUpside: "Advances the approved work without enabling broad autopilot or any unapproved external action.",
+      workflowId: task.workflow_id,
+    });
+  }
   return items.slice(0, 12);
 }
 
@@ -180,6 +214,27 @@ function currentTest(db, ventureId) {
     [ventureId],
   );
   return row ? { ...row, status: testStatus(row.status), metadata: fromJson(row.metadata) } : null;
+}
+
+function digestWithCurrentAttention(digest, work) {
+  if (!digest) return null;
+  const importantItems = work.length;
+  const attentionSentence = importantItems
+    ? `${importantItems} item${importantItems === 1 ? " needs" : "s need"} operator attention.`
+    : "No consequential exception needs operator attention.";
+  const summary = String(digest.summary || "").replace(
+    /(?:\d+ items? (?:needs|need) operator attention\.|No consequential exception needs operator attention\.)$/,
+    attentionSentence,
+  );
+  return {
+    ...digest,
+    status: importantItems ? "attention_needed" : "on_track",
+    summary,
+    metrics: {
+      ...(digest.metrics || {}),
+      liveImportantItems: importantItems,
+    },
+  };
 }
 
 function teamState(db, ventureId) {
@@ -283,16 +338,21 @@ function getCockpitState(db) {
     spend: spendState(db),
     teamPulse: {
       working: team.filter((agent) => agent.status === "Working").length,
+      waiting: team.filter((agent) => agent.status === "Waiting to start").length,
       needsAttention: team.filter((agent) => agent.status === "Needs attention").length,
       standby: team.filter((agent) => agent.status === "Standby").length,
       agents: team,
     },
     health: {
-      label: Number(failed?.count || 0) > 0 ? "Needs attention" : "Operating normally",
+      label: Number(failed?.count || 0) > 0
+        ? "Needs attention"
+        : Number(queue?.count || 0) > 0
+          ? "Work waiting"
+          : "Operating normally",
       queuedWork: Number(queue?.count || 0),
       importantItems: work.length,
     },
-    weeklyDigest: getLatestDigest(db, commercial.venture.id),
+    weeklyDigest: digestWithCurrentAttention(getLatestDigest(db, commercial.venture.id), work),
   };
 }
 
@@ -429,10 +489,25 @@ function getSystemState(db) {
     },
     queue: parseRows(all(
       db,
-      `SELECT * FROM tasks
-       WHERE status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
-       ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'needs_attention' THEN 1 WHEN 'blocked' THEN 2 ELSE 3 END,
-                updated_at DESC LIMIT 50`,
+      `SELECT tasks.*,
+              CASE
+                WHEN tasks.status IN ('planned', 'queued')
+                 AND NOT EXISTS (
+                   SELECT 1 FROM tasks AS earlier
+                   WHERE earlier.workflow_id = tasks.workflow_id
+                     AND earlier.id <> tasks.id
+                     AND earlier.status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
+                     AND (
+                       earlier.priority < tasks.priority
+                       OR (earlier.priority = tasks.priority AND earlier.created_at < tasks.created_at)
+                       OR (earlier.priority = tasks.priority AND earlier.created_at = tasks.created_at AND earlier.id < tasks.id)
+                     )
+                 ) THEN 1 ELSE 0
+              END AS can_run
+       FROM tasks
+       WHERE tasks.status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
+       ORDER BY CASE tasks.status WHEN 'running' THEN 0 WHEN 'needs_attention' THEN 1 WHEN 'blocked' THEN 2 ELSE 3 END,
+                tasks.updated_at DESC LIMIT 50`,
     ), ["payload", "result"]),
     spend: spendState(db),
     connections: parseRows(all(db, "SELECT * FROM integrations ORDER BY name")),

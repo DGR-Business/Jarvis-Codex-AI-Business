@@ -1037,6 +1037,7 @@ function createHandoffFollowupTask(db, handoff, note, ts) {
     riskLevel: handoff.risk_level || "medium",
     operatorDecision: "approve",
     operatorNote: note || "",
+    sourceBusinessDecision: handoff.metadata?.businessDecision || null,
   };
   run(
     db,

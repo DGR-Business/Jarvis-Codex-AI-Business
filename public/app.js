@@ -62,12 +62,13 @@ function humanStatus(value) {
     protected: "Internal only",
     safe_internal: "Available",
     live_tested: "Tested with AI",
-    queued: "Ready",
+    queued: "Waiting to start",
     active: "Running",
     proving: "Validating",
     not_configured: "Not connected",
     completed_live: "Research complete",
     completed_live_needs_source_review: "Source review needed",
+    blocked: "Needs attention",
   };
   return labels[key] || key.replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
@@ -75,7 +76,7 @@ function humanStatus(value) {
 function statusTone(value) {
   const key = String(value || "").toLowerCase();
   if (/(failed|attention|unknown|rejected|stopped|cancel)/.test(key)) return "coral";
-  if (/(pending|waiting|blocked|change|setup|estimate)/.test(key)) return "amber";
+  if (/(pending|waiting|queued|blocked|change|setup|estimate)/.test(key)) return "amber";
   if (/(working|complete|ready|approved|running|operating|promoted)/.test(key)) return "mint";
   return "sky";
 }
@@ -199,12 +200,17 @@ function renderImportantWork(items) {
   if (!items.length) {
     return `<section class="priority-panel clear"><div class="priority-header"><div><span class="eyebrow">Important work</span><h2>Nothing needs your attention</h2></div>${badge("Operating normally", "mint")}</div></section>`;
   }
+  const onlyWaitingToStart = items.every((item) => item.type === "queued_work");
   return `<section class="priority-panel">
-    <div class="priority-header"><div><span class="eyebrow">Important work</span><h2>${items.length} item${items.length === 1 ? " needs" : "s need"} a decision or check</h2></div>${badge("Needs attention", "coral")}</div>
+    <div class="priority-header"><div><span class="eyebrow">Important work</span><h2>${items.length} item${items.length === 1 ? " needs" : "s need"} a decision, check, or start</h2></div>${onlyWaitingToStart ? badge("Work waiting", "amber") : badge("Needs attention", "coral")}</div>
     <div class="priority-list">${items.map((item) => `<article class="work-item">
       <span class="risk-bar ${escapeHtml(item.risk || "medium")}"></span>
       <div class="work-copy"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(compact(item.recommendation, 260))}</p>${item.expectedUpside ? `<small>Why it matters: ${escapeHtml(compact(item.expectedUpside, 180))}</small>` : ""}</div>
-      ${item.type === "decision" ? approvalButtons(item, true) : `<button class="secondary-button" data-action="open-drawer" data-kind="work" data-id="${escapeHtml(item.id)}">${icon("arrow-right")}Review</button>`}
+      ${item.type === "decision"
+        ? approvalButtons(item, true)
+        : item.type === "queued_work"
+          ? `<button class="primary-button" data-action="run-task" data-id="${escapeHtml(item.id)}">${icon("play")}Run now</button>`
+          : `<button class="secondary-button" data-action="open-drawer" data-kind="work" data-id="${escapeHtml(item.id)}">${icon("arrow-right")}Review</button>`}
     </article>`).join("")}</div>
   </section>`;
 }
@@ -214,7 +220,7 @@ function renderWeeklyDigest(digest) {
   const metrics = digest.metrics || {};
   return `<section class="weekly-brief">
     <div><span class="eyebrow">Weekly executive brief</span><h2>${escapeHtml(digest.summary)}</h2><p>${escapeHtml(shortDate(digest.period_start))} to ${escapeHtml(shortDate(digest.period_end))}</p></div>
-    <dl class="brief-facts"><div><dt>Work completed</dt><dd>${metrics.completedWork || 0}</dd></div><div><dt>Buyer proof</dt><dd>${metrics.independentBuyers || 0}/3</dd></div><div><dt>Needs attention</dt><dd>${Number(metrics.openDecisions || 0) + Number(metrics.unknownOutcomes || 0)}</dd></div></dl>
+    <dl class="brief-facts"><div><dt>Work completed</dt><dd>${metrics.completedWork || 0}</dd></div><div><dt>Buyer proof</dt><dd>${metrics.independentBuyers || 0}/3</dd></div><div><dt>Needs attention</dt><dd>${metrics.liveImportantItems ?? (Number(metrics.openDecisions || 0) + Number(metrics.unknownOutcomes || 0))}</dd></div></dl>
   </section>`;
 }
 
@@ -260,7 +266,7 @@ function renderCockpit() {
         </div>` : emptyState("No market test is running", "The team is still selecting and validating the first digital-product opportunity.", "flask-conical")}
       </section>
       <section class="section-block">
-        ${sectionHeading("Team pulse", `${data.teamPulse.working} working, ${data.teamPulse.needsAttention} need attention.`)}
+        ${sectionHeading("Team pulse", `${data.teamPulse.working} working, ${data.teamPulse.waiting || 0} waiting to start, ${data.teamPulse.needsAttention} need attention.`)}
         <div class="team-pulse-list">${teamRows.map((agent) => `<button class="team-pulse-row" data-action="open-drawer" data-kind="agent" data-id="${escapeHtml(agent.id)}">
           <span class="status-dot ${escapeHtml(agent.status.toLowerCase().replace(/\s+/g, "-"))}"></span><div><strong>${escapeHtml(agent.name)}</strong><p>${escapeHtml(compact(agent.assignment, 80))}</p></div><span>${escapeHtml(agent.status)}</span>
         </button>`).join("")}</div>
@@ -391,13 +397,13 @@ function renderSystemPanel(data) {
     const research = data.health.liveResearch;
     return `<div class="card-grid">
       <article class="item-card"><header><h3>Runtime database</h3>${badge(data.health.database === "ok" ? "Operating normally" : "Needs attention")}</header><p>The durable operating state passed its latest integrity check.</p></article>
-      <article class="item-card"><header><h3>AI worker connection</h3>${badge(ai.ready ? "Ready" : "Setup needed")}</header><p>${escapeHtml(ai.ready ? "The capped worker path is available when you approve a pilot." : compact(ai.blockers?.join(" ") || "Credentials and live permission are not configured."))}</p></article>
-      <article class="item-card"><header><h3>Live research</h3>${badge(research.ready ? "Ready" : "Setup needed")}</header><p>${escapeHtml(research.ready ? "Read-only sourced research can run after approval." : compact(research.blockers?.join(" ") || "The research connection is not configured."))}</p></article>
+      <article class="item-card"><header><h3>AI worker connection</h3>${badge(ai.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(ai.ready ? "OpenAI workers can run from this dashboard when their exact capped task is approved." : compact(ai.blockers?.join(" ") || "Credentials and live permission are not configured."))}</p></article>
+      <article class="item-card"><header><h3>Live research</h3>${badge(research.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(research.ready ? "Read-only sourced research can run from this dashboard after its exact cost approval." : compact(research.blockers?.join(" ") || "The research connection is not configured."))}</p></article>
       <article class="item-card"><header><h3>External actions</h3>${badge("Your approval required", "mint")}</header><p>Publishing, customer contact, account changes and spend still require your explicit decision.</p></article>
     </div>`;
   }
   if (store.systemTab === "queue") {
-    return data.queue.length ? `<div class="table-wrap"><table><thead><tr><th>Work</th><th>Worker</th><th>Status</th><th>Updated</th></tr></thead><tbody>${data.queue.map((item) => `<tr><td><strong>${escapeHtml(item.title)}</strong></td><td>${escapeHtml(humanStatus(item.agent))}</td><td>${badge(item.status)}</td><td>${escapeHtml(shortDate(item.updated_at))}</td></tr>`).join("")}</tbody></table></div>` : emptyState("The queue is empty", "Create internal work from the Command Center when there is a clear business purpose.", "list-checks");
+    return data.queue.length ? `<div class="table-wrap"><table><thead><tr><th>Work</th><th>Worker</th><th>Status</th><th>Updated</th><th>Action</th></tr></thead><tbody>${data.queue.map((item) => `<tr><td><strong>${escapeHtml(item.title)}</strong></td><td>${escapeHtml(humanStatus(item.agent))}</td><td>${badge(item.approval_id && ["blocked", "waiting_approval"].includes(item.status) ? "Waiting for decision" : item.status)}</td><td>${escapeHtml(shortDate(item.updated_at))}</td><td>${item.can_run ? `<button class="secondary-button" data-action="run-task" data-id="${escapeHtml(item.id)}">${icon("play")}Run now</button>` : ["blocked", "waiting_approval", "needs_attention"].includes(item.status) ? `<button class="text-button" data-view="decisions">Review</button>` : `<span class="muted-text">After earlier work</span>`}</td></tr>`).join("")}</tbody></table></div>` : emptyState("The queue is empty", "Create internal work from the Command Center when there is a clear business purpose.", "list-checks");
   }
   if (store.systemTab === "spend") {
     const spend = data.spend;
@@ -431,7 +437,8 @@ function renderSystemPanel(data) {
 
 function renderSystem() {
   const data = store.data.system;
-  $("#view").innerHTML = `<div class="view-stack">${systemTabs()}<section><div class="system-toolbar"><button class="secondary-button" data-action="run-next">${icon("play")}Run next internal step</button><button class="secondary-button" data-action="maintenance">${icon("wrench")}Run maintenance now</button></div>${renderSystemPanel(data)}</section></div>`;
+  const runnableWork = data.queue.some((item) => item.can_run);
+  $("#view").innerHTML = `<div class="view-stack">${systemTabs()}<section><div class="system-toolbar"><button class="secondary-button" data-action="run-next"${runnableWork ? "" : " disabled"}>${icon("play")}${runnableWork ? "Run next internal step" : "No internal step ready"}</button><button class="secondary-button" data-action="maintenance">${icon("wrench")}Run maintenance now</button></div>${renderSystemPanel(data)}</section></div>`;
 }
 
 function renderView() {
@@ -600,21 +607,28 @@ async function handleAction(button) {
   if (action === "open-pdf") return openPdf(button.dataset.id, button.dataset.title);
   if (action === "approval") {
     const decisionLabels = { approve: "approved", changes: "changes requested", reject: "declined" };
-    await postJson(`/api/approvals/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`, {
+    const payload = await postJson(`/api/approvals/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`, {
       scopeHash: button.dataset.scopeHash,
       note: `Dashboard decision: ${decisionLabels[button.dataset.decision]}.`,
     });
     closeDrawer();
-    toast(`Decision ${decisionLabels[button.dataset.decision]}.`);
+    const execution = payload.execution;
+    toast(execution?.status === "completed"
+      ? "Approved work completed. Review the new result."
+      : execution?.status === "blocked"
+        ? "Approved, but the work still needs setup or another exact decision."
+        : `Decision ${decisionLabels[button.dataset.decision]}.`);
     return loadView(store.view, { silent: true });
   }
   if (action === "handoff-decision") {
     const decisionLabels = { approve: "approved", changes: "changes requested", reject: "declined" };
-    await postJson(`/api/agent-handoffs/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`, {
+    const payload = await postJson(`/api/agent-handoffs/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`, {
       note: `Dashboard decision: ${decisionLabels[button.dataset.decision]}.`,
     });
     closeDrawer();
-    toast(`Next step ${decisionLabels[button.dataset.decision]}.`);
+    toast(payload.execution?.status === "completed"
+      ? "Approved. The Chief of Staff completed the next internal step."
+      : `Next step ${decisionLabels[button.dataset.decision]}.`);
     return loadView(store.view, { silent: true });
   }
   if (action === "submit-command") {
@@ -638,6 +652,13 @@ async function handleAction(button) {
     const result = await postJson("/api/runtime/tick", {});
     toast(result.result?.message || `Internal work: ${humanStatus(result.result?.status || "complete")}.`);
     return loadView("system", { silent: true });
+  }
+  if (action === "run-task") {
+    const payload = await postJson(`/api/tasks/${encodeURIComponent(button.dataset.id)}/run`, {});
+    toast(payload.result?.status === "completed"
+      ? "That work item completed."
+      : payload.result?.message || `Work item: ${humanStatus(payload.result?.status || "complete")}.`);
+    return loadView(store.view, { silent: true });
   }
   if (action === "prepare-pilot") {
     await postJson(`/api/agent-pilot/fixtures/${encodeURIComponent(button.dataset.fixtureId)}/prepare`, { estimatedCostCents: 100 });

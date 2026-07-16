@@ -7,7 +7,7 @@ const { decideApproval, decideApprovalByToken } = require("../src/runtime/approv
 const { processApprovalReply } = require("../src/runtime/approval-replies");
 const { runOnce, runUntilBlocked } = require("../src/runtime/orchestrator");
 const { getDashboardState } = require("../src/runtime/state");
-const { getAgentRunDetail, getAiTeamState, getDecisionsState } = require("../src/runtime/cockpit-state");
+const { getAgentRunDetail, getAiTeamState, getCockpitState, getDecisionsState } = require("../src/runtime/cockpit-state");
 const { createCommandPlan } = require("../src/runtime/planner");
 const { createApp, createRuntime } = require("../src/server");
 const { getLiveAiWorkerReadiness } = require("../src/runtime/live-ai-worker-readiness");
@@ -36,10 +36,11 @@ const { getAgentOperatingBriefsState } = require("../src/runtime/agent-operating
 const { getAgentPlaybooksState, queueAgentPlaybookRehearsal, queueAgentPlaybookRehearsalSuite } = require("../src/runtime/agent-playbooks");
 const { getAgentModelReadinessState, queueAgentModelComparisonPacket, storedComparisonPackets } = require("../src/runtime/agent-model-readiness");
 const { recordAiPilotReviewDecision } = require("../src/runtime/ai-pilot-review");
+const { generateWeeklyDigest } = require("../src/runtime/executive-digest");
 const { runMonitorCycle } = require("../src/runtime/monitor");
 const { createLiveAiWorkerSmokeTest, requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { createLiveResearchSmokeTest, requestLiveResearch } = require("../src/runtime/live-research");
-const { AI_TEAM_DEFINITIONS, createAgentRun, decideAgentHandoff, findAgentDefinition } = require("../src/runtime/ai-team");
+const { AI_TEAM_DEFINITIONS, createAgentRun, decideAgentHandoff, findAgentDefinition, finishAgentRun } = require("../src/runtime/ai-team");
 const { ensureSchedulerJobs, runDueSchedulerJobs, runSchedulerJob, setSchedulerJobStatus } = require("../src/runtime/scheduler");
 const { recordCommercialFeedback, recordCommercialResult } = require("../src/runtime/commercial-results");
 const {
@@ -2097,6 +2098,93 @@ test("approved worker handoff queues and runs Chief of Staff follow-up", async (
     db.close();
     if (previousPackDir === undefined) delete process.env.JARVIS_APPROVAL_PACK_DIR;
     else process.env.JARVIS_APPROVAL_PACK_DIR = previousPackDir;
+  }
+});
+
+test("cockpit surfaces queued work and exact-task execution cannot start a different item", async () => {
+  const db = seededDb("cockpit-queued-work");
+  const planned = createCommandPlan(db, {
+    text: "Evaluate a compact invoice follow-up template and prepare a decision pack",
+    source: "test",
+    createFiles: false,
+  });
+  const tasks = all(db, "SELECT * FROM tasks WHERE workflow_id = ? ORDER BY priority", [planned.workflow.id]);
+
+  try {
+    generateWeeklyDigest(db);
+    const cockpit = getCockpitState(db);
+    const waiting = cockpit.importantWork.find((item) => item.type === "queued_work" && item.id === tasks[0].id);
+    assert.ok(waiting);
+    assert.match(waiting.title, /waiting to start/i);
+    assert.equal(cockpit.weeklyDigest.metrics.liveImportantItems, cockpit.importantWork.length);
+    assert.match(cockpit.weeklyDigest.summary, /operator attention/i);
+
+    const premature = await runOnce(db, { taskId: tasks[1].id, workflowId: planned.workflow.id, claimant: "test_out_of_order_task" });
+    assert.equal(premature.status, "waiting");
+    assert.match(premature.message, /earlier work/i);
+    assert.equal(get(db, "SELECT status FROM tasks WHERE id = ?", [tasks[1].id]).status, "planned");
+
+    const result = await runOnce(db, { taskId: tasks[0].id, claimant: "test_exact_task" });
+    assert.equal(result.status, "completed");
+    assert.equal(result.task.id, tasks[0].id);
+    assert.equal(get(db, "SELECT status FROM tasks WHERE id = ?", [tasks[1].id]).status, "planned");
+  } finally {
+    db.close();
+  }
+});
+
+test("approved Demand Validator interest handoff prepares one capped web-research decision", async () => {
+  const db = seededDb("demand-interest-research");
+  const planned = createCommandPlan(db, {
+    text: "Define a non-paid interest test for a weekly cash-control checklist for solo service businesses",
+    source: "test",
+    createFiles: false,
+  });
+  const sourceTask = get(db, "SELECT * FROM tasks WHERE workflow_id = ? ORDER BY priority LIMIT 1", [planned.workflow.id]);
+  run(db, "UPDATE tasks SET status = 'completed' WHERE workflow_id = ?", [planned.workflow.id]);
+  getAiTeamState(db);
+  const definition = AI_TEAM_DEFINITIONS.find((item) => item.id === "demand_validator");
+  const sourceRun = createAgentRun(db, definition, sourceTask, {
+    mode: "openai-agents-sdk",
+    inputSummary: "Reviewed supplied evidence for a weekly cash-control checklist.",
+    approvalRequired: true,
+  });
+  finishAgentRun(db, sourceRun.id, {
+    status: "completed",
+    outputSummary: "Advance only to a small, non-paid interest test because no live willingness-to-pay evidence exists.",
+    approvalRequired: true,
+    handoffTo: "chief_of_staff",
+    evalStatus: "passed",
+    metadata: {
+      taskKind: "live_ai_worker_execution",
+      businessDecision: {
+        buyer: "Solo service-business owners with inconsistent weekly cash control.",
+        problem: "Missed invoice, expense, and cash-review tasks.",
+        offer: "A concise weekly cash-control checklist.",
+        channel: "One evidence-selected organic audience.",
+        evidenceSummary: "Supplied evidence supports the problem but contains no real buyer or payment signal.",
+        nextAction: "Define the audience, message, threshold, and stop rule for a non-paid interest test.",
+      },
+    },
+  });
+
+  try {
+    const handoff = getDashboardState(db).aiTeam.handoffs.find((item) => item.from_run_id === sourceRun.id);
+    const decision = decideAgentHandoff(db, handoff.id, "approve", "Advance to the bounded interest-test preparation step.");
+    const completed = await runOnce(db, { taskId: decision.followupTask.id });
+
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.result.output.commercialNextAction.type, "prepare_manual_market_test");
+    assert.equal(completed.result.output.commercialNextAction.preparedWork.kind, "demand_validator_web_research");
+    assert.equal(completed.result.output.commercialNextAction.preparedWork.maxCostCents, 200);
+    const researchTask = get(db, "SELECT * FROM tasks WHERE id = ?", [completed.result.output.commercialNextAction.preparedWork.taskId]);
+    const approval = get(db, "SELECT * FROM approvals WHERE id = ?", [completed.result.output.commercialNextAction.preparedWork.approvalId]);
+    assert.equal(researchTask.status, "blocked");
+    assert.deepEqual(JSON.parse(researchTask.payload).liveSpendRequest.tools, ["research_adapter"]);
+    assert.equal(approval.status, "pending");
+    assert.equal(approval.scope, "live_ai_worker_spend");
+  } finally {
+    db.close();
   }
 });
 
@@ -4166,6 +4254,35 @@ test("HTTP API creates execution packs and records pack outcomes safely", async 
   }
 });
 
+test("HTTP dashboard approval executes the exact authorised task immediately", async () => {
+  const db = seededDb("server-dashboard-approval");
+  const app = createApp({ db, dbPath: tempDbPath("server-dashboard-approval-unused"), security: false });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  try {
+    const decisions = await fetch(`${baseUrl}/api/decisions`).then((response) => response.json());
+    const approval = decisions.approvals.find((item) => item.id === "appr-digital-product-dry-run");
+    const response = await fetch(`${baseUrl}/api/approvals/${encodeURIComponent(approval.id)}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scopeHash: approval.scopeHash, note: "Execute this exact approved internal proof." }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.result.approval.status, "approved");
+    assert.deepEqual(payload.result.approvedTaskIds, ["task-digital-product-dry-run"]);
+    assert.equal(payload.execution.status, "completed");
+    assert.equal(payload.execution.task.id, "task-digital-product-dry-run");
+    assert.equal(get(db, "SELECT status FROM tasks WHERE id = ?", ["task-digital-product-dry-run"]).status, "completed");
+  } finally {
+    await new Promise((resolve) => app.wss.close(resolve));
+    await new Promise((resolve) => app.server.close(resolve));
+    db.close();
+  }
+});
+
 test("HTTP API exposes health, state, approvals, and runtime tick", async () => {
   const previousPackDir = process.env.JARVIS_APPROVAL_PACK_DIR;
   const previousKey = process.env.OPENAI_API_KEY;
@@ -4310,7 +4427,9 @@ test("HTTP API exposes health, state, approvals, and runtime tick", async () => 
     assert.equal(handoffDecision.result.followupTask.kind, "handoff_followup");
     assert.equal(handoffDecision.result.followupTask.status, "queued");
     assert.equal(handoffDecision.result.handoff.metadata.operatorDecision.followupTaskId, handoffDecision.result.followupTask.id);
-    assert.ok(handoffDecision.state.tasks.some((task) => task.id === handoffDecision.result.followupTask.id && task.agent === "chief_of_staff"));
+    assert.equal(handoffDecision.execution.status, "completed");
+    assert.equal(handoffDecision.execution.task.id, handoffDecision.result.followupTask.id);
+    assert.ok(handoffDecision.state.tasks.some((task) => task.id === handoffDecision.result.followupTask.id && task.agent === "chief_of_staff" && task.status === "completed"));
     assert.ok(handoffDecision.state.events.some((event) => event.type === "agent.handoff_decided" && event.entity_id === apiHandoff.id));
 
     const unclearReply = await fetch(`${baseUrl}/api/inbound/approval-reply`, {

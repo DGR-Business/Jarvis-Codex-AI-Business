@@ -680,6 +680,19 @@ function createApp(options = {}) {
         return;
       }
 
+      const taskRun = routeMatch(url.pathname, "/api/tasks/:id/run");
+      if (req.method === "POST" && taskRun) {
+        const task = get(db, "SELECT id, workflow_id FROM tasks WHERE id = ?", [taskRun.id]);
+        if (!task) {
+          jsonResponse(res, 404, { error: "Work item not found." });
+          return;
+        }
+        const result = await runOnce(db, { taskId: taskRun.id, workflowId: task.workflow_id, claimant: "dashboard_exact_task" });
+        broadcastState();
+        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/runtime/run-until-blocked") {
         const body = await readBody(req);
         const result = await runUntilBlocked(db, { maxSteps: body.maxSteps });
@@ -869,8 +882,11 @@ function createApp(options = {}) {
           return;
         }
         const result = decideApproval(db, approvalDecision.id, decision, body.note || "", { expectedScopeHash: body.scopeHash });
+        const execution = decision === "approved" && result.changed && result.approvedTaskIds?.length
+          ? await runOnce(db, { taskId: result.approvedTaskIds[0], claimant: "dashboard_approval" })
+          : null;
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result, execution, state: getDashboardState(db) });
         return;
       }
 
@@ -890,8 +906,11 @@ function createApp(options = {}) {
         const result = decideAgentHandoff(db, handoffDecision.id, decision, body.note || "", {
           decidedBy: body.decidedBy || "operator",
         });
+        const execution = decision === "approve" && result.followupTask?.id
+          ? await runOnce(db, { taskId: result.followupTask.id, claimant: "dashboard_handoff_approval" })
+          : null;
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result, execution, state: getDashboardState(db) });
         return;
       }
 

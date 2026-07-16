@@ -15,6 +15,19 @@ $expectedDbPath = [IO.Path]::GetFullPath((Join-Path $root "data\runtime.sqlite")
 $dashboardUrl = "http://127.0.0.1:$Port/"
 $healthUrl = "http://127.0.0.1:$Port/api/health"
 
+$runtimeEnvironment = @{}
+$userEnvironment = [Environment]::GetEnvironmentVariables("User")
+foreach ($name in $userEnvironment.Keys) {
+  $textName = [string]$name
+  if ($textName -ne "OPENAI_API_KEY" -and -not $textName.StartsWith("JARVIS_", [StringComparison]::OrdinalIgnoreCase)) {
+    continue
+  }
+  $value = [string]$userEnvironment[$name]
+  if ([string]::IsNullOrWhiteSpace($value)) { continue }
+  [Environment]::SetEnvironmentVariable($textName, $value, "Process")
+  $runtimeEnvironment[$textName] = $value
+}
+
 function Get-JarvisHealth {
   try {
     $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2
@@ -27,6 +40,22 @@ function Get-JarvisHealth {
 }
 
 $health = Get-JarvisHealth
+$connectionsExpected = $runtimeEnvironment.ContainsKey("OPENAI_API_KEY") `
+  -and $runtimeEnvironment["JARVIS_ENABLE_LIVE_MODELS"] -eq "1" `
+  -and $runtimeEnvironment["JARVIS_ENABLE_LIVE_RESEARCH"] -eq "1"
+$connectionRefreshNeeded = $health -and $connectionsExpected -and (
+  $health.liveAiWorkers.credentialsConfigured -ne $true `
+  -or $health.liveAiWorkers.liveFlagEnabled -ne $true `
+  -or $health.liveResearch.credentialsConfigured -ne $true `
+  -or $health.liveResearch.liveFlagEnabled -ne $true
+)
+if ($connectionRefreshNeeded) {
+  Write-Host "Refreshing Jarvis with the approved AI connections..."
+  & (Join-Path $PSScriptRoot "stop-jarvis.ps1") -Port $Port
+  if (-not $?) { throw "The existing Jarvis process could not be refreshed safely." }
+  $health = $null
+}
+
 if (-not $health) {
   $node = Get-Command node.exe -ErrorAction Stop
   $nodeMajor = [int]((& $node.Source -p "process.versions.node.split('.')[0]") | Select-Object -First 1)
@@ -51,6 +80,9 @@ if (-not $health) {
   $startInfo.UseShellExecute = $false
   $startInfo.CreateNoWindow = $true
   $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+  foreach ($name in $runtimeEnvironment.Keys) {
+    $startInfo.Environment[$name] = $runtimeEnvironment[$name]
+  }
   $process = [System.Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
   if (-not $process.Start()) { throw "Jarvis server process could not be started." }
@@ -75,4 +107,5 @@ if (-not $NoOpen) {
 }
 
 Write-Host "Jarvis is ready at $dashboardUrl"
-Write-Host "Mode: $($health.mode). AI workers and outside actions still require their normal approvals."
+Write-Host "Mode: $($health.mode). Outside actions still require their normal approvals."
+Write-Host "AI workers: $(if ($health.liveAiWorkers.ready) { 'connected' } else { 'setup needed' }). Live research: $(if ($health.liveResearch.ready) { 'connected' } else { 'setup needed' })."

@@ -27,7 +27,7 @@ Internal foundation status on 2026-07-16:
   claims, exact approval scope, honest cost states, timeout recovery, local
   security, evidence provenance, Gumroad CSV privacy, risk-tiered autonomy, and
   the five-section cockpit are implemented;
-- 92 automated tests pass, including a production-seed assertion that fresh
+- 95 automated tests pass, including a production-seed assertion that fresh
   runtime databases contain no fabricated workflows, approvals, outputs, or
   commercial evidence;
 - an isolated clean source copy installed from `package-lock.json`, passed all
@@ -69,11 +69,11 @@ Internal foundation status on 2026-07-16:
   and the current cost-balanced `gpt-5.6-terra` model. Execution is bound to
   the exact approved provider, model, output limit, fixture, and cost cap, so
   later environment changes cannot silently alter an approved run;
-- a restricted model-request-only OpenAI key was used without entering the
-  repository, logs or chat. Final restart verification found it was scoped to
-  the live test process rather than persisted in the Windows user environment,
-  so a future live run needs a fresh secure credential connection;
-  the API account has US$10 prepaid credit and automatic recharge is off;
+- the restricted model-request-only OpenAI key is stored in the Windows user
+  environment outside the repository and is loaded by the one-click launcher
+  without printing its value. The standalone dashboard now reports both AI
+  workers and read-only live research as connected; the API account has US$10
+  prepaid credit and automatic recharge is off;
 - the first one-turn, no-tool, A$1 maximum attempt made exactly one Agents SDK
   call. It produced no usable result because structured-output parsing failed
   with an unterminated JSON string. The consumed one-use approval was not
@@ -97,7 +97,13 @@ Internal foundation status on 2026-07-16:
   content to the exact approval scope. Privacy-first settings remain the default
   for other work;
 - `START JARVIS.cmd` and `STOP JARVIS.cmd` provide a one-click protected Windows
-  lifecycle without requiring Daniel to ask Codex to start the runtime;
+  lifecycle without requiring Daniel to ask Codex to start the runtime. Startup
+  imports the approved user-level connection settings while keeping global live
+  mode off and all outside-world hard stops intact;
+- dashboard approval now executes the exact newly authorised internal task
+  immediately. Work that still needs a second consequential decision is shown
+  in Important Work, Decisions and System Queue rather than being left silently
+  queued. Later workflow steps cannot be run before earlier work finishes;
 - the official OpenAI Developer Docs MCP integration is installed in Codex and
   the current Agents SDK architecture review is recorded under `docs/reviews/`;
 - live AI workers now receive versioned, worker-specific model packets instead
@@ -131,9 +137,11 @@ Internal foundation status on 2026-07-16:
 - SDK trace IDs and response IDs are now recorded separately. The first failed
   and corrected successful traces are both attached to their preserved task,
   model-call and agent-run records;
-- all 92 tests pass and live mode is off. The next gate is the separate business
-  decision on whether to advance the recommendation to a small, non-paid
-  interest test. No additional model call is authorised.
+- all 95 tests pass and global live mode is off. The Chief of Staff has completed
+  the approved internal interest-test handoff and prepared one exact Demand
+  Validator web-research decision capped at A$2, three searches and four turns.
+  No additional model call has run; approving that visible decision is the next
+  gate.
 
 ## 1. North Star
 
@@ -783,41 +791,41 @@ Operator approval is required for:
 
 The first Demand Validator result passed technical review and Daniel rated it
 useful at 4/5. The exact supplied-evidence reasoning skill is supervised at 1/5.
+Daniel approved its recommendation to continue toward a non-paid interest test;
+the protected Chief of Staff step completed without a model call.
 
-1. Decide the existing business handoff: approve, change or decline the
-   recommendation to advance only to a small, non-paid interest test.
-2. If the path continues, prepare one distinct supplied-evidence fixture and
-   request a new single-use approval for run 2/5. Do not reuse the first fixture
-   or approval.
-3. Continue only toward five consecutive reviewed successes for the narrow
-   reasoning-over-supplied-evidence capability. Any failure resets the streak;
-   promotion remains Daniel's explicit decision.
+1. Decide the visible A$2 Demand Validator research request: approve, change or
+   decline up to three read-only searches for current buyer language,
+   alternatives, price signals and one suitable organic audience.
+2. If approved, let the dashboard execute that exact Agents SDK task, then
+   review its sources, observable judgement, trace, usage, cost and commercial
+   usefulness before preparing any public test.
+3. Keep supplied-evidence reasoning at 1/5 and web-research skill at 0/5 until
+   each distinct capability earns its own consecutive reviewed successes.
+   Promotion remains Daniel's explicit decision.
 4. Preserve the proven recovery behavior: encrypted source/database/artifact
    backups, authenticated restore, retention, and private operator records.
-5. Preserve the proven clean-source behavior: lockfile install, 92/92
+5. Preserve the proven clean-source behavior: lockfile install, 95/95
    tests, healthy startup, and no synthetic production work or evidence.
 
 ### Next
 
-1. Rank three digital-product opportunities and present one concise selection
+1. Turn accepted web-research evidence into one bounded non-paid interest-test
+   design with a five-qualified-signal threshold and explicit stop rule.
+2. Rank three digital-product opportunities and present one concise selection
    decision.
-2. Build the smallest useful selected product and complete its Publish Pack.
-3. After Daniel creates the Gumroad account and approves publishing, run the
+3. Build the smallest useful selected product and complete its Publish Pack.
+4. After Daniel creates the Gumroad account and approves publishing, run the
    14-day or 50-qualified-view test and import results from Gumroad CSV.
 
 ### Later
 
-1. Run the implemented A$2, three-call read-only web-search capability only
-   under a fresh supervised approval after the current usefulness decision and
-   a deliberate pilot-timing choice. The code is ready; credentials and live
-   flags remain off. Its evidence/citation skill earns autonomy separately from
-   supplied-evidence reasoning.
-2. Offer one optional A$25 paid test only if organic reach is insufficient.
-3. Use the implemented one-asset GPT Image path only when a selected product
+1. Offer one optional A$25 paid test only if organic reach is insufficient.
+2. Use the implemented one-asset GPT Image path only when a selected product
    genuinely needs a visual asset and the exact prompt/quality/cost is approved.
    Add broader paid media tools only after three sales or evidence that media
    quality is the conversion blocker.
-4. Defer live email, POD/Gelato/Etsy, ChatKit, Xero, narrow autopilot, mobile
+3. Defer live email, POD/Gelato/Etsy, ChatKit, Xero, narrow autopilot, mobile
    redesign, and additional ventures until first revenue proof justifies them.
 
 ## 9. Update Protocol

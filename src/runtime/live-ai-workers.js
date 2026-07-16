@@ -109,11 +109,13 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const command = latestCommand(db, workflowId);
   const sourceTask = sourceWorkerTask(db, workflowId);
   const workerDefinition = normalizeRequestedWorker(options, sourceTask);
-  const subject = workflow.metadata.subject || sourceTask?.payload?.subject || workflow.title || "this business idea";
-  const channel = workflow.metadata.channel || sourceTask?.payload?.channel || workflow.type || "Business Idea";
+  const businessContext = options.businessContext || {};
+  const subject = businessContext.subject || workflow.metadata.subject || sourceTask?.payload?.subject || workflow.title || "this business idea";
+  const channel = businessContext.channel || workflow.metadata.channel || sourceTask?.payload?.channel || workflow.type || "Business Idea";
   const amountCents = normalizeBudgetCents(options.estimatedCostCents);
   const ts = now();
-  const taskId = `task_live_worker_${safeId(workflowId)}`;
+  const requestSuffix = options.requestKey ? `_${safeId(options.requestKey)}` : "";
+  const taskId = `task_live_worker_${safeId(workflowId)}${requestSuffix}`;
   const approvalId = approvalIdForRequest(db, taskId, workflowId, ts);
   const title = options.taskTitle || `Live ${workerDefinition.name} test for ${subject}`;
   const reason = options.reason || "A live OpenAI-backed worker should only run after the dry-run path is reviewable, the cost cap is accepted, and provider readiness passes.";
@@ -125,6 +127,10 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const payload = {
     subject,
     channel,
+    buyer: String(businessContext.buyer || ""),
+    problem: String(businessContext.problem || ""),
+    offer: String(businessContext.offer || ""),
+    evidenceStandard: String(businessContext.evidenceStandard || ""),
     sourceTaskId: sourceTask?.id || null,
     commandId: command?.id || null,
     requestedAt: ts,

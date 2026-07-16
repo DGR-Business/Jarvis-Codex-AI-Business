@@ -210,8 +210,36 @@ function updateWorkflowAfterCompletion(db, task, result, done) {
 }
 
 async function runOnce(db, options = {}) {
-  const claim = claimNextTask(db, { workflowId: options.workflowId, claimant: options.claimant || "orchestrator" });
+  const claim = claimNextTask(db, {
+    workflowId: options.workflowId,
+    taskId: options.taskId,
+    claimant: options.claimant || "orchestrator",
+  });
   if (!claim) {
+    if (options.taskId) {
+      const target = hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [options.taskId]));
+      if (target) {
+        if (["blocked", "waiting_approval", "needs_attention"].includes(target.status)) {
+          return {
+            status: "blocked",
+            message: "This work item needs a decision or review before it can run.",
+            task: target,
+          };
+        }
+        if (["queued", "planned"].includes(target.status)) {
+          return {
+            status: "waiting",
+            message: "Earlier work in this workflow must finish before this item can start.",
+            task: target,
+          };
+        }
+        return {
+          status: "idle",
+          message: "This work item is not waiting to run.",
+          task: target,
+        };
+      }
+    }
     const blocked = blockedTasks(db, options.workflowId);
     if (blocked.length > 0) {
       const escalations = [];
