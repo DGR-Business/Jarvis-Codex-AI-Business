@@ -691,7 +691,14 @@ function summarizeResearchBridge(bridge) {
 async function runAgentTask(db, task) {
   const workflow = hydrateWorkflow(get(db, "SELECT * FROM workflows WHERE id = ?", [task.workflow_id]));
   const command = commandForWorkflow(db, task.workflow_id);
-  const policy = policyForTask(task);
+  const basePolicy = policyForTask(task);
+  const requestedSdkTools = task.kind === "live_ai_worker_execution"
+    ? (task.payload?.liveSpendRequest?.tools || [])
+    : [];
+  const policy = {
+    ...basePolicy,
+    allowedTools: [...new Set([...basePolicy.allowedTools, ...requestedSdkTools])],
+  };
   const agentDefinition = findAgentDefinition(db, task);
   const toolAccess = getAgentToolPolicyForAgent(db, agentDefinition.id);
   const isLiveResearchTask = task.kind === "live_market_research";
@@ -742,7 +749,7 @@ async function runAgentTask(db, task) {
     });
 
     if (isLiveAiWorkerTask) {
-      const liveWorker = await runAgentRuntimeTask(db, task, agentDefinition, policy);
+      const liveWorker = await runAgentRuntimeTask(db, task, agentDefinition, policy, { agentRunId: agentRun.id });
       addAgentTrace(
         db,
         agentRun.id,
@@ -756,6 +763,8 @@ async function runAgentTask(db, task) {
           structuredOutput: liveWorker.raw.structuredOutput,
           provider: liveWorker.provider,
           tracePolicy: liveWorker.raw.tracePolicy,
+          capabilityPlan: liveWorker.raw.capabilityPlan,
+          toolActivity: liveWorker.raw.toolActivity,
         },
       );
       output = liveWorker.output;
@@ -804,6 +813,8 @@ async function runAgentTask(db, task) {
           agentSdkTraceId: liveWorker.raw.traceId || null,
           structuredOutput: liveWorker.raw.structuredOutput,
           tracePolicy: liveWorker.raw.tracePolicy,
+          capabilityPlan: liveWorker.raw.capabilityPlan,
+          toolActivity: liveWorker.raw.toolActivity,
           businessDecision: workerDecisionMetadata(output),
           outputContract: output.outputContract,
           toolPolicy: {
@@ -1081,11 +1092,18 @@ async function runAgentTask(db, task) {
           toolId: error.toolId,
           workflowId: task.workflow_id,
           taskId: task.id,
+          providerCallOccurred: error.providerCallOccurred,
+          incurredEstimateCents: error.incurredEstimateCents,
+          providerRequestId: error.providerRequestId,
+          agentSdkTraceId: error.agentSdkTraceId,
         },
       );
       finishAgentRun(db, agentRun.id, {
         status: "waiting_approval",
         outputSummary: error.message,
+        modelCallId: error.modelCallId || null,
+        estimatedCostCents: error.incurredEstimateCents || 0,
+        actualCostCents: 0,
         approvalRequired: true,
         evalStatus: "waiting_for_review",
         metadata: {
@@ -1098,6 +1116,10 @@ async function runAgentTask(db, task) {
             toolId: error.toolId,
             status: error.result?.status,
             decision: error.result?.decision,
+            providerCallOccurred: error.providerCallOccurred,
+            incurredEstimateCents: error.incurredEstimateCents,
+            providerRequestId: error.providerRequestId,
+            agentSdkTraceId: error.agentSdkTraceId,
           },
           toolPolicy: {
             status: toolAccess.status,

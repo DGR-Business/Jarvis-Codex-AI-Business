@@ -17,6 +17,10 @@ class AgentToolApprovalRequiredError extends Error {
     this.runId = input.runId || null;
     this.taskId = input.task?.id || input.taskId || null;
     this.workflowId = input.task?.workflow_id || input.workflowId || null;
+    this.providerCallOccurred = input.providerCallOccurred === true;
+    this.incurredEstimateCents = Number(input.incurredEstimateCents || 0);
+    this.providerRequestId = input.providerRequestId || null;
+    this.agentSdkTraceId = input.agentSdkTraceId || null;
   }
 }
 
@@ -203,6 +207,33 @@ function recordInvocation(db, payload) {
   return invocationId;
 }
 
+function recordAgentToolObservation(db, invocationId, observation = {}) {
+  const invocation = parseInvocation(get(db, "SELECT * FROM agent_tool_invocations WHERE id = ?", [invocationId]));
+  if (!invocation) throw new Error(`Agent tool invocation not found: ${invocationId}`);
+  const ts = now();
+  const failed = observation.status === "failed";
+  const status = failed ? "blocked" : "allowed";
+  const outputSummary = String(
+    observation.outputSummary
+      || (failed ? `${observation.toolName || invocation.tool_id} failed during provider execution.` : `${observation.toolName || invocation.tool_id} completed and its evidence was recorded.`),
+  ).slice(0, 1200);
+  const metadata = {
+    ...invocation.metadata,
+    providerObservation: {
+      recordedAt: ts,
+      ...observation,
+    },
+  };
+  run(
+    db,
+    `UPDATE agent_tool_invocations
+     SET status = ?, output_summary = ?, metadata = ?, resolved_at = ?
+     WHERE id = ?`,
+    [status, outputSummary, toJson(metadata), ts, invocationId],
+  );
+  return parseInvocation(get(db, "SELECT * FROM agent_tool_invocations WHERE id = ?", [invocationId]));
+}
+
 function traceToolDecision(db, runId, decision, title, detail, metadata) {
   if (!runId) return;
   addAgentTrace(db, runId, `tool_call.${decision}`, title, detail, {
@@ -302,7 +333,7 @@ function requestAgentToolUse(db, input = {}) {
   const assignment = findAssignment(policy, agentId, toolId);
   const mode = requestedMode(input.mode || input.requestedMode);
   const inputSummary = summarizeInput(input);
-  const approval = getApproval(db, input.approvalId || input.task?.approval_id);
+  const approval = getApproval(db, input.ignoreTaskApproval ? input.approvalId : (input.approvalId || input.task?.approval_id));
   const agentPolicy = policy.byAgent[agentId] || {};
   const agentName = input.agentName || agentPolicy.agentName || agentId;
   const baseMetadata = {
@@ -313,6 +344,7 @@ function requestAgentToolUse(db, input = {}) {
     approvedApprovalId: approvalIsApproved(approval) ? approval.id : null,
     providerCapability: tool?.provider_capability || null,
     liveFlag: tool?.live_flag || null,
+    ...(input.metadata || {}),
   };
 
   if (!tool) {
@@ -594,6 +626,7 @@ module.exports = {
   getAgentToolGateState,
   isAgentToolApprovalRequiredError,
   listAgentToolInvocations,
+  recordAgentToolObservation,
   requestAgentToolUse,
   requireAgentToolUse,
   resolveAgentToolApproval,

@@ -41,6 +41,22 @@ function normalizeTracePolicy(options = {}) {
   };
 }
 
+function requestedToolControls(options = {}) {
+  const tools = [...new Set(Array.isArray(options.tools) ? options.tools.filter(Boolean).map(String) : [])];
+  const hasSearch = tools.some((toolId) => ["research_adapter", "live_web_with_approval"].includes(toolId));
+  const hasImageGeneration = tools.includes("image_generation_spend");
+  const flags = ["JARVIS_ENABLE_LIVE_MODELS"];
+  if (hasSearch) flags.push("JARVIS_ENABLE_LIVE_RESEARCH");
+  if (hasImageGeneration) flags.push("JARVIS_ENABLE_IMAGE_GENERATION");
+  return {
+    tools,
+    flags,
+    maxTurns: Number(options.maxTurns || (hasSearch ? 4 : hasImageGeneration ? 2 : 1)),
+    maxToolCalls: Number(options.maxToolCalls ?? (hasSearch ? 3 : hasImageGeneration ? 1 : 0)),
+    deadlineMs: Number(options.deadlineMs || (hasImageGeneration ? 180000 : hasSearch ? 120000 : 60000)),
+  };
+}
+
 function latestCommand(db, workflowId) {
   return get(db, "SELECT * FROM commands WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 1", [workflowId]);
 }
@@ -105,6 +121,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const comparisonSource = options.comparisonSource || null;
   const expectedMetric = options.expectedMetric || "Compare live output quality, trace coverage, cost, and usefulness against protected worker proof.";
   const tracePolicy = normalizeTracePolicy(options);
+  const toolControls = requestedToolControls(options);
   const payload = {
     subject,
     channel,
@@ -141,16 +158,18 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       protectedEvidence,
       expectedMetric,
       fixtureHash: options.fixtureHash || null,
-      tools: Array.isArray(options.tools) ? options.tools : [],
+      tools: toolControls.tools,
       toolArguments: options.toolArguments || {},
       parameters: options.parameters || {},
-      maxTurns: Number(options.maxTurns || 1),
+      maxTurns: toolControls.maxTurns,
+      maxToolCalls: toolControls.maxToolCalls,
+      deadlineMs: toolControls.deadlineMs,
       maxOutputTokens: Number(options.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 1200),
       maxCostCents: amountCents,
       effects: Array.isArray(options.effects) ? options.effects : [],
       tracePolicy,
       requiresProviderEnv: "OPENAI_API_KEY",
-      requiresLiveFlag: "JARVIS_ENABLE_LIVE_MODELS",
+      requiresLiveFlag: toolControls.flags,
       requiresRuntimeCapability: "openai_agents_sdk_runner",
       worker: {
         id: workerDefinition.id,

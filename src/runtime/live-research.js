@@ -69,6 +69,14 @@ function requestLiveResearch(db, workflowId, options = {}) {
   const approvalId = approvalIdForRequest(db, taskId, workflowId, ts);
   const title = `Live research evidence for ${subject}`;
   const reason = options.reason || "Current market, competitor, pricing, and risk evidence is required before treating this workflow as commercially validated.";
+  const requestedTracePolicy = options.tracePolicy || {};
+  const tracePolicy = {
+    providerResponseStored: requestedTracePolicy.providerResponseStored === true,
+    providerTraceContent: requestedTracePolicy.providerTraceContent === true,
+    localReviewStored: true,
+    dataClass: String(requestedTracePolicy.dataClass || "business_internal"),
+    purpose: String(requestedTracePolicy.purpose || "Retain cited research locally for operator review without retaining provider response content by default."),
+  };
   const payload = {
     subject,
     channel,
@@ -88,6 +96,7 @@ function requestLiveResearch(db, workflowId, options = {}) {
       riskLevel: amountCents >= 500 ? "medium" : "low",
       reason,
       commercialPurpose: "Validate current demand, competitors, pricing, trend freshness, and risk before paid creation or publishing.",
+      tracePolicy,
       requiresProviderEnv: "OPENAI_API_KEY",
       requiresLiveFlag: "JARVIS_ENABLE_LIVE_RESEARCH",
       requiresRuntimeCapability: "live_research_adapter",

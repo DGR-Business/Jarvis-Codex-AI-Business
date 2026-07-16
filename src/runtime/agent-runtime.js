@@ -1,5 +1,8 @@
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 const CONFIG = require("../config");
-const { insertEvent, now, randomId } = require("../db");
+const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const {
   LIVE_AI_WORKER_PROVIDER,
   buildOpenAIRequest,
@@ -10,12 +13,136 @@ const {
   recordLiveWorkerModelCall,
   runLiveAiWorkerTask,
 } = require("../adapters/live-ai-worker");
+const {
+  demandValidatorPilotOutputSchema: demandValidatorPilotSchema,
+  normalizeWorkerOutput,
+  workerOutputZodSchema,
+} = require("./agent-model-contracts");
+const {
+  buildAgentsSdkModelInput,
+  buildAgentsSdkCapabilityPlan,
+  extractAgentsSdkToolActivity,
+  extractGeneratedImages,
+  materializeAgentsSdkTools,
+  sdkInterruptionDetails,
+} = require("./agent-sdk-capabilities");
+const {
+  AgentToolApprovalRequiredError,
+  recordAgentToolObservation,
+  requestAgentToolUse,
+} = require("./agent-tool-gate");
 const { estimateModelUsageAud } = require("./model-pricing");
 
 const AGENTS_SDK_PROVIDER = "openai-agents-sdk";
 
 let testSdkRunner = null;
 let defaultSdkRunner = null;
+
+function safeId(value) {
+  return String(value || "asset").replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80);
+}
+
+function stableSafetyIdentifier(task) {
+  return `jarvis_${crypto.createHash("sha256").update(String(task.venture_id || task.workflow_id || "local-operator")).digest("hex").slice(0, 32)}`;
+}
+
+function getApprovedSdkResumeState(db, task) {
+  if (!task.id || !task.approval_id) return null;
+  const candidates = all(
+    db,
+    `SELECT invocations.id, invocations.approval_id, invocations.metadata,
+            approvals.status AS approval_status, approvals.payload AS approval_payload,
+            approvals.expires_at
+     FROM agent_tool_invocations AS invocations
+     JOIN approvals ON approvals.id = invocations.approval_id
+     WHERE invocations.task_id = ? AND invocations.approval_id = ?
+       AND invocations.decision = 'approved_live' AND invocations.status = 'allowed'
+     ORDER BY invocations.resolved_at DESC, invocations.requested_at DESC`,
+    [task.id, task.approval_id],
+  );
+  for (const candidate of candidates) {
+    const metadata = fromJson(candidate.metadata, {});
+    const approvalPayload = fromJson(candidate.approval_payload, {});
+    const serializedState = metadata.sdkRunState;
+    const stateHash = metadata.sdkRunStateHash;
+    if (!serializedState || !stateHash || candidate.approval_status !== "approved") continue;
+    if (candidate.expires_at && Date.parse(candidate.expires_at) <= Date.now()) continue;
+    if (approvalPayload.taskId !== task.id || approvalPayload.invocationId !== candidate.id) continue;
+    if (approvalPayload.metadata?.sdkRunStateHash !== stateHash) continue;
+    const actualHash = crypto.createHash("sha256").update(serializedState).digest("hex");
+    if (actualHash !== stateHash) continue;
+    return serializedState;
+  }
+  return null;
+}
+
+function sdkPricingEstimate(model, usage, approvedCapCents, toolActivity) {
+  return {
+    ...estimateModelUsageAud(model, usage, { fallbackCents: approvedCapCents }),
+    hostedToolCalls: toolActivity.length,
+    hostedToolCostStatus: toolActivity.length ? "pending_provider_reconciliation" : "not_applicable",
+    note: toolActivity.length
+      ? "The token estimate is recorded now; hosted-tool charges remain pending until provider usage is reconciled."
+      : "No hosted-tool charge applies to this run.",
+  };
+}
+
+function persistGeneratedAssets(db, task, capabilityPlan, result) {
+  const generated = extractGeneratedImages(result);
+  if (!generated.length) return [];
+  const imageSpec = capabilityPlan.specs.find((spec) => spec.sdkName === "image_generation");
+  const format = imageSpec?.options?.outputFormat || "png";
+  const extension = ["png", "jpeg", "webp"].includes(format) ? format : "png";
+  const outputDir = path.join(CONFIG.artifactRoot, "workflows", safeId(task.workflow_id), "generated-assets");
+  fs.mkdirSync(outputDir, { recursive: true });
+  const ts = now();
+  return generated.map((image, index) => {
+    const deliverableId = `deliv_generated_${safeId(task.id)}_${index + 1}`;
+    const outputPath = path.join(outputDir, `${deliverableId}.${extension}`);
+    fs.writeFileSync(outputPath, image.bytes);
+    const relativePath = path.relative(CONFIG.rootDir, outputPath).replace(/\\/g, "/");
+    const humanName = `${task.payload?.subject || task.title || "Product"} Visual Asset ${index + 1}`;
+    run(
+      db,
+      `INSERT INTO deliverables
+       (id, workflow_id, command_id, task_id, title, human_name, audience, format, status, file_path, summary, metadata, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         human_name = excluded.human_name,
+         status = excluded.status,
+         file_path = excluded.file_path,
+         summary = excluded.summary,
+         metadata = excluded.metadata,
+         updated_at = excluded.updated_at`,
+      [
+        deliverableId,
+        task.workflow_id,
+        task.payload?.commandId || null,
+        task.id,
+        "Generated Product Asset",
+        humanName,
+        "operator",
+        `image/${extension === "jpeg" ? "jpeg" : extension}`,
+        "ready_for_review",
+        relativePath,
+        "Capped AI-generated visual asset. Review brand fit, text accuracy, IP/platform risk, and product usefulness before any publishing.",
+        toJson({
+          provider: AGENTS_SDK_PROVIDER,
+          model: imageSpec?.options?.model || "gpt-image-2",
+          quality: imageSpec?.options?.quality || "low",
+          size: imageSpec?.options?.size || "1024x1024",
+          revisedPrompt: image.revisedPrompt,
+          sha256: image.hash,
+          bytes: image.bytes.length,
+          approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
+        }),
+        ts,
+        ts,
+      ],
+    );
+    return { id: deliverableId, humanName, filePath: relativePath, bytes: image.bytes.length, sha256: image.hash };
+  });
+}
 
 function packageAvailable(name) {
   try {
@@ -66,7 +193,10 @@ function loadAgentsSdk() {
   return {
     Agent: sdk.Agent,
     Runner: sdk.Runner,
+    RunState: sdk.RunState,
     generateTraceId: sdk.generateTraceId,
+    imageGenerationTool: sdk.imageGenerationTool,
+    webSearchTool: sdk.webSearchTool,
     z,
   };
 }
@@ -125,21 +255,7 @@ function zodOutputSchema(z) {
 }
 
 function demandValidatorPilotOutputSchema(z) {
-  return z.object({
-    summary: z.string(),
-    moneyMove: z.string(),
-    evidence: z.array(z.string()).max(2),
-    counterevidence: z.array(z.string()).max(2),
-    assumptions: z.array(z.string()).max(2),
-    priceChannelHypothesis: z.string(),
-    smallestTest: z.string(),
-    metric: z.string(),
-    killRule: z.string(),
-    risks: z.array(z.string()).max(2),
-    nextAction: z.string(),
-    operatorDecision: z.enum(["approve", "revise", "deny", "needs_evidence"]),
-    confidence: z.enum(["low", "medium", "high"]),
-  }).strict();
+  return demandValidatorPilotSchema(z);
 }
 
 function sdkUsage(result) {
@@ -182,12 +298,14 @@ function approvedTracePolicy(task) {
 }
 
 async function runSdkAgent(requestBody, task, agentDefinition, policy, options = {}) {
-  const { Agent, Runner, generateTraceId, z } = loadAgentsSdk();
+  const sdk = loadAgentsSdk();
+  const { Agent, Runner, RunState, generateTraceId, z } = sdk;
   const traceId = options.traceId || generateTraceId();
   const tracePolicy = approvedTracePolicy(task);
+  const capabilityPlan = options.capabilityPlan || buildAgentsSdkCapabilityPlan(task, agentDefinition);
   if (testSdkRunner) {
     try {
-      const result = await testSdkRunner({ requestBody, task, agentDefinition, policy, options, traceId, tracePolicy });
+      const result = await testSdkRunner({ requestBody, task, agentDefinition, policy, options, traceId, tracePolicy, capabilityPlan });
       return { result, traceId };
     } catch (error) {
       error.agentSdkTraceId = traceId;
@@ -195,29 +313,44 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     }
   }
 
+  const sdkTools = materializeAgentsSdkTools(sdk, capabilityPlan);
   const agent = new Agent({
     name: agentDefinition.name,
     instructions: requestBody.input[0].content,
     model: requestBody.model,
     outputType: task.payload?.pilotFixture
       ? demandValidatorPilotOutputSchema(z)
-      : zodOutputSchema(z),
-    tools: [],
+      : workerOutputZodSchema(z, agentDefinition.id),
+    tools: sdkTools,
     handoffs: [],
     modelSettings: {
-      maxTokens: Math.min(1200, Number(requestBody.max_output_tokens || 1200)),
-      toolChoice: "none",
-      parallelToolCalls: false,
+      maxTokens: Math.min(4000, Number(requestBody.max_output_tokens || 1200)),
+      toolChoice: capabilityPlan.toolChoice,
+      parallelToolCalls: capabilityPlan.parallelToolCalls,
       store: tracePolicy.providerResponseStored,
+      providerData: {
+        max_tool_calls: capabilityPlan.maxToolCalls || undefined,
+        safety_identifier: stableSafetyIdentifier(task),
+        prompt_cache_key: `jarvis_${agentDefinition.id}_${requestBody.metadata.packet_schema}`,
+      },
     },
   });
   const runner = options.runner || getDefaultSdkRunner(Runner);
+  let sdkInput = options.modelInput || requestBody.input[1].content;
+  if (options.resumeState) {
+    const state = await RunState.fromString(agent, options.resumeState);
+    if (typeof state.clearTrace === "function") state.clearTrace();
+    for (const interruption of state.getInterruptions()) state.approve(interruption);
+    sdkInput = state;
+  }
+  const signal = options.signal || (typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(capabilityPlan.deadlineMs) : undefined);
   try {
-    const result = await runner.run(agent, requestBody.input[1].content, {
-      maxTurns: 1,
+    const result = await runner.run(agent, sdkInput, {
+      maxTurns: capabilityPlan.maxTurns,
       traceId,
-      workflowName: "Jarvis Demand Validator controlled proof",
+      workflowName: `Jarvis ${agentDefinition.name} controlled run`,
       traceIncludeSensitiveData: tracePolicy.providerTraceContent,
+      signal,
       traceMetadata: {
         venture_id: String(task.venture_id || ""),
         workflow_id: String(task.workflow_id || ""),
@@ -233,6 +366,7 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
         agentId: agentDefinition.id,
         provider: AGENTS_SDK_PROVIDER,
         externalActionsAllowed: false,
+        approvedSdkTools: capabilityPlan.requestedTools,
       },
     });
     return { result, traceId };
@@ -253,10 +387,35 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const requestBody = buildOpenAIRequest(db, task, agentDefinition, policy);
   const approvedCapCents = liveWorkerCostEstimateCents(task);
   const tracePolicy = approvedTracePolicy(task);
+  const capabilityPlan = buildAgentsSdkCapabilityPlan(task, agentDefinition);
+  const modelInput = buildAgentsSdkModelInput(db, task, requestBody.input[1].content, capabilityPlan);
+  const inputAssets = modelInput.assets;
+  const resumeState = getApprovedSdkResumeState(db, task);
+  const toolInvocations = capabilityPlan.specs.map((spec) => ({
+    spec,
+    gate: requestAgentToolUse(db, {
+      agentId: agentDefinition.id,
+      agentName: agentDefinition.name,
+      runId: options.agentRunId || null,
+      task,
+      toolId: spec.toolId,
+      mode: "live",
+      approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
+      reason: `Use the exact approved ${spec.sdkName} capability inside this capped Agents SDK run.`,
+    }),
+  }));
+  const blockedTool = toolInvocations.find((item) => !item.gate.allowed);
+  if (blockedTool) throw new Error(`${blockedTool.spec.toolId} did not pass the Jarvis worker tool gate.`);
   let result;
   let traceId = null;
   try {
-    const sdkRun = await runSdkAgent(requestBody, task, agentDefinition, policy, options);
+    const sdkRun = await runSdkAgent(requestBody, task, agentDefinition, policy, {
+      ...options,
+      capabilityPlan,
+      resumeState,
+      modelInput: modelInput.input,
+      inputAssets,
+    });
     result = sdkRun.result;
     traceId = sdkRun.traceId;
   } catch (error) {
@@ -270,6 +429,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       error: error.message,
       outcomeUnknown: true,
       tracePolicy,
+      inputAssets,
     });
     insertEvent(db, {
       level: "error",
@@ -290,12 +450,132 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     throw error;
   }
 
+  const toolActivity = extractAgentsSdkToolActivity(result);
   const responseId = sdkResponseId(result) || `agents_sdk_${randomId()}`;
-  const rawText = sdkOutputText(result.finalOutput);
-  const output = normalizeOutput(typeof result.finalOutput === "object" ? result.finalOutput : null, rawText);
   const usage = sdkUsage(result);
-  const pricingEstimate = estimateModelUsageAud(requestBody.model, usage, { fallbackCents: approvedCapCents });
+  const pricingEstimate = sdkPricingEstimate(requestBody.model, usage, approvedCapCents, toolActivity);
   const estimateCents = pricingEstimate.amountCents;
+  const interruptions = sdkInterruptionDetails(result);
+  if (interruptions.length) {
+    const interruption = interruptions[0];
+    const interruptedSpec = capabilityPlan.specs.find((spec) => [spec.sdkName, spec.toolId].includes(interruption.toolName));
+    const toolId = interruptedSpec?.toolId || interruption.toolName;
+    if (!toolId || !interruption.serializedRunState) {
+      const error = new Error("The Agents SDK paused, but its tool identity or resumable state was missing.");
+      error.agentSdkTraceId = traceId;
+      error.outcomeUnknown = false;
+      throw error;
+    }
+    const pausedCall = recordLiveWorkerModelCall(db, task, { id: responseId, usage, output: [] }, estimateCents, requestBody.model, "waiting_approval", {
+      provider: AGENTS_SDK_PROVIDER,
+      sdkRunner: true,
+      agentSdkTraceId: traceId,
+      rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
+      interruptionCount: interruptions.length,
+      reservedCostCents: approvedCapCents,
+      pricingEstimate,
+      tracePolicy,
+      capabilityPlan,
+      toolActivity,
+      inputAssets,
+      outcomeUnknown: false,
+    });
+    recordLiveWorkerCost(db, task, estimateCents, { id: responseId }, {
+      provider: AGENTS_SDK_PROVIDER,
+      model: requestBody.model,
+      modelCallId: pausedCall.id,
+      sdkRunner: true,
+      agentSdkTraceId: traceId,
+      approvedCapCents,
+      pricingEstimate,
+      tracePolicy,
+      capabilityPlan,
+      inputAssets,
+      pausedForToolApproval: true,
+    });
+    const sdkRunStateHash = crypto.createHash("sha256").update(interruption.serializedRunState).digest("hex");
+    const gate = requestAgentToolUse(db, {
+      agentId: agentDefinition.id,
+      agentName: agentDefinition.name,
+      runId: options.agentRunId || null,
+      task,
+      toolId,
+      mode: "live",
+      ignoreTaskApproval: true,
+      reason: `Approve or reject the exact paused ${interruption.toolName || toolId} call before the same Agents SDK run resumes.`,
+      inputSummary: `${interruption.toolName || toolId} call ${interruption.callId || "without an id"}: ${String(interruption.arguments || "No arguments captured.").slice(0, 500)}`,
+      metadata: {
+        sdkRunState: interruption.serializedRunState,
+        sdkRunStateHash,
+        sdkInterruptionCallId: interruption.callId,
+        sdkInterruptionArguments: interruption.arguments,
+        parentApprovalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
+        partialModelCallId: pausedCall.id,
+        providerResponseId: responseId,
+        agentSdkTraceId: traceId,
+      },
+    });
+    if (!gate.approvalRequired) {
+      const error = new Error(`The paused SDK tool ${toolId} did not produce a Jarvis approval interruption.`);
+      error.agentSdkTraceId = traceId;
+      error.outcomeUnknown = false;
+      throw error;
+    }
+    insertEvent(db, {
+      level: "warn",
+      actor: "agent-runtime",
+      type: "live_ai_worker.paused_for_tool_approval",
+      entityType: "task",
+      entityId: task.id,
+      message: `${agentDefinition.name} paused before ${toolId}; the same SDK run is stored for an operator decision.`,
+      metadata: { approvalId: gate.approvalId, invocationId: gate.id, toolId, responseId, traceId, sdkRunStateHash, incurredEstimateCents: estimateCents },
+    });
+    const error = new AgentToolApprovalRequiredError(gate, {
+      agentId: agentDefinition.id,
+      runId: options.agentRunId || null,
+      task,
+      toolId,
+      providerCallOccurred: true,
+      incurredEstimateCents: estimateCents,
+      providerRequestId: responseId,
+      agentSdkTraceId: traceId,
+    });
+    error.outcomeUnknown = false;
+    error.modelCallId = pausedCall.id;
+    throw error;
+  }
+
+  const generatedAssets = persistGeneratedAssets(db, task, capabilityPlan, result);
+  for (const invocation of toolInvocations) {
+    const observed = invocation.spec.kind === "model_input"
+      ? { type: invocation.spec.sdkName, status: "completed", assets: inputAssets }
+      : toolActivity.find((item) => item.type === invocation.spec.sdkName);
+    recordAgentToolObservation(db, invocation.gate.id, {
+      status: observed?.status === "failed" ? "failed" : "completed",
+      toolName: invocation.spec.sdkName,
+      toolId: invocation.spec.toolId,
+      activity: observed || null,
+      limits: {
+        maxToolCalls: capabilityPlan.maxToolCalls,
+        deadlineMs: capabilityPlan.deadlineMs,
+        approvedCostCapCents: capabilityPlan.approvedCostCapCents,
+      },
+      outputSummary: observed
+        ? invocation.spec.kind === "model_input"
+          ? `${inputAssets.length} exact approved visual asset${inputAssets.length === 1 ? " was" : "s were"} supplied for model review; hashes and limits were recorded locally.`
+          : `${invocation.spec.sdkName} completed; provider activity and provenance were recorded for review.`
+        : `${invocation.spec.sdkName} was approved but no matching provider tool-call item was returned. Review the trace before accepting the run.`,
+    });
+  }
+
+  const rawText = sdkOutputText(result.finalOutput);
+  const roleOutput = normalizeWorkerOutput(
+    agentDefinition.id,
+    typeof result.finalOutput === "object" ? result.finalOutput : null,
+    agentDefinition.name,
+  );
+  const output = normalizeOutput(roleOutput, rawText);
+  output.roleOutput = roleOutput?.roleOutput || null;
   const responseLike = {
     id: responseId,
     usage,
@@ -306,12 +586,18 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     sdkRunner: true,
     agentSdkTraceId: traceId,
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
-    interruptionCount: Array.isArray(result.interruptions) ? result.interruptions.length : 0,
+    interruptionCount: interruptions.length,
     finalAgent: result.lastAgent?.name || agentDefinition.name,
     reservedCostCents: approvedCapCents,
     pricingEstimate,
     tracePolicy,
-    reason: "Live AI worker used the OpenAI Agents SDK runner after approval; no external tools or side effects were exposed.",
+    capabilityPlan,
+    toolActivity,
+    inputAssets,
+    generatedAssets,
+    reason: capabilityPlan.requestedTools.length
+      ? "Live AI worker used only the exact approved SDK capability; no publishing, contact, account action, legal decision, or money movement was exposed."
+      : "Live AI worker used the OpenAI Agents SDK runner after approval; no external tools or side effects were exposed.",
   });
   recordLiveWorkerCost(db, task, estimateCents, { id: responseId }, {
     provider: AGENTS_SDK_PROVIDER,
@@ -323,6 +609,10 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     approvedCapCents,
     pricingEstimate,
     tracePolicy,
+    capabilityPlan,
+    toolActivity,
+    inputAssets,
+    generatedAssets,
   });
 
   insertEvent(db, {
@@ -341,6 +631,10 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       agentSdkTraceId: traceId,
       provider: AGENTS_SDK_PROVIDER,
       tracePolicy,
+      capabilityPlan,
+      toolActivity,
+      inputAssets,
+      generatedAssets,
     },
   });
 
@@ -373,10 +667,14 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       risks: output.risks,
       nextAction: output.nextAction,
       confidence: output.confidence,
-      liveEvidence: false,
+      liveEvidence: toolActivity.some((item) => item.type === "web_search" && item.sources?.length),
       modelGenerated: true,
       operatorDecision: output.operatorDecision,
       businessDecision: output.businessDecision,
+      roleOutput: output.roleOutput,
+      toolActivity,
+      inputAssets,
+      generatedAssets,
       pilotRecommendation: {
         evidence: output.evidence,
         counterevidence: output.counterevidence,
@@ -387,6 +685,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         killRule: output.killRule,
         confidence: output.confidence,
         risks: output.risks,
+        sources: toolActivity.flatMap((item) => item.sources || []),
       },
     },
     raw: {
@@ -400,6 +699,11 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       usage,
       pricingEstimate,
       tracePolicy,
+      capabilityPlan,
+      toolActivity,
+      inputAssets,
+      generatedAssets,
+      toolInvocations: toolInvocations.map((item) => ({ id: item.gate.id, toolId: item.spec.toolId, sdkName: item.spec.sdkName })),
     },
   };
 }
@@ -432,6 +736,7 @@ module.exports = {
   AGENTS_SDK_PROVIDER,
   __setAgentRuntimeSdkRunnerForTests,
   demandValidatorPilotOutputSchema,
+  getApprovedSdkResumeState,
   getAgentRuntimeReadiness,
   isAgentRuntimeSdkAvailable,
   runAgentRuntimeTask,

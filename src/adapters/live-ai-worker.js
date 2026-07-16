@@ -1,5 +1,11 @@
 const CONFIG = require("../config");
 const { fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
+const {
+  buildWorkerModelPacket,
+  normalizeWorkerOutput,
+  outputSchemaName,
+  workerOutputJsonSchema,
+} = require("../runtime/agent-model-contracts");
 
 const LIVE_AI_WORKER_PROVIDER = "openai-responses-live-worker";
 
@@ -212,7 +218,7 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
   const hardStops = agentDefinition.approval_policy?.mustPauseFor || [];
   const outputInstruction = requested.pilotFixture
     ? "For this controlled Demand Validator pilot, return only the concise supplied-evidence recommendation fields requested by the output schema. Use no more than two short items in each list and one short paragraph per text field. Do not repeat the same judgement in a generic businessDecision object."
-    : "The businessDecision object must name the buyer, problem, offer, channel, money move, evidence summary, risk, success metric, stop rule, and learning-loop fields. externalActionsAllowed must be false.";
+    : `Return the shared recommendation fields plus the exact ${agentDefinition.name} role fields inside work. Do not add a generic businessDecision object or fields that are not in the supplied schema.`;
   return [
     `Worker: ${agentDefinition.name}`,
     `Role: ${agentDefinition.role}`,
@@ -231,51 +237,13 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
 }
 
 function buildOpenAIRequest(db, task, agentDefinition, policy) {
-  const context = latestWorkflowContext(db, task);
   const approvedRequest = task.payload?.liveSpendRequest || {};
-  const subject = task.payload?.subject || context.workflow?.metadata?.subject || context.workflow?.title || "business idea";
-  const channel = task.payload?.channel || context.workflow?.metadata?.channel || context.workflow?.type || "Business Idea";
-  const today = new Date().toISOString().slice(0, 10);
-  const requestContext = {
-    date: today,
-    subject,
-    channel,
-    workflow: context.workflow
-      ? {
-          id: context.workflow.id,
-          title: context.workflow.title,
-          status: context.workflow.status,
-          currentStep: context.workflow.current_step,
-          qualityScore: context.workflow.quality_score,
-          expectedProfitCents: context.workflow.expected_profit_cents,
-          metadata: context.workflow.metadata,
-        }
-      : null,
-    command: context.command
-      ? {
-          id: context.command.id,
-          source: context.command.source,
-          instruction: context.command.raw_text,
-          summary: context.command.summary,
-          metadata: context.command.metadata,
-        }
-      : null,
-    scorecard: context.scorecard
-      ? {
-          totalScore: context.scorecard.total_score,
-          verdict: context.scorecard.verdict,
-          confidence: context.scorecard.confidence,
-          recommendation: context.scorecard.recommendation,
-          risks: context.scorecard.risks,
-          nextActions: context.scorecard.next_actions,
-        }
-      : null,
-    recentTaskOutputs: context.recentTasks,
-    suppliedEvidenceFixture: task.payload?.pilotFixture || null,
-  };
+  const requestContext = buildWorkerModelPacket(db, task, agentDefinition);
+  const tracePolicy = approvedRequest.tracePolicy || {};
 
   return {
     model: approvedRequest.model || process.env.JARVIS_LIVE_MODEL || CONFIG.liveModel,
+    store: tracePolicy.providerResponseStored === true,
     max_output_tokens: Math.max(1, Number(approvedRequest.maxOutputTokens || CONFIG.liveModelMaxOutputTokens)),
     input: [
       {
@@ -286,7 +254,7 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
         role: "user",
         content: [
           "Return one operator-ready business decision in strict JSON.",
-          "Runtime context:",
+          "Worker-specific business packet:",
           JSON.stringify(requestContext, null, 2),
         ].join("\n"),
       },
@@ -294,9 +262,9 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
     text: {
       format: {
         type: "json_schema",
-        name: "jarvis_live_worker_decision",
+        name: outputSchemaName(agentDefinition.id),
         strict: true,
-        schema: outputSchema(),
+        schema: workerOutputJsonSchema(agentDefinition.id),
       },
     },
     metadata: {
@@ -304,6 +272,8 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
       task_id: task.id,
       agent_id: agentDefinition.id,
       adapter: approvedRequest.provider || LIVE_AI_WORKER_PROVIDER,
+      packet_schema: requestContext.schema,
+      packet_hash: requestContext.packetHash,
     },
   };
 }
@@ -548,7 +518,9 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
 
   const { text, annotations } = outputTextAndAnnotations(response);
   const parsed = parseJsonOutput(text);
-  const output = normalizeOutput(parsed, text);
+  const roleOutput = normalizeWorkerOutput(agentDefinition.id, parsed, agentDefinition.name);
+  const output = normalizeOutput(roleOutput, text);
+  output.roleOutput = roleOutput?.roleOutput || null;
   const modelCall = recordLiveWorkerModelCall(db, task, response, estimateCents, requestBody.model, "completed", {
     structuredOutput: Boolean(parsed),
     annotationCount: annotations.length,

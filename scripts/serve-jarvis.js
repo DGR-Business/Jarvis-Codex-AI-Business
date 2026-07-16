@@ -12,6 +12,7 @@ process.env.PORT = String(port);
 delete process.env.OPENAI_API_KEY;
 process.env.JARVIS_ENABLE_LIVE_MODELS = "0";
 process.env.JARVIS_ENABLE_LIVE_RESEARCH = "0";
+process.env.JARVIS_ENABLE_IMAGE_GENERATION = "0";
 process.env.JARVIS_LIVE_MODE = "0";
 const logRoot = path.resolve(__dirname, "..", "tmp");
 fs.mkdirSync(logRoot, { recursive: true });

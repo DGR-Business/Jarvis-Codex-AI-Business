@@ -33,6 +33,18 @@ function humanTaskStatus(status) {
   }[status] || "Standby";
 }
 
+function operatorDeliverable(deliverable) {
+  const humanText = (value) => String(value || "")
+    .replace(/Approval Pack \(for approval\)/gi, "Decision Brief")
+    .replace(/Approval Pack/gi, "Decision Brief")
+    .replace(/approval pack/gi, "decision brief");
+  return {
+    ...deliverable,
+    human_name: humanText(deliverable.human_name),
+    summary: humanText(deliverable.summary),
+  };
+}
+
 function pendingApprovals(db) {
   return all(db, "SELECT * FROM approvals WHERE status = 'pending' ORDER BY CASE risk_level WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, requested_at")
     .map((row) => {
@@ -195,7 +207,14 @@ function teamState(db, ventureId) {
       "SELECT * FROM tasks WHERE venture_id = ? AND agent = ? AND status IN ('running','queued','blocked','waiting_approval','needs_attention') ORDER BY updated_at DESC LIMIT 1",
       [ventureId, definition.id],
     );
-    const capability = capabilities.find((item) => item.agent_id === definition.id);
+    const agentCapabilities = capabilities
+      .filter((item) => item.agent_id === definition.id)
+      .sort((left, right) => (
+        Number(right.consecutive_passes || 0) - Number(left.consecutive_passes || 0)
+        || Number(right.required_passes || 5) - Number(left.required_passes || 5)
+        || String(left.capability_key).localeCompare(String(right.capability_key))
+      ));
+    const capability = agentCapabilities[0];
     const rawStatus = activeTask?.status || "standby";
     return {
       id: definition.id,
@@ -210,8 +229,10 @@ function teamState(db, ventureId) {
             passes: capability.consecutive_passes,
             required: capability.required_passes,
             riskTier: capability.risk_tier,
+            capabilityKey: capability.capability_key,
+            capabilityCount: agentCapabilities.length,
           }
-        : { status: "supervised", passes: 0, required: 5, riskTier: 0 },
+        : { status: "supervised", passes: 0, required: 5, riskTier: 0, capabilityKey: null, capabilityCount: 0 },
       technical: {
         modelClass: definition.model_class,
         mode: definition.mode,
@@ -285,7 +306,7 @@ function getDecisionsState(db) {
     `SELECT * FROM deliverables
      WHERE status = 'ready_for_review'
      ORDER BY updated_at DESC LIMIT 20`,
-  )).map((deliverable) => ({
+  )).map(operatorDeliverable).map((deliverable) => ({
     id: deliverable.id,
     title: deliverable.human_name,
     summary: deliverable.summary,
@@ -363,7 +384,7 @@ function humanActivityMessage(event) {
     }[metadata.decision] || "A consequential team decision was recorded.";
   }
   if (event.type === "workflow_run.completed") return "Internal work finished and is ready for review.";
-  if (event.type === "approval_pack.generated") return "A PDF decision pack is ready to preview.";
+  if (event.type === "approval_pack.generated") return "A PDF decision brief is ready to preview.";
   if (event.type === "command.planned") return "A new internal work plan was created.";
   if (event.type === "research.dry_run_created") return "An internal research plan was prepared; real market evidence is still required.";
   if (event.type === "task.completed") {
@@ -418,7 +439,7 @@ function getSystemState(db) {
     outputs: parseRows(all(
       db,
       "SELECT * FROM deliverables ORDER BY CASE status WHEN 'archived' THEN 1 ELSE 0 END, updated_at DESC LIMIT 50",
-    )),
+    )).map(operatorDeliverable),
     activity: activityState(db),
     weeklyDigest: getLatestDigest(db),
   };

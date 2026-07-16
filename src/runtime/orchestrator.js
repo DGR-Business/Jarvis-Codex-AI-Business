@@ -316,6 +316,8 @@ async function runOnce(db, options = {}) {
     return { status: "completed", task: { ...task, result }, result };
   } catch (error) {
     if (isAgentToolApprovalRequiredError(error)) {
+      const providerCallOccurred = error.providerCallOccurred === true;
+      const incurredEstimateCents = Number(error.incurredEstimateCents || 0);
       const approval = get(db, "SELECT * FROM approvals WHERE id = ?", [error.approvalId]);
       const escalation = await markBlocked(db, task, approval || {
         id: error.approvalId,
@@ -326,13 +328,23 @@ async function runOnce(db, options = {}) {
         invocationId: error.invocationId,
         toolId: error.toolId,
         runId: error.runId,
-        noSpendOccurred: true,
+        noSpendOccurred: !providerCallOccurred,
+        providerCallOccurred,
+        incurredEstimateCents,
+        providerRequestId: error.providerRequestId || null,
+        agentSdkTraceId: error.agentSdkTraceId || null,
       });
-      if (reservation) resolveReservation(db, task.id, "released", { amountCents: 0, metadata: { noProviderCall: true } });
+      if (reservation) {
+        resolveReservation(db, task.id, providerCallOccurred ? "incurred_estimate" : "released", {
+          amountCents: incurredEstimateCents,
+          metadata: { noProviderCall: !providerCallOccurred, pausedForToolApproval: true, providerRequestId: error.providerRequestId || null },
+        });
+      }
       releaseTaskClaim(db, claim, "blocked", {
-        outcomeStatus: "not_started",
+        outcomeStatus: providerCallOccurred ? "known" : "not_started",
         errorKind: "tool_approval_required",
-        metadata: { approvalId: error.approvalId, noProviderCall: true },
+        providerRequestId: error.providerRequestId || null,
+        metadata: { approvalId: error.approvalId, noProviderCall: !providerCallOccurred, incurredEstimateCents },
       });
       return {
         status: "blocked",

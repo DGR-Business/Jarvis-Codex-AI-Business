@@ -2594,3 +2594,90 @@ Verification:
   under its URL policy. No alternate browser bypass was attempted. The live API,
   static scripts, syntax checks and automated tests provide the current proof;
   Daniel can refresh the already-open dashboard for the visual review.
+
+## 2026-07-16 - OpenAI Capability Bridge And Decision Brief Redux
+
+Intent:
+
+- Convert the official OpenAI integration review into narrow executable worker
+  capabilities without widening live authority.
+- Redesign operator PDFs as concise business decision documents while keeping
+  agent inputs separately structured for reliable processing.
+
+OpenAI worker boundary:
+
+- Added versioned allowlisted model packets and strict role-specific output
+  schemas for all 11 workers. Raw workflow metadata, full task records and local
+  paths are no longer the default model context.
+- Added one Agents SDK capability bridge. Demand Validator can receive only
+  capped hosted web search; Product Builder can receive only one capped GPT
+  Image asset; Quality Reviewer can receive only exact approved visual asset
+  IDs. Browser, filesystem, publishing, customer contact, account, payment and
+  legal powers are not exposed.
+- Completed the Quality Reviewer multimodal path after a final implementation
+  audit: exact same-workflow image deliverables are resolved inside approved
+  workspace roots and sent as SDK `input_image` content. The runtime enforces a
+  10 MB per-file and 20 MB total limit, rejects missing, unsupported or cross-
+  workflow assets, and records only ID, media type, bytes, detail and the SHA-256
+  of the actual file bytes. Image data and local paths are not logged.
+- Bound tools, arguments, model, packet/fixture, turns, tool calls, deadline,
+  storage, trace-content choice, cost cap and zero effects to the exact approval
+  scope. Direct Responses paths now state response storage explicitly.
+- Provider requests, SDK traces, response IDs, source/query provenance,
+  generated-asset hashes, usage and pending hosted-tool charges are captured
+  locally. Image base64 is not logged and cost estimates are not presented as
+  reconciled billing.
+- Added real Agents SDK interruption handling: Jarvis stores the serialized
+  `RunState` and hash in a nested tool approval, consumes that approval once and
+  resumes the same run after approval. It does not silently restart the model
+  call. The deterministic pause/resume proof passes.
+
+Operator document redesign:
+
+- Replaced the raw operator pack payload with
+  `jarvis_operator_decision_brief_v2` and rebuilt the ReportLab renderer around
+  the next money move, recommendation, commercial snapshot, evidence for and
+  against, score, hypothesis, smallest test, success measure, stop rule, risks,
+  team accountability, review outputs and clear decision choices.
+- Raw paths, backend fields and provider payloads are removed before rendering.
+  Agent-facing Markdown and structured inputs remain unchanged and separate.
+- A short workflow renders to two readable A4 pages; a dense 11-worker workflow
+  renders to four. Every page was visually inspected for hierarchy, clipping,
+  overlap and legibility. PDF text extraction confirmed the key decision
+  sections and found no raw path, `file_path`, `approval gate` or
+  `dry-run active` leakage.
+- Historical stored names remain untouched for audit history, but focused
+  dashboard APIs translate old `Approval Pack` labels to `Decision Brief` for
+  ordinary user-facing language.
+
+Browser and runtime proof:
+
+- Started an isolated protected runtime with the OpenAI key removed and live
+  model, research and image flags set to off. Health returned `ok: true` and
+  confirmed the Agents SDK runner is installed but live execution is blocked.
+- The real in-app browser connected without console warnings or errors. Command
+  Center, Decisions, Reviews and AI Team rendered without horizontal overflow
+  at 1440x900, 1280x720 and 1024x768.
+- Browser inspection exposed and corrected a derived-view mismatch caused by
+  Demand Validator having multiple exact capabilities. Worker cards now show
+  the strongest proven skill, matching the pilot header at 1/5.
+- The Decisions review tab displayed historical and new PDFs as Decision Briefs.
+  The Preview control opened the modal and the focused file endpoint returned
+  HTTP 200, `application/pdf`, with a non-empty PDF body.
+- The usefulness decision and business-action handoff remain deliberately
+  separate. Daniel has rated the first result useful at 4/5; the consequential
+  decision on advancing its recommendation is still visible in Important Work.
+
+Verification and safety:
+
+- `npm.cmd test` passes 92/92 tests. `git diff --check` reports no whitespace
+  errors; only the repository's existing Windows line-ending notices appear.
+- Created a fresh AES-256-GCM source, database and artifact checkpoint in the
+  configured OneDrive backup folder. The database backup payload SHA-256 is
+  `34d0b52a3adc1276d68abd062169cf0762e040ff608a0fa256f30d244e86c2fa`.
+  An authenticated restore matched that hash, returned `integrity_check: ok`
+  and preserved the useful 4/5 review plus the 1/5 supervised capability state.
+- No live model call, hosted search, image generation, vision request,
+  publishing, outreach, account action, legal decision or money movement ran.
+- All live flags remain off. The next model or tool call still requires a fresh,
+  single-use approval and action-time credential connection.

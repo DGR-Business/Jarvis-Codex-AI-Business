@@ -104,6 +104,8 @@ function approvalPayload(task, request, amountCents) {
     toolArguments: request.toolArguments || {},
     parameters: request.parameters || {},
     maxTurns: Number(request.maxTurns || 1),
+    maxToolCalls: Number(request.maxToolCalls || 0),
+    deadlineMs: Number(request.deadlineMs || 60000),
     maxOutputTokens: Number(request.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 0),
     maxCostCents: amountCents,
     effects: asArray(request.effects),

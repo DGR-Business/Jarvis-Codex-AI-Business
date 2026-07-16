@@ -27,7 +27,7 @@ Internal foundation status on 2026-07-16:
   claims, exact approval scope, honest cost states, timeout recovery, local
   security, evidence provenance, Gumroad CSV privacy, risk-tiered autonomy, and
   the five-section cockpit are implemented;
-- 86 automated tests pass, including a production-seed assertion that fresh
+- 92 automated tests pass, including a production-seed assertion that fresh
   runtime databases contain no fabricated workflows, approvals, outputs, or
   commercial evidence;
 - an isolated clean source copy installed from `package-lock.json`, passed all
@@ -44,6 +44,11 @@ Internal foundation status on 2026-07-16:
 - a new permanent backup passphrase is stored in the Windows user environment;
   fresh encrypted source, database, and artifact backups were created while
   preserving the older files;
+- the latest 2026-07-16 12:33 UTC encrypted source, database and artifact
+  checkpoint contains this OpenAI capability/PDF phase. The database backup
+  authenticated to its exact payload hash; the restored SQLite file returned
+  `integrity_check: ok`, Demand Validator at 1/5 supervised passes and Daniel's
+  useful 4/5 verdict;
 - all three fresh backups passed authenticated restore, source-manifest,
   SQLite-integrity, current-output, clean-install, 81-test, healthy-start,
   PDF-preview, console, and desktop-layout proof;
@@ -83,9 +88,11 @@ Internal foundation status on 2026-07-16:
   100 and all deterministic pilot checks passed;
 - the successful run's OpenAI trace was visible but its Response detail was not:
   the pilot had explicitly disabled provider response storage and trace content.
-  The historical provider detail cannot be recovered, so the usefulness verdict
-  remains pending. A focused local run review now exposes the observable
-  evidence, judgement, recommendation, checks, usage, cost and runtime trace;
+  The historical provider detail cannot be recovered. Daniel reviewed the
+  preserved local result and rated it useful at 4/5, so this exact supplied-
+  evidence reasoning capability is now at 1/5 reviewed successes. A focused
+  local run review exposes the observable evidence, judgement, recommendation,
+  checks, usage, cost and runtime trace;
 - future non-personal pilot fixtures bind provider response storage and trace
   content to the exact approval scope. Privacy-first settings remain the default
   for other work;
@@ -93,6 +100,30 @@ Internal foundation status on 2026-07-16:
   lifecycle without requiring Daniel to ask Codex to start the runtime;
 - the official OpenAI Developer Docs MCP integration is installed in Codex and
   the current Agents SDK architecture review is recorded under `docs/reviews/`;
+- live AI workers now receive versioned, worker-specific model packets instead
+  of raw workflow metadata or complete task results. Each of the 11 workers has
+  a strict role-specific output contract that the runtime translates back into
+  the shared operator decision record;
+- an executable Agents SDK capability bridge now maps only exact approved
+  Jarvis tool IDs to hosted SDK tools. Demand Validator web search is capped at
+  three calls, four turns, A$2 and 120 seconds; Product Builder image generation
+  is capped at one GPT Image 2 asset, A$1 and 180 seconds; Quality Reviewer can
+  receive only exact same-workflow approved image assets as bounded multimodal
+  model input, without receiving generation access or exposing image data and
+  file paths in local records;
+- hosted-tool plans, arguments, limits, deadlines, retention policy, provider
+  activity, sources, generated-asset hashes, trace IDs and pending cost
+  reconciliation are recorded. Direct Responses paths now set response storage
+  explicitly instead of relying on provider defaults;
+- paid image output is stored as a local review deliverable with model, quality,
+  size, revised prompt, hash, byte count and approval provenance. Publishing or
+  other outside-world use remains a separate hard stop;
+- operator PDFs now use `jarvis_operator_decision_brief_v2`: a responsive
+  two-to-four-page executive decision brief with the next money move,
+  recommendation, commercial case, evidence for and against, score, test,
+  safeguards, team accountability, outputs and three decision choices. Raw
+  paths and machine-facing records are excluded before rendering; agent-facing
+  Markdown and structured inputs remain separate;
 - the signed-in OpenAI usage and trace surfaces confirm two requests, 2,742
   aggregate tokens and US$0.03 total usage. At the actual prepaid-credit rate,
   the ledger records A$0.05 reconciled aggregate spend, with no unknown or
@@ -100,9 +131,9 @@ Internal foundation status on 2026-07-16:
 - SDK trace IDs and response IDs are now recorded separately. The first failed
   and corrected successful traces are both attached to their preserved task,
   model-call and agent-run records;
-- all 86 tests pass and live mode is off. The next gate is Daniel's commercial
-  usefulness verdict on the valid recommendation. No additional model call is
-  authorised.
+- all 92 tests pass and live mode is off. The next gate is the separate business
+  decision on whether to advance the recommendation to a small, non-paid
+  interest test. No additional model call is authorised.
 
 ## 1. North Star
 
@@ -124,8 +155,10 @@ test, monitor, and improve the system.
 - Dashboard is the source of truth: email, Slack, ClickUp, or mobile views may
   mirror or control work later, but the runtime database and dashboard stay
   canonical.
-- Human-facing outputs must be polished: review items use readable names and,
-  for major decisions, should become PDF-backed approval packs.
+- Human-facing outputs must be polished: major decisions use concise executive
+  decision briefs. Agent inputs remain separately structured for reliable
+  processing; raw paths, provider payloads and machine records do not leak into
+  operator PDFs.
 - Dry-run before live: every external adapter must prove a dry-run path before
   credentials or live actions are used.
 - Spend is earned: paid model/tool usage is approved only when it has a clear
@@ -172,6 +205,10 @@ test, monitor, and improve the system.
    tracing, and resumable approvals are core requirements. The Responses API
    remains a lower-level provider path for direct model calls, research/search
    adapters, and fallback cases where the runtime should own the loop directly.
+   The facade builds worker-specific allowlisted model packets, applies strict
+   role output schemas, attaches only exact approved SDK capabilities, enforces
+   abort deadlines and tool-call limits, and records provider/tool provenance
+   for local review.
 9. Model routing: chooses model class by task importance, cost, and risk.
 10. Tools and connectors: OpenAI Agents SDK, OpenAI Responses API, Codex,
    research/search, browser/computer use, ChatKit, Gelato, Etsy partner rails,
@@ -665,6 +702,15 @@ Done when:
 - Live AI worker execution follows the official OpenAI agent architecture
   principles: narrow worker instructions, tool scopes, guardrails, traces,
   resumable approvals, result records, and eval checks.
+- Live worker requests use allowlisted worker packets and role-specific strict
+  schemas rather than a generic all-purpose model payload.
+- Hosted SDK tools are attached through one Jarvis capability bridge only when
+  the exact worker, tool, arguments, retention choice, tool-call limit,
+  deadline, cost cap and zero external effects are approval-bound.
+- Demand Validator web search, Product Builder GPT Image generation and Quality
+  Reviewer visual inspection are implementation-ready but remain separately
+  flagged, capped and approval-gated. No capability is granted to an agent
+  globally.
 - Live AI worker tasks cannot be marked complete by a dry-run fallback.
 - Paid image/design/PDF generation has per-task caps and approval rules.
 - Retry logic and failure escalation are proven.
@@ -735,17 +781,20 @@ Operator approval is required for:
 
 ### Now
 
-1. Have Daniel judge the corrected Demand Validator recommendation for
-   commercial usefulness. The technical review passed, but the capability
-   remains supervised at 0/5 until that human verdict is recorded.
-2. If useful, prepare one distinct supplied-evidence fixture and request a new
-   single-use approval for run 2/5. Do not reuse the first fixture or approval.
+The first Demand Validator result passed technical review and Daniel rated it
+useful at 4/5. The exact supplied-evidence reasoning skill is supervised at 1/5.
+
+1. Decide the existing business handoff: approve, change or decline the
+   recommendation to advance only to a small, non-paid interest test.
+2. If the path continues, prepare one distinct supplied-evidence fixture and
+   request a new single-use approval for run 2/5. Do not reuse the first fixture
+   or approval.
 3. Continue only toward five consecutive reviewed successes for the narrow
    reasoning-over-supplied-evidence capability. Any failure resets the streak;
    promotion remains Daniel's explicit decision.
 4. Preserve the proven recovery behavior: encrypted source/database/artifact
    backups, authenticated restore, retention, and private operator records.
-5. Preserve the proven clean-source behavior: lockfile install, 86/86
+5. Preserve the proven clean-source behavior: lockfile install, 92/92
    tests, healthy startup, and no synthetic production work or evidence.
 
 ### Next
@@ -758,11 +807,16 @@ Operator approval is required for:
 
 ### Later
 
-1. Add a separately capped A$2 read-only web-search capability only after the
-   no-tool reasoning capability completes its five-run review sequence.
+1. Run the implemented A$2, three-call read-only web-search capability only
+   under a fresh supervised approval after the current usefulness decision and
+   a deliberate pilot-timing choice. The code is ready; credentials and live
+   flags remain off. Its evidence/citation skill earns autonomy separately from
+   supplied-evidence reasoning.
 2. Offer one optional A$25 paid test only if organic reach is insufficient.
-3. Add paid media tools only after three sales or evidence that media quality
-   is the conversion blocker.
+3. Use the implemented one-asset GPT Image path only when a selected product
+   genuinely needs a visual asset and the exact prompt/quality/cost is approved.
+   Add broader paid media tools only after three sales or evidence that media
+   quality is the conversion blocker.
 4. Defer live email, POD/Gelato/Etsy, ChatKit, Xero, narrow autopilot, mobile
    redesign, and additional ventures until first revenue proof justifies them.
 

@@ -7,11 +7,21 @@ const { decideApproval, decideApprovalByToken } = require("../src/runtime/approv
 const { processApprovalReply } = require("../src/runtime/approval-replies");
 const { runOnce, runUntilBlocked } = require("../src/runtime/orchestrator");
 const { getDashboardState } = require("../src/runtime/state");
-const { getAgentRunDetail } = require("../src/runtime/cockpit-state");
+const { getAgentRunDetail, getAiTeamState, getDecisionsState } = require("../src/runtime/cockpit-state");
 const { createCommandPlan } = require("../src/runtime/planner");
 const { createApp, createRuntime } = require("../src/server");
 const { getLiveAiWorkerReadiness } = require("../src/runtime/live-ai-worker-readiness");
-const { __setAgentRuntimeSdkRunnerForTests } = require("../src/runtime/agent-runtime");
+const { __setAgentRuntimeSdkRunnerForTests, getApprovedSdkResumeState } = require("../src/runtime/agent-runtime");
+const { buildWorkerModelPacket, workerOutputJsonSchema } = require("../src/runtime/agent-model-contracts");
+const {
+  buildAgentsSdkModelInput,
+  buildAgentsSdkCapabilityPlan,
+  extractAgentsSdkToolActivity,
+  extractGeneratedImages,
+  materializeAgentsSdkTools,
+} = require("../src/runtime/agent-sdk-capabilities");
+const CONFIG = require("../src/config");
+const { buildOperatorPackPayload } = require("../src/runtime/approval-pack");
 const { getLiveResearchReadiness } = require("../src/runtime/live-research-readiness");
 const { getPreOpenAiReadinessState } = require("../src/runtime/pre-openai-readiness");
 const {
@@ -29,7 +39,7 @@ const { recordAiPilotReviewDecision } = require("../src/runtime/ai-pilot-review"
 const { runMonitorCycle } = require("../src/runtime/monitor");
 const { createLiveAiWorkerSmokeTest, requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { createLiveResearchSmokeTest, requestLiveResearch } = require("../src/runtime/live-research");
-const { createAgentRun, decideAgentHandoff, findAgentDefinition } = require("../src/runtime/ai-team");
+const { AI_TEAM_DEFINITIONS, createAgentRun, decideAgentHandoff, findAgentDefinition } = require("../src/runtime/ai-team");
 const { ensureSchedulerJobs, runDueSchedulerJobs, runSchedulerJob, setSchedulerJobStatus } = require("../src/runtime/scheduler");
 const { recordCommercialFeedback, recordCommercialResult } = require("../src/runtime/commercial-results");
 const {
@@ -110,7 +120,25 @@ test("seedDatabase creates durable runtime state", () => {
   assert.equal(state.agentWorkbench.metrics.evalCases, state.aiTeam.definitions.length);
   assert.equal(state.agentWorkbench.byAgent.demand_validator.dataset.activeCases, 1);
   assert.equal(state.agentWorkbench.byAgent.demand_validator.status, "needs_dry_run_proof");
+  const focusedDecisions = getDecisionsState(db);
+  assert.equal(focusedDecisions.reviews.some((review) => /approval pack/i.test(`${review.title} ${review.summary}`)), false);
 
+  db.close();
+});
+
+test("AI Team card shows the worker's strongest reviewed capability", () => {
+  const db = seededDb("focused-ai-capability");
+  getAiTeamState(db);
+  run(
+    db,
+    "UPDATE capability_autonomy SET consecutive_passes = 3 WHERE capability_key = ?",
+    ["demand_validator.reasoning_on_supplied_evidence"],
+  );
+  const demandValidator = getAiTeamState(db).agents.find((agent) => agent.id === "demand_validator");
+  assert.equal(demandValidator.autonomy.passes, 3);
+  assert.equal(demandValidator.autonomy.required, 5);
+  assert.equal(demandValidator.autonomy.capabilityKey, "demand_validator.reasoning_on_supplied_evidence");
+  assert.equal(demandValidator.autonomy.capabilityCount >= 2, true);
   db.close();
 });
 
@@ -471,12 +499,246 @@ test("agent tool policy registers worker permissions and hard stops", () => {
   assert.equal(demandValidator.externalActionsRequireApproval, true);
   assert.equal(demandValidator.spendRequiresApproval, true);
   assert.equal(productBuilder.status, "approval_gated");
-  assert.deepEqual(productBuilder.approvalRequired.map((item) => item.tool_id), ["digital_product_adapter"]);
+  assert.deepEqual(productBuilder.approvalRequired.map((item) => item.tool_id).sort(), ["digital_product_adapter", "image_generation_spend"]);
+  assert.deepEqual(policy.byAgent.quality_reviewer.approvalRequired.map((item) => item.tool_id), ["visual_asset_review"]);
   assert.equal(marketplacePublish.status, "blocked");
   assert.equal(marketplacePublish.hard_stop, true);
   assert.equal(policy.assignments.some((assignment) => assignment.tool_id === "marketplace_publish"), false);
 
   db.close();
+});
+
+test("live workers receive allowlisted business packets and role-specific output contracts", () => {
+  const db = seededDb("worker-model-packet");
+  try {
+    const task = get(db, "SELECT * FROM tasks WHERE id = ?", ["task-market-validated"]);
+    task.payload = JSON.parse(task.payload || "{}");
+    task.payload.pilotFixture = {
+      buyer: "Solo service operator",
+      observedProblem: "Missed weekly cash checks",
+      evidence: ["Three supplied interviews describe the same missed task."],
+    };
+    const definition = AI_TEAM_DEFINITIONS.find((item) => item.id === "demand_validator");
+    const packet = buildWorkerModelPacket(db, task, definition);
+    const contract = workerOutputJsonSchema(definition.id);
+
+    assert.equal(packet.schema, "jarvis_worker_model_packet_v1");
+    assert.match(packet.packetHash, /^[a-f0-9]{64}$/);
+    assert.equal(Object.hasOwn(packet.workflow || {}, "metadata"), false);
+    assert.equal(Object.hasOwn(packet.operatorInstruction || {}, "metadata"), false);
+    assert.equal(Object.hasOwn(packet.relevantCompletedWork[0] || {}, "result"), false);
+    assert.equal(JSON.stringify(packet).includes("file_path"), false);
+    assert.equal(JSON.stringify(packet).includes("cost_actual_cents"), false);
+    assert.equal(packet.suppliedEvidenceFixture.buyer, "Solo service operator");
+    assert.equal(contract.additionalProperties, false);
+    assert.ok(contract.required.includes("work"));
+    assert.deepEqual(contract.properties.work.required, [
+      "demandVerdict",
+      "sourceSummary",
+      "counterevidence",
+      "assumptions",
+      "priceChannelHypothesis",
+      "smallestTest",
+      "successMetric",
+      "stopRule",
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("Agents SDK capability bridge exposes only exact capped worker skills", () => {
+  const sdk = require("@openai/agents");
+  const demandValidator = AI_TEAM_DEFINITIONS.find((item) => item.id === "demand_validator");
+  const productBuilder = AI_TEAM_DEFINITIONS.find((item) => item.id === "product_builder");
+  const qualityReviewer = AI_TEAM_DEFINITIONS.find((item) => item.id === "quality_reviewer");
+  const task = {
+    id: "task-sdk-search",
+    cost_budget_cents: 200,
+    payload: {
+      liveSpendRequest: {
+        tools: ["research_adapter"],
+        maxCostCents: 200,
+        maxTurns: 4,
+        maxToolCalls: 3,
+        deadlineMs: 120000,
+        effects: [],
+        toolArguments: { research_adapter: { searchContextSize: "medium", allowedDomains: ["example.com"] } },
+      },
+    },
+  };
+  const searchPlan = buildAgentsSdkCapabilityPlan(task, demandValidator);
+  const searchTools = materializeAgentsSdkTools(sdk, searchPlan);
+  assert.equal(searchPlan.schema, "jarvis_agents_sdk_capability_plan_v1");
+  assert.equal(searchPlan.maxToolCalls, 3);
+  assert.equal(searchPlan.deadlineMs, 120000);
+  assert.equal(searchTools.length, 1);
+  assert.equal(searchTools[0].providerData.type, "web_search");
+  assert.deepEqual(searchTools[0].providerData.filters.allowed_domains, ["example.com"]);
+  assert.throws(() => buildAgentsSdkCapabilityPlan(task, productBuilder), /restricted to demand_validator/);
+
+  const imageTask = {
+    id: "task-sdk-image",
+    cost_budget_cents: 100,
+    payload: {
+      liveSpendRequest: {
+        tools: ["image_generation_spend"],
+        maxCostCents: 100,
+        maxTurns: 2,
+        maxToolCalls: 1,
+        deadlineMs: 180000,
+        effects: [],
+        toolArguments: { image_generation_spend: { quality: "low", size: "1024x1024" } },
+      },
+    },
+  };
+  const imagePlan = buildAgentsSdkCapabilityPlan(imageTask, productBuilder);
+  const imageTools = materializeAgentsSdkTools(sdk, imagePlan);
+  assert.equal(imageTools[0].providerData.type, "image_generation");
+  assert.equal(imageTools[0].providerData.model, "gpt-image-2");
+  assert.equal(imageTools[0].providerData.quality, "low");
+  const imageResult = {
+    rawResponses: [{ output: [{ type: "image_generation_call", id: "img-call", status: "completed", revised_prompt: "Clean product visual", result: Buffer.from("image-bytes").toString("base64") }] }],
+  };
+  const imageActivity = extractAgentsSdkToolActivity(imageResult);
+  const imageAssets = extractGeneratedImages(imageResult);
+  assert.equal(imageActivity[0].type, "image_generation");
+  assert.equal(Object.hasOwn(imageActivity[0], "result"), false);
+  assert.equal(imageAssets[0].bytes.toString(), "image-bytes");
+  assert.match(imageAssets[0].hash, /^[a-f0-9]{64}$/);
+  assert.equal(imageActivity[0].assetSha256, imageAssets[0].hash);
+  assert.equal(imageActivity[0].assetBytesEstimate, imageAssets[0].bytes.length);
+
+  const visionTask = {
+    id: "task-sdk-vision",
+    cost_budget_cents: 100,
+    payload: {
+      liveSpendRequest: {
+        tools: ["visual_asset_review"],
+        maxCostCents: 100,
+        maxTurns: 1,
+        maxToolCalls: 0,
+        deadlineMs: 90000,
+        effects: [],
+        parameters: { approvedAssetIds: ["asset-one"] },
+      },
+    },
+  };
+  const visionPlan = buildAgentsSdkCapabilityPlan(visionTask, qualityReviewer);
+  assert.equal(visionPlan.specs[0].kind, "model_input");
+  assert.deepEqual(visionPlan.specs[0].options.assetIds, ["asset-one"]);
+  assert.deepEqual(materializeAgentsSdkTools(sdk, visionPlan), []);
+});
+
+test("visual review sends only exact approved local images without logging image data", () => {
+  const db = seededDb("sdk-visual-input");
+  try {
+    const workflowId = "wf-digital-product-pilot-proof";
+    const assetId = "asset-approved-visual";
+    const outputDir = path.join(CONFIG.artifactRoot, "visual-input-test");
+    const imagePath = path.join(outputDir, "approved-visual.png");
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(
+      imagePath,
+      Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nT0AAAAASUVORK5CYII=", "base64"),
+    );
+    const ts = new Date().toISOString();
+    run(
+      db,
+      `INSERT INTO deliverables
+       (id, workflow_id, title, human_name, audience, format, status, file_path, summary, metadata, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'operator', 'png', 'ready_for_review', ?, ?, '{}', ?, ?)`,
+      [assetId, workflowId, "Approved product visual", "Approved Product Visual", imagePath, "One exact image for quality review.", ts, ts],
+    );
+    const task = {
+      id: "task-sdk-visual-input",
+      workflow_id: workflowId,
+      venture_id: "venture-digital-products",
+      title: "Review the approved product visual",
+      cost_budget_cents: 100,
+      payload: {
+        liveSpendRequest: {
+          tools: ["visual_asset_review"],
+          maxCostCents: 100,
+          maxTurns: 1,
+          maxToolCalls: 0,
+          deadlineMs: 90000,
+          effects: [],
+          parameters: { approvedAssetIds: [assetId] },
+        },
+      },
+    };
+    const qualityReviewer = AI_TEAM_DEFINITIONS.find((item) => item.id === "quality_reviewer");
+    const plan = buildAgentsSdkCapabilityPlan(task, qualityReviewer);
+    const modelInput = buildAgentsSdkModelInput(db, task, "Review only the approved image.", plan);
+    const packet = buildWorkerModelPacket(db, task, qualityReviewer);
+
+    assert.equal(modelInput.input[0].role, "user");
+    assert.equal(modelInput.input[0].content[0].type, "input_text");
+    assert.equal(modelInput.input[0].content[1].type, "input_image");
+    assert.match(modelInput.input[0].content[1].image, /^data:image\/png;base64,/);
+    assert.equal(modelInput.input[0].content[1].detail, "high");
+    assert.equal(modelInput.assets[0].id, assetId);
+    assert.match(modelInput.assets[0].sha256, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(modelInput.assets).includes("base64"), false);
+    assert.equal(JSON.stringify(modelInput.assets).includes(imagePath), false);
+    assert.equal(packet.approvedAssetInputs[0].name, "Approved Product Visual");
+    assert.equal(JSON.stringify(packet).includes(imagePath), false);
+
+    const wrongWorkflowTask = { ...task, workflow_id: "wf-other" };
+    assert.throws(
+      () => buildAgentsSdkModelInput(db, wrongWorkflowTask, "Review the image.", buildAgentsSdkCapabilityPlan(wrongWorkflowTask, qualityReviewer)),
+      /does not belong to this workflow/,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("operator decision brief payload excludes raw paths and machine-facing records", () => {
+  const payload = buildOperatorPackPayload({
+    approvalPackId: "pack-test",
+    humanName: "Commercial Pilot Decision Brief",
+    generatedAt: "2026-07-16T10:00:00.000Z",
+    workflow: {
+      id: "workflow-test",
+      title: "Commercial Pilot",
+      status: "ready_for_review",
+      current_step: "review",
+      expected_profit_cents: 2500,
+      metadata: { subject: "Cash-control checklist", buyer: "Solo service operator" },
+    },
+    command: { raw_text: "Validate the smallest useful offer." },
+    scorecard: null,
+    tasks: [{
+      id: "task-test",
+      kind: "live_ai_worker_execution",
+      agent: "demand_validator",
+      title: "Validate demand",
+      status: "completed",
+      result: {
+        output: {
+          summary: "Run one small buyer-interest test before building.",
+          evidence: ["The supplied evidence repeats the same buyer problem."],
+          risks: ["Willingness to pay is unproven."],
+          nextAction: "Run a 20-view interest test.",
+          operatorDecision: "approve",
+          confidence: "medium",
+          businessDecision: { buyer: "Solo service operator", problem: "Missed cash checks", offer: "Weekly checklist", channel: "Gumroad" },
+        },
+        modelPolicy: { selectedModel: "internal-only" },
+      },
+    }],
+    deliverables: [{ id: "secret-output", human_name: "Evidence Brief", format: "markdown", status: "ready_for_review", file_path: "private/secret/path.md", summary: "Evidence summary." }],
+    costs: [],
+  });
+  const serialized = JSON.stringify(payload);
+  assert.equal(payload.schema, "jarvis_operator_decision_brief_v2");
+  assert.equal(payload.decision.headline, "Run a 20-view interest test.");
+  assert.equal(payload.outputs[0].name, "Evidence Brief");
+  assert.equal(serialized.includes("private/secret/path.md"), false);
+  assert.equal(serialized.includes("modelPolicy"), false);
+  assert.equal(serialized.includes("file_path"), false);
 });
 
 test("agent tool gate records allowed, approval-controlled, and blocked tool calls", () => {
@@ -1622,7 +1884,7 @@ test("dry-run agent runner executes planned workflow steps with guardrails", asy
   assert.equal(marketTask.result.research.staleDataWarning, true);
   assert.equal(marketTask.result.research.sources.length, 3);
   assert.ok(state.metrics.research.needsLiveResearch >= 1);
-  assert.ok(pdfPack.human_name.endsWith("Approval Pack"));
+  assert.ok(pdfPack.human_name.endsWith("Decision Brief"));
   assert.equal(pdfPack.audience, "operator");
   assert.equal(pdfPack.file_path.endsWith(".pdf"), true);
   assert.equal(fs.existsSync(pdfPack.file_path), true);
@@ -2467,8 +2729,8 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
   process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
 
   let capturedRequest = null;
-  __setAgentRuntimeSdkRunnerForTests(async ({ requestBody, task, agentDefinition, policy, traceId, tracePolicy }) => {
-    capturedRequest = { requestBody, task, agentDefinition, policy, traceId, tracePolicy };
+  __setAgentRuntimeSdkRunnerForTests(async ({ requestBody, task, agentDefinition, policy, traceId, tracePolicy, capabilityPlan }) => {
+    capturedRequest = { requestBody, task, agentDefinition, policy, traceId, tracePolicy, capabilityPlan };
     return {
       finalOutput: {
         heading: "Demand Validator recommendation",
@@ -2564,7 +2826,14 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(capturedRequest.requestBody.text.format.type, "json_schema");
     assert.equal(capturedRequest.requestBody.text.format.strict, true);
     assert.equal(capturedRequest.requestBody.text.format.schema.additionalProperties, false);
-    assert.ok(capturedRequest.requestBody.text.format.schema.required.includes("businessDecision"));
+    assert.ok(capturedRequest.requestBody.text.format.schema.required.includes("work"));
+    assert.equal(capturedRequest.requestBody.text.format.schema.required.includes("businessDecision"), false);
+    assert.equal(capturedRequest.requestBody.metadata.packet_schema, "jarvis_worker_model_packet_v1");
+    assert.match(capturedRequest.requestBody.metadata.packet_hash, /^[a-f0-9]{64}$/);
+    assert.deepEqual(capturedRequest.capabilityPlan.requestedTools, []);
+    assert.equal(capturedRequest.capabilityPlan.maxTurns, 1);
+    assert.equal(capturedRequest.capabilityPlan.maxToolCalls, 0);
+    assert.equal(capturedRequest.capabilityPlan.deadlineMs, 60000);
     assert.equal(capturedRequest.requestBody.metadata.agent_id, "demand_validator");
     assert.equal(capturedRequest.requestBody.metadata.adapter, "openai-agents-sdk");
     assert.equal(capturedRequest.requestBody.model, "gpt-5.6-terra-approved");
@@ -2677,6 +2946,145 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     else process.env.JARVIS_LIVE_MODEL = previousModel;
     if (previousRuntimeProvider === undefined) delete process.env.JARVIS_AGENT_RUNTIME_PROVIDER;
     else process.env.JARVIS_AGENT_RUNTIME_PROVIDER = previousRuntimeProvider;
+    if (previousPackDir === undefined) delete process.env.JARVIS_APPROVAL_PACK_DIR;
+    else process.env.JARVIS_APPROVAL_PACK_DIR = previousPackDir;
+  }
+});
+
+test("SDK tool interruption uses Jarvis approval and resumes the same serialized run", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
+  const previousLiveResearch = process.env.JARVIS_ENABLE_LIVE_RESEARCH;
+  const previousDisabledAdapter = process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  const previousDisabledSdk = process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+  const previousPackDir = process.env.JARVIS_APPROVAL_PACK_DIR;
+  const packDir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-sdk-resume-pdf-"));
+  process.env.OPENAI_API_KEY = "test-sdk-resume-key";
+  process.env.JARVIS_ENABLE_LIVE_MODELS = "1";
+  process.env.JARVIS_ENABLE_LIVE_RESEARCH = "1";
+  delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+  process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
+
+  const serializedState = JSON.stringify({ schema: "test-sdk-state", pending: "research_adapter" });
+  let calls = 0;
+  let resumedState = null;
+  __setAgentRuntimeSdkRunnerForTests(async ({ options }) => {
+    calls += 1;
+    if (!options.resumeState) {
+      return {
+        finalOutput: undefined,
+        lastResponseId: "resp_sdk_paused",
+        rawResponses: [{ responseId: "resp_sdk_paused", usage: { input_tokens: 500, output_tokens: 40, total_tokens: 540 } }],
+        runContext: { usage: { inputTokens: 500, outputTokens: 40, totalTokens: 540 } },
+        interruptions: [{
+          toJSON() {
+            return { name: "research_adapter", id: "call_search_1", arguments: JSON.stringify({ query: "buyer demand evidence" }) };
+          },
+        }],
+        state: { toString: () => serializedState },
+      };
+    }
+    resumedState = options.resumeState;
+    return {
+      finalOutput: {
+        summary: "The supplied evidence warrants one small buyer-interest test, not product build-out.",
+        recommendation: "Run the smallest qualified interest test and stop if buyers do not act.",
+        evidence: ["The same cash-control problem appears repeatedly in the supplied evidence."],
+        risks: ["Willingness to pay remains unproven."],
+        nextAction: "Prepare a 20-view buyer-interest test for operator review.",
+        operatorDecision: "approve",
+        confidence: "medium",
+        work: {
+          demandVerdict: "Promising problem evidence; paid demand is not yet proven.",
+          sourceSummary: ["Supplied operator evidence only."],
+          counterevidence: ["No paid buyers were supplied."],
+          assumptions: ["The supplied evidence is representative."],
+          priceChannelHypothesis: "Test one low price through one qualified channel.",
+          smallestTest: "Show the offer to 20 qualified visitors.",
+          successMetric: "At least one paid buyer or three strong buyer-intent actions.",
+          stopRule: "Stop or revise after 20 qualified views with no buyer action.",
+        },
+      },
+      lastResponseId: "resp_sdk_resumed",
+      rawResponses: [{ responseId: "resp_sdk_resumed", usage: { input_tokens: 620, output_tokens: 280, total_tokens: 900 } }],
+      runContext: { usage: { inputTokens: 620, outputTokens: 280, totalTokens: 900 } },
+      lastAgent: { name: "Demand Validator" },
+      interruptions: [],
+    };
+  });
+
+  const db = seededDb("sdk-tool-resume");
+  try {
+    const planned = createCommandPlan(db, {
+      text: "Evaluate a tiny digital checklist and prepare a decision pack",
+      source: "test",
+      createFiles: false,
+    });
+    const workflowId = planned.workflow.id;
+    await runUntilBlocked(db, { workflowId, maxSteps: 12 });
+    const requested = requestLiveAiWorker(db, workflowId, {
+      estimatedCostCents: 200,
+      worker: "demand_validator",
+      provider: "openai-agents-sdk",
+      tools: ["research_adapter"],
+      maxTurns: 4,
+      maxToolCalls: 3,
+      deadlineMs: 120000,
+    });
+    decideApproval(db, requested.approval.id, "approved", "approve capped SDK search proof");
+
+    const paused = await runOnce(db, { workflowId });
+    assert.equal(paused.status, "blocked");
+    assert.equal(paused.toolGate.approvalRequired, true);
+    assert.notEqual(paused.approval.id, requested.approval.id);
+    const blockedTask = get(db, "SELECT * FROM tasks WHERE id = ?", [requested.task.id]);
+    assert.equal(blockedTask.approval_id, paused.approval.id);
+    const pausedInvocation = get(db, "SELECT * FROM agent_tool_invocations WHERE id = ?", [paused.toolGate.id]);
+    const pausedMetadata = JSON.parse(pausedInvocation.metadata);
+    assert.equal(pausedMetadata.sdkRunState, serializedState);
+    assert.match(pausedMetadata.sdkRunStateHash, /^[a-f0-9]{64}$/);
+    assert.equal(get(db, "SELECT status FROM model_calls WHERE provider_request_id = ?", ["resp_sdk_paused"]).status, "waiting_approval");
+
+    decideApproval(db, paused.approval.id, "approved", "resume the exact paused SDK call");
+    const approvedPausedInvocation = get(db, "SELECT * FROM agent_tool_invocations WHERE id = ?", [paused.toolGate.id]);
+    assert.equal(approvedPausedInvocation.status, "allowed");
+    assert.equal(approvedPausedInvocation.decision, "approved_live");
+    assert.equal(JSON.parse(approvedPausedInvocation.metadata).sdkRunState, serializedState);
+    const queuedResumeTask = get(db, "SELECT * FROM tasks WHERE id = ?", [requested.task.id]);
+    const resumeCandidate = get(
+      db,
+      `SELECT metadata FROM agent_tool_invocations
+       WHERE task_id = ? AND approval_id = ? AND decision = 'approved_live' AND status = 'allowed'
+       ORDER BY resolved_at DESC LIMIT 1`,
+      [queuedResumeTask.id, queuedResumeTask.approval_id],
+    );
+    assert.ok(resumeCandidate);
+    assert.equal(JSON.parse(resumeCandidate.metadata).sdkRunState, serializedState);
+    assert.equal(getApprovedSdkResumeState(db, queuedResumeTask), serializedState);
+    const completed = await runOnce(db, { workflowId });
+    assert.equal(completed.status, "completed");
+    assert.equal(calls, 2);
+    assert.equal(resumedState, serializedState);
+    assert.equal(completed.result.output.operatorDecision, "approve");
+    assert.equal(completed.result.output.roleOutput.demandVerdict.includes("Promising"), true);
+    const nestedApproval = get(db, "SELECT consumed_at FROM approvals WHERE id = ?", [paused.approval.id]);
+    assert.ok(nestedApproval.consumed_at);
+    assert.ok(all(db, "SELECT status FROM model_calls WHERE task_id = ? ORDER BY created_at", [requested.task.id]).some((call) => call.status === "waiting_approval"));
+  } finally {
+    db.close();
+    __setAgentRuntimeSdkRunnerForTests(null);
+    fs.rmSync(packDir, { recursive: true, force: true });
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+    if (previousLiveModels === undefined) delete process.env.JARVIS_ENABLE_LIVE_MODELS;
+    else process.env.JARVIS_ENABLE_LIVE_MODELS = previousLiveModels;
+    if (previousLiveResearch === undefined) delete process.env.JARVIS_ENABLE_LIVE_RESEARCH;
+    else process.env.JARVIS_ENABLE_LIVE_RESEARCH = previousLiveResearch;
+    if (previousDisabledAdapter === undefined) delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+    else process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER = previousDisabledAdapter;
+    if (previousDisabledSdk === undefined) delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+    else process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK = previousDisabledSdk;
     if (previousPackDir === undefined) delete process.env.JARVIS_APPROVAL_PACK_DIR;
     else process.env.JARVIS_APPROVAL_PACK_DIR = previousPackDir;
   }
@@ -2859,6 +3267,7 @@ test("approved live research uses provider adapter, records sources, cost, and s
     assert.equal(capturedRequest.body.tools[0].type, "web_search");
     assert.equal(capturedRequest.body.tool_choice, "required");
     assert.ok(capturedRequest.body.include.includes("web_search_call.action.sources"));
+    assert.equal(capturedRequest.body.store, false);
     assert.match(capturedRequest.options.headers.authorization, /Bearer test-live-research-key/);
 
     const state = getDashboardState(db);
@@ -3846,7 +4255,7 @@ test("HTTP API exposes health, state, approvals, and runtime tick", async () => 
     const pack = await fetch(`${baseUrl}/api/workflows/${planned.result.workflow.id}/approval-pack`, {
       method: "POST",
     }).then((response) => response.json());
-    assert.equal(pack.result.humanName.includes("Approval Pack"), true);
+    assert.equal(pack.result.humanName.includes("Decision Brief"), true);
     assert.equal(fs.existsSync(pack.result.filePath), true);
     assert.ok(pack.state.deliverables.some((deliverable) => deliverable.id === pack.result.id && deliverable.format === "pdf"));
 

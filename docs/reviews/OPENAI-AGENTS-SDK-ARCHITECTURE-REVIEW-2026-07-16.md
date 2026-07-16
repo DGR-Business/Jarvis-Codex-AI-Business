@@ -64,25 +64,55 @@ before this capability proves useful over distinct fixtures.
 - Human commercial usefulness as a separate gate from technical correctness.
 - One venture and one test at a time until revenue evidence exists.
 
+## Additions Implemented On 2026-07-16
+
+The documentation review was converted into executable runtime controls without
+widening live authority:
+
+1. Every worker now receives an allowlisted, versioned model packet and a strict
+   role-specific output schema. Complete task records, raw metadata and local
+   paths are not sent as generic model context.
+2. One capability bridge maps exact Jarvis tool IDs to Agents SDK hosted tools.
+   Demand Validator receives only capped web search; Product Builder receives
+   only capped image generation; Quality Reviewer receives exact approved local
+   images as bounded multimodal model input but no generation permission. Asset
+   IDs must belong to the same workflow; local records retain hashes and limits,
+   not image data or file paths.
+3. The SDK runner binds tool count, turn count, deadline, storage, trace-content
+   policy, arguments, model and cost cap to the single-use approval scope.
+4. Provider activity, sources, queries, generated-asset hashes, response IDs,
+   SDK trace IDs, token estimates and pending hosted-tool charges are recorded
+   locally without retaining image base64 or claiming estimates as invoices.
+5. SDK interruptions are serialized into Jarvis approval records. Approval
+   resumes the same hash-verified run state; rejection or requested changes stop
+   it. The scheduler cannot silently restart the call.
+6. Agent-facing structured data and operator-facing decision briefs are now
+   separate products. The latter exclude raw paths and machine records.
+
+All capability flags are off in protected operation. No search, image, vision,
+publishing, customer-contact or account action was performed for this work.
+
 ## Recommended Next Additions
 
 ### Now
 
-1. Daniel reviews the existing run in the local AI Team drawer before recording
-   any usefulness verdict.
-2. If the result is useful, run one distinct supplied-evidence fixture with the
-   new provider trace policy and verify both the local review and OpenAI trace.
-3. Keep the second fixture to one turn, no tools and the same A$1 cap.
+1. The first result is technically passed and Daniel rated it useful at 4/5;
+   keep the exact capability supervised at its current 1/5 streak.
+2. Decide the separate business handoff on whether the recommendation should
+   advance to a small, non-paid interest test.
+3. If the path continues, use one distinct supplied-evidence fixture with the
+   new provider trace policy. Keep it to one turn, no tools and the same A$1 cap.
 
-### When Read-Only Tools Begin
+### When The First Read-Only Tool Is Tested
 
-1. Add one bounded web-search tool to Demand Validator under its own A$2 scope.
-2. Use an SDK tool input guardrail for allowed query purpose and an output
-   guardrail for citation/provenance requirements.
-3. Bridge SDK `interruptions` and serialized `RunState` into the existing Jarvis
-   approval records so a paused tool call resumes rather than restarts.
-4. Add a local trace processor only when tools or handoffs create events that
-   the current runtime trace cannot reconstruct reliably.
+1. Use the implemented web-search bridge only under a fresh A$2 approval, three
+   call maximum and 120-second deadline.
+2. Review query purpose, source provenance, unsupported claims, exact tool
+   activity and provider cost before accepting the run.
+3. Prove the implemented interruption/resume path against the live SDK before
+   any autonomy promotion; the deterministic test is already green.
+4. Add a local trace processor only if a real tool or handoff event cannot be
+   reconstructed from the records now captured.
 
 ### When Multiple Workers Are Proven
 

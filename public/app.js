@@ -48,6 +48,7 @@ function humanStatus(value) {
   const labels = {
     pending: "Waiting for decision",
     approval_requested: "Waiting for decision",
+    approval_gated: "Available with approval",
     blocked_for_approval: "Waiting for your decision",
     blocked_for_credentials: "Setup needed",
     dry_run_complete: "Internal work complete",
@@ -57,6 +58,10 @@ function humanStatus(value) {
     incurred_estimate: "Estimated charge",
     unknown: "Needs reconciliation",
     planned: "Waiting",
+    pilot_ready: "Ready for controlled test",
+    protected: "Internal only",
+    safe_internal: "Available",
+    live_tested: "Tested with AI",
     queued: "Ready",
     active: "Running",
     proving: "Validating",
@@ -285,7 +290,7 @@ function renderDecisions() {
       <footer><button class="text-button" data-action="open-drawer" data-kind="decision" data-id="${escapeHtml(item.id)}">Review details ${icon("arrow-right")}</button>${approvalButtons(item, true)}</footer>
     </article>`).join("")}</div>` : emptyState("No decisions waiting", "Reviews and suggestions remain separate so they do not compete with consequential choices.");
   } else if (store.decisionTab === "reviews") {
-    body = data.reviews.length ? `<div class="plain-list">${data.reviews.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p></div><div class="work-actions">${String(item.format).toLowerCase() === "pdf" ? `<button class="secondary-button" data-action="open-pdf" data-id="${escapeHtml(item.id)}" data-title="${escapeHtml(item.title)}">${icon("file-search")}Preview</button>` : ""}<button class="text-button" data-action="open-drawer" data-kind="review" data-id="${escapeHtml(item.id)}">Details ${icon("arrow-right")}</button></div></article>`).join("")}</div>` : emptyState("No outputs need review", "Completed packs will appear here without being presented as approval decisions.", "files");
+    body = data.reviews.length ? `<div class="plain-list">${data.reviews.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p></div><div class="work-actions">${String(item.format).toLowerCase() === "pdf" ? `<button class="secondary-button" data-action="open-pdf" data-id="${escapeHtml(item.id)}" data-title="${escapeHtml(item.title)}">${icon("file-search")}Preview</button>` : ""}<button class="text-button" data-action="open-drawer" data-kind="review" data-id="${escapeHtml(item.id)}">Details ${icon("arrow-right")}</button></div></article>`).join("")}</div>` : emptyState("No outputs need review", "Completed decision briefs and supporting outputs will appear here without competing with consequential choices.", "files");
   } else if (store.decisionTab === "suggestions") {
     body = data.suggestions.length ? `<div class="plain-list">${data.suggestions.map((item) => `<article class="plain-row"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p></article>`).join("")}</div>` : emptyState("No suggestions at the moment", "The team will surface non-urgent improvements here.", "lightbulb");
   } else {
@@ -364,7 +369,7 @@ function renderAiTeam() {
       <div class="agent-groups">${groups.map((group) => {
         const agents = data.agents.filter((agent) => agent.group === group);
         return `<section class="agent-group"><span class="section-label">${escapeHtml(agentGroupLabels[group])}</span><div class="agent-grid">${agents.map((agent) => `<button class="agent-card" data-action="open-drawer" data-kind="agent" data-id="${escapeHtml(agent.id)}">
-          <span class="agent-initial">${escapeHtml(initials(agent.name))}</span><div><h3>${escapeHtml(agent.name)}</h3><p>${escapeHtml(agent.assignment)}</p></div><span class="agent-meta">${badge(agent.status)}<small>${agent.autonomy.passes}/${agent.autonomy.required} reviewed passes</small></span>
+          <span class="agent-initial">${escapeHtml(initials(agent.name))}</span><div><h3>${escapeHtml(agent.name)}</h3><p>${escapeHtml(agent.assignment)}</p></div><span class="agent-meta">${badge(agent.status)}<small>${agent.autonomy.passes}/${agent.autonomy.required} for best proven skill</small></span>
         </button>`).join("")}</div></section>`;
       }).join("")}</div>
     </section>
@@ -528,7 +533,7 @@ async function showDetail(kind, id) {
     openDrawer(agent.name, agent.group, [
       detailSection("Current position", `<p>${escapeHtml(agent.assignment)}</p>${badge(agent.status)}`),
       detailSection("Last reviewed outcome", `<p>${escapeHtml(agent.lastOutcome)}</p>`),
-      detailSection("Earned capability", `<p>${agent.autonomy.passes} of ${agent.autonomy.required} consecutive successful reviewed runs. Current level: ${escapeHtml(humanStatus(agent.autonomy.status))}.</p>`),
+      detailSection("Earned capability", `<p>Best proven skill: ${agent.autonomy.passes} of ${agent.autonomy.required} consecutive successful reviewed runs. Current level: ${escapeHtml(humanStatus(agent.autonomy.status))}.</p>`),
       detailSection("Technical detail", `<p>Model class: ${escapeHtml(agent.technical.modelClass)}<br>Runtime mode: ${escapeHtml(agent.technical.mode)}<br>Last run: ${escapeHtml(agent.technical.lastRunId || "None")}</p>${agent.technical.lastRunId ? `<button class="secondary-button" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(agent.technical.lastRunId)}">${icon("scan-search")}Review latest run</button>` : ""}`),
     ].join(""));
     return;

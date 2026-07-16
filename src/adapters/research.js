@@ -393,8 +393,10 @@ async function callOpenAIResponses(body, options = {}) {
 }
 
 function buildOpenAIRequest(task, workflow, command, query) {
+  const tracePolicy = task.payload?.liveSpendRequest?.tracePolicy || {};
   return {
     model: process.env.JARVIS_LIVE_RESEARCH_MODEL || CONFIG.liveResearchModel,
+    store: tracePolicy.providerResponseStored === true,
     tools: [{ type: "web_search", external_web_access: true }],
     tool_choice: "required",
     include: ["web_search_call.action.sources"],
@@ -410,6 +412,7 @@ function buildOpenAIRequest(task, workflow, command, query) {
       workflow_id: task.workflow_id,
       task_id: task.id,
       adapter: LIVE_RESEARCH_PROVIDER,
+      data_class: String(tracePolicy.dataClass || "business_internal"),
     },
   };
 }
