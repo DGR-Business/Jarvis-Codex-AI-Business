@@ -27,7 +27,7 @@ Internal foundation status on 2026-07-16:
   claims, exact approval scope, honest cost states, timeout recovery, local
   security, evidence provenance, Gumroad CSV privacy, risk-tiered autonomy, and
   the five-section cockpit are implemented;
-- 84 automated tests pass, including a production-seed assertion that fresh
+- 86 automated tests pass, including a production-seed assertion that fresh
   runtime databases contain no fabricated workflows, approvals, outputs, or
   commercial evidence;
 - an isolated clean source copy installed from `package-lock.json`, passed all
@@ -36,8 +36,9 @@ Internal foundation status on 2026-07-16:
 - a real-browser internal-work proof passed, including PDF preview, a request-
   changes decision, timeline update, empty active queue, zero browser console
   errors, and no horizontal overflow at target desktop/mobile widths;
-- no model call, Gumroad account, publishing, spend, or customer contact was
-  performed;
+- no Gumroad account, publishing, customer contact, paid research or external
+  business action was performed; two tightly scoped Agents SDK model requests
+  were used only for the controlled Demand Validator fixture proof;
 - historical outputs are hidden by default in System and remain available
   through an explicit past-output control;
 - a new permanent backup passphrase is stored in the Windows user environment;
@@ -46,6 +47,11 @@ Internal foundation status on 2026-07-16:
 - all three fresh backups passed authenticated restore, source-manifest,
   SQLite-integrity, current-output, clean-install, 81-test, healthy-start,
   PDF-preview, console, and desktop-layout proof;
+- a separate encrypted post-pilot source, database, and artifact checkpoint also
+  passed authenticated restore. The restored database reports `integrity_check`
+  `ok`, both preserved attempts, A$0.05 reconciled provider usage, and the
+  pending usefulness review; sampled source hashes match and all 20 restored
+  artifacts are present;
 - the tracked baseline is sealed as history-free root commit `e3f7a81`, so the
   old commits containing private metadata were not pushed;
 - private repository `DGR-Business/Jarvis-Codex-AI-Business` now has that clean
@@ -58,22 +64,33 @@ Internal foundation status on 2026-07-16:
   and the current cost-balanced `gpt-5.6-terra` model. Execution is bound to
   the exact approved provider, model, output limit, fixture, and cost cap, so
   later environment changes cannot silently alter an approved run;
-- a restricted model-request-only OpenAI key is stored outside the repository;
+- a restricted model-request-only OpenAI key was used without entering the
+  repository, logs or chat. Final restart verification found it was scoped to
+  the live test process rather than persisted in the Windows user environment,
+  so a future live run needs a fresh secure credential connection;
   the API account has US$10 prepaid credit and automatic recharge is off;
 - the first one-turn, no-tool, A$1 maximum attempt made exactly one Agents SDK
   call. It produced no usable result because structured-output parsing failed
-  with an unterminated JSON string. The one-use approval was consumed, no
-  retry ran, no pilot pass was awarded, and A$1 remains an unknown exposure
-  until provider billing is reconciled;
+  with an unterminated JSON string. The consumed one-use approval was not
+  reused, and the attempt is preserved as a known technical failure;
 - the strongest current explanation is that the large generic output contract
   could not finish inside 1,200 output tokens. This is a diagnosis, not a
   provider-confirmed finish reason because the SDK did not preserve raw usage
   or a response id after the parse failure;
-- the pilot now uses a lean supplied-evidence result contract, token-price AUD
-  estimation, an AUD operating-cost ledger, and consumed-approval filtering.
-  These corrections pass 84/84 tests but have not yet passed a second live run;
-- live mode is off. The next gated action is provider-cost reconciliation and
-  a fresh, separately approved retry of the corrected one-turn pilot.
+- a fresh single-use approval authorised one corrected retry over the same
+  fixture. It completed in one response with 1,329 input tokens, 335 output
+  tokens, zero tools, zero handoffs and no external effects. Runtime eval scored
+  100 and all deterministic pilot checks passed;
+- the signed-in OpenAI usage and trace surfaces confirm two requests, 2,742
+  aggregate tokens and US$0.03 total usage. At the actual prepaid-credit rate,
+  the ledger records A$0.05 reconciled aggregate spend, with no unknown or
+  reserved pilot exposure;
+- SDK trace IDs and response IDs are now recorded separately. The first failed
+  and corrected successful traces are both attached to their preserved task,
+  model-call and agent-run records;
+- all 86 tests pass and live mode is off. The next gate is Daniel's commercial
+  usefulness verdict on the valid recommendation. No additional model call is
+  authorised.
 
 ## 1. North Star
 
@@ -553,9 +570,10 @@ work is reduced to copy, checklist, tracking, and result-capture controls.
 The first local capped smoke-test approval has been prepared for a digital
 product idea without provider calls or spend. The adapter records query/provider
 metadata, live sources, model-call estimates, cost estimates,
-completion/failure events, and scorecard upgrades. Real live model/email
+completion/failure events, and scorecard upgrades. Live research and email
 providers are not connected yet, and the first real live research execution
-still requires credentials plus operator approval.
+still requires credentials plus operator approval. The separate Agents SDK
+worker path has completed one controlled supplied-evidence proof.
 Parallel to live research, the system now has a live AI worker readiness/request
 rail using the same safety pattern: capped request tasks, spend approval,
 provider-readiness checks, dashboard health, zero-spend smoke-test preparation,
@@ -569,9 +587,9 @@ records, cost records, and Workbench promotion-gate updates. A live AI worker
 request can target a registered specialist such as Demand Validator, preserve
 that specialist identity through task, approval, spend-gate, provider-blocked,
 live-run, trace, eval, cost, and dashboard records, and reject unknown explicit
-workers instead of silently falling back. Real provider execution still requires
-credentials, the live-model flag, approval, trace/eval review, and billing
-reconciliation.
+workers instead of silently falling back. The first corrected provider run
+completed successfully; every future provider execution still requires the
+live-model flag, exact approval, trace/eval review, and billing reconciliation.
 Completed live research is now piped directly into the research-to-experiment
 bridge. A successful live research run produces one source-linked brief, three
 ranked approval-safe commercial test candidates, a trace event, and Money Move
@@ -705,18 +723,17 @@ Operator approval is required for:
 
 ### Now
 
-1. Reconcile the first failed attempt against OpenAI usage/billing. Keep its A$1
-   record unknown until provider evidence supports a lower confirmed amount.
-2. With a fresh action-time approval, retry the corrected A$1 maximum Demand
-   Validator Agents SDK pilot once over the same versioned evidence fixture,
-   with no tools, handoffs, or external effects.
-3. If and only if a valid result is captured, compare it with the protected
-   baseline, have Daniel judge
-   commercial usefulness, reconcile cost, and decide revise, repeat, promote
-   only the exact capability, or stop.
+1. Have Daniel judge the corrected Demand Validator recommendation for
+   commercial usefulness. The technical review passed, but the capability
+   remains supervised at 0/5 until that human verdict is recorded.
+2. If useful, prepare one distinct supplied-evidence fixture and request a new
+   single-use approval for run 2/5. Do not reuse the first fixture or approval.
+3. Continue only toward five consecutive reviewed successes for the narrow
+   reasoning-over-supplied-evidence capability. Any failure resets the streak;
+   promotion remains Daniel's explicit decision.
 4. Preserve the proven recovery behavior: encrypted source/database/artifact
    backups, authenticated restore, retention, and private operator records.
-5. Preserve the proven clean-source behavior: lockfile install, 84/84
+5. Preserve the proven clean-source behavior: lockfile install, 86/86
    tests, healthy startup, and no synthetic production work or evidence.
 
 ### Next

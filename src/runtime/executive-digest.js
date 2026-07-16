@@ -65,14 +65,16 @@ function generateWeeklyDigest(db, options = {}) {
   const importantCount = openDecisions + unknownOutcomes;
   const nextActions = [
     commercial.ventureCase.next_money_move,
-    ...(unknownOutcomes ? ["Reconcile unknown provider outcomes before any retry."] : []),
+    ...(unknownOutcomes ? ["Reconcile unknown provider outcomes and costs; do not repeat affected work automatically."] : []),
     ...(openDecisions ? ["Review the waiting consequential decisions."] : []),
   ].filter(Boolean);
   const summary = [
     `${completedWork} internal work item${completedWork === 1 ? "" : "s"} completed this week.`,
     `${commercial.economics.independentBuyers} independent paying buyer${commercial.economics.independentBuyers === 1 ? "" : "s"} recorded.`,
     currentTest ? `The current business test is ${String(currentTest.status).replace(/[_-]+/g, " ")}.` : "No real-world business test is running yet.",
-    importantCount ? `${importantCount} item${importantCount === 1 ? "" : "s"} need operator attention.` : "No consequential exception needs operator attention.",
+    importantCount
+      ? `${importantCount} item${importantCount === 1 ? " needs" : "s need"} operator attention.`
+      : "No consequential exception needs operator attention.",
   ].join(" ");
   const status = importantCount ? "attention_needed" : "on_track";
   const id = `digest_${ventureId.replace(/[^a-z0-9]+/gi, "_")}_${window.start.slice(0, 10)}`;

@@ -164,15 +164,31 @@ function hydrateFixture(row, options = {}) {
   return fixture;
 }
 
-function prepareDemandValidatorPilot(db, fixtureId, options = {}) {
-  const fixture = hydrateFixture(get(db, "SELECT * FROM agent_pilot_fixtures WHERE id = ?", [fixtureId]));
-  if (!fixture) throw new Error(`Pilot fixture not found: ${fixtureId}`);
-  if (fixture.status !== "ready") throw new Error("This fixture is already prepared or completed.");
+function fixturePilotTasks(db, fixtureId) {
+  return all(
+    db,
+    `SELECT * FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+     ORDER BY created_at ASC`,
+  )
+    .map((row) => ({ ...row, payload: fromJson(row.payload, {}) }))
+    .filter((task) => task.payload?.pilotFixture?.id === fixtureId);
+}
+
+function prepareFixtureRun(db, fixture, options = {}, retryContext = null) {
   const amountCents = Math.min(PILOT_COST_CAP_CENTS, Math.max(1, Number(options.estimatedCostCents || PILOT_COST_CAP_CENTS)));
   const ts = now();
   const suffix = randomId().slice(0, 8);
   const workflowId = `wf_demand_validator_pilot_${suffix}`;
   const commandId = `cmd_demand_validator_pilot_${suffix}`;
+  const attemptNumber = Number(retryContext?.attemptNumber || 1);
+  const retryMetadata = retryContext ? {
+    attemptNumber,
+    technicalRetry: true,
+    retryOfTaskId: retryContext.previousTaskId,
+    priorOutcome: "unknown",
+    priorOutcomeAcknowledged: true,
+  } : { attemptNumber, technicalRetry: false };
   run(
     db,
     `INSERT INTO workflows
@@ -184,7 +200,13 @@ function prepareDemandValidatorPilot(db, fixtureId, options = {}) {
       fixture.venture_id,
       "Demand Validator controlled proof",
       amountCents,
-      toJson({ fixtureId, fixtureHash: fixture.fixture_hash, capabilityKey: PILOT_CAPABILITY, baselineExcludedFromWorker: true }),
+      toJson({
+        fixtureId: fixture.id,
+        fixtureHash: fixture.fixture_hash,
+        capabilityKey: PILOT_CAPABILITY,
+        baselineExcludedFromWorker: true,
+        ...retryMetadata,
+      }),
       ts,
       ts,
     ],
@@ -199,7 +221,7 @@ function prepareDemandValidatorPilot(db, fixtureId, options = {}) {
       fixture.question,
       workflowId,
       "Prepare one capped Demand Validator recommendation from a versioned evidence fixture.",
-      toJson({ fixtureId, fixtureHash: fixture.fixture_hash, baselineExcludedFromWorker: true }),
+      toJson({ fixtureId: fixture.id, fixtureHash: fixture.fixture_hash, baselineExcludedFromWorker: true, ...retryMetadata }),
       ts,
       ts,
       fixture.venture_id,
@@ -221,7 +243,9 @@ function prepareDemandValidatorPilot(db, fixtureId, options = {}) {
     requestedBy: options.requestedBy || "agent-pilot",
     taskTitle: "Demand Validator controlled proof",
     approvalTitle: "Approve this Demand Validator proof",
-    reason: "Run one Agents SDK turn over supplied evidence only. No tools, handoffs, publishing, contact, account action or external effect is permitted.",
+    reason: retryContext
+      ? "Run one separately approved corrected Agents SDK turn after acknowledging the prior unknown technical outcome. No tools, handoffs, publishing, contact, account action or external effect is permitted."
+      : "Run one Agents SDK turn over supplied evidence only. No tools, handoffs, publishing, contact, account action or external effect is permitted.",
     expectedOutput: "A structured recommendation with evidence, counterevidence, assumptions, price/channel hypothesis, smallest test, metric, stop rule, confidence and risks.",
     expectedMetric: "Deterministic scope, source, structure and cost checks pass; Daniel separately judges commercial usefulness.",
     fixtureHash: fixture.fixture_hash,
@@ -229,12 +253,111 @@ function prepareDemandValidatorPilot(db, fixtureId, options = {}) {
     tools: [],
     maxTurns: 1,
     maxOutputTokens: 1200,
+    parameters: retryContext ? retryMetadata : {},
     effects: [],
-    comparisonSource: { type: "versioned_agent_pilot_fixture", fixtureId, fixtureHash: fixture.fixture_hash },
+    comparisonSource: { type: "versioned_agent_pilot_fixture", fixtureId: fixture.id, fixtureHash: fixture.fixture_hash },
     protectedEvidence: fixture.sources.map((source) => `${source.title}: ${source.summary}`),
   });
-  run(db, "UPDATE agent_pilot_fixtures SET status = 'prepared' WHERE id = ?", [fixtureId]);
+  run(db, "UPDATE agent_pilot_fixtures SET status = 'prepared' WHERE id = ?", [fixture.id]);
+  if (retryContext) {
+    insertEvent(db, {
+      level: "warn",
+      actor: options.requestedBy || "operator",
+      type: "agent_pilot.technical_retry_prepared",
+      entityType: "agent_pilot_fixture",
+      entityId: fixture.id,
+      message: "A fresh one-use approval was prepared for one corrected Demand Validator attempt; the prior unknown result remains unchanged.",
+      metadata: {
+        fixtureId: fixture.id,
+        fixtureHash: fixture.fixture_hash,
+        previousTaskId: retryContext.previousTaskId,
+        newTaskId: requested.task.id,
+        workflowId,
+        approvalId: requested.approval.id,
+        attemptNumber,
+        priorOutcome: "unknown",
+        historyPreserved: true,
+      },
+    });
+  }
   return { workflowId, commandId, fixture, requested };
+}
+
+function prepareDemandValidatorPilot(db, fixtureId, options = {}) {
+  const fixture = hydrateFixture(get(db, "SELECT * FROM agent_pilot_fixtures WHERE id = ?", [fixtureId]));
+  if (!fixture) throw new Error(`Pilot fixture not found: ${fixtureId}`);
+  if (fixture.status !== "ready") throw new Error("This fixture is already prepared or completed.");
+  return prepareFixtureRun(db, fixture, options);
+}
+
+function prepareDemandValidatorPilotRetry(db, fixtureId, options = {}) {
+  if (options.acknowledgeUnknownOutcome !== true) {
+    throw new Error("The prior unknown provider outcome must be explicitly acknowledged before a corrected attempt is prepared.");
+  }
+  const previousTaskId = String(options.previousTaskId || "").trim();
+  if (!previousTaskId) throw new Error("The exact prior task must be identified before a corrected attempt is prepared.");
+  const fixture = hydrateFixture(get(db, "SELECT * FROM agent_pilot_fixtures WHERE id = ?", [fixtureId]));
+  if (!fixture) throw new Error(`Pilot fixture not found: ${fixtureId}`);
+  if (fixture.status !== "prepared") {
+    throw new Error("Only a prepared fixture with a failed technical attempt can be retried.");
+  }
+
+  const attempts = fixturePilotTasks(db, fixtureId);
+  if (attempts.length !== 1) {
+    throw new Error("This fixture is limited to one history-preserving technical retry. Review or revise the contract before another attempt.");
+  }
+  const previousTask = attempts[0];
+  if (previousTask.id !== previousTaskId) throw new Error("The acknowledged task does not match this fixture's failed attempt.");
+  if (!new Set(["needs_attention", "failed"]).has(previousTask.status)) {
+    throw new Error("The prior task must have a failed or needs-attention outcome before a corrected attempt is prepared.");
+  }
+  const previousApprovalId = previousTask.payload?.liveSpendRequest?.approvalId;
+  const previousApproval = previousApprovalId
+    ? get(db, "SELECT * FROM approvals WHERE id = ?", [previousApprovalId])
+    : null;
+  if (!previousApproval?.consumed_at) {
+    throw new Error("The prior one-use approval was not consumed, so a technical retry cannot be prepared.");
+  }
+  const reviewCount = get(
+    db,
+    `SELECT COUNT(*) AS count
+     FROM agent_pilot_reviews reviews
+     JOIN agent_runs runs ON runs.id = reviews.run_id
+     WHERE runs.task_id = ?`,
+    [previousTask.id],
+  );
+  if (Number(reviewCount?.count || 0) > 0) {
+    throw new Error("The prior attempt already has a review result and cannot be treated as a technical retry.");
+  }
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    insertEvent(db, {
+      level: "warn",
+      actor: options.requestedBy || "operator",
+      type: "agent_pilot.unknown_outcome_acknowledged",
+      entityType: "task",
+      entityId: previousTask.id,
+      message: "Daniel acknowledged the prior unknown provider outcome and authorised preparation of one corrected attempt without erasing the original record.",
+      metadata: {
+        fixtureId,
+        fixtureHash: fixture.fixture_hash,
+        previousTaskId: previousTask.id,
+        previousApprovalId,
+        previousApprovalConsumedAt: previousApproval.consumed_at,
+        operatorNote: String(options.operatorNote || ""),
+      },
+    });
+    const prepared = prepareFixtureRun(db, fixture, options, {
+      previousTaskId: previousTask.id,
+      attemptNumber: 2,
+    });
+    db.exec("COMMIT");
+    return prepared;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function pilotRecommendation(output = {}) {
@@ -326,7 +449,7 @@ function recordPilotRunReview(db, input) {
       Number(input.liveWorker?.modelCall?.estimatedCostCents || estimate),
       estimate,
       reconciled,
-      input.liveWorker?.raw?.responseId || null,
+      input.liveWorker?.raw?.traceId || null,
     ],
   );
   run(db, "UPDATE agent_pilot_fixtures SET status = 'awaiting_review' WHERE id = ?", [fixture.id]);
@@ -406,6 +529,7 @@ module.exports = {
   ensureDemandValidatorPilotFixture,
   getPilotState,
   prepareDemandValidatorPilot,
+  prepareDemandValidatorPilotRetry,
   recordPilotRunReview,
   reviewPilotRun,
 };

@@ -193,12 +193,15 @@ Recheck these official Gumroad references immediately before launch:
 - Phase 3: implemented for one active digital-product venture.
 - Phase 4: implemented and real-browser verified at 1440x900, 1280x720,
   1024x768, and a stable 390x844 mobile fallback.
-- Phase 5: first live attempt completed as a controlled technical failure. One
-  Agents SDK call ran; structured output ended as unterminated JSON, so no
-  usable recommendation or pilot pass exists. The one-use approval was
-  consumed, no retry ran, and A$1 remains unknown pending provider billing.
-  The oversized output contract was replaced with a lean pilot contract and
-  84/84 tests pass. Live mode is off; a corrected retry needs a fresh approval.
+- Phase 5: the first oversized-contract attempt is preserved as a known
+  technical failure. One separately approved corrected attempt then completed
+  successfully with valid structured output, no tools, no handoffs and no
+  external effects. Runtime eval scored 100 and all deterministic pilot checks
+  passed. OpenAI usage confirms A$0.05 aggregate cost across the two calls. All
+  86 tests pass, a complete encrypted post-pilot checkpoint has passed
+  authenticated database/source/artifact restore, and live mode is off.
+  Daniel's usefulness verdict remains the gate before this capability earns the
+  first success in its five-run sequence.
 - Phase 6: Gumroad import, privacy handling, launch gate, limits, and metrics are
   ready; opportunity selection, product creation, account action, publishing,
   and buyer test remain unperformed.

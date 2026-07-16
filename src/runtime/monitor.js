@@ -118,7 +118,29 @@ function collectFindings(db, options = {}) {
     });
   }
 
-  const failedTasks = all(db, "SELECT id, title, workflow_id, error FROM tasks WHERE status = 'failed' ORDER BY updated_at DESC LIMIT 10");
+  const failedTasks = all(
+    db,
+    `SELECT tasks.id, tasks.title, tasks.workflow_id, tasks.error
+     FROM tasks
+     WHERE tasks.status = 'failed'
+       AND NOT (
+         tasks.outcome_status = 'known'
+         AND EXISTS (
+           SELECT 1 FROM costs
+           WHERE costs.workflow_id = tasks.workflow_id AND costs.status = 'reconciled'
+         )
+         AND EXISTS (
+           SELECT 1 FROM events
+           WHERE events.type = 'provider_usage.task_reconciled'
+             AND events.entity_id = tasks.id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM messages
+           WHERE messages.task_id = tasks.id AND messages.status = 'open'
+         )
+       )
+     ORDER BY tasks.updated_at DESC LIMIT 10`,
+  );
   if (failedTasks.length > 0) {
     addFinding(findings, {
       severity: "error",
@@ -244,8 +266,27 @@ function persistFindings(db, runId, findings) {
 }
 
 function escalateCriticalFindings(db, runId, findings) {
-  for (const finding of findings.filter((item) => item.severity === "error")) {
-    if (finding.category === "messages") continue;
+  const criticalFindings = findings.filter((item) => item.severity === "error" && item.category !== "messages");
+  const activeSubjects = criticalFindings.map((finding) => `Runtime monitor: ${finding.title}`);
+  const resolvedAt = now();
+  if (activeSubjects.length) {
+    const placeholders = activeSubjects.map(() => "?").join(", ");
+    run(
+      db,
+      `UPDATE messages SET status = 'resolved', resolved_at = ?
+       WHERE status = 'open' AND subject LIKE 'Runtime monitor:%'
+         AND subject NOT IN (${placeholders})`,
+      [resolvedAt, ...activeSubjects],
+    );
+  } else {
+    run(
+      db,
+      "UPDATE messages SET status = 'resolved', resolved_at = ? WHERE status = 'open' AND subject LIKE 'Runtime monitor:%'",
+      [resolvedAt],
+    );
+  }
+
+  for (const finding of criticalFindings) {
     const subject = `Runtime monitor: ${finding.title}`;
     const existing = get(
       db,

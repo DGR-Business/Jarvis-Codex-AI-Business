@@ -1980,6 +1980,14 @@ test("runtime monitor records findings and escalates stale running tasks", () =>
   assert.equal(repeatedFinding.first_seen, staleFinding.first_seen);
   assert.ok(Date.parse(repeatedFinding.last_seen) >= Date.parse(repeatedFinding.first_seen));
 
+  run(db, "UPDATE tasks SET status = 'completed', updated_at = ? WHERE id = 'task-monitor-stale'", [new Date().toISOString()]);
+  const recoveredRun = runMonitorCycle(db, { staleTaskMinutes: 1 });
+  const resolvedFinding = get(db, "SELECT status FROM monitor_findings WHERE id = ?", [staleFinding.id]);
+  const resolvedMessage = get(db, "SELECT status FROM messages WHERE id = ?", [urgentMessage.id]);
+  assert.equal(recoveredRun.findings.some((finding) => finding.entityId === "task-monitor-stale"), false);
+  assert.equal(resolvedFinding.status, "resolved");
+  assert.equal(resolvedMessage.status, "resolved");
+
   db.close();
 });
 
@@ -2455,8 +2463,8 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
   process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
 
   let capturedRequest = null;
-  __setAgentRuntimeSdkRunnerForTests(async ({ requestBody, task, agentDefinition, policy }) => {
-    capturedRequest = { requestBody, task, agentDefinition, policy };
+  __setAgentRuntimeSdkRunnerForTests(async ({ requestBody, task, agentDefinition, policy, traceId }) => {
+    capturedRequest = { requestBody, task, agentDefinition, policy, traceId };
     return {
       finalOutput: {
         heading: "Demand Validator recommendation",
@@ -2548,7 +2556,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(completed.result.output.businessDecision.externalActionsAllowed, false);
     assert.equal(completed.result.output.businessDecision.buyer, "Finance-focused Notion users");
     assert.equal(completed.result.output.outputContract.missing.length, 0);
-    assert.ok(completed.result.output.evidence.some((item) => item.includes("Agents SDK run")));
+    assert.ok(completed.result.output.evidence.some((item) => item.includes("Agents SDK worker")));
     assert.equal(capturedRequest.requestBody.text.format.type, "json_schema");
     assert.equal(capturedRequest.requestBody.text.format.strict, true);
     assert.equal(capturedRequest.requestBody.text.format.schema.additionalProperties, false);
@@ -2557,6 +2565,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(capturedRequest.requestBody.metadata.adapter, "openai-agents-sdk");
     assert.equal(capturedRequest.requestBody.model, "gpt-5.6-terra-approved");
     assert.equal(capturedRequest.agentDefinition.id, "demand_validator");
+    assert.match(capturedRequest.traceId, /^trace_[A-Za-z0-9_-]+$/);
     assert.match(capturedRequest.requestBody.input[0].content, /Worker: Demand Validator/);
     assert.equal(capturedRequest.requestBody.max_output_tokens, 777);
 
@@ -2597,6 +2606,8 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(modelCall.output_tokens, 420);
     assert.equal(modelCall.metadata.provider, "openai-agents-sdk");
     assert.equal(modelCall.metadata.sdkRunner, true);
+    assert.equal(modelCall.metadata.agentSdkTraceId, capturedRequest.traceId);
+    assert.equal(liveRun.metadata.agentSdkTraceId, capturedRequest.traceId);
     assert.equal(cost.status, "incurred_estimate");
     assert.equal(cost.amount_cents, 160);
     assert.equal(cost.metadata.exactBillingPending, true);

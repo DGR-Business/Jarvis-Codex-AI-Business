@@ -1,5 +1,5 @@
 const CONFIG = require("../config");
-const { fromJson, get, now, randomId, run, toJson } = require("../db");
+const { fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 
 function monthlyCapCents(db) {
   const setting = get(db, "SELECT value FROM settings WHERE key = 'budget'");
@@ -71,8 +71,351 @@ function resolveReservation(db, taskId, status, options = {}) {
   return get(db, "SELECT * FROM budget_reservations WHERE id = ?", [reservation.id]);
 }
 
+function providerTraceId(allocation = {}) {
+  const traceId = String(allocation.agentSdkTraceId || "").trim();
+  if (traceId && !/^trace_[A-Za-z0-9_-]+$/.test(traceId)) {
+    throw new Error("Provider trace IDs must use the OpenAI trace_ format.");
+  }
+  return traceId || null;
+}
+
+function persistAgentSdkTrace(db, task, traceId, evidence) {
+  if (!traceId) return;
+  const agentRun = get(db, "SELECT * FROM agent_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1", [task.id]);
+  if (agentRun) {
+    run(
+      db,
+      "UPDATE agent_runs SET metadata = ? WHERE id = ?",
+      [
+        toJson({
+          ...fromJson(agentRun.metadata, {}),
+          agentSdkTraceId: traceId,
+          agentSdkTraceEvidence: evidence,
+        }),
+        agentRun.id,
+      ],
+    );
+    run(db, "UPDATE agent_pilot_reviews SET trace_id = ? WHERE run_id = ?", [traceId, agentRun.id]);
+  }
+}
+
+function reconciledTaskResult(rawResult, amountCents, reconciliation) {
+  const result = fromJson(rawResult, {});
+  if (result.cost) {
+    result.cost.actualCents = amountCents;
+    result.cost.reconciledCents = amountCents;
+    result.cost.costStatus = "reconciled";
+    result.cost.exactBillingPending = false;
+  }
+  if (result.modelPolicy) {
+    result.modelPolicy.actualCostCents = amountCents;
+    result.modelPolicy.reconciledCostCents = amountCents;
+    result.modelPolicy.costStatus = "reconciled";
+    result.modelPolicy.exactBillingPending = false;
+  }
+  if (result.pilotReview) result.pilotReview.reconciled_cost_cents = amountCents;
+  if (reconciliation.agentSdkTraceId) {
+    result.providerTrace = {
+      id: reconciliation.agentSdkTraceId,
+      source: reconciliation.evidence?.source || "provider_evidence",
+      responseId: reconciliation.responseId || null,
+    };
+  }
+  result.costReconciliation = reconciliation;
+  return result;
+}
+
+function reconcileProviderUsageBatch(db, input = {}) {
+  const allocations = Array.isArray(input.allocations) ? input.allocations : [];
+  if (!allocations.length) throw new Error("Provider reconciliation needs at least one exact task allocation.");
+  const ventureId = String(input.ventureId || "").trim();
+  const provider = String(input.provider || "").trim();
+  const evidence = input.evidence && typeof input.evidence === "object" ? input.evidence : {};
+  const totalAudCents = Number(input.totalAudCents);
+  if (!ventureId || !provider || !evidence.source) {
+    throw new Error("Provider reconciliation needs a venture, provider and evidence source.");
+  }
+  if (!Number.isInteger(totalAudCents) || totalAudCents < 0) {
+    throw new Error("Provider reconciliation total must be a non-negative whole number of AUD cents.");
+  }
+  const taskIds = new Set();
+  const allowedTaskStatuses = new Set(["completed", "failed", "needs_attention"]);
+  const allowedWorkflowStatuses = new Set(["completed", "failed", "needs_attention"]);
+  const allowedOutcomeStatuses = new Set(["known", "unknown"]);
+  let allocatedCents = 0;
+  for (const allocation of allocations) {
+    const amountCents = Number(allocation.amountCents);
+    if (!allocation.taskId || !allocation.costId || !allocation.modelCallId) {
+      throw new Error("Every provider allocation needs exact task, cost and model-call IDs.");
+    }
+    if (taskIds.has(allocation.taskId)) throw new Error("A task can appear only once in a provider reconciliation batch.");
+    if (!Number.isInteger(amountCents) || amountCents < 0) {
+      throw new Error("Every provider allocation must use non-negative whole AUD cents.");
+    }
+    if (allocation.taskStatus && !allowedTaskStatuses.has(allocation.taskStatus)) {
+      throw new Error("Provider reconciliation cannot assign an unsupported task status.");
+    }
+    if (allocation.workflowStatus && !allowedWorkflowStatuses.has(allocation.workflowStatus)) {
+      throw new Error("Provider reconciliation cannot assign an unsupported workflow status.");
+    }
+    if (allocation.outcomeStatus && !allowedOutcomeStatuses.has(allocation.outcomeStatus)) {
+      throw new Error("Provider reconciliation cannot assign an unsupported outcome status.");
+    }
+    providerTraceId(allocation);
+    taskIds.add(allocation.taskId);
+    allocatedCents += amountCents;
+  }
+  if (allocatedCents !== totalAudCents) {
+    throw new Error("Provider allocations must add up exactly to the reconciled AUD total.");
+  }
+
+  const batchId = String(input.batchId || `provider_reconciliation_${randomId()}`);
+  const reconciledAt = input.reconciledAt || now();
+  const existingBatch = get(
+    db,
+    "SELECT * FROM events WHERE type = 'provider_usage.batch_reconciled' AND json_extract(metadata, '$.batchId') = ? ORDER BY id DESC LIMIT 1",
+    [batchId],
+  );
+  if (existingBatch) {
+    const existingResults = [];
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const allocation of allocations) {
+        const task = get(db, "SELECT * FROM tasks WHERE id = ?", [allocation.taskId]);
+        const cost = get(db, "SELECT * FROM costs WHERE id = ?", [allocation.costId]);
+        const modelCall = get(db, "SELECT * FROM model_calls WHERE id = ?", [allocation.modelCallId]);
+        const costReconciliation = fromJson(cost?.metadata, {}).reconciliation;
+        if (
+          !task
+          || task.venture_id !== ventureId
+          || !cost
+          || cost.status !== "reconciled"
+          || Number(cost.amount_cents) !== Number(allocation.amountCents)
+          || costReconciliation?.batchId !== batchId
+          || !modelCall
+          || modelCall.task_id !== task.id
+          || modelCall.provider !== provider
+          || modelCall.cost_status !== "reconciled"
+        ) {
+          throw new Error("The existing provider reconciliation batch does not match the supplied records.");
+        }
+        if (allocation.responseId && modelCall.provider_request_id !== allocation.responseId) {
+          throw new Error("The provider response ID does not match the reconciled model call.");
+        }
+        const traceId = providerTraceId(allocation);
+        if (traceId) {
+          const traceEvidence = {
+            batchId,
+            source: evidence.source,
+            reconciledAt,
+            responseId: allocation.responseId || modelCall.provider_request_id || null,
+          };
+          run(
+            db,
+            "UPDATE model_calls SET metadata = ? WHERE id = ?",
+            [
+              toJson({
+                ...fromJson(modelCall.metadata, {}),
+                agentSdkTraceId: traceId,
+                agentSdkTraceEvidence: traceEvidence,
+              }),
+              modelCall.id,
+            ],
+          );
+          run(
+            db,
+            "UPDATE tasks SET result = ? WHERE id = ?",
+            [
+              toJson(reconciledTaskResult(task.result, Number(allocation.amountCents), {
+                ...costReconciliation,
+                agentSdkTraceId: traceId,
+                responseId: traceEvidence.responseId,
+              })),
+              task.id,
+            ],
+          );
+          persistAgentSdkTrace(db, task, traceId, traceEvidence);
+        }
+        run(
+          db,
+          `UPDATE messages
+           SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?)
+           WHERE task_id = ? AND status = 'open' AND subject LIKE 'Check provider outcome:%'`,
+          [reconciledAt, task.id],
+        );
+        existingResults.push({
+          taskId: task.id,
+          costId: cost.id,
+          modelCallId: modelCall.id,
+          amountCents: Number(allocation.amountCents),
+          taskStatus: task.status,
+          outcomeStatus: task.outcome_status,
+          reservationId: null,
+          agentSdkTraceId: traceId,
+        });
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    return {
+      batchId,
+      ventureId,
+      provider,
+      totalAudCents,
+      reconciledAt,
+      evidence,
+      allocations: existingResults,
+      alreadyReconciled: true,
+    };
+  }
+  const results = [];
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const allocation of allocations) {
+      const task = get(db, "SELECT * FROM tasks WHERE id = ?", [allocation.taskId]);
+      if (!task || task.venture_id !== ventureId) throw new Error(`Reconciliation task is missing or belongs to another venture: ${allocation.taskId}`);
+      const cost = get(db, "SELECT * FROM costs WHERE id = ?", [allocation.costId]);
+      if (!cost || cost.workflow_id !== task.workflow_id) throw new Error(`Reconciliation cost does not match task: ${allocation.costId}`);
+      const modelCall = get(db, "SELECT * FROM model_calls WHERE id = ?", [allocation.modelCallId]);
+      if (!modelCall || modelCall.task_id !== task.id) throw new Error(`Reconciliation model call does not match task: ${allocation.modelCallId}`);
+      if (modelCall.provider !== provider) throw new Error("The reconciliation provider does not match the model-call provider.");
+      if (allocation.responseId && modelCall.provider_request_id !== allocation.responseId) {
+        throw new Error("The provider response ID does not match the reconciled model call.");
+      }
+      const amountCents = Number(allocation.amountCents);
+      const traceId = providerTraceId(allocation);
+      const allocationEvidence = {
+        batchId,
+        provider,
+        reconciledAt,
+        aggregateProviderEvidence: true,
+        exactPerCallAllocation: allocation.exactPerCallAllocation === true,
+        allocationMethod: String(allocation.allocationMethod || "aggregate_provider_total"),
+        agentSdkTraceId: traceId,
+        responseId: allocation.responseId || modelCall.provider_request_id || null,
+        evidence,
+      };
+      const costMetadata = {
+        ...fromJson(cost.metadata, {}),
+        exactBillingPending: false,
+        reconciliation: allocationEvidence,
+      };
+      const modelMetadata = {
+        ...fromJson(modelCall.metadata, {}),
+        exactBillingPending: false,
+        ...(traceId ? { agentSdkTraceId: traceId } : {}),
+        reconciliation: allocationEvidence,
+      };
+      const taskStatus = allocation.taskStatus || task.status;
+      const outcomeStatus = allocation.outcomeStatus || task.outcome_status;
+      const result = reconciledTaskResult(task.result, amountCents, allocationEvidence);
+
+      run(
+        db,
+        "UPDATE costs SET status = 'reconciled', amount_cents = ?, occurred_at = ?, metadata = ? WHERE id = ?",
+        [amountCents, reconciledAt, toJson(costMetadata), cost.id],
+      );
+      run(
+        db,
+        `UPDATE model_calls
+         SET actual_cost_cents = ?, reconciled_cost_cents = ?, cost_status = 'reconciled',
+             outcome_status = ?, metadata = ? WHERE id = ?`,
+        [amountCents, amountCents, outcomeStatus, toJson(modelMetadata), modelCall.id],
+      );
+      run(
+        db,
+        `UPDATE tasks
+         SET status = ?, outcome_status = ?, cost_actual_cents = ?, result = ?, updated_at = ?
+         WHERE id = ?`,
+        [taskStatus, outcomeStatus, amountCents, toJson(result), reconciledAt, task.id],
+      );
+      if (outcomeStatus === "known") {
+        run(
+          db,
+          `UPDATE messages
+           SET status = 'resolved', resolved_at = ?
+           WHERE task_id = ? AND status = 'open' AND subject LIKE 'Check provider outcome:%'`,
+          [reconciledAt, task.id],
+        );
+      }
+      run(db, "UPDATE agent_runs SET actual_cost_cents = ? WHERE task_id = ?", [amountCents, task.id]);
+      persistAgentSdkTrace(db, task, traceId, {
+        batchId,
+        source: evidence.source,
+        reconciledAt,
+        responseId: allocationEvidence.responseId,
+      });
+      run(
+        db,
+        `UPDATE agent_pilot_reviews SET reconciled_cost_cents = ?
+         WHERE run_id IN (SELECT id FROM agent_runs WHERE task_id = ?)`,
+        [amountCents, task.id],
+      );
+      const reservation = get(
+        db,
+        "SELECT * FROM budget_reservations WHERE task_id = ? AND status IN ('reserved', 'incurred_estimate', 'unknown') ORDER BY reserved_at DESC LIMIT 1",
+        [task.id],
+      );
+      if (reservation) {
+        run(
+          db,
+          `UPDATE budget_reservations
+           SET status = 'reconciled', amount_cents = ?, resolved_at = ?, metadata = ? WHERE id = ?`,
+          [
+            amountCents,
+            reconciledAt,
+            toJson({ ...fromJson(reservation.metadata, {}), reconciliation: allocationEvidence }),
+            reservation.id,
+          ],
+        );
+      }
+      if (allocation.workflowStatus) {
+        run(
+          db,
+          "UPDATE workflows SET status = ?, current_step = ?, updated_at = ? WHERE id = ?",
+          [allocation.workflowStatus, String(allocation.workflowStep || "Provider outcome and cost reconciled."), reconciledAt, task.workflow_id],
+        );
+      }
+      insertEvent(db, {
+        actor: input.reconciledBy || "operator",
+        type: "provider_usage.task_reconciled",
+        entityType: "task",
+        entityId: task.id,
+        message: `${provider} usage was reconciled for ${task.title} at ${amountCents} AUD cents using aggregate provider evidence.`,
+        metadata: { ...allocationEvidence, costId: cost.id, modelCallId: modelCall.id, amountCents },
+      });
+      results.push({
+        taskId: task.id,
+        costId: cost.id,
+        modelCallId: modelCall.id,
+        amountCents,
+        taskStatus,
+        outcomeStatus,
+        reservationId: reservation?.id || null,
+        agentSdkTraceId: traceId,
+      });
+    }
+    insertEvent(db, {
+      actor: input.reconciledBy || "operator",
+      type: "provider_usage.batch_reconciled",
+      entityType: "venture",
+      entityId: ventureId,
+      message: `${provider} usage batch reconciled at ${totalAudCents} AUD cents across ${allocations.length} calls.`,
+      metadata: { batchId, provider, totalAudCents, evidence, allocations: results },
+    });
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return { batchId, ventureId, provider, totalAudCents, reconciledAt, evidence, allocations: results };
+}
+
 module.exports = {
   monthlyCapCents,
+  reconcileProviderUsageBatch,
   reserveBudget,
   reservedThisMonth,
   resolveReservation,

@@ -41,11 +41,13 @@ const { generateWeeklyDigest, getLatestDigest } = require("./runtime/executive-d
 const { ensureActiveVentureCase } = require("./runtime/venture-case");
 const { ensureCapabilityAutonomy } = require("./runtime/capability-autonomy");
 const { getGumroadSalesState, importGumroadCsv } = require("./runtime/gumroad-import");
+const { reconcileProviderUsageBatch } = require("./runtime/cost-ledger");
 const {
   createPilotFixture,
   ensureDemandValidatorPilotFixture,
   getPilotState,
   prepareDemandValidatorPilot,
+  prepareDemandValidatorPilotRetry,
   reviewPilotRun,
 } = require("./runtime/agent-pilot");
 const {
@@ -352,6 +354,14 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "POST" && url.pathname === "/api/system/spend/reconcile-provider-usage") {
+        const body = await readBody(req);
+        const result = reconcileProviderUsageBatch(db, body || {});
+        broadcastState();
+        jsonResponse(res, 200, { result, system: getSystemState(db) });
+        return;
+      }
+
       const testDetail = routeMatch(url.pathname, "/api/tests/:id");
       if (req.method === "GET" && testDetail) {
         const result = getTestDetail(db, testDetail.id);
@@ -453,6 +463,15 @@ function createApp(options = {}) {
       if (req.method === "POST" && pilotFixturePrepare) {
         const body = await readBody(req);
         const result = prepareDemandValidatorPilot(db, pilotFixturePrepare.id, body || {});
+        broadcastState();
+        jsonResponse(res, 202, { result, pilot: getPilotState(db) });
+        return;
+      }
+
+      const pilotFixtureRetry = routeMatch(url.pathname, "/api/agent-pilot/fixtures/:id/retry");
+      if (req.method === "POST" && pilotFixtureRetry) {
+        const body = await readBody(req);
+        const result = prepareDemandValidatorPilotRetry(db, pilotFixtureRetry.id, body || {});
         broadcastState();
         jsonResponse(res, 202, { result, pilot: getPilotState(db) });
         return;

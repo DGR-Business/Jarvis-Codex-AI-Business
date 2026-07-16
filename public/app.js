@@ -195,7 +195,7 @@ function renderImportantWork(items) {
     return `<section class="priority-panel clear"><div class="priority-header"><div><span class="eyebrow">Important work</span><h2>Nothing needs your attention</h2></div>${badge("Operating normally", "mint")}</div></section>`;
   }
   return `<section class="priority-panel">
-    <div class="priority-header"><div><span class="eyebrow">Important work</span><h2>${items.length} item${items.length === 1 ? "" : "s"} need a decision or check</h2></div>${badge("Needs attention", "coral")}</div>
+    <div class="priority-header"><div><span class="eyebrow">Important work</span><h2>${items.length} item${items.length === 1 ? " needs" : "s need"} a decision or check</h2></div>${badge("Needs attention", "coral")}</div>
     <div class="priority-list">${items.map((item) => `<article class="work-item">
       <span class="risk-bar ${escapeHtml(item.risk || "medium")}"></span>
       <div class="work-copy"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(compact(item.recommendation, 260))}</p>${item.expectedUpside ? `<small>Why it matters: ${escapeHtml(compact(item.expectedUpside, 180))}</small>` : ""}</div>
@@ -398,7 +398,7 @@ function renderSystemPanel(data) {
     const accounting = spend.accounting || { currency: "AUD", cashPaidCents: 0, recurringMonthlyCents: 0, recent: [] };
     return `<div class="view-stack">
       <section>${sectionHeading("AI and tool budget", "Approval caps and measured provider usage for controlled business work.")}
-        <div class="metric-grid"><div class="metric sky"><span>Monthly cap</span><strong>${money(spend.monthlyCapCents, spend.currency)}</strong><small>Pre-revenue limit</small></div><div class="metric mint"><span>Reconciled usage</span><strong>${money(spend.reconciledCents, spend.currency)}</strong><small>Confirmed provider cost</small></div><div class="metric amber"><span>Estimated usage</span><strong>${money(spend.incurredEstimateCents, spend.currency)}</strong><small>Awaiting provider reconciliation</small></div><div class="metric coral"><span>Unresolved</span><strong>${money(spend.unknownCents, spend.currency)}</strong><small>Must be checked before retry</small></div></div>
+        <div class="metric-grid"><div class="metric sky"><span>Monthly cap</span><strong>${money(spend.monthlyCapCents, spend.currency)}</strong><small>Pre-revenue limit</small></div><div class="metric mint"><span>Reconciled usage</span><strong>${money(spend.reconciledCents, spend.currency)}</strong><small>Confirmed provider cost</small></div><div class="metric amber"><span>Estimated usage</span><strong>${money(spend.incurredEstimateCents, spend.currency)}</strong><small>Awaiting provider reconciliation</small></div><div class="metric coral"><span>Unresolved</span><strong>${money(spend.unknownCents, spend.currency)}</strong><small>Requires provider reconciliation</small></div></div>
       </section>
       <section>${sectionHeading("Operating costs", "Actual cash records stay separate from the AI execution cap and are stored in Australian dollars.")}
         <div class="metric-grid"><div class="metric coral"><span>Cash paid this month</span><strong>${money(accounting.cashPaidCents, accounting.currency)}</strong><small>Subscriptions and prepaid services</small></div><div class="metric sky"><span>Recurring monthly overhead</span><strong>${money(accounting.recurringMonthlyCents, accounting.currency)}</strong><small>Current active commitments</small></div></div>
@@ -556,7 +556,7 @@ async function handleAction(button) {
     return loadView("cockpit", { silent: true });
   }
   if (action === "maintenance") {
-    await postJson("/api/system/maintenance/run-due", { limit: 2 });
+    await postJson("/api/monitor/run", {});
     toast("Maintenance completed.");
     return loadView("system", { silent: true });
   }

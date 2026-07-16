@@ -103,17 +103,33 @@ function importantWork(db) {
   ];
   const unknownTasks = parseRows(all(
     db,
-    "SELECT id, venture_id, workflow_id, title, status, error, result, updated_at, '{}' AS metadata FROM tasks WHERE outcome_status = 'unknown' OR status = 'needs_attention' ORDER BY updated_at DESC",
+    "SELECT id, venture_id, workflow_id, title, status, error, payload, result, created_at, updated_at, '{}' AS metadata FROM tasks WHERE outcome_status = 'unknown' OR status = 'needs_attention' ORDER BY updated_at DESC",
     [],
-  ), ["result"]);
+  ), ["payload", "result"]);
+  const completedPilotTasks = parseRows(all(
+    db,
+    "SELECT id, payload, created_at FROM tasks WHERE kind = 'live_ai_worker_execution' AND status = 'completed' ORDER BY created_at DESC",
+    [],
+  ), ["payload"]);
   for (const task of unknownTasks) {
+    const fixtureId = task.payload?.pilotFixture?.id;
+    const correctedRun = fixtureId
+      ? completedPilotTasks.find((candidate) => (
+        candidate.payload?.pilotFixture?.id === fixtureId
+        && Date.parse(candidate.created_at) > Date.parse(task.created_at)
+      ))
+      : null;
     items.push({
       id: task.id,
       type: "unknown_outcome",
-      title: task.title,
+      title: correctedRun ? `${task.title}: first call billing check` : task.title,
       risk: "high",
-      recommendation: "Check the provider outcome and reconcile any cost before retrying.",
-      expectedUpside: "Prevents duplicate work, duplicate spend and contradictory state.",
+      recommendation: correctedRun
+        ? "The corrected run completed successfully. Reconcile only the first call's final provider charge; do not run it again."
+        : "Check the provider outcome and reconcile any cost before deciding whether another attempt is justified.",
+      expectedUpside: correctedRun
+        ? "Keeps the cost record accurate without reopening completed work."
+        : "Prevents duplicate work, duplicate spend and contradictory state.",
       workflowId: task.workflow_id,
     });
   }

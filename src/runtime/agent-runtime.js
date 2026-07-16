@@ -63,7 +63,12 @@ function getAgentRuntimeReadiness() {
 function loadAgentsSdk() {
   const sdk = require("@openai/agents");
   const { z } = require("zod");
-  return { Agent: sdk.Agent, Runner: sdk.Runner, z };
+  return {
+    Agent: sdk.Agent,
+    Runner: sdk.Runner,
+    generateTraceId: sdk.generateTraceId,
+    z,
+  };
 }
 
 function getDefaultSdkRunner(Runner) {
@@ -166,11 +171,18 @@ function sdkOutputText(finalOutput) {
 }
 
 async function runSdkAgent(requestBody, task, agentDefinition, policy, options = {}) {
+  const { Agent, Runner, generateTraceId, z } = loadAgentsSdk();
+  const traceId = options.traceId || generateTraceId();
   if (testSdkRunner) {
-    return testSdkRunner({ requestBody, task, agentDefinition, policy, options });
+    try {
+      const result = await testSdkRunner({ requestBody, task, agentDefinition, policy, options, traceId });
+      return { result, traceId };
+    } catch (error) {
+      error.agentSdkTraceId = traceId;
+      throw error;
+    }
   }
 
-  const { Agent, Runner, z } = loadAgentsSdk();
   const agent = new Agent({
     name: agentDefinition.name,
     instructions: requestBody.input[0].content,
@@ -188,24 +200,31 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     },
   });
   const runner = options.runner || getDefaultSdkRunner(Runner);
-  return runner.run(agent, requestBody.input[1].content, {
-    maxTurns: 1,
-    workflowName: "Jarvis Demand Validator controlled proof",
-    traceIncludeSensitiveData: false,
-    traceMetadata: {
-      venture_id: String(task.venture_id || ""),
-      workflow_id: String(task.workflow_id || ""),
-      task_id: String(task.id || ""),
-      fixture_hash: String(task.payload?.liveSpendRequest?.fixtureHash || ""),
-    },
-    context: {
-      workflowId: task.workflow_id,
-      taskId: task.id,
-      agentId: agentDefinition.id,
-      provider: AGENTS_SDK_PROVIDER,
-      externalActionsAllowed: false,
-    },
-  });
+  try {
+    const result = await runner.run(agent, requestBody.input[1].content, {
+      maxTurns: 1,
+      traceId,
+      workflowName: "Jarvis Demand Validator controlled proof",
+      traceIncludeSensitiveData: false,
+      traceMetadata: {
+        venture_id: String(task.venture_id || ""),
+        workflow_id: String(task.workflow_id || ""),
+        task_id: String(task.id || ""),
+        fixture_hash: String(task.payload?.liveSpendRequest?.fixtureHash || ""),
+      },
+      context: {
+        workflowId: task.workflow_id,
+        taskId: task.id,
+        agentId: agentDefinition.id,
+        provider: AGENTS_SDK_PROVIDER,
+        externalActionsAllowed: false,
+      },
+    });
+    return { result, traceId };
+  } catch (error) {
+    error.agentSdkTraceId = traceId;
+    throw error;
+  }
 }
 
 async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options = {}) {
@@ -219,14 +238,19 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const requestBody = buildOpenAIRequest(db, task, agentDefinition, policy);
   const approvedCapCents = liveWorkerCostEstimateCents(task);
   let result;
+  let traceId = null;
   try {
-    result = await runSdkAgent(requestBody, task, agentDefinition, policy, options);
+    const sdkRun = await runSdkAgent(requestBody, task, agentDefinition, policy, options);
+    result = sdkRun.result;
+    traceId = sdkRun.traceId;
   } catch (error) {
     error.outcomeUnknown = true;
+    traceId = error.agentSdkTraceId || null;
     recordLiveWorkerFailureCost(db, task, error);
     const failedCall = recordLiveWorkerModelCall(db, task, null, approvedCapCents, requestBody.model, "failed", {
       provider: AGENTS_SDK_PROVIDER,
       sdkRunner: true,
+      agentSdkTraceId: traceId,
       error: error.message,
       outcomeUnknown: true,
     });
@@ -237,7 +261,14 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       entityType: "task",
       entityId: task.id,
       message: `Agents SDK worker failed before usable output was captured: ${error.message}`,
-      metadata: { workflowId: task.workflow_id, taskId: task.id, modelCallId: failedCall.id, provider: AGENTS_SDK_PROVIDER, outcomeUnknown: true },
+      metadata: {
+        workflowId: task.workflow_id,
+        taskId: task.id,
+        modelCallId: failedCall.id,
+        provider: AGENTS_SDK_PROVIDER,
+        agentSdkTraceId: traceId,
+        outcomeUnknown: true,
+      },
     });
     throw error;
   }
@@ -256,6 +287,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const modelCall = recordLiveWorkerModelCall(db, task, responseLike, estimateCents, requestBody.model, "completed", {
     provider: AGENTS_SDK_PROVIDER,
     sdkRunner: true,
+    agentSdkTraceId: traceId,
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
     interruptionCount: Array.isArray(result.interruptions) ? result.interruptions.length : 0,
     finalAgent: result.lastAgent?.name || agentDefinition.name,
@@ -268,6 +300,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     model: requestBody.model,
     modelCallId: modelCall.id,
     sdkRunner: true,
+    agentSdkTraceId: traceId,
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
     approvedCapCents,
     pricingEstimate,
@@ -286,6 +319,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       estimatedCostCents: estimateCents,
       approvedCapCents,
       responseId,
+      agentSdkTraceId: traceId,
       provider: AGENTS_SDK_PROVIDER,
     },
   });
@@ -306,7 +340,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       heading: output.heading,
       summary: output.summary,
       evidence: [
-        `Agents SDK run ${responseId} returned a structured specialist-worker result.`,
+        "The approved Agents SDK worker returned a structured specialist recommendation.",
         ...output.evidence,
       ],
       details: {
@@ -337,6 +371,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     },
     raw: {
       responseId,
+      traceId,
       sdkRunner: true,
       provider: AGENTS_SDK_PROVIDER,
       structuredOutput: Boolean(result.finalOutput && typeof result.finalOutput === "object"),

@@ -19,23 +19,25 @@ const { promoteCapability, recordCapabilityReview } = require("../src/runtime/ca
 const { createCommercialExperiment } = require("../src/runtime/commercial-results");
 const { demandValidatorPilotOutputSchema } = require("../src/runtime/agent-runtime");
 const { getAccountingSummary, recordAccountingEntry } = require("../src/runtime/accounting-ledger");
-const { reserveBudget, reservedThisMonth, resolveReservation } = require("../src/runtime/cost-ledger");
+const { reconcileProviderUsageBatch, reserveBudget, reservedThisMonth, resolveReservation } = require("../src/runtime/cost-ledger");
 const { estimateModelUsageAud } = require("../src/runtime/model-pricing");
 const { renderDeliverable, upsertDeliverableSection } = require("../src/runtime/deliverables");
 const { generateWeeklyDigest } = require("../src/runtime/executive-digest");
+const { collectFindings } = require("../src/runtime/monitor");
 const { getGumroadSalesState, importGumroadCsv } = require("../src/runtime/gumroad-import");
 const {
   PILOT_CAPABILITY,
   createPilotFixture,
   ensureDemandValidatorPilotFixture,
   prepareDemandValidatorPilot,
+  prepareDemandValidatorPilotRetry,
 } = require("../src/runtime/agent-pilot");
 const { createCommandPlan } = require("../src/runtime/planner");
 const { claimNextTask, completeTaskClaim } = require("../src/runtime/task-claims");
 const { runOnce } = require("../src/runtime/orchestrator");
 const { recoverSetupBlockedTasks } = require("../src/runtime/spend-gate");
 const { createApp } = require("../src/server");
-const { getSystemState } = require("../src/runtime/cockpit-state");
+const { getCockpitState, getSystemState } = require("../src/runtime/cockpit-state");
 const { commercialFoundationState, recordEvidence, setExperimentState } = require("../src/runtime/venture-case");
 const { all, get, openDatabase, run, seedDatabase, toJson } = require("../src/db");
 
@@ -553,6 +555,202 @@ test("cost reservations keep estimates, unknown outcomes, reconciliation, and re
   }
 });
 
+test("aggregate provider usage reconciliation updates exact runtime records atomically", () => {
+  const runtime = runtimeDb("provider-usage-reconciliation");
+  try {
+    const firstPlan = createCommandPlan(runtime.db, {
+      text: "First controlled provider call",
+      source: "test",
+      createFiles: false,
+    });
+    const secondPlan = createCommandPlan(runtime.db, {
+      text: "Corrected controlled provider call",
+      source: "test",
+      createFiles: false,
+    });
+    const firstTask = get(runtime.db, "SELECT * FROM tasks WHERE workflow_id = ? ORDER BY priority LIMIT 1", [firstPlan.workflow.id]);
+    const secondTask = get(runtime.db, "SELECT * FROM tasks WHERE workflow_id = ? ORDER BY priority LIMIT 1", [secondPlan.workflow.id]);
+    run(runtime.db, "UPDATE tasks SET cost_budget_cents = 100 WHERE id IN (?, ?)", [firstTask.id, secondTask.id]);
+    firstTask.cost_budget_cents = 100;
+    secondTask.cost_budget_cents = 100;
+    reserveBudget(runtime.db, firstTask, null, 100);
+    reserveBudget(runtime.db, secondTask, null, 100);
+    const ts = new Date().toISOString();
+    for (const [sequence, task, status, amount] of [
+      [1, firstTask, "unknown", 100],
+      [2, secondTask, "incurred_estimate", 2],
+    ]) {
+      run(
+        runtime.db,
+        `INSERT INTO model_calls
+         (id, workflow_id, task_id, provider, model_class, selected_model, mode, status,
+          input_tokens, output_tokens, estimated_cost_cents, actual_cost_cents,
+          approval_required, metadata, created_at, venture_id, provider_request_id,
+          cost_status, reserved_cost_cents, incurred_estimate_cents, reconciled_cost_cents,
+          outcome_status)
+         VALUES (?, ?, ?, 'openai', 'live-ai-worker', 'gpt-test', 'live', ?,
+                 10, 5, ?, 0, 1, '{}', ?, ?, ?, ?, 100, ?, 0, ?)`,
+        [
+          `model-reconcile-${sequence}`,
+          task.workflow_id,
+          task.id,
+          status === "unknown" ? "failed" : "completed",
+          amount,
+          ts,
+          task.venture_id,
+          `response-reconcile-${sequence}`,
+          status,
+          status === "unknown" ? 0 : amount,
+          status === "unknown" ? "unknown" : "known",
+        ],
+      );
+      run(
+        runtime.db,
+        `INSERT INTO costs
+         (id, workflow_id, category, source, status, amount_cents, currency, occurred_at, metadata, venture_id)
+         VALUES (?, ?, 'live_ai_worker', 'openai-agents-sdk', ?, ?, 'AUD', ?, '{}', ?)`,
+        [`cost-reconcile-${sequence}`, task.workflow_id, status, amount, ts, task.venture_id],
+      );
+      run(
+        runtime.db,
+        "UPDATE tasks SET status = ?, outcome_status = ?, result = ? WHERE id = ?",
+        [
+          status === "unknown" ? "needs_attention" : "completed",
+          status === "unknown" ? "unknown" : "known",
+          toJson({ cost: { estimatedCents: amount, actualCents: 0, exactBillingPending: true } }),
+          task.id,
+        ],
+      );
+    }
+    run(
+      runtime.db,
+      `INSERT INTO messages
+       (id, task_id, severity, status, subject, body, created_at, metadata, venture_id)
+       VALUES ('msg-provider-reconcile', ?, 'urgent', 'open', ?, ?, ?, '{}', ?)`,
+      [
+        firstTask.id,
+        `Check provider outcome: ${firstTask.title}`,
+        "Do not retry until the provider outcome and cost are reconciled.",
+        ts,
+        firstTask.venture_id,
+      ],
+    );
+
+    const allocations = [
+      {
+        taskId: firstTask.id,
+        costId: "cost-reconcile-1",
+        modelCallId: "model-reconcile-1",
+        amountCents: 3,
+        taskStatus: "failed",
+        outcomeStatus: "known",
+        workflowStatus: "failed",
+        workflowStep: "Initial provider call reconciled as a known technical failure.",
+        allocationMethod: "aggregate_total_less_known_success_estimate",
+      },
+      {
+        taskId: secondTask.id,
+        costId: "cost-reconcile-2",
+        modelCallId: "model-reconcile-2",
+        amountCents: 2,
+        taskStatus: "completed",
+        outcomeStatus: "known",
+        allocationMethod: "published_token_estimate_within_aggregate_total",
+      },
+    ];
+    assert.throws(
+      () => reconcileProviderUsageBatch(runtime.db, {
+        ventureId: firstTask.venture_id,
+        provider: "openai",
+        totalAudCents: 4,
+        evidence: { source: "provider_usage_dashboard" },
+        allocations,
+      }),
+      /add up exactly/i,
+    );
+    assert.throws(
+      () => reconcileProviderUsageBatch(runtime.db, {
+        ventureId: firstTask.venture_id,
+        provider: "another-provider",
+        totalAudCents: 5,
+        evidence: { source: "provider_usage_dashboard" },
+        allocations,
+      }),
+      /provider does not match/i,
+    );
+    assert.throws(
+      () => reconcileProviderUsageBatch(runtime.db, {
+        ventureId: firstTask.venture_id,
+        provider: "openai",
+        totalAudCents: 5,
+        evidence: { source: "provider_usage_dashboard" },
+        allocations: [{ ...allocations[0], taskStatus: "invented" }, allocations[1]],
+      }),
+      /unsupported task status/i,
+    );
+    assert.equal(get(runtime.db, "SELECT status FROM costs WHERE id = 'cost-reconcile-1'").status, "unknown");
+
+    const reconciled = reconcileProviderUsageBatch(runtime.db, {
+      batchId: "provider-reconciliation-test",
+      ventureId: firstTask.venture_id,
+      provider: "openai",
+      totalAudCents: 5,
+      reconciledBy: "test",
+      evidence: {
+        source: "provider_usage_dashboard",
+        requests: 2,
+        totalTokens: 2742,
+        totalUsd: 0.03,
+        audPerUsd: 1.579,
+      },
+      allocations,
+    });
+    assert.equal(reconciled.totalAudCents, 5);
+    assert.equal(reservedThisMonth(runtime.db), 0);
+    assert.deepEqual(
+      all(runtime.db, "SELECT status, amount_cents FROM costs WHERE id LIKE 'cost-reconcile-%' ORDER BY id")
+        .map((row) => [row.status, row.amount_cents]),
+      [["reconciled", 3], ["reconciled", 2]],
+    );
+    assert.equal(get(runtime.db, "SELECT status, outcome_status, cost_actual_cents FROM tasks WHERE id = ?", [firstTask.id]).status, "failed");
+    assert.equal(get(runtime.db, "SELECT outcome_status FROM tasks WHERE id = ?", [firstTask.id]).outcome_status, "known");
+    assert.equal(get(runtime.db, "SELECT cost_actual_cents FROM tasks WHERE id = ?", [firstTask.id]).cost_actual_cents, 3);
+    assert.equal(get(runtime.db, "SELECT cost_status FROM model_calls WHERE id = 'model-reconcile-2'").cost_status, "reconciled");
+    assert.equal(get(runtime.db, "SELECT actual_cost_cents FROM model_calls WHERE id = 'model-reconcile-2'").actual_cost_cents, 2);
+    const secondResult = JSON.parse(get(runtime.db, "SELECT result FROM tasks WHERE id = ?", [secondTask.id]).result);
+    assert.equal(secondResult.cost.actualCents, 2);
+    assert.equal(secondResult.cost.exactBillingPending, false);
+    assert.equal(secondResult.costReconciliation.aggregateProviderEvidence, true);
+    assert.equal(get(runtime.db, "SELECT status FROM messages WHERE id = 'msg-provider-reconcile'").status, "resolved");
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'provider_usage.batch_reconciled'").count, 1);
+    run(runtime.db, "UPDATE messages SET status = 'open', resolved_at = NULL WHERE id = 'msg-provider-reconcile'");
+    const tracedAllocations = allocations.map((allocation, index) => ({
+      ...allocation,
+      responseId: `response-reconcile-${index + 1}`,
+      agentSdkTraceId: `trace_${String(index + 1).repeat(32)}`,
+    }));
+    const repeated = reconcileProviderUsageBatch(runtime.db, {
+      batchId: "provider-reconciliation-test",
+      ventureId: firstTask.venture_id,
+      provider: "openai",
+      totalAudCents: 5,
+      reconciledBy: "test",
+      evidence: { source: "provider_usage_dashboard" },
+      allocations: tracedAllocations,
+    });
+    assert.equal(repeated.alreadyReconciled, true);
+    assert.equal(get(runtime.db, "SELECT status FROM messages WHERE id = 'msg-provider-reconcile'").status, "resolved");
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'provider_usage.batch_reconciled'").count, 1);
+    const tracedModelCall = get(runtime.db, "SELECT metadata FROM model_calls WHERE id = 'model-reconcile-2'");
+    assert.equal(JSON.parse(tracedModelCall.metadata).agentSdkTraceId, `trace_${"2".repeat(32)}`);
+    const tracedTask = get(runtime.db, "SELECT result FROM tasks WHERE id = ?", [secondTask.id]);
+    assert.equal(JSON.parse(tracedTask.result).providerTrace.id, `trace_${"2".repeat(32)}`);
+    assert.equal(collectFindings(runtime.db).some((finding) => finding.title.includes("failed task")), false);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
 test("approved setup-blocked work becomes resumable when its credential requirement appears", async () => {
   const runtime = runtimeDb("setup-recovery");
   const previousKey = process.env.JARVIS_TEST_PROVIDER_KEY;
@@ -642,6 +840,81 @@ test("Demand Validator pilot preparation excludes the protected baseline and nev
         sources: [{ id: "source-6", title: "Source 6", sourceType: "test_fixture", summary: "Evaluation evidence only." }],
       }),
       /limited to five distinct fixtures/i,
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("Demand Validator technical retry preserves the unknown attempt and creates a fresh scoped approval", () => {
+  const runtime = runtimeDb("pilot-technical-retry");
+  try {
+    const fixture = ensureDemandValidatorPilotFixture(runtime.db);
+    const first = prepareDemandValidatorPilot(runtime.db, fixture.id);
+    const firstTask = get(runtime.db, "SELECT * FROM tasks WHERE id = ?", [first.requested.task.id]);
+    const firstScope = ensureApprovalScope(runtime.db, first.requested.approval.id);
+    decideApproval(runtime.db, first.requested.approval.id, "approved", "approve first controlled proof", {
+      expectedScopeHash: firstScope.scopeHash,
+    });
+    consumeApproval(runtime.db, first.requested.approval.id, firstTask);
+    run(runtime.db, "UPDATE tasks SET status = 'needs_attention', error = ? WHERE id = ?", [
+      "Structured output was not captured.",
+      firstTask.id,
+    ]);
+
+    assert.throws(
+      () => prepareDemandValidatorPilotRetry(runtime.db, fixture.id, { previousTaskId: firstTask.id }),
+      /explicitly acknowledged/i,
+    );
+    assert.throws(
+      () => prepareDemandValidatorPilotRetry(runtime.db, fixture.id, {
+        previousTaskId: "wrong-task",
+        acknowledgeUnknownOutcome: true,
+      }),
+      /does not match/i,
+    );
+
+    const second = prepareDemandValidatorPilotRetry(runtime.db, fixture.id, {
+      previousTaskId: firstTask.id,
+      acknowledgeUnknownOutcome: true,
+      operatorNote: "Approve one corrected attempt under the unchanged A$1 cap.",
+      requestedBy: "daniel",
+    });
+    const preserved = get(runtime.db, "SELECT status, error FROM tasks WHERE id = ?", [firstTask.id]);
+    const firstApproval = get(runtime.db, "SELECT consumed_at, scope_hash FROM approvals WHERE id = ?", [first.requested.approval.id]);
+    const secondApproval = ensureApprovalScope(runtime.db, second.requested.approval.id);
+    const secondPayload = JSON.parse(get(runtime.db, "SELECT payload FROM tasks WHERE id = ?", [second.requested.task.id]).payload);
+
+    assert.equal(preserved.status, "needs_attention");
+    assert.equal(preserved.error, "Structured output was not captured.");
+    assert.ok(firstApproval.consumed_at);
+    assert.notEqual(second.requested.task.id, firstTask.id);
+    assert.notEqual(second.requested.approval.id, first.requested.approval.id);
+    assert.notEqual(secondApproval.scopeHash, firstApproval.scope_hash);
+    assert.equal(second.requested.approval.status, "pending");
+    assert.equal(secondPayload.liveSpendRequest.parameters.attemptNumber, 2);
+    assert.equal(secondPayload.liveSpendRequest.parameters.retryOfTaskId, firstTask.id);
+    assert.equal(secondPayload.liveSpendRequest.parameters.priorOutcome, "unknown");
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM tasks WHERE kind = 'live_ai_worker_execution'").count, 2);
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'agent_pilot.unknown_outcome_acknowledged'").count, 1);
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'agent_pilot.technical_retry_prepared'").count, 1);
+
+    run(runtime.db, "UPDATE tasks SET status = 'completed', outcome_status = 'known', completed_at = ? WHERE id = ?", [
+      new Date().toISOString(),
+      second.requested.task.id,
+    ]);
+    const firstAttemptWork = getCockpitState(runtime.db).importantWork.find((item) => item.id === firstTask.id);
+    assert.match(firstAttemptWork.title, /first call billing check/i);
+    assert.match(firstAttemptWork.recommendation, /corrected run completed successfully/i);
+    assert.doesNotMatch(firstAttemptWork.recommendation, /before retrying/i);
+
+    run(runtime.db, "UPDATE tasks SET status = 'needs_attention' WHERE id = ?", [second.requested.task.id]);
+    assert.throws(
+      () => prepareDemandValidatorPilotRetry(runtime.db, fixture.id, {
+        previousTaskId: second.requested.task.id,
+        acknowledgeUnknownOutcome: true,
+      }),
+      /limited to one history-preserving technical retry/i,
     );
   } finally {
     closeRuntime(runtime);

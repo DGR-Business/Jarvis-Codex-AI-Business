@@ -22,11 +22,12 @@ actions, or other high-risk decisions.
 
 ## Current Runtime State
 
-- 2026-07-14 foundation status: the active database truth is one validating
-  Digital Products venture, no active real-world test, no verified buyers, no
-  revenue, no provider spend, and no consequential item waiting. Historical
-  rehearsals remain retained but archived outside the current decision queue.
-- Database migrations are versioned through migration 9. They preserve the
+- 2026-07-16 operating status: the active database truth is one validating
+  Digital Products venture, no active real-world market test, no verified
+  buyers and no revenue. Controlled Agents SDK usage is reconciled at A$0.05.
+  One genuine item is waiting: Daniel's usefulness verdict on the successful
+  Demand Validator recommendation. Historical rehearsals remain archived.
+- Database migrations are versioned through migration 10. They preserve the
   existing database, assign venture ownership, add commercial/evidence/pilot/
   digest state, archive unsupported legacy demo/review noise, mark old
   workflows and outputs as historical, and repoint retained legacy artifact
@@ -50,7 +51,7 @@ actions, or other high-risk decisions.
 - A weekly executive digest records work, buyer proof, cash contribution,
   decisions, exceptions, learning, and the next money move without creating a
   routine interruption.
-- The full test suite passes 81/81. Real-browser proof passed at 1440x900,
+- The full test suite passes 86/86. Real-browser proof passed at 1440x900,
   1280x720, 1024x768, and 390x844 with zero horizontal overflow and no console
   warnings/errors. The proof ran internal work, previewed its five-page PDF,
   recorded a request-changes decision, updated Activity, and left the active
@@ -60,12 +61,11 @@ actions, or other high-risk decisions.
   lockfile, 81/81 tests passed, startup and `GET /api/health` passed, and its
   production database contained one venture with zero workflows, tasks,
   approvals, deliverables, experiments, costs, or messages.
-- Encrypted backup/restore code and retention are implemented and test-proven.
-  A new permanent passphrase and fresh final backup set still require Daniel's
-  confirmation because the prior encrypted files' key is not available to the
-  current runtime process.
+- Encrypted backup/restore and retention are implemented and proven. The
+  permanent passphrase is stored outside the repository, fresh source/database/
+  artifact backups authenticate, and the pre-retry database restored exactly.
 - Private GitHub creation, clean baseline commit/push, and fresh-checkout proof
-  remain external action gates.
+  are complete for `DGR-Business/Jarvis-Codex-AI-Business`.
 - Runtime is local Node.js with SQLite persistent state.
 - Dashboard is the source of truth for work, approvals, deliverables, costs,
   messages, integrations, monitor findings, and event history.
@@ -96,7 +96,10 @@ actions, or other high-risk decisions.
   Responses adapter remains lower-level provider infrastructure for fallback and
   direct-call cases. The SDK path records structured output, model-call records,
   worker traces, evals, estimated cost records, and provider-failure no-spend
-  evidence.
+  evidence. The first oversized-contract attempt is preserved as a known
+  technical failure. One fresh approved retry using the lean contract completed
+  successfully, passed the runtime eval at 100 and passed every deterministic
+  pilot criterion. Daniel's commercial-usefulness verdict is pending.
 - Direction correction on 2026-07-09: the OpenAI Responses worker adapter stays
   as lower-level provider infrastructure, but the first-class live AI Team
   execution path is now the OpenAI Agents SDK behind an internal `AgentRuntime`
@@ -176,6 +179,8 @@ actions, or other high-risk decisions.
 | 2026-07-14 | Earn autonomy per exact capability after five consecutive reviewed successes. | A worker must not receive global autonomy because one narrow task performed well. Any failure resets and suspends that capability. |
 | 2026-07-14 | Limit normal operator time to eight hours weekly and require approval for any intensive week up to 16 hours. | The system must reduce Daniel's workload rather than disguise a manual pipeline as autonomy. |
 | 2026-07-14 | Archive unsupported legacy proof state instead of deleting it or presenting it as business truth. | Audit evidence remains available in System/SQLite while current decisions, reviews, tests, spend, and buyer metrics stay honest. |
+| 2026-07-16 | Preserve the failed Demand Validator attempt and allow one separately approved technical retry. | Unknown outcomes and consumed approvals must never be overwritten or silently reused. A corrected attempt needs a new task, approval, scope hash and explicit operator acknowledgement. |
+| 2026-07-16 | Treat Daniel's usefulness verdict as distinct from deterministic technical review. | Valid structure, scope and cost do not prove that an agent recommendation helps the business. Capability streaks advance only after both checks pass. |
 | 2026-07-05 | Dashboard remains canonical even if email, Slack, ClickUp, or mobile views are added later. | Avoid scattered truth and keep operator control simple. |
 | 2026-07-05 | Dry-run proof stays ahead of live tool use. | Prevent fake autonomy, runaway spend, and accidental external actions. |
 
@@ -1855,10 +1860,12 @@ publishing, customer contact, or external action were used.
 
 ## Open Gates
 
-- First live AI pilot: no provider call may run until Daniel confirms the exact
-  A$1 Demand Validator fixture, credentials are configured outside the repo,
-  `JARVIS_ENABLE_LIVE_MODELS=1` is enabled for that run, the exact scope is
-  approved, and output/trace/eval/cost review is ready.
+- Demand Validator capability review: the corrected first proof passed its
+  deterministic checks, but Daniel must still record whether it was useful.
+  No second fixture or model call is authorised yet.
+- Future live AI runs still require a distinct fixture, exact single-use
+  approval, capped scope, temporary live flag, trace/eval review and cost
+  reconciliation. The successful first proof grants no global autonomy.
 - Gumroad: account creation, KYC, publishing, and any public channel post remain
   Daniel-confirmed actions. No account has been created and no listing has been
   published by this build.
@@ -1867,13 +1874,15 @@ publishing, customer contact, or external action were used.
 
 ## Next Best Work
 
-1. With separate action-time confirmation, run one A$1 maximum Demand Validator
-   Agents SDK proof over the selected versioned evidence fixture, with no tools
-   or handoffs.
-2. Have Daniel review commercial usefulness, unsupported claims, trace/eval,
-   scope, and reconciled cost. Revise, repeat, promote only reasoning over
-   supplied evidence, or stop.
-3. Rank three real digital-product opportunities and present one concise
+1. Have Daniel review the successful Demand Validator recommendation for
+   commercial usefulness. Suggested starting verdict: useful, 4/5, with a note
+   requesting more concrete channel, sample-size, duration and price detail
+   when evidence permits.
+2. If useful, prepare one distinct supplied-evidence fixture and request a new
+   capped approval for run 2/5. Any failed reviewed run resets the capability
+   streak.
+3. After the five-run supplied-evidence proof sequence, rank three real
+   digital-product opportunities and present one concise
    selection decision.
 4. Build the smallest useful selected product and complete its product files,
    economics, risk review, listing copy, Publish Pack, and launch checklist.
@@ -2380,8 +2389,9 @@ Next clean move:
 Account and cost setup:
 
 - Created a restricted OpenAI project key with model-request permission only;
-  the secret is stored in the Windows user environment and was not written to
-  the repository, logs or chat.
+  the secret was loaded into the live test process and was not written to the
+  repository, logs or chat. Final restart verification later confirmed it was
+  not persisted in the Windows user environment.
 - Confirmed US$10 API credit with automatic recharge off. Daniel reported US$1
   tax and an actual Australian-bank charge of A$15.79.
 - Verified the ChatGPT account invoice: Pro 5x is A$100 per month; the July
@@ -2427,3 +2437,101 @@ Next clean move:
 2. Prepare a fresh one-use approval for one corrected retry only after the
    failed fixture is explicitly acknowledged and reset.
 3. Do not judge Demand Validator usefulness until a valid output exists.
+
+## 2026-07-16 - Corrected Demand Validator Retry Passed
+
+History-preserving retry:
+
+- Added a one-time technical retry path that accepts only the exact prior task,
+  requires explicit acknowledgement of its unknown outcome, verifies the prior
+  approval was consumed, rejects any prior reviewed result, and creates a new
+  workflow, task, approval and scope hash.
+- Created and authenticated an encrypted pre-retry database backup. An exact
+  temporary restore passed with payload SHA-256
+  `ea3029328e20c8102dc2c360cada68fd6af280a14137addb441e5cab9bbbb7fb`.
+- Daniel approved the corrected retry. The prior failed task and approval were
+  not changed or reused.
+
+Live result:
+
+- Exactly one corrected Agents SDK request ran. Task
+  `task_live_worker_wf_demand_validator_pilot_11493dc5` completed from
+  `2026-07-16T05:23:52.677Z` to `2026-07-16T05:23:58.567Z`.
+- The model was `gpt-5.6-terra`; response ID was
+  `resp_0c7bd5258a29fcc8016a586aeadec0819b9b60a16506207d5c`; SDK trace was
+  `trace_ce3936bdcf464644a8b94696598c6aea`.
+- Usage was 1,329 input tokens, 335 output tokens and 1,664 total tokens. One raw
+  response completed with zero interruptions, SDK tools, handoffs or effects.
+- Runtime eval `agent_eval_f56e13ca-0e2c-4ce6-9996-3764d94e7131` passed at 100.
+  Deterministic pilot review
+  `pilot_review_bffe266f-321e-40b4-beb7-8aa8e6564960` passed source validity,
+  unsupported-claim, structure, scope, cost and baseline-exclusion checks.
+- The worker correctly declined to treat fixture-only problem evidence as
+  proof of demand. It recommended a bounded, non-paid interest test with a
+  pre-set threshold and stop rule. Confidence was low. No external action ran.
+- The lean output used only 335 tokens, so the 1,200-token limit was retained.
+
+Provider reconciliation and trace proof:
+
+- The signed-in OpenAI Usage surface showed two July requests, 2,742 aggregate
+  tokens and US$0.03 total spend, matching the failed and corrected calls.
+- At the actual 1.579 AUD/USD prepaid-credit rate, usage is A$0.04737 and is
+  recorded as A$0.05 after whole-cent rounding. The A$0.03/A$0.02 task split is
+  explicitly an allocation because OpenAI exposed only an aggregate total.
+- The first trace is `trace_39431c0fdacb4eabbcf7371feb132602`; the corrected
+  trace is `trace_ce3936bdcf464644a8b94696598c6aea`. Both are now attached to
+  their model-call and agent-run records. The successful pilot review points to
+  the SDK trace, not the API response ID.
+- Added atomic, idempotent provider-usage reconciliation over exact task, cost
+  and model-call IDs. Spend is now A$0.05 reconciled, A$0 estimated, A$0 unknown
+  and A$0 reserved, with A$99.95 remaining under the pre-revenue monthly cap.
+- Separated generated SDK trace IDs from response IDs for all future runs and
+  preserve the trace ID on failure paths.
+
+Verification:
+
+- `npm.cmd test` passes 86/86 tests.
+- Generated a fresh cryptographically random backup passphrase, stored it in
+  the Windows user environment outside the repository, and verified that a new
+  process can read it without exposing its value.
+- Created a post-pilot encrypted checkpoint in
+  `C:\Users\radul\OneDrive\Jarvis-Codex-Backups`:
+  - database `jarvis-database-2026-07-16T06-36-17-165Z.jbackup`, payload
+    SHA-256 `5ba4f10686da892b40c136c3a06c63af4d6589e56bb77632784663c298788b59`
+    and encrypted-file SHA-256
+    `b59f8a3f09f563b487f89bdb34d29a9862a77e2669d6c1d8b990307b86fd7c74`;
+  - source `jarvis-source-2026-07-16T06-36-17-029Z.jbackup`, payload SHA-256
+    `de1492e593cdee3137460b31b09c5e787b8623b426dc155b22cf8c5331f8c510`
+    and encrypted-file SHA-256
+    `4bec7d5dc6d920bba5be6917de008661d2398bf50bd198fd63999ad698717eb7`;
+  - artifacts `jarvis-artifacts-2026-07-16T06-36-17-210Z.jbackup`, payload
+    SHA-256 `a63e5771fe3fcb62b3714b301678209a0c7a6733ef8a398b13129ff130a22011`
+    and encrypted-file SHA-256
+    `f8245619928f236535cc7ac541cd89fbf85b1544740763b13e0fe33e6f9ee8d0`.
+- Retention removed the superseded same-day checkpoint and kept this final set
+  plus the older historical files. Only the final set is claimed as restorable
+  with the current persisted passphrase.
+- Authenticated restoration passed for all three post-pilot backups. The
+  restored SQLite database returned `integrity_check: ok`, preserved the failed
+  3-cent allocation and successful 2-cent allocation, preserved the successful
+  review and trace, and reported A$0.05 reconciled spend. Four sampled source
+  files matched their live SHA-256 hashes and the artifact restore contained 20
+  files.
+- The live cockpit shows one genuine Important Work item: Daniel's usefulness
+  verdict. The stale provider-outcome alert is resolved.
+- Real-browser checks passed for recommendation visibility, usefulness controls,
+  console state and responsive desktop layout.
+- Live-model mode is off again. No additional model request, research, outreach,
+  publishing, account action, legal decision or money movement is authorised.
+- The protected final restart has no OpenAI key loaded. A future approved live
+  fixture needs a fresh restricted key connection; the system must not claim
+  provider readiness until then.
+- Reconciled historical provider failures are excluded from active monitor
+  alerts only after outcome, cost and operator messages are all resolved. Their
+  task, trace, event and cost history remains visible in System.
+
+Next clean move:
+
+1. Daniel records the usefulness verdict for this recommendation.
+2. If useful, prepare a distinct second fixture and request a new capped
+   single-use approval. Do not rerun this fixture.

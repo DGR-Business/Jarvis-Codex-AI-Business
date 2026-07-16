@@ -749,7 +749,13 @@ async function runAgentTask(db, task) {
         "model_call_completed",
         "Live worker model call complete",
         `${liveWorker.model} returned an operator-ready worker result with a capped model call.`,
-        { modelCallId: liveWorker.modelCall.id, responseId: liveWorker.raw.responseId, structuredOutput: liveWorker.raw.structuredOutput, provider: liveWorker.provider },
+        {
+          modelCallId: liveWorker.modelCall.id,
+          responseId: liveWorker.raw.responseId,
+          agentSdkTraceId: liveWorker.raw.traceId || null,
+          structuredOutput: liveWorker.raw.structuredOutput,
+          provider: liveWorker.provider,
+        },
       );
       output = liveWorker.output;
       attachWorkerDecisionContract(task, workflow, output, agentDefinition, { policy, spendApproval, humanReviewRequired: true });
@@ -794,6 +800,7 @@ async function runAgentTask(db, task) {
           evalScore: evalResult.score,
           deliverables: touchedDeliverables,
           liveWorkerResponseId: liveWorker.raw.responseId,
+          agentSdkTraceId: liveWorker.raw.traceId || null,
           structuredOutput: liveWorker.raw.structuredOutput,
           businessDecision: workerDecisionMetadata(output),
           outputContract: output.outputContract,
