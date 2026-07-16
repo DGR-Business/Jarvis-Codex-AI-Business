@@ -23,7 +23,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@openai/agents": "^0.13.0",
+    "@openai/agents": "0.13.4",
     "csv-parse": "6.1.0",
     "lucide": "0.468.0",
     "ws": "^8.19.0",

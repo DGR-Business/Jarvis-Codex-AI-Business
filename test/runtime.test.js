@@ -2443,13 +2443,15 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
   const previousDisabledAdapter = process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
   const previousDisabledSdk = process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
   const previousModel = process.env.JARVIS_LIVE_MODEL;
+  const previousRuntimeProvider = process.env.JARVIS_AGENT_RUNTIME_PROVIDER;
   const previousPackDir = process.env.JARVIS_APPROVAL_PACK_DIR;
   const packDir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-codex-live-worker-success-pdf-"));
   process.env.OPENAI_API_KEY = "test-live-worker-key";
   process.env.JARVIS_ENABLE_LIVE_MODELS = "1";
   delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
   delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
-  process.env.JARVIS_LIVE_MODEL = "gpt-5.5-worker-test";
+  process.env.JARVIS_LIVE_MODEL = "gpt-unapproved-environment-drift";
+  process.env.JARVIS_AGENT_RUNTIME_PROVIDER = "responses";
   process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
 
   let capturedRequest = null;
@@ -2515,7 +2517,13 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     const workflowId = planned.workflow.id;
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
 
-    const requested = requestLiveAiWorker(db, workflowId, { estimatedCostCents: 160, worker: "demand_validator" });
+    const requested = requestLiveAiWorker(db, workflowId, {
+      estimatedCostCents: 160,
+      worker: "demand_validator",
+      provider: "openai-agents-sdk",
+      model: "gpt-5.6-terra-approved",
+      maxOutputTokens: 777,
+    });
     assert.equal(requested.worker.id, "demand_validator");
     decideApproval(db, requested.approval.id, "approved", "approve stubbed live worker");
     const completed = await runOnce(db, { workflowId });
@@ -2531,7 +2539,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(completed.result.toolPolicy.workerBlocked.length, 0);
     assert.equal(completed.result.modelPolicy.mode, "live");
     assert.equal(completed.result.modelPolicy.status, "completed");
-    assert.equal(completed.result.modelPolicy.selectedModel, "gpt-5.5-worker-test");
+    assert.equal(completed.result.modelPolicy.selectedModel, "gpt-5.6-terra-approved");
     assert.equal(completed.result.cost.actualCents, 0);
     assert.equal(completed.result.output.operatorDecision, "revise");
     assert.equal(completed.result.output.businessDecision.schema, "jarvis_worker_business_decision_v1");
@@ -2546,9 +2554,11 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(capturedRequest.requestBody.text.format.schema.additionalProperties, false);
     assert.ok(capturedRequest.requestBody.text.format.schema.required.includes("businessDecision"));
     assert.equal(capturedRequest.requestBody.metadata.agent_id, "demand_validator");
+    assert.equal(capturedRequest.requestBody.metadata.adapter, "openai-agents-sdk");
+    assert.equal(capturedRequest.requestBody.model, "gpt-5.6-terra-approved");
     assert.equal(capturedRequest.agentDefinition.id, "demand_validator");
     assert.match(capturedRequest.requestBody.input[0].content, /Worker: Demand Validator/);
-    assert.equal(capturedRequest.requestBody.max_output_tokens >= 400, true);
+    assert.equal(capturedRequest.requestBody.max_output_tokens, 777);
 
     const state = getDashboardState(db);
     const liveTask = state.tasks.find((task) => task.workflow_id === workflowId && task.kind === "live_ai_worker_execution");
@@ -2562,6 +2572,8 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(liveTask.status, "completed");
     assert.equal(liveTask.agent, "demand_validator");
     assert.equal(liveTask.payload.requestedWorker, "demand_validator");
+    assert.equal(liveTask.payload.liveSpendRequest.provider, "openai-agents-sdk");
+    assert.equal(liveTask.payload.liveSpendRequest.model, "gpt-5.6-terra-approved");
     assert.equal(liveTask.cost_actual_cents, 0);
     assert.equal(liveRun.agent_id, "demand_validator");
     assert.equal(liveRun.mode, "openai-agents-sdk");
@@ -2632,6 +2644,8 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     else process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK = previousDisabledSdk;
     if (previousModel === undefined) delete process.env.JARVIS_LIVE_MODEL;
     else process.env.JARVIS_LIVE_MODEL = previousModel;
+    if (previousRuntimeProvider === undefined) delete process.env.JARVIS_AGENT_RUNTIME_PROVIDER;
+    else process.env.JARVIS_AGENT_RUNTIME_PROVIDER = previousRuntimeProvider;
     if (previousPackDir === undefined) delete process.env.JARVIS_APPROVAL_PACK_DIR;
     else process.env.JARVIS_APPROVAL_PACK_DIR = previousPackDir;
   }

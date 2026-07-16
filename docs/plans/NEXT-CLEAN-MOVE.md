@@ -1,6 +1,6 @@
 # Next Clean Move
 
-Status: foundation baseline complete; first capped AI pilot is next
+Status: Demand Validator approval prepared; secure setup and execution are next
 Saved: 2026-07-16
 Owner: Daniel
 Maintainer: Codex
@@ -23,10 +23,10 @@ The recoverable clean baseline is complete.
    fresh checkout through install, 81/81 tests, healthy startup, truthful empty
    state, and a clean real-browser load.
 
-## Following Move
+## Prepared Pilot
 
-Ask for separate action-time approval to run one real, tightly capped Demand
-Validator pilot through the OpenAI Agents SDK.
+The first real Demand Validator approval is now waiting in the dashboard. It
+uses the pinned OpenAI Agents SDK `0.13.4` and `gpt-5.6-terra`.
 
 - one versioned evidence fixture;
 - no tools;
@@ -36,6 +36,29 @@ Validator pilot through the OpenAI Agents SDK.
 - maximum approved cost A$1;
 - no publishing, account action, customer contact, legal/compliance decision,
   money movement, or fallback substitution for the SDK acceptance run.
+
+Execution now takes the provider, model, token limit, fixture, and cost cap from
+the exact approved scope. A later environment change cannot silently substitute
+a different provider or model.
+
+Current state:
+
+- approval packet prepared and pending;
+- Agents SDK installed and ready;
+- 81/81 automated tests pass;
+- OpenAI credential is not configured;
+- live-model mode is off;
+- no live provider call or spend has occurred.
+
+## Following Move
+
+1. Obtain Daniel's action-time approval to open the official OpenAI account/key
+   flow and store the resulting credential in the Windows user environment,
+   never in this repository or chat.
+2. Enable live models only for this controlled run.
+3. Execute the exact pending dashboard decision once.
+4. Review evidence use, unsupported claims, commercial usefulness, trace/eval
+   state, scope compliance, and reconciled cost.
 
 Daniel then reviews commercial usefulness, unsupported claims, evidence use,
 trace/eval state, scope compliance, and reconciled cost. The only valid next
@@ -64,5 +87,6 @@ over supplied evidence after five consecutive passes, or stop.
   GitHub no-reply author identity and contains no private operator files,
   runtime database, generated artifacts, environment secrets, or dependencies.
 
-This note records sequence only. It is not authorization to connect a model,
-create a Gumroad account, publish, spend, or contact customers.
+This note and the prepared dashboard item record sequence only. Neither is
+authorization to connect a model, create an account, execute the A$1 pilot,
+publish, spend, or contact customers.

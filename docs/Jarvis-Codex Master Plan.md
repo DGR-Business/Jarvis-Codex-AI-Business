@@ -53,8 +53,16 @@ Internal foundation status on 2026-07-16:
 - a fresh checkout from the private remote installed 104 lockfile packages,
   passed 81/81 tests, started healthy, exposed one venture with zero synthetic
   operating or commercial records, and passed a clean real-browser check;
-- the recoverable clean-baseline gate is complete. The next gated action is the
-  first A$1 maximum Demand Validator Agents SDK pilot.
+- the recoverable clean-baseline gate is complete;
+- the Demand Validator pilot now uses the pinned OpenAI Agents SDK `0.13.4`
+  and the current cost-balanced `gpt-5.6-terra` model. Execution is bound to
+  the exact approved provider, model, output limit, fixture, and cost cap, so
+  later environment changes cannot silently alter an approved run;
+- the one-turn, no-tool, A$1 maximum pilot approval packet is prepared and
+  waiting in Decisions. Credentials and live mode remain off, and no live
+  model call or provider spend has occurred;
+- the next gated action is secure credential setup followed by Daniel's
+  separate action-time approval of that exact pilot.
 
 ## 1. North Star
 
@@ -686,15 +694,16 @@ Operator approval is required for:
 
 ### Now
 
-1. With separate action-time approval, run exactly one A$1 maximum Demand
-   Validator Agents SDK pilot over one versioned evidence fixture, with no
-   tools or handoffs.
-2. Compare the SDK result with the protected baseline, have Daniel judge
+1. With separate action-time approval, configure the OpenAI credential outside
+   the repository and enable live models only for the controlled pilot.
+2. Run the prepared A$1 maximum Demand Validator Agents SDK decision over one
+   versioned evidence fixture, with no tools, handoffs, or external effects.
+3. Compare the SDK result with the protected baseline, have Daniel judge
    commercial usefulness, reconcile cost, and decide revise, repeat, promote
    only the exact capability, or stop.
-3. Preserve the proven recovery behavior: encrypted source/database/artifact
+4. Preserve the proven recovery behavior: encrypted source/database/artifact
    backups, authenticated restore, retention, and private operator records.
-4. Preserve the proven clean-source behavior: lockfile install, 81/81
+5. Preserve the proven clean-source behavior: lockfile install, 81/81
    tests, healthy startup, and no synthetic production work or evidence.
 
 ### Next

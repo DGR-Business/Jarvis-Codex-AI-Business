@@ -14,6 +14,7 @@ const {
 const AGENTS_SDK_PROVIDER = "openai-agents-sdk";
 
 let testSdkRunner = null;
+let defaultSdkRunner = null;
 
 function packageAvailable(name) {
   try {
@@ -62,6 +63,11 @@ function loadAgentsSdk() {
   const sdk = require("@openai/agents");
   const { z } = require("zod");
   return { Agent: sdk.Agent, Runner: sdk.Runner, z };
+}
+
+function getDefaultSdkRunner(Runner) {
+  if (!defaultSdkRunner) defaultSdkRunner = new Runner();
+  return defaultSdkRunner;
 }
 
 function zodOutputSchema(z) {
@@ -148,9 +154,14 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     outputType: zodOutputSchema(z),
     tools: [],
     handoffs: [],
-    modelSettings: { maxTokens: Math.min(1200, Number(requestBody.max_output_tokens || 1200)) },
+    modelSettings: {
+      maxTokens: Math.min(1200, Number(requestBody.max_output_tokens || 1200)),
+      toolChoice: "none",
+      parallelToolCalls: false,
+      store: false,
+    },
   });
-  const runner = options.runner || new Runner();
+  const runner = options.runner || getDefaultSdkRunner(Runner);
   return runner.run(agent, requestBody.input[1].content, {
     maxTurns: 1,
     workflowName: "Jarvis Demand Validator controlled proof",
@@ -304,7 +315,11 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
 }
 
 async function runAgentRuntimeTask(db, task, agentDefinition, policy, options = {}) {
-  const provider = options.provider || process.env.JARVIS_AGENT_RUNTIME_PROVIDER || CONFIG.liveModelProvider || AGENTS_SDK_PROVIDER;
+  const approvedProvider = task.payload?.liveSpendRequest?.provider || null;
+  const provider = options.provider || approvedProvider || process.env.JARVIS_AGENT_RUNTIME_PROVIDER || CONFIG.liveModelProvider || AGENTS_SDK_PROVIDER;
+  if (approvedProvider && options.provider && options.provider !== approvedProvider) {
+    throw new Error(`The requested runtime provider does not match the approved provider ${approvedProvider}.`);
+  }
   if (provider === LIVE_AI_WORKER_PROVIDER || provider === "responses") {
     const result = await runLiveAiWorkerTask(db, task, agentDefinition, policy, options);
     return {
@@ -313,7 +328,10 @@ async function runAgentRuntimeTask(db, task, agentDefinition, policy, options = 
       primaryProvider: AGENTS_SDK_PROVIDER,
     };
   }
-  return runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options);
+  if (provider === AGENTS_SDK_PROVIDER) {
+    return runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options);
+  }
+  throw new Error(`Unsupported agent runtime provider: ${provider}.`);
 }
 
 function __setAgentRuntimeSdkRunnerForTests(runner) {

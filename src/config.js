@@ -33,7 +33,7 @@ const CONFIG = {
   liveResearchMaxOutputTokens: Math.max(800, numberFromEnv("JARVIS_LIVE_RESEARCH_MAX_OUTPUT_TOKENS", 2400)),
   liveModelDefaultBudgetCents: Math.round(numberFromEnv("JARVIS_LIVE_MODEL_BUDGET_AUD", 1) * 100),
   liveModelProvider: process.env.JARVIS_LIVE_MODEL_PROVIDER || "openai-agents-sdk",
-  liveModel: process.env.JARVIS_LIVE_MODEL || "gpt-5.5",
+  liveModel: process.env.JARVIS_LIVE_MODEL || "gpt-5.6-terra",
   liveModelMaxOutputTokens: Math.max(400, numberFromEnv("JARVIS_LIVE_MODEL_MAX_OUTPUT_TOKENS", 1200)),
   targetFirstPassApprovalRate: numberFromEnv("JARVIS_TARGET_APPROVAL_RATE", 0.9),
   approvalPromotionMinimum: numberFromEnv("JARVIS_APPROVAL_PROMOTION_MINIMUM", 20),

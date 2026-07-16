@@ -229,6 +229,7 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
 
 function buildOpenAIRequest(db, task, agentDefinition, policy) {
   const context = latestWorkflowContext(db, task);
+  const approvedRequest = task.payload?.liveSpendRequest || {};
   const subject = task.payload?.subject || context.workflow?.metadata?.subject || context.workflow?.title || "business idea";
   const channel = task.payload?.channel || context.workflow?.metadata?.channel || context.workflow?.type || "Business Idea";
   const today = new Date().toISOString().slice(0, 10);
@@ -271,8 +272,8 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
   };
 
   return {
-    model: process.env.JARVIS_LIVE_MODEL || CONFIG.liveModel,
-    max_output_tokens: CONFIG.liveModelMaxOutputTokens,
+    model: approvedRequest.model || process.env.JARVIS_LIVE_MODEL || CONFIG.liveModel,
+    max_output_tokens: Math.max(1, Number(approvedRequest.maxOutputTokens || CONFIG.liveModelMaxOutputTokens)),
     input: [
       {
         role: "system",
@@ -299,7 +300,7 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
       workflow_id: task.workflow_id,
       task_id: task.id,
       agent_id: agentDefinition.id,
-      adapter: LIVE_AI_WORKER_PROVIDER,
+      adapter: approvedRequest.provider || LIVE_AI_WORKER_PROVIDER,
     },
   };
 }

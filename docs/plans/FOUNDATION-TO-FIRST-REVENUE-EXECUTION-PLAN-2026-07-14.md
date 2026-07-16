@@ -193,7 +193,11 @@ Recheck these official Gumroad references immediately before launch:
 - Phase 3: implemented for one active digital-product venture.
 - Phase 4: implemented and real-browser verified at 1440x900, 1280x720,
   1024x768, and a stable 390x844 mobile fallback.
-- Phase 5: implementation and fixtures are ready; no live provider run has been
+- Phase 5: implementation and fixtures are ready. The OpenAI Agents SDK is
+  pinned at `0.13.4`, the pilot model is `gpt-5.6-terra`, and execution is bound
+  to the exact approved provider, model, output limit, fixture, and cost cap.
+  The one-turn, no-tool, A$1 maximum decision is prepared in the dashboard.
+  Credentials and live mode remain off; no live provider run or spend has been
   authorized or made.
 - Phase 6: Gumroad import, privacy handling, launch gate, limits, and metrics are
   ready; opportunity selection, product creation, account action, publishing,

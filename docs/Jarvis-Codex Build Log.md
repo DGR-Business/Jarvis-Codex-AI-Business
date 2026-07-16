@@ -2327,3 +2327,50 @@ Remote status:
 
 No model call, Gumroad action, publishing, spend, customer contact, legal
 decision, or money movement occurred.
+
+## 2026-07-16 - Demand Validator SDK Pilot Prepared
+
+Implementation decision:
+
+- Rechecked the current official OpenAI Agents SDK, agent-running, structured
+  output, tracing, evaluation, model, and pricing guidance before preparing the
+  first live worker proof.
+- Pinned `@openai/agents` at `0.13.4` and selected `gpt-5.6-terra` as the
+  current cost-balanced pilot model. The Responses path remains lower-level
+  infrastructure and cannot satisfy this SDK acceptance run.
+- Reused one SDK Runner and explicitly disabled tools, parallel tool calls,
+  response storage, and sensitive trace content for the one-turn proof.
+
+Approval-scope hardening:
+
+- Found that the saved approval named an exact provider, model, and output cap,
+  while execution could still read later environment values for those fields.
+- Bound execution to the approved task scope first. A changed environment can
+  no longer silently run Responses, a different model, or a different output
+  limit under the existing approval.
+- Explicit provider overrides must now match the approved provider; unsupported
+  providers fail closed instead of falling back to the Agents SDK.
+- Added a regression test that surrounds an SDK-approved task with conflicting
+  provider/model environment values and proves the exact approved SDK,
+  `gpt-5.6-terra` fixture model, and output cap still control execution.
+
+Verification and prepared state:
+
+- `npm.cmd install` completed with 105 audited packages and zero reported
+  vulnerabilities.
+- `npm.cmd test` passed 81/81 tests, and `git diff --check` passed.
+- Restarted the localhost runtime. `GET /api/health` reports the Agents SDK
+  ready, `gpt-5.6-terra`, credentials absent, live mode off, and zero spend.
+- In the real dashboard, prepared exactly one pending low-risk decision named
+  `Approve this Demand Validator proof`. Its scope is one supplied-evidence
+  fixture, one turn, no tools, no handoffs, no external effects, 1,200 output
+  tokens maximum, and A$1 maximum cost.
+- No credential was stored, no live model call ran, and no provider spend was
+  incurred. The pending decision is not authorization to execute.
+
+Next clean move:
+
+1. Obtain Daniel's action-time approval for secure OpenAI credential setup and
+   the exact pending A$1 maximum pilot.
+2. Run it once, compare it with the protected baseline, complete Daniel's
+   usefulness review, reconcile cost, and decide revise, repeat, or stop.

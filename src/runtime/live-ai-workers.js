@@ -153,7 +153,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     approvalId,
     estimatedCostCents: amountCents,
     provider: payload.liveSpendRequest.provider,
-    model: CONFIG.liveModel,
+    model: payload.liveSpendRequest.model,
     requestedWorker: {
       id: workerDefinition.id,
       name: workerDefinition.name,
@@ -231,7 +231,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     spendGate,
     estimatedCostCents: amountCents,
     provider: payload.liveSpendRequest.provider,
-    model: CONFIG.liveModel,
+    model: payload.liveSpendRequest.model,
     worker: {
       id: workerDefinition.id,
       name: workerDefinition.name,
