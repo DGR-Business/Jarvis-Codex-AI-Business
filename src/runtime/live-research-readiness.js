@@ -51,7 +51,10 @@ function getLiveResearchReadiness(db) {
   const liveResearchIntegration = integrations.find((integration) => integration.id === "live_research");
   const liveResearchTasks = tasks.filter((task) => task.kind === "live_market_research");
   const pendingApprovals = approvals.filter((approval) => approval.scope === "live_research_spend" && approval.status === "pending");
-  const approvedApprovals = approvals.filter((approval) => approval.scope === "live_research_spend" && approval.status === "approved");
+  const approvedApprovals = approvals.filter((approval) => approval.scope === "live_research_spend"
+    && approval.status === "approved"
+    && !approval.consumed_at
+    && (!approval.expires_at || approval.expires_at > new Date().toISOString()));
   const completedRuns = all(db, "SELECT COUNT(*) AS count FROM research_runs WHERE status = 'completed_live'")[0]?.count || 0;
   const failedRuns = all(db, "SELECT COUNT(*) AS count FROM research_runs WHERE status = 'failed_live'")[0]?.count || 0;
 

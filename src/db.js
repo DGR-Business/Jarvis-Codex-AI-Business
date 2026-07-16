@@ -847,6 +847,42 @@ function applyHistoricalWorkArchiveMigration(db) {
   }
 }
 
+function applyAccountingLedgerMigration(db) {
+  if (migrationApplied(db, 10)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS accounting_entries (
+        id TEXT PRIMARY KEY,
+        venture_id TEXT,
+        entry_type TEXT NOT NULL,
+        category TEXT NOT NULL,
+        source TEXT NOT NULL,
+        description TEXT NOT NULL,
+        status TEXT NOT NULL,
+        amount_cents INTEGER NOT NULL CHECK(amount_cents >= 0),
+        currency TEXT NOT NULL DEFAULT 'AUD' CHECK(currency = 'AUD'),
+        occurred_at TEXT NOT NULL,
+        next_due_at TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (venture_id) REFERENCES ventures(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_accounting_entries_occurred
+        ON accounting_entries(occurred_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_accounting_entries_type_status
+        ON accounting_entries(entry_type, status);
+    `);
+    recordMigration(db, 10, "aud-accounting-ledger");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1639,6 +1675,7 @@ function migrate(db) {
   applyLegacyReviewQueueMigration(db);
   applyLegacyNotificationCleanupMigration(db);
   applyHistoricalWorkArchiveMigration(db);
+  applyAccountingLedgerMigration(db);
 }
 
 function putSetting(db, key, value) {

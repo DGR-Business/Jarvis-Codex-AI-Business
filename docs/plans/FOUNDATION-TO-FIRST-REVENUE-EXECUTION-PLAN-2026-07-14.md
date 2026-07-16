@@ -189,16 +189,16 @@ Recheck these official Gumroad references immediately before launch:
   be pushed. The private GitHub `main` branch contains the clean baseline, and
   a fresh checkout from that remote passed install, all tests, healthy startup,
   truthful empty-state, and real-browser verification on 2026-07-16.
-- Phase 2: implemented through migration 9 and covered by automated tests.
+- Phase 2: implemented through migration 10 and covered by automated tests.
 - Phase 3: implemented for one active digital-product venture.
 - Phase 4: implemented and real-browser verified at 1440x900, 1280x720,
   1024x768, and a stable 390x844 mobile fallback.
-- Phase 5: implementation and fixtures are ready. The OpenAI Agents SDK is
-  pinned at `0.13.4`, the pilot model is `gpt-5.6-terra`, and execution is bound
-  to the exact approved provider, model, output limit, fixture, and cost cap.
-  The one-turn, no-tool, A$1 maximum decision is prepared in the dashboard.
-  Credentials and live mode remain off; no live provider run or spend has been
-  authorized or made.
+- Phase 5: first live attempt completed as a controlled technical failure. One
+  Agents SDK call ran; structured output ended as unterminated JSON, so no
+  usable recommendation or pilot pass exists. The one-use approval was
+  consumed, no retry ran, and A$1 remains unknown pending provider billing.
+  The oversized output contract was replaced with a lean pilot contract and
+  84/84 tests pass. Live mode is off; a corrected retry needs a fresh approval.
 - Phase 6: Gumroad import, privacy handling, launch gate, limits, and metrics are
   ready; opportunity selection, product creation, account action, publishing,
   and buyer test remain unperformed.

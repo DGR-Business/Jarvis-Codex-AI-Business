@@ -10,6 +10,7 @@ const {
   recordLiveWorkerModelCall,
   runLiveAiWorkerTask,
 } = require("../adapters/live-ai-worker");
+const { estimateModelUsageAud } = require("./model-pricing");
 
 const AGENTS_SDK_PROVIDER = "openai-agents-sdk";
 
@@ -118,14 +119,37 @@ function zodOutputSchema(z) {
   }).strict();
 }
 
+function demandValidatorPilotOutputSchema(z) {
+  return z.object({
+    summary: z.string(),
+    moneyMove: z.string(),
+    evidence: z.array(z.string()).max(2),
+    counterevidence: z.array(z.string()).max(2),
+    assumptions: z.array(z.string()).max(2),
+    priceChannelHypothesis: z.string(),
+    smallestTest: z.string(),
+    metric: z.string(),
+    killRule: z.string(),
+    risks: z.array(z.string()).max(2),
+    nextAction: z.string(),
+    operatorDecision: z.enum(["approve", "revise", "deny", "needs_evidence"]),
+    confidence: z.enum(["low", "medium", "high"]),
+  }).strict();
+}
+
 function sdkUsage(result) {
   const usage = result?.runContext?.usage || result?.state?._context?.usage || {};
   const rawResponses = Array.isArray(result?.rawResponses) ? result.rawResponses : [];
   const lastUsage = rawResponses.length ? rawResponses[rawResponses.length - 1]?.usage || {} : {};
+  const inputDetails = usage.inputTokensDetails
+    || lastUsage.inputTokensDetails
+    || lastUsage.input_tokens_details
+    || {};
   return {
     input_tokens: Number(usage.inputTokens ?? lastUsage.inputTokens ?? lastUsage.input_tokens ?? 0),
     output_tokens: Number(usage.outputTokens ?? lastUsage.outputTokens ?? lastUsage.output_tokens ?? 0),
     total_tokens: Number(usage.totalTokens ?? lastUsage.totalTokens ?? lastUsage.total_tokens ?? 0),
+    cached_input_tokens: Number(inputDetails.cachedTokens ?? inputDetails.cached_tokens ?? 0),
   };
 }
 
@@ -151,7 +175,9 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     name: agentDefinition.name,
     instructions: requestBody.input[0].content,
     model: requestBody.model,
-    outputType: zodOutputSchema(z),
+    outputType: task.payload?.pilotFixture
+      ? demandValidatorPilotOutputSchema(z)
+      : zodOutputSchema(z),
     tools: [],
     handoffs: [],
     modelSettings: {
@@ -191,14 +217,14 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   }
 
   const requestBody = buildOpenAIRequest(db, task, agentDefinition, policy);
-  const estimateCents = liveWorkerCostEstimateCents(task);
+  const approvedCapCents = liveWorkerCostEstimateCents(task);
   let result;
   try {
     result = await runSdkAgent(requestBody, task, agentDefinition, policy, options);
   } catch (error) {
     error.outcomeUnknown = true;
     recordLiveWorkerFailureCost(db, task, error);
-    const failedCall = recordLiveWorkerModelCall(db, task, null, estimateCents, requestBody.model, "failed", {
+    const failedCall = recordLiveWorkerModelCall(db, task, null, approvedCapCents, requestBody.model, "failed", {
       provider: AGENTS_SDK_PROVIDER,
       sdkRunner: true,
       error: error.message,
@@ -220,6 +246,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const rawText = sdkOutputText(result.finalOutput);
   const output = normalizeOutput(typeof result.finalOutput === "object" ? result.finalOutput : null, rawText);
   const usage = sdkUsage(result);
+  const pricingEstimate = estimateModelUsageAud(requestBody.model, usage, { fallbackCents: approvedCapCents });
+  const estimateCents = pricingEstimate.amountCents;
   const responseLike = {
     id: responseId,
     usage,
@@ -231,6 +259,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
     interruptionCount: Array.isArray(result.interruptions) ? result.interruptions.length : 0,
     finalAgent: result.lastAgent?.name || agentDefinition.name,
+    reservedCostCents: approvedCapCents,
+    pricingEstimate,
     reason: "Live AI worker used the OpenAI Agents SDK runner after approval; no external tools or side effects were exposed.",
   });
   recordLiveWorkerCost(db, task, estimateCents, { id: responseId }, {
@@ -239,6 +269,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     modelCallId: modelCall.id,
     sdkRunner: true,
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
+    approvedCapCents,
+    pricingEstimate,
   });
 
   insertEvent(db, {
@@ -252,6 +284,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       taskId: task.id,
       modelCallId: modelCall.id,
       estimatedCostCents: estimateCents,
+      approvedCapCents,
       responseId,
       provider: AGENTS_SDK_PROVIDER,
     },
@@ -310,6 +343,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
       interruptions: Array.isArray(result.interruptions) ? result.interruptions.length : 0,
       usage,
+      pricingEstimate,
     },
   };
 }
@@ -341,6 +375,7 @@ function __setAgentRuntimeSdkRunnerForTests(runner) {
 module.exports = {
   AGENTS_SDK_PROVIDER,
   __setAgentRuntimeSdkRunnerForTests,
+  demandValidatorPilotOutputSchema,
   getAgentRuntimeReadiness,
   isAgentRuntimeSdkAvailable,
   runAgentRuntimeTask,

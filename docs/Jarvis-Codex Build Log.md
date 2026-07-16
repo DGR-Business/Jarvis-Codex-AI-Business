@@ -2374,3 +2374,56 @@ Next clean move:
    the exact pending A$1 maximum pilot.
 2. Run it once, compare it with the protected baseline, complete Daniel's
    usefulness review, reconcile cost, and decide revise, repeat, or stop.
+
+## 2026-07-16 - First Live Demand Validator Attempt Failed Safely
+
+Account and cost setup:
+
+- Created a restricted OpenAI project key with model-request permission only;
+  the secret is stored in the Windows user environment and was not written to
+  the repository, logs or chat.
+- Confirmed US$10 API credit with automatic recharge off. Daniel reported US$1
+  tax and an actual Australian-bank charge of A$15.79.
+- Verified the ChatGPT account invoice: Pro 5x is A$100 per month; the July
+  upgrade payment was A$94.68 after A$5.32 unused-Plus credit.
+- Added migration 10 and a separate AUD accounting ledger. July confirmed cash
+  paid is A$110.47 and active recurring overhead is A$100 per month. These do
+  not consume the controlled AI execution cap.
+
+Live attempt facts:
+
+- Created an encrypted database backup immediately before execution.
+- Started the runtime with the stored key and live flag enabled only for the
+  approved run. Health showed the SDK, credential, model, cap and provider ready.
+- Re-read the exact fixture and approval before execution: one turn, 1,200
+  output tokens, A$1 cap, no tools, handoffs or external effects, and the
+  protected baseline excluded.
+- Daniel's one-use approval scope hash matched. The task queued with zero prior
+  live calls, then exactly one Agents SDK call ran.
+- The call produced no usable result. The SDK reported an unterminated JSON
+  string at character 6,568. The task and attempt became `needs_attention` with
+  an unknown provider outcome.
+- No response id or token usage survived the parse failure. No pilot review,
+  usefulness verdict or capability pass was created.
+- The approval was consumed, the A$1 reservation became unknown, and no retry
+  occurred. Live mode was disabled immediately afterward.
+
+Correction and proof:
+
+- The strongest hypothesis is output truncation caused by an oversized repeated
+  generic output contract, but this is not presented as provider-confirmed
+  because finish metadata was not preserved.
+- Replaced the pilot response with a lean supplied-evidence contract while
+  retaining the one-turn, 1,200-token and A$1 limits.
+- Added published-token-price AUD estimation using the prepaid-credit cost basis
+  and kept estimates distinct from confirmed billing.
+- Excluded consumed approvals from executable-readiness counts.
+- `npm.cmd test` passes 84/84 tests. The correction has not yet passed a second
+  live call.
+
+Next clean move:
+
+1. Reconcile the unknown first-call exposure from OpenAI billing evidence.
+2. Prepare a fresh one-use approval for one corrected retry only after the
+   failed fixture is explicitly acknowledged and reset.
+3. Do not judge Demand Validator usefulness until a valid output exists.

@@ -8,6 +8,7 @@ const { ensureCapabilityAutonomy } = require("./capability-autonomy");
 const { getLiveAiWorkerReadiness } = require("./live-ai-worker-readiness");
 const { getLiveResearchReadiness } = require("./live-research-readiness");
 const { getLatestDigest } = require("./executive-digest");
+const { getAccountingSummary } = require("./accounting-ledger");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -222,6 +223,7 @@ function spendState(db) {
     incurredEstimateCents: Number(byStatus.incurred_estimate || 0),
     unknownCents: Number(byStatus.unknown || 0),
     reservedCents: Number(reservedByStatus.reserved || 0),
+    accounting: getAccountingSummary(db),
   };
 }
 

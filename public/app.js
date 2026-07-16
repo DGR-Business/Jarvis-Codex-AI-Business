@@ -395,7 +395,16 @@ function renderSystemPanel(data) {
   }
   if (store.systemTab === "spend") {
     const spend = data.spend;
-    return `<div class="metric-grid"><div class="metric sky"><span>Monthly cap</span><strong>${money(spend.monthlyCapCents, spend.currency)}</strong><small>Pre-revenue limit</small></div><div class="metric mint"><span>Reconciled</span><strong>${money(spend.reconciledCents, spend.currency)}</strong><small>Confirmed provider cost</small></div><div class="metric amber"><span>Estimated</span><strong>${money(spend.incurredEstimateCents, spend.currency)}</strong><small>Awaiting reconciliation</small></div><div class="metric coral"><span>Unresolved</span><strong>${money(spend.unknownCents, spend.currency)}</strong><small>Must be checked before retry</small></div></div>`;
+    const accounting = spend.accounting || { currency: "AUD", cashPaidCents: 0, recurringMonthlyCents: 0, recent: [] };
+    return `<div class="view-stack">
+      <section>${sectionHeading("AI and tool budget", "Approval caps and measured provider usage for controlled business work.")}
+        <div class="metric-grid"><div class="metric sky"><span>Monthly cap</span><strong>${money(spend.monthlyCapCents, spend.currency)}</strong><small>Pre-revenue limit</small></div><div class="metric mint"><span>Reconciled usage</span><strong>${money(spend.reconciledCents, spend.currency)}</strong><small>Confirmed provider cost</small></div><div class="metric amber"><span>Estimated usage</span><strong>${money(spend.incurredEstimateCents, spend.currency)}</strong><small>Awaiting provider reconciliation</small></div><div class="metric coral"><span>Unresolved</span><strong>${money(spend.unknownCents, spend.currency)}</strong><small>Must be checked before retry</small></div></div>
+      </section>
+      <section>${sectionHeading("Operating costs", "Actual cash records stay separate from the AI execution cap and are stored in Australian dollars.")}
+        <div class="metric-grid"><div class="metric coral"><span>Cash paid this month</span><strong>${money(accounting.cashPaidCents, accounting.currency)}</strong><small>Subscriptions and prepaid services</small></div><div class="metric sky"><span>Recurring monthly overhead</span><strong>${money(accounting.recurringMonthlyCents, accounting.currency)}</strong><small>Current active commitments</small></div></div>
+        ${accounting.recent?.length ? `<div class="plain-list">${accounting.recent.map((entry) => `<article class="plain-row"><div><h3>${escapeHtml(entry.description)}</h3><p>${escapeHtml(shortDate(entry.occurred_at))} | ${escapeHtml(entry.source)}</p></div><div><strong>${money(entry.amount_cents, entry.currency)}</strong>${badge(entry.entry_type === "recurring_commitment" ? "Monthly" : entry.status)}</div></article>`).join("")}</div>` : emptyState("No operating costs recorded", "Confirmed subscriptions and cash purchases will appear here in Australian dollars.", "receipt")}
+      </section>
+    </div>`;
   }
   if (store.systemTab === "connections") {
     return `<div class="connection-list">${data.connections.map((item) => `<article class="connection-row"><div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.metadata?.use || "Runtime connection")}</p></div>${badge(item.health)}</article>`).join("")}</div>`;

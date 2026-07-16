@@ -17,7 +17,10 @@ const { decideApproval } = require("../src/runtime/approvals");
 const { consumeApproval, ensureApprovalScope, validateApprovalScope } = require("../src/runtime/approval-scope");
 const { promoteCapability, recordCapabilityReview } = require("../src/runtime/capability-autonomy");
 const { createCommercialExperiment } = require("../src/runtime/commercial-results");
+const { demandValidatorPilotOutputSchema } = require("../src/runtime/agent-runtime");
+const { getAccountingSummary, recordAccountingEntry } = require("../src/runtime/accounting-ledger");
 const { reserveBudget, reservedThisMonth, resolveReservation } = require("../src/runtime/cost-ledger");
+const { estimateModelUsageAud } = require("../src/runtime/model-pricing");
 const { renderDeliverable, upsertDeliverableSection } = require("../src/runtime/deliverables");
 const { generateWeeklyDigest } = require("../src/runtime/executive-digest");
 const { getGumroadSalesState, importGumroadCsv } = require("../src/runtime/gumroad-import");
@@ -63,11 +66,88 @@ test("production seed starts with truthful empty operating records", () => {
     assert.equal(get(db, "SELECT COUNT(*) AS count FROM approvals").count, 0);
     assert.equal(get(db, "SELECT COUNT(*) AS count FROM deliverables").count, 0);
     assert.equal(get(db, "SELECT COUNT(*) AS count FROM messages").count, 0);
+    assert.equal(get(db, "SELECT COUNT(*) AS count FROM accounting_entries").count, 0);
     assert.equal(get(db, "SELECT COUNT(*) AS count FROM integrations").count > 0, true);
   } finally {
     db.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("AUD accounting records cash outflow and recurring overhead without consuming the AI cap", () => {
+  const runtime = runtimeDb("aud-accounting");
+  try {
+    recordAccountingEntry(runtime.db, {
+      id: "acct-api-credit",
+      entryType: "prepaid_credit_purchase",
+      category: "ai_infrastructure",
+      source: "OpenAI API",
+      description: "OpenAI API prepaid credit",
+      amountCents: 1579,
+      occurredAt: "2026-07-16T00:00:00+10:00",
+      metadata: { sourceCurrency: "USD", sourceTotalCents: 1100 },
+    });
+    recordAccountingEntry(runtime.db, {
+      id: "acct-chatgpt-pro-payment",
+      entryType: "cash_outflow",
+      category: "software_subscription",
+      source: "OpenAI ChatGPT",
+      description: "ChatGPT Pro upgrade payment",
+      amountCents: 9468,
+      occurredAt: "2026-07-05T00:00:00+10:00",
+    });
+    recordAccountingEntry(runtime.db, {
+      id: "acct-chatgpt-pro-recurring",
+      entryType: "recurring_commitment",
+      category: "software_subscription",
+      source: "OpenAI ChatGPT",
+      description: "ChatGPT Pro monthly subscription",
+      status: "active",
+      amountCents: 10000,
+      occurredAt: "2026-07-05T00:00:00+10:00",
+      nextDueAt: "2026-08-05T00:00:00+10:00",
+    });
+    const summary = getAccountingSummary(runtime.db, { month: "2026-07" });
+    assert.equal(summary.cashPaidCents, 11047);
+    assert.equal(summary.recurringMonthlyCents, 10000);
+    assert.equal(summary.entryCount, 3);
+    assert.equal(reservedThisMonth(runtime.db), 0);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("Terra token pricing remains an AUD estimate separate from the approved cap", () => {
+  const estimate = estimateModelUsageAud("gpt-5.6-terra", {
+    input_tokens: 1000,
+    cached_input_tokens: 100,
+    output_tokens: 1000,
+  }, { audPerUsd: 1.579, fallbackCents: 100 });
+  assert.equal(estimate.method, "published_token_price_converted_to_aud");
+  assert.equal(estimate.amountCents, 3);
+  assert.equal(estimate.audPerUsd, 1.579);
+  assert.equal(estimateModelUsageAud("unknown-model", { input_tokens: 1 }, { fallbackCents: 100 }).amountCents, 100);
+});
+
+test("Demand Validator pilot output stays lean enough for the approved response cap", () => {
+  const { z } = require("zod");
+  const parsed = demandValidatorPilotOutputSchema(z).safeParse({
+    summary: "The fixture identifies a repeated problem but contains no willingness-to-pay evidence.",
+    moneyMove: "Run a small interest test before building.",
+    evidence: ["Repeated cash-control tasks were missed."],
+    counterevidence: ["No paid buyers or product views were supplied."],
+    assumptions: ["The evaluation fixture is accurate but is not live evidence."],
+    priceChannelHypothesis: "Test one low-risk price through one qualified channel.",
+    smallestTest: "Show a concise offer to a small qualified audience.",
+    metric: "Qualified views, buyer actions and paid conversions.",
+    killRule: "Stop or revise at the declared sample without buyer action.",
+    risks: ["Demand and willingness to pay remain unproven."],
+    nextAction: "Prepare the bounded interest test.",
+    operatorDecision: "needs_evidence",
+    confidence: "low",
+  });
+  assert.equal(parsed.success, true);
+  assert.equal(Object.hasOwn(parsed.data, "businessDecision"), false);
 });
 
 test("encrypted backups authenticate and restore exact file bytes", async () => {
@@ -164,7 +244,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -201,7 +281,7 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 9);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 10);
   } finally {
     closeRuntime(runtime);
   }

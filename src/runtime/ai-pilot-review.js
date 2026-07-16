@@ -116,6 +116,7 @@ function recommendationForStatus(status) {
 }
 
 function buildActions({ status, packet, approval, liveRun }) {
+  if (status === "live_run_failed_review") return [];
   if (status === "ready_to_prepare_packet") {
     return [{ label: "Prepare Pilot Packet", action: "prepare-model-comparison-packet", id: "demand_validator", tone: "success" }];
   }
@@ -161,6 +162,7 @@ function buildAiPilotReview({
   const approval = approvalForPacket(approvals, packet);
   const task = taskForPacket(tasks, packet) || newest(asArray(tasks).filter((item) => item.kind === "live_ai_worker_execution" && item.agent === agentId), "updated_at");
   const liveRun = latestLiveRun(aiTeam.runs || [], agentId, task?.id) || latestLiveRun(aiTeam.runs || [], agentId);
+  const pilotFixture = task?.payload?.pilotFixture || null;
   const protectedRun = latestProtectedRun(agentWorkbench, agentId);
   const evalResult = evalForRun(aiTeam.evalResults || [], liveRun);
   const modelCall = modelCallForRun(modelCalls, liveRun, task);
@@ -175,10 +177,15 @@ function buildAiPilotReview({
     workerName: definition.name || "Demand Validator",
     status,
     summary: recommendationForStatus(status),
-    businessQuestion: packet?.protectedBaseline?.fixture?.inputSummary
+    businessQuestion: pilotFixture?.question
+      || packet?.protectedBaseline?.fixture?.inputSummary
       || packet?.comparisonPlan?.purpose
       || "Can Demand Validator produce useful commercial judgement for this digital-product opportunity?",
-    fixture: packet ? {
+    fixture: pilotFixture ? {
+      id: pilotFixture.id,
+      title: pilotFixture.question,
+      expectedOutput: task?.payload?.expectedOutput || "A concise supplied-evidence demand recommendation.",
+    } : packet ? {
       id: packet.fixtureId,
       title: packet.fixtureTitle,
       expectedOutput: packet.protectedBaseline?.fixture?.expectedOutput || "",

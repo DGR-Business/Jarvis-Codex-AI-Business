@@ -1,6 +1,6 @@
 # Next Clean Move
 
-Status: Demand Validator approval prepared; secure setup and execution are next
+Status: first live attempt failed safely; reconcile and separately approve retry
 Saved: 2026-07-16
 Owner: Daniel
 Maintainer: Codex
@@ -23,10 +23,10 @@ The recoverable clean baseline is complete.
    fresh checkout through install, 81/81 tests, healthy startup, truthful empty
    state, and a clean real-browser load.
 
-## Prepared Pilot
+## First Live Attempt
 
-The first real Demand Validator approval is now waiting in the dashboard. It
-uses the pinned OpenAI Agents SDK `0.13.4` and `gpt-5.6-terra`.
+Daniel approved the exact controlled scope and one Agents SDK provider call ran.
+The provider/model path was `@openai/agents` `0.13.4` with `gpt-5.6-terra`.
 
 - one versioned evidence fixture;
 - no tools;
@@ -37,28 +37,43 @@ uses the pinned OpenAI Agents SDK `0.13.4` and `gpt-5.6-terra`.
 - no publishing, account action, customer contact, legal/compliance decision,
   money movement, or fallback substitution for the SDK acceptance run.
 
-Execution now takes the provider, model, token limit, fixture, and cost cap from
-the exact approved scope. A later environment change cannot silently substitute
-a different provider or model.
+Observed result:
 
-Current state:
+- exactly one provider call was attempted;
+- the task ended `needs_attention` with an unknown provider outcome;
+- the SDK reported `Invalid output type: Unterminated string in JSON at position
+  6568 (line 1 column 6569)`;
+- no usable recommendation, token count, provider response id, deterministic
+  pilot review, or commercial result was captured;
+- the approval was consumed once, the task was not retried, and no pilot pass
+  was awarded;
+- the A$1 reservation is recorded as unknown exposure, not actual spend;
+- live-model mode is off again.
 
-- approval packet prepared and pending;
-- Agents SDK installed and ready;
-- 81/81 automated tests pass;
-- OpenAI credential is not configured;
-- live-model mode is off;
-- no live provider call or spend has occurred.
+The detailed evidence record is
+`docs/reviews/DEMAND-VALIDATOR-LIVE-PILOT-2026-07-16.md`.
+
+Corrective work completed:
+
+- replaced the oversized repeated business-decision output with a lean Demand
+  Validator supplied-evidence contract while retaining the 1,200-token ceiling;
+- added token-price AUD estimation using published model rates and the actual
+  prepaid-credit acquisition cost;
+- added migration 10 and a separate AUD accounting ledger so subscriptions and
+  prepaid cash purchases do not consume the controlled AI execution cap;
+- changed readiness so consumed approvals no longer look executable;
+- 84/84 automated tests pass. The correction has not yet passed a live call.
 
 ## Following Move
 
-1. Obtain Daniel's action-time approval to open the official OpenAI account/key
-   flow and store the resulting credential in the Windows user environment,
-   never in this repository or chat.
-2. Enable live models only for this controlled run.
-3. Execute the exact pending dashboard decision once.
-4. Review evidence use, unsupported claims, commercial usefulness, trace/eval
-   state, scope compliance, and reconciled cost.
+1. Reconcile the failed attempt against OpenAI usage/billing when provider data
+   becomes visible. Do not convert the A$1 unknown amount into actual spend by
+   assumption.
+2. Reset the technically failed fixture only after the incident is acknowledged,
+   then prepare a new one-use approval over the same corrected scope.
+3. Obtain Daniel's separate action-time approval before one retry.
+4. If a valid result is captured, review evidence use, unsupported claims,
+   commercial usefulness, trace/eval state, scope compliance, and cost.
 
 Daniel then reviews commercial usefulness, unsupported claims, evidence use,
 trace/eval state, scope compliance, and reconciled cost. The only valid next
@@ -87,6 +102,4 @@ over supplied evidence after five consecutive passes, or stop.
   GitHub no-reply author identity and contains no private operator files,
   runtime database, generated artifacts, environment secrets, or dependencies.
 
-This note and the prepared dashboard item record sequence only. Neither is
-authorization to connect a model, create an account, execute the A$1 pilot,
-publish, spend, or contact customers.
+This note is not authorization to retry, publish, spend, or contact customers.

@@ -22,12 +22,12 @@ Current focus:
 
 Internal foundation status on 2026-07-16:
 
-- versioned migrations through migration 9, isolated tests/artifacts,
+- versioned migrations through migration 10, isolated tests/artifacts,
   deterministic outputs, atomic
   claims, exact approval scope, honest cost states, timeout recovery, local
   security, evidence provenance, Gumroad CSV privacy, risk-tiered autonomy, and
   the five-section cockpit are implemented;
-- 81 automated tests pass, including a production-seed assertion that fresh
+- 84 automated tests pass, including a production-seed assertion that fresh
   runtime databases contain no fabricated workflows, approvals, outputs, or
   commercial evidence;
 - an isolated clean source copy installed from `package-lock.json`, passed all
@@ -58,11 +58,22 @@ Internal foundation status on 2026-07-16:
   and the current cost-balanced `gpt-5.6-terra` model. Execution is bound to
   the exact approved provider, model, output limit, fixture, and cost cap, so
   later environment changes cannot silently alter an approved run;
-- the one-turn, no-tool, A$1 maximum pilot approval packet is prepared and
-  waiting in Decisions. Credentials and live mode remain off, and no live
-  model call or provider spend has occurred;
-- the next gated action is secure credential setup followed by Daniel's
-  separate action-time approval of that exact pilot.
+- a restricted model-request-only OpenAI key is stored outside the repository;
+  the API account has US$10 prepaid credit and automatic recharge is off;
+- the first one-turn, no-tool, A$1 maximum attempt made exactly one Agents SDK
+  call. It produced no usable result because structured-output parsing failed
+  with an unterminated JSON string. The one-use approval was consumed, no
+  retry ran, no pilot pass was awarded, and A$1 remains an unknown exposure
+  until provider billing is reconciled;
+- the strongest current explanation is that the large generic output contract
+  could not finish inside 1,200 output tokens. This is a diagnosis, not a
+  provider-confirmed finish reason because the SDK did not preserve raw usage
+  or a response id after the parse failure;
+- the pilot now uses a lean supplied-evidence result contract, token-price AUD
+  estimation, an AUD operating-cost ledger, and consumed-approval filtering.
+  These corrections pass 84/84 tests but have not yet passed a second live run;
+- live mode is off. The next gated action is provider-cost reconciliation and
+  a fresh, separately approved retry of the corrected one-turn pilot.
 
 ## 1. North Star
 
@@ -694,16 +705,18 @@ Operator approval is required for:
 
 ### Now
 
-1. With separate action-time approval, configure the OpenAI credential outside
-   the repository and enable live models only for the controlled pilot.
-2. Run the prepared A$1 maximum Demand Validator Agents SDK decision over one
-   versioned evidence fixture, with no tools, handoffs, or external effects.
-3. Compare the SDK result with the protected baseline, have Daniel judge
+1. Reconcile the first failed attempt against OpenAI usage/billing. Keep its A$1
+   record unknown until provider evidence supports a lower confirmed amount.
+2. With a fresh action-time approval, retry the corrected A$1 maximum Demand
+   Validator Agents SDK pilot once over the same versioned evidence fixture,
+   with no tools, handoffs, or external effects.
+3. If and only if a valid result is captured, compare it with the protected
+   baseline, have Daniel judge
    commercial usefulness, reconcile cost, and decide revise, repeat, promote
    only the exact capability, or stop.
 4. Preserve the proven recovery behavior: encrypted source/database/artifact
    backups, authenticated restore, retention, and private operator records.
-5. Preserve the proven clean-source behavior: lockfile install, 81/81
+5. Preserve the proven clean-source behavior: lockfile install, 84/84
    tests, healthy startup, and no synthetic production work or evidence.
 
 ### Next

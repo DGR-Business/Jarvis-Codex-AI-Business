@@ -210,6 +210,9 @@ function getRecentTasks(db, workflowId) {
 function buildWorkerPrompt(task, agentDefinition, policy) {
   const requested = task.payload || {};
   const hardStops = agentDefinition.approval_policy?.mustPauseFor || [];
+  const outputInstruction = requested.pilotFixture
+    ? "For this controlled Demand Validator pilot, return only the concise supplied-evidence recommendation fields requested by the output schema. Use no more than two short items in each list and one short paragraph per text field. Do not repeat the same judgement in a generic businessDecision object."
+    : "The businessDecision object must name the buyer, problem, offer, channel, money move, evidence summary, risk, success metric, stop rule, and learning-loop fields. externalActionsAllowed must be false.";
   return [
     `Worker: ${agentDefinition.name}`,
     `Role: ${agentDefinition.role}`,
@@ -223,7 +226,7 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
     "Your job is to compress the available runtime evidence into a practical operator decision.",
     "Use ordinary business language. If evidence is weak, say so and recommend the smallest useful next action.",
     "For a controlled pilot, reason only over suppliedEvidenceFixture. State counterevidence and assumptions explicitly. Never infer live demand from a test fixture.",
-    "The businessDecision object must name the buyer, problem, offer, channel, money move, evidence summary, risk, success metric, stop rule, and learning-loop fields. externalActionsAllowed must be false.",
+    outputInstruction,
   ].join("\n");
 }
 
@@ -347,6 +350,7 @@ async function callOpenAIResponses(body, options = {}) {
 
 function recordLiveWorkerModelCall(db, task, response, estimateCents, model, status = "completed", metadata = {}) {
   const usage = tokenUsage(response || {});
+  const reservedCostCents = Math.max(0, Number(metadata.reservedCostCents ?? estimateCents));
   const callId = `model_${randomId()}`;
   run(
     db,
@@ -380,7 +384,7 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
       now(),
       response?.id || null,
       status === "completed" ? "incurred_estimate" : "unknown",
-      estimateCents,
+      reservedCostCents,
       status === "completed" ? estimateCents : 0,
       0,
       status === "completed" ? "known" : "unknown",

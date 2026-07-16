@@ -52,7 +52,10 @@ function getLiveAiWorkerReadiness(db) {
   const agentRuntime = getAgentRuntimeReadiness();
   const liveWorkerTasks = tasks.filter((task) => task.kind === "live_ai_worker_execution");
   const pendingApprovals = approvals.filter((approval) => approval.scope === "live_ai_worker_spend" && approval.status === "pending");
-  const approvedApprovals = approvals.filter((approval) => approval.scope === "live_ai_worker_spend" && approval.status === "approved");
+  const approvedApprovals = approvals.filter((approval) => approval.scope === "live_ai_worker_spend"
+    && approval.status === "approved"
+    && !approval.consumed_at
+    && (!approval.expires_at || approval.expires_at > new Date().toISOString()));
   const completedLiveRuns = all(
     db,
     "SELECT COUNT(*) AS count FROM agent_runs WHERE mode IN ('live-ai-worker', 'openai-agents-sdk', 'live-agent') AND status = 'completed'",
