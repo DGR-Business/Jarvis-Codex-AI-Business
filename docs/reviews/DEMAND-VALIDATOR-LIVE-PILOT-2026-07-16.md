@@ -152,6 +152,28 @@ process, so the current protected runtime has no credential loaded.
 - The stale unknown-outcome alert is resolved. Important Work now contains only
   the genuine operator review of the successful recommendation.
 
+## Post-Run Observability Correction
+
+Daniel found that the OpenAI trace existed but its Responses span displayed
+`Could not fetch Response`. The cause was verified in the pilot runner:
+
+- `modelSettings.store` was explicitly `false`, so the successful Response was
+  not retained for later provider retrieval;
+- `traceIncludeSensitiveData` was explicitly `false`, so generation input and
+  output were omitted from the provider trace.
+
+Those settings were privacy-preserving but unsuitable for a controlled fixture
+that Daniel needs to inspect. The historical provider Response cannot be made
+retrievable after the fact. Its structured result, review, usage and local trace
+were already preserved in Jarvis.
+
+The AI Team now provides a focused run-review drawer and API record. Future
+non-personal controlled fixtures bind provider response storage and trace
+content to the exact single-use approval scope. Other work remains privacy-first
+unless its own scope explicitly allows provider retention.
+
+The usefulness verdict remains pending until Daniel reviews this local record.
+
 ## Next Gate
 
 Daniel must judge whether the recommendation was commercially useful. No

@@ -81,6 +81,18 @@ Internal foundation status on 2026-07-16:
   fixture. It completed in one response with 1,329 input tokens, 335 output
   tokens, zero tools, zero handoffs and no external effects. Runtime eval scored
   100 and all deterministic pilot checks passed;
+- the successful run's OpenAI trace was visible but its Response detail was not:
+  the pilot had explicitly disabled provider response storage and trace content.
+  The historical provider detail cannot be recovered, so the usefulness verdict
+  remains pending. A focused local run review now exposes the observable
+  evidence, judgement, recommendation, checks, usage, cost and runtime trace;
+- future non-personal pilot fixtures bind provider response storage and trace
+  content to the exact approval scope. Privacy-first settings remain the default
+  for other work;
+- `START JARVIS.cmd` and `STOP JARVIS.cmd` provide a one-click protected Windows
+  lifecycle without requiring Daniel to ask Codex to start the runtime;
+- the official OpenAI Developer Docs MCP integration is installed in Codex and
+  the current Agents SDK architecture review is recorded under `docs/reviews/`;
 - the signed-in OpenAI usage and trace surfaces confirm two requests, 2,742
   aggregate tokens and US$0.03 total usage. At the actual prepaid-credit rate,
   the ledger records A$0.05 reconciled aggregate spend, with no unknown or

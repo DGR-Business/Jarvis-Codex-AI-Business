@@ -7,6 +7,7 @@ const { decideApproval, decideApprovalByToken } = require("../src/runtime/approv
 const { processApprovalReply } = require("../src/runtime/approval-replies");
 const { runOnce, runUntilBlocked } = require("../src/runtime/orchestrator");
 const { getDashboardState } = require("../src/runtime/state");
+const { getAgentRunDetail } = require("../src/runtime/cockpit-state");
 const { createCommandPlan } = require("../src/runtime/planner");
 const { createApp, createRuntime } = require("../src/server");
 const { getLiveAiWorkerReadiness } = require("../src/runtime/live-ai-worker-readiness");
@@ -2260,6 +2261,9 @@ test("live AI worker readiness and smoke test create approval-gated work without
     assert.deepEqual(approval.payload.providerRequirements.env, ["OPENAI_API_KEY"]);
     assert.ok(approval.payload.providerRequirements.flags.includes("JARVIS_ENABLE_LIVE_MODELS"));
     assert.ok(approval.payload.providerRequirements.capabilities.includes("openai_agents_sdk_runner"));
+    assert.equal(approval.payload.tracePolicy.providerResponseStored, false);
+    assert.equal(approval.payload.tracePolicy.providerTraceContent, false);
+    assert.equal(approval.payload.tracePolicy.localReviewStored, true);
     assert.equal(cost.amount_cents, 0);
     assert.equal(cost.status, "approval_requested");
     assert.equal(state.runtime.liveAiWorkers.pendingApprovals, 1);
@@ -2463,8 +2467,8 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
   process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
 
   let capturedRequest = null;
-  __setAgentRuntimeSdkRunnerForTests(async ({ requestBody, task, agentDefinition, policy, traceId }) => {
-    capturedRequest = { requestBody, task, agentDefinition, policy, traceId };
+  __setAgentRuntimeSdkRunnerForTests(async ({ requestBody, task, agentDefinition, policy, traceId, tracePolicy }) => {
+    capturedRequest = { requestBody, task, agentDefinition, policy, traceId, tracePolicy };
     return {
       finalOutput: {
         heading: "Demand Validator recommendation",
@@ -2566,6 +2570,9 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(capturedRequest.requestBody.model, "gpt-5.6-terra-approved");
     assert.equal(capturedRequest.agentDefinition.id, "demand_validator");
     assert.match(capturedRequest.traceId, /^trace_[A-Za-z0-9_-]+$/);
+    assert.equal(capturedRequest.tracePolicy.providerResponseStored, false);
+    assert.equal(capturedRequest.tracePolicy.providerTraceContent, false);
+    assert.equal(capturedRequest.tracePolicy.localReviewStored, true);
     assert.match(capturedRequest.requestBody.input[0].content, /Worker: Demand Validator/);
     assert.equal(capturedRequest.requestBody.max_output_tokens, 777);
 
@@ -2626,6 +2633,19 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(state.aiTeam.workbench.byAgent.demand_validator.promotionGate.requirements.find((item) => item.id === "live_trace").ok, true);
     assert.equal(state.aiTeam.workbench.byAgent.demand_validator.promotionGate.comparison.liveCostCents, 0);
     assert.equal(state.aiTeam.workbench.metrics.readyForNarrowLiveUse, 0);
+
+    const runDetail = getAgentRunDetail(db, liveRun.id);
+    assert.equal(runDetail.schema, "jarvis_agent_run_review_v1");
+    assert.equal(runDetail.run.workerName, "Demand Validator");
+    assert.match(runDetail.process.conclusion, /promising enough for a tiny manual test/i);
+    assert.ok(runDetail.process.supportingEvidence.length >= 1);
+    assert.equal(runDetail.execution.tracePolicy.providerResponseStored, false);
+    assert.equal(runDetail.execution.tracePolicy.providerTraceContent, false);
+    assert.equal(runDetail.execution.tracePolicy.localReviewStored, true);
+    assert.equal(runDetail.execution.traceId, capturedRequest.traceId);
+    assert.equal(runDetail.execution.inputTokens, 900);
+    assert.equal(runDetail.execution.outputTokens, 420);
+    assert.ok(runDetail.developer.traceEvents.some((trace) => trace.type === "model_call_completed"));
     assert.equal(state.aiTeam.workbench.metrics.liveTested >= 1, true);
 
     assert.equal(state.aiPilotReview.status, "live_output_ready_for_review");

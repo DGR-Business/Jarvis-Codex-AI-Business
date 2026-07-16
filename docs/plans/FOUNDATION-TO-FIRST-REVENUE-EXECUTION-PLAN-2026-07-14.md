@@ -200,8 +200,10 @@ Recheck these official Gumroad references immediately before launch:
   passed. OpenAI usage confirms A$0.05 aggregate cost across the two calls. All
   86 tests pass, a complete encrypted post-pilot checkpoint has passed
   authenticated database/source/artifact restore, and live mode is off.
-  Daniel's usefulness verdict remains the gate before this capability earns the
-  first success in its five-run sequence.
+  A focused local run-review surface is available because the historical
+  privacy-first provider trace cannot retrieve its Response detail. Daniel's
+  usefulness verdict remains the gate before this capability earns the first
+  success in its five-run sequence.
 - Phase 6: Gumroad import, privacy handling, launch gate, limits, and metrics are
   ready; opportunity selection, product creation, account action, publishing,
   and buyer test remain unperformed.

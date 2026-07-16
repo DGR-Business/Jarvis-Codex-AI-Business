@@ -58,6 +58,7 @@ function decisionCard(approval) {
     provider: payload.provider || null,
     worker: payload.worker?.name || payload.requestedWorker || null,
     effects: approval.expectedEffects,
+    tracePolicy: payload.tracePolicy || null,
     actions: ["approve", "changes", "reject"],
   };
 }
@@ -447,8 +448,192 @@ function getAgentDetail(db, id) {
   };
 }
 
+function elapsedMilliseconds(startedAt, completedAt) {
+  const start = Date.parse(startedAt || "");
+  const end = Date.parse(completedAt || "");
+  return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : null;
+}
+
+function getAgentRunDetail(db, id) {
+  const runRecord = get(db, "SELECT * FROM agent_runs WHERE id = ?", [id]);
+  if (!runRecord) return null;
+  const runMetadata = fromJson(runRecord.metadata, {});
+  const definition = get(db, "SELECT id, name, role FROM agent_definitions WHERE id = ?", [runRecord.agent_id]);
+  const taskRow = runRecord.task_id ? get(db, "SELECT * FROM tasks WHERE id = ?", [runRecord.task_id]) : null;
+  const task = taskRow ? {
+    ...taskRow,
+    payload: fromJson(taskRow.payload, {}),
+    result: fromJson(taskRow.result, {}),
+  } : null;
+  const modelCallRow = runRecord.model_call_id
+    ? get(db, "SELECT * FROM model_calls WHERE id = ?", [runRecord.model_call_id])
+    : get(db, "SELECT * FROM model_calls WHERE task_id = ? ORDER BY created_at DESC LIMIT 1", [runRecord.task_id]);
+  const modelCall = modelCallRow ? { ...modelCallRow, metadata: fromJson(modelCallRow.metadata, {}) } : null;
+  const evaluationRow = get(db, "SELECT * FROM agent_eval_results WHERE run_id = ? ORDER BY created_at DESC LIMIT 1", [id]);
+  const evaluation = evaluationRow ? {
+    ...evaluationRow,
+    criteria: fromJson(evaluationRow.criteria, []),
+    findings: fromJson(evaluationRow.findings, []),
+    metadata: fromJson(evaluationRow.metadata, {}),
+  } : null;
+  const reviewRow = get(db, "SELECT * FROM agent_pilot_reviews WHERE run_id = ?", [id]);
+  const review = reviewRow ? { ...reviewRow, criteria: fromJson(reviewRow.criteria, {}) } : null;
+  const fixtureId = review?.fixture_id || task?.payload?.pilotFixture?.id || null;
+  const fixtureRow = fixtureId ? get(
+    db,
+    `SELECT id, venture_id, captured_at, question, buyer, hypothesis, sources,
+            constraints, fixture_hash, status, created_at
+     FROM agent_pilot_fixtures WHERE id = ?`,
+    [fixtureId],
+  ) : null;
+  const fixture = fixtureRow ? {
+    ...fixtureRow,
+    sources: fromJson(fixtureRow.sources, []),
+    constraints: fromJson(fixtureRow.constraints, {}),
+  } : null;
+  const traces = parseRows(all(
+    db,
+    "SELECT * FROM agent_trace_events WHERE run_id = ? ORDER BY sequence ASC",
+    [id],
+  ));
+  const handoffs = parseRows(all(
+    db,
+    "SELECT * FROM agent_handoffs WHERE from_run_id = ? ORDER BY created_at ASC",
+    [id],
+  ));
+  const costRow = task ? get(
+    db,
+    "SELECT * FROM costs WHERE id = ? OR (workflow_id = ? AND category = 'live_ai_worker') ORDER BY occurred_at DESC LIMIT 1",
+    [`cost_spend_${task.id}`, task.workflow_id],
+  ) : null;
+  const cost = costRow ? { ...costRow, metadata: fromJson(costRow.metadata, {}) } : null;
+  const approvalId = task?.payload?.liveSpendRequest?.approvalId || null;
+  const approval = approvalId ? get(db, "SELECT id, status, scope_hash, requested_at, decided_at, consumed_at FROM approvals WHERE id = ?", [approvalId]) : null;
+  const output = task?.result?.output || {};
+  const recommendation = output.pilotRecommendation || {
+    evidence: output.evidence || [],
+    counterevidence: output.counterevidence || [],
+    assumptions: output.assumptions || [],
+    priceChannelHypothesis: output.priceChannelHypothesis || "",
+    smallestTest: output.smallestTest || output.nextAction || "",
+    metric: output.metric || "",
+    killRule: output.killRule || "",
+    confidence: output.confidence || "",
+    risks: output.risks || [],
+  };
+  const approvedTracePolicy = task?.payload?.liveSpendRequest?.tracePolicy || null;
+  const tracePolicy = approvedTracePolicy || {
+    providerResponseStored: false,
+    providerTraceContent: false,
+    localReviewStored: true,
+    dataClass: "legacy_controlled_fixture",
+    purpose: "The original run used privacy-first settings; its provider response cannot be retrieved from the Platform.",
+  };
+  const inputTokens = Number(modelCall?.input_tokens || 0);
+  const outputTokens = Number(modelCall?.output_tokens || 0);
+  const reconciledCostCents = Number(modelCall?.reconciled_cost_cents || modelCall?.actual_cost_cents || (cost?.status === "reconciled" ? cost.amount_cents : 0) || 0);
+
+  return {
+    schema: "jarvis_agent_run_review_v1",
+    run: {
+      id: runRecord.id,
+      workerId: runRecord.agent_id,
+      workerName: definition?.name || runRecord.agent_id,
+      workerRole: definition?.role || "Specialist worker",
+      taskId: runRecord.task_id,
+      taskTitle: task?.title || runMetadata.taskTitle || "AI worker run",
+      status: runRecord.status,
+      summary: output.summary || runRecord.output_summary || "No result summary was captured.",
+      startedAt: runRecord.started_at,
+      completedAt: runRecord.completed_at,
+      durationMs: elapsedMilliseconds(runRecord.started_at, runRecord.completed_at),
+    },
+    process: {
+      explanation: "This is a structured account of the evidence, judgement and result. It does not expose hidden private model chain-of-thought.",
+      question: fixture?.question || task?.payload?.subject || "No question was recorded.",
+      buyer: fixture?.buyer || output.businessDecision?.buyer || "No buyer was recorded.",
+      hypothesis: fixture?.hypothesis || output.businessDecision?.continuousImprovement?.hypothesis || "No hypothesis was recorded.",
+      suppliedEvidence: (fixture?.sources || []).map((source) => ({
+        id: source.id || null,
+        title: source.title || "Evidence item",
+        summary: source.summary || "",
+        sourceType: source.sourceType || "unknown",
+        url: source.url || null,
+      })),
+      supportingEvidence: recommendation.evidence || [],
+      counterevidence: recommendation.counterevidence || [],
+      assumptions: recommendation.assumptions || [],
+      conclusion: output.summary || runRecord.output_summary || "No conclusion was captured.",
+      priceChannelHypothesis: recommendation.priceChannelHypothesis || "Not stated.",
+      smallestTest: recommendation.smallestTest || "Not stated.",
+      metric: recommendation.metric || "Not stated.",
+      stopRule: recommendation.killRule || "Not stated.",
+      confidence: recommendation.confidence || output.confidence || "not stated",
+      risks: recommendation.risks || output.risks || [],
+      nextAction: output.nextAction || recommendation.smallestTest || "Review before continuing.",
+      operatorDecision: output.operatorDecision || "needs_evidence",
+    },
+    review: review ? {
+      deterministicStatus: review.deterministic_status,
+      operatorVerdict: review.operator_verdict,
+      usefulnessScore: review.usefulness_score,
+      note: review.note,
+      criteria: review.criteria,
+      outputHash: review.output_hash,
+      reviewedAt: review.reviewed_at,
+    } : null,
+    execution: {
+      provider: modelCall?.metadata?.provider || review?.provider || runRecord.mode,
+      model: modelCall?.selected_model || "Not recorded",
+      responseId: modelCall?.provider_request_id || modelCall?.metadata?.responseId || null,
+      traceId: review?.trace_id || modelCall?.metadata?.agentSdkTraceId || runMetadata.agentSdkTraceId || null,
+      inputTokens,
+      outputTokens,
+      totalTokens: Number(modelCall?.metadata?.totalTokens || inputTokens + outputTokens),
+      rawResponses: Number(modelCall?.metadata?.rawResponseCount || 0),
+      interruptions: Number(modelCall?.metadata?.interruptionCount || 0),
+      sdkTools: task?.payload?.liveSpendRequest?.tools || [],
+      sdkHandoffs: 0,
+      runtimeHandoffs: handoffs.map((handoff) => ({
+        id: handoff.id,
+        from: handoff.from_agent_id,
+        to: handoff.to_agent_id,
+        status: handoff.status,
+        summary: handoff.summary,
+      })),
+      externalEffects: task?.payload?.liveSpendRequest?.effects || [],
+      tracePolicy: {
+        ...tracePolicy,
+        legacyPolicyInferred: approvedTracePolicy === null,
+      },
+      cost: {
+        status: modelCall?.cost_status || cost?.status || "not_recorded",
+        estimatedCents: Number(modelCall?.estimated_cost_cents || 0),
+        reconciledCents: reconciledCostCents,
+        currency: cost?.currency || CONFIG.currency,
+      },
+    },
+    quality: evaluation ? {
+      status: evaluation.status,
+      score: evaluation.score,
+      criteria: evaluation.criteria,
+      findings: evaluation.findings,
+      evaluationId: evaluation.id,
+    } : null,
+    developer: {
+      fixtureId,
+      fixtureHash: fixture?.fixture_hash || task?.payload?.liveSpendRequest?.fixtureHash || null,
+      approval,
+      modelCallId: modelCall?.id || null,
+      structuredOutput: output,
+      traceEvents: traces,
+    },
+  };
+}
+
 module.exports = {
   getAgentDetail,
+  getAgentRunDetail,
   getAiTeamState,
   getBusinessTestsState,
   getCockpitState,

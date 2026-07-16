@@ -349,6 +349,7 @@ function renderAiTeam() {
   const nextFixture = pilot.fixtures?.find((fixture) => ["ready", "reviewed"].includes(fixture.status));
   const pendingReview = pilot.reviews?.find((review) => review.operator_verdict === "pending");
   const pilotAction = pendingReview ? `<div class="pilot-review-form">
+      <button class="secondary-button" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(pendingReview.run_id)}">${icon("scan-search")}Review what the agent did</button>
       <select id="pilot-usefulness-score" aria-label="Commercial usefulness score"><option value="5">5 - Excellent</option><option value="4">4 - Useful</option><option value="3" selected>3 - Adequate</option><option value="2">2 - Weak</option><option value="1">1 - Not useful</option></select>
       <input id="pilot-review-note" type="text" placeholder="Short review note" aria-label="Pilot review note">
       <div class="work-actions"><button class="primary-button" data-action="review-pilot" data-run-id="${escapeHtml(pendingReview.run_id)}" data-verdict="useful">${icon("check")}Useful</button><button class="secondary-button" data-action="review-pilot" data-run-id="${escapeHtml(pendingReview.run_id)}" data-verdict="changes_required">${icon("pencil-line")}Needs changes</button></div>
@@ -437,11 +438,12 @@ function renderView() {
   refreshIcons();
 }
 
-function openDrawer(title, kicker, body) {
+function openDrawer(title, kicker, body, options = {}) {
   $("#drawer-title").textContent = title;
   $("#drawer-kicker").textContent = kicker;
   $("#drawer-body").innerHTML = body;
   $("#drawer").classList.add("open");
+  $("#drawer").classList.toggle("wide", options.wide === true);
   $("#drawer").setAttribute("aria-hidden", "false");
   $("#drawer-backdrop").classList.add("open");
   refreshIcons();
@@ -449,12 +451,74 @@ function openDrawer(title, kicker, body) {
 
 function closeDrawer() {
   $("#drawer").classList.remove("open");
+  $("#drawer").classList.remove("wide");
   $("#drawer").setAttribute("aria-hidden", "true");
   $("#drawer-backdrop").classList.remove("open");
 }
 
 function detailSection(title, content) {
   return `<section class="drawer-section"><h3>${escapeHtml(title)}</h3>${content}</section>`;
+}
+
+function detailList(items, emptyMessage = "None recorded.") {
+  return items?.length
+    ? `<ul>${items.map((item) => `<li>${escapeHtml(typeof item === "string" ? item : item.summary || item.title || String(item))}</li>`).join("")}</ul>`
+    : `<p>${escapeHtml(emptyMessage)}</p>`;
+}
+
+function reviewCriteria(criteria = {}) {
+  const labels = {
+    sourceValidity: "Evidence was identifiable",
+    unsupportedClaims: "No unsupported demand claim",
+    reasoningStructure: "Required judgement fields were present",
+    commercialUsefulness: "Commercial usefulness",
+    scopeCompliance: "Approved scope was respected",
+    costCompliance: "Cost stayed inside the cap",
+    baselineExcludedFromWorker: "Protected answer was hidden",
+  };
+  return `<div class="review-check-list">${Object.entries(criteria).map(([key, value]) => {
+    const waiting = typeof value === "string";
+    const tone = value === true ? "mint" : value === false ? "coral" : "amber";
+    const status = value === true ? "Passed" : value === false ? "Failed" : waiting ? "Waiting for your review" : humanStatus(value);
+    return `<div class="review-check"><span>${escapeHtml(labels[key] || humanStatus(key))}</span>${badge(status, tone)}</div>`;
+  }).join("")}</div>`;
+}
+
+function runReviewBody(data) {
+  const process = data.process;
+  const execution = data.execution;
+  const visibility = execution.tracePolicy || {};
+  const duration = data.run.durationMs === null ? "Not recorded" : `${(data.run.durationMs / 1000).toFixed(2)} seconds`;
+  const suppliedEvidence = process.suppliedEvidence?.length
+    ? `<div class="evidence-list">${process.suppliedEvidence.map((item) => `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(humanStatus(item.sourceType))}</small></article>`).join("")}</div>`
+    : "<p>No supplied evidence was recorded.</p>";
+  const traceEvents = data.developer.traceEvents?.length
+    ? `<ol class="trace-list">${data.developer.traceEvents.map((event) => `<li><strong>${escapeHtml(event.title)}</strong><span>${escapeHtml(event.detail || humanStatus(event.type))}</span><small>${escapeHtml(shortDate(event.ts))}</small></li>`).join("")}</ol>`
+    : "<p>No local trace events were recorded.</p>";
+  const handoffs = execution.runtimeHandoffs?.length
+    ? execution.runtimeHandoffs.map((handoff) => `${humanStatus(handoff.from)} to ${humanStatus(handoff.to)}: ${handoff.summary || handoff.status}`)
+    : [];
+  const providerVisibility = visibility.providerResponseStored && visibility.providerTraceContent
+    ? "OpenAI response storage and trace content were enabled for this approved non-personal fixture."
+    : "This run used privacy-first settings. OpenAI did not retain the response for retrieval and the trace omitted its input/output content, which explains the Platform error. The local record remains available here.";
+  const verdictControls = data.review?.operatorVerdict === "pending" ? `<div class="pilot-review-form compact-form">
+      <select id="drawer-pilot-usefulness-score" aria-label="Commercial usefulness score"><option value="5">5 - Excellent</option><option value="4">4 - Useful</option><option value="3" selected>3 - Adequate</option><option value="2">2 - Weak</option><option value="1">1 - Not useful</option></select>
+      <input id="drawer-pilot-review-note" type="text" placeholder="Short review note" aria-label="Pilot review note">
+      <div class="work-actions"><button class="primary-button" data-action="review-pilot" data-review-source="drawer" data-run-id="${escapeHtml(data.run.id)}" data-verdict="useful">${icon("check")}Useful</button><button class="secondary-button" data-action="review-pilot" data-review-source="drawer" data-run-id="${escapeHtml(data.run.id)}" data-verdict="changes_required">${icon("pencil-line")}Needs changes</button></div>
+    </div>` : `<p>${escapeHtml(data.review?.note || `Verdict: ${humanStatus(data.review?.operatorVerdict || "not recorded")}.`)}</p>`;
+
+  return [
+    `<div class="process-note"><strong>Readable process record</strong><p>${escapeHtml(process.explanation)}</p></div>`,
+    detailSection("Assignment", `<div class="detail-grid"><div><span>Question</span><strong>${escapeHtml(process.question)}</strong></div><div><span>Buyer</span><strong>${escapeHtml(process.buyer)}</strong></div></div><p><strong>Hypothesis:</strong> ${escapeHtml(process.hypothesis)}</p>`),
+    detailSection("Evidence reviewed", suppliedEvidence),
+    detailSection("How the judgement was formed", `<h4>Evidence supporting action</h4>${detailList(process.supportingEvidence)}<h4>Evidence against or still missing</h4>${detailList(process.counterevidence)}<h4>Assumptions</h4>${detailList(process.assumptions)}`),
+    detailSection("Recommendation", `<p>${escapeHtml(process.conclusion)}</p><div class="review-facts"><div><span>Price and channel hypothesis</span><strong>${escapeHtml(process.priceChannelHypothesis)}</strong></div><div><span>Smallest proposed test</span><strong>${escapeHtml(process.smallestTest)}</strong></div><div><span>Success measure</span><strong>${escapeHtml(process.metric)}</strong></div><div><span>Stop rule</span><strong>${escapeHtml(process.stopRule)}</strong></div></div><p><strong>Confidence:</strong> ${escapeHtml(humanStatus(process.confidence))}<br><strong>Next action:</strong> ${escapeHtml(process.nextAction)}</p><h4>Risks</h4>${detailList(process.risks)}`),
+    detailSection("Quality checks", `${reviewCriteria(data.review?.criteria || {})}<p>Runtime evaluation: ${escapeHtml(String(data.quality?.score ?? "Not scored"))}${data.quality?.score !== undefined ? "/100" : ""}.</p>`),
+    detailSection("Execution facts", `<div class="review-facts"><div><span>Model</span><strong>${escapeHtml(execution.model)}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Tokens</span><strong>${execution.inputTokens.toLocaleString()} in / ${execution.outputTokens.toLocaleString()} out</strong></div><div><span>Reconciled cost</span><strong>${money(execution.cost.reconciledCents, execution.cost.currency)}</strong></div><div><span>SDK tools</span><strong>${execution.sdkTools.length ? escapeHtml(execution.sdkTools.join(", ")) : "None"}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div></div>${handoffs.length ? `<h4>Runtime handoff after completion</h4>${detailList(handoffs)}` : ""}`),
+    detailSection("Provider trace visibility", `<p>${escapeHtml(providerVisibility)}</p><div class="technical-ids"><span>Trace ID</span><code>${escapeHtml(execution.traceId || "Not recorded")}</code><span>Response ID</span><code>${escapeHtml(execution.responseId || "Not retained")}</code></div>`),
+    detailSection("Local developer trace", `${traceEvents}<div class="technical-ids"><span>Run ID</span><code>${escapeHtml(data.run.id)}</code><span>Model call</span><code>${escapeHtml(data.developer.modelCallId || "Not recorded")}</code><span>Fixture hash</span><code>${escapeHtml(data.developer.fixtureHash || "Not recorded")}</code></div>`),
+    detailSection("Your verdict", verdictControls),
+  ].join("");
 }
 
 async function showDetail(kind, id) {
@@ -465,8 +529,13 @@ async function showDetail(kind, id) {
       detailSection("Current position", `<p>${escapeHtml(agent.assignment)}</p>${badge(agent.status)}`),
       detailSection("Last reviewed outcome", `<p>${escapeHtml(agent.lastOutcome)}</p>`),
       detailSection("Earned capability", `<p>${agent.autonomy.passes} of ${agent.autonomy.required} consecutive successful reviewed runs. Current level: ${escapeHtml(humanStatus(agent.autonomy.status))}.</p>`),
-      detailSection("Technical detail", `<p>Model class: ${escapeHtml(agent.technical.modelClass)}<br>Runtime mode: ${escapeHtml(agent.technical.mode)}<br>Last run: ${escapeHtml(agent.technical.lastRunId || "None")}</p>`),
+      detailSection("Technical detail", `<p>Model class: ${escapeHtml(agent.technical.modelClass)}<br>Runtime mode: ${escapeHtml(agent.technical.mode)}<br>Last run: ${escapeHtml(agent.technical.lastRunId || "None")}</p>${agent.technical.lastRunId ? `<button class="secondary-button" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(agent.technical.lastRunId)}">${icon("scan-search")}Review latest run</button>` : ""}`),
     ].join(""));
+    return;
+  }
+  if (kind === "agent-run") {
+    const data = await fetchJson(`/api/agent-runs/${encodeURIComponent(id)}`);
+    openDrawer(data.run.taskTitle, `${data.run.workerName} run review`, runReviewBody(data), { wide: true });
     return;
   }
   if (kind === "test") {
@@ -486,7 +555,7 @@ async function showDetail(kind, id) {
     openDrawer(item.title, "Decision", [
       detailSection("Recommendation", `<p>${escapeHtml(item.recommendation)}</p>`),
       detailSection("Expected result", `<p>${escapeHtml(item.expectedUpside)}</p>`),
-      detailSection("Boundaries", `<p>Maximum approved cost: ${money(item.maxCostCents)}.<br>Risk: ${escapeHtml(humanStatus(item.risk))}.<br>This decision applies only to the exact work shown here.</p>`),
+      detailSection("Boundaries", `<p>Maximum approved cost: ${money(item.maxCostCents)}.<br>Risk: ${escapeHtml(humanStatus(item.risk))}.<br>This decision applies only to the exact work shown here.${item.tracePolicy?.providerTraceContent ? " OpenAI trace input and output will be retained for this approved non-personal fixture." : ""}</p>`),
       detailSection("Your decision", approvalButtons(item)),
     ].join(""));
     return;
@@ -571,13 +640,15 @@ async function handleAction(button) {
     return loadView("ai-team", { silent: true });
   }
   if (action === "review-pilot") {
-    const usefulnessScore = Number($("#pilot-usefulness-score")?.value || 3);
-    const note = $("#pilot-review-note")?.value.trim() || "";
+    const fromDrawer = button.dataset.reviewSource === "drawer";
+    const usefulnessScore = Number($(fromDrawer ? "#drawer-pilot-usefulness-score" : "#pilot-usefulness-score")?.value || 3);
+    const note = $(fromDrawer ? "#drawer-pilot-review-note" : "#pilot-review-note")?.value.trim() || "";
     await postJson(`/api/agent-pilot/runs/${encodeURIComponent(button.dataset.runId)}/review`, {
       verdict: button.dataset.verdict,
       usefulnessScore,
       note,
     });
+    if (fromDrawer) closeDrawer();
     toast(button.dataset.verdict === "useful" ? "Usefulness verdict recorded." : "Changes requested and the success streak reset.");
     return loadView("ai-team", { silent: true });
   }

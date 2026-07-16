@@ -23,14 +23,19 @@ function scopeHash(value) {
   return crypto.createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
+function parsedValue(value, fallback) {
+  if (value && typeof value === "object") return value;
+  return fromJson(value, fallback);
+}
+
 function taskForApproval(db, approval) {
   if (approval.task_id) return get(db, "SELECT * FROM tasks WHERE id = ?", [approval.task_id]);
   return get(db, "SELECT * FROM tasks WHERE approval_id = ? ORDER BY created_at LIMIT 1", [approval.id]);
 }
 
 function buildApprovalScope(approval, task) {
-  const approvalPayload = fromJson(approval.payload, {});
-  const taskPayload = fromJson(task?.payload, {});
+  const approvalPayload = parsedValue(approval.payload, {});
+  const taskPayload = parsedValue(task?.payload, {});
   const spend = taskPayload.liveSpendRequest || approvalPayload.liveSpendRequest || {};
   const worker = spend.worker || approvalPayload.worker || {};
   const tools = spend.tools || approvalPayload.tools || worker.tools || [];
@@ -61,7 +66,13 @@ function buildApprovalScope(approval, task) {
     maxTurns: Number(spend.maxTurns || approvalPayload.maxTurns || 1),
     maxOutputTokens: Number(spend.maxOutputTokens || approvalPayload.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 0),
     maxCostCents,
-    effects: spend.effects || approvalPayload.effects || fromJson(approval.expected_effects, []),
+    effects: spend.effects || approvalPayload.effects || parsedValue(approval.expected_effects, []),
+    tracePolicy: spend.tracePolicy || approvalPayload.tracePolicy || {
+      providerResponseStored: false,
+      providerTraceContent: false,
+      localReviewStored: true,
+      dataClass: "business_internal",
+    },
     scope: approval.scope,
   };
 }

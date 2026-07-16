@@ -107,6 +107,12 @@ function approvalPayload(task, request, amountCents) {
     maxOutputTokens: Number(request.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 0),
     maxCostCents: amountCents,
     effects: asArray(request.effects),
+    tracePolicy: request.tracePolicy || {
+      providerResponseStored: false,
+      providerTraceContent: false,
+      localReviewStored: true,
+      dataClass: "business_internal",
+    },
     noSpendBeforeAdapter: true,
     noSpendOccurred: true,
   };

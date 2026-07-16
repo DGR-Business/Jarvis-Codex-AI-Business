@@ -16,6 +16,11 @@ Maintainer: Codex
 - Runtime truth, safety, commercial operating model and five-section cockpit
   are implemented.
 - All 86 automated tests pass.
+- A focused local run review now shows the agent's evidence, counterevidence,
+  assumptions, recommendation, checks, cost and trace without relying on the
+  provider log viewer.
+- One-click Windows start and stop shortcuts are implemented and lifecycle-
+  tested.
 
 ## Live Pilot Result
 
@@ -40,16 +45,14 @@ Detailed evidence is in
 
 ## Immediate Move
 
-Daniel reviews the corrected recommendation for commercial usefulness. Suggested
-starting verdict: useful, 4/5.
+Daniel opens **AI Team**, selects **Review what the agent did**, and inspects the
+preserved successful run. Do not record a usefulness verdict until that review
+is complete.
 
-Suggested review note:
-
-> Correctly separated problem evidence from proof of demand and proposed a
-> bounded interest test. Future outputs should make the exact channel, sample
-> size, duration and price hypothesis more concrete when evidence permits.
-
-Do not record this verdict until Daniel confirms or changes it.
+The historical OpenAI Response cannot be fetched because provider response
+storage and trace content were deliberately disabled for that run. This is now
+explained in the local review. Future approved non-personal fixtures use an
+explicit provider-visible trace policy.
 
 ## Following Move
 

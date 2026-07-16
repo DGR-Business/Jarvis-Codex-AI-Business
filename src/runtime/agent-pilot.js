@@ -253,6 +253,13 @@ function prepareFixtureRun(db, fixture, options = {}, retryContext = null) {
     tools: [],
     maxTurns: 1,
     maxOutputTokens: 1200,
+    tracePolicy: {
+      providerResponseStored: true,
+      providerTraceContent: true,
+      localReviewStored: true,
+      dataClass: "controlled_fixture_no_personal_data",
+      purpose: "Make the supplied fixture and structured recommendation reviewable in OpenAI traces while retaining the local audit record.",
+    },
     parameters: retryContext ? retryMetadata : {},
     effects: [],
     comparisonSource: { type: "versioned_agent_pilot_fixture", fixtureId: fixture.id, fixtureHash: fixture.fixture_hash },

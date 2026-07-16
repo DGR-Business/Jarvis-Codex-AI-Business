@@ -170,12 +170,24 @@ function sdkOutputText(finalOutput) {
   return "";
 }
 
+function approvedTracePolicy(task) {
+  const policy = task.payload?.liveSpendRequest?.tracePolicy || {};
+  return {
+    providerResponseStored: policy.providerResponseStored === true,
+    providerTraceContent: policy.providerTraceContent === true,
+    localReviewStored: true,
+    dataClass: String(policy.dataClass || "business_internal"),
+    purpose: String(policy.purpose || "Keep a local operator and developer review record for this run."),
+  };
+}
+
 async function runSdkAgent(requestBody, task, agentDefinition, policy, options = {}) {
   const { Agent, Runner, generateTraceId, z } = loadAgentsSdk();
   const traceId = options.traceId || generateTraceId();
+  const tracePolicy = approvedTracePolicy(task);
   if (testSdkRunner) {
     try {
-      const result = await testSdkRunner({ requestBody, task, agentDefinition, policy, options, traceId });
+      const result = await testSdkRunner({ requestBody, task, agentDefinition, policy, options, traceId, tracePolicy });
       return { result, traceId };
     } catch (error) {
       error.agentSdkTraceId = traceId;
@@ -196,7 +208,7 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
       maxTokens: Math.min(1200, Number(requestBody.max_output_tokens || 1200)),
       toolChoice: "none",
       parallelToolCalls: false,
-      store: false,
+      store: tracePolicy.providerResponseStored,
     },
   });
   const runner = options.runner || getDefaultSdkRunner(Runner);
@@ -205,12 +217,15 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
       maxTurns: 1,
       traceId,
       workflowName: "Jarvis Demand Validator controlled proof",
-      traceIncludeSensitiveData: false,
+      traceIncludeSensitiveData: tracePolicy.providerTraceContent,
       traceMetadata: {
         venture_id: String(task.venture_id || ""),
         workflow_id: String(task.workflow_id || ""),
         task_id: String(task.id || ""),
         fixture_hash: String(task.payload?.liveSpendRequest?.fixtureHash || ""),
+        provider_response_stored: String(tracePolicy.providerResponseStored),
+        provider_trace_content: String(tracePolicy.providerTraceContent),
+        data_class: tracePolicy.dataClass,
       },
       context: {
         workflowId: task.workflow_id,
@@ -237,6 +252,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
 
   const requestBody = buildOpenAIRequest(db, task, agentDefinition, policy);
   const approvedCapCents = liveWorkerCostEstimateCents(task);
+  const tracePolicy = approvedTracePolicy(task);
   let result;
   let traceId = null;
   try {
@@ -253,6 +269,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       agentSdkTraceId: traceId,
       error: error.message,
       outcomeUnknown: true,
+      tracePolicy,
     });
     insertEvent(db, {
       level: "error",
@@ -293,6 +310,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     finalAgent: result.lastAgent?.name || agentDefinition.name,
     reservedCostCents: approvedCapCents,
     pricingEstimate,
+    tracePolicy,
     reason: "Live AI worker used the OpenAI Agents SDK runner after approval; no external tools or side effects were exposed.",
   });
   recordLiveWorkerCost(db, task, estimateCents, { id: responseId }, {
@@ -304,6 +322,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
     approvedCapCents,
     pricingEstimate,
+    tracePolicy,
   });
 
   insertEvent(db, {
@@ -321,6 +340,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       responseId,
       agentSdkTraceId: traceId,
       provider: AGENTS_SDK_PROVIDER,
+      tracePolicy,
     },
   });
 
@@ -379,6 +399,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       interruptions: Array.isArray(result.interruptions) ? result.interruptions.length : 0,
       usage,
       pricingEstimate,
+      tracePolicy,
     },
   };
 }

@@ -30,6 +30,17 @@ function normalizeBudgetCents(value) {
   return Math.max(MIN_LIVE_AI_WORKER_BUDGET_CENTS, Math.min(MAX_LIVE_AI_WORKER_BUDGET_CENTS, Math.round(selected)));
 }
 
+function normalizeTracePolicy(options = {}) {
+  const requested = options.tracePolicy || {};
+  return {
+    providerResponseStored: requested.providerResponseStored === true,
+    providerTraceContent: requested.providerTraceContent === true,
+    localReviewStored: true,
+    dataClass: String(requested.dataClass || "business_internal"),
+    purpose: String(requested.purpose || "Keep a local operator and developer review record for this run."),
+  };
+}
+
 function latestCommand(db, workflowId) {
   return get(db, "SELECT * FROM commands WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 1", [workflowId]);
 }
@@ -93,6 +104,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const protectedEvidence = Array.isArray(options.protectedEvidence) ? options.protectedEvidence.filter(Boolean).slice(0, 8) : [];
   const comparisonSource = options.comparisonSource || null;
   const expectedMetric = options.expectedMetric || "Compare live output quality, trace coverage, cost, and usefulness against protected worker proof.";
+  const tracePolicy = normalizeTracePolicy(options);
   const payload = {
     subject,
     channel,
@@ -136,6 +148,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       maxOutputTokens: Number(options.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 1200),
       maxCostCents: amountCents,
       effects: Array.isArray(options.effects) ? options.effects : [],
+      tracePolicy,
       requiresProviderEnv: "OPENAI_API_KEY",
       requiresLiveFlag: "JARVIS_ENABLE_LIVE_MODELS",
       requiresRuntimeCapability: "openai_agents_sdk_runner",

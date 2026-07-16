@@ -1875,9 +1875,8 @@ publishing, customer contact, or external action were used.
 ## Next Best Work
 
 1. Have Daniel review the successful Demand Validator recommendation for
-   commercial usefulness. Suggested starting verdict: useful, 4/5, with a note
-   requesting more concrete channel, sample-size, duration and price detail
-   when evidence permits.
+   commercial usefulness through the new local run-review drawer. Do not preset
+   the verdict before that evidence and process review is complete.
 2. If useful, prepare one distinct supplied-evidence fixture and request a new
    capped approval for run 2/5. Any failed reviewed run resets the capability
    streak.
@@ -2535,3 +2534,63 @@ Next clean move:
 1. Daniel records the usefulness verdict for this recommendation.
 2. If useful, prepare a distinct second fixture and request a new capped
    single-use approval. Do not rerun this fixture.
+
+## 2026-07-16 - Agent Run Review, Trace Visibility And Operator Startup
+
+Platform trace diagnosis:
+
+- Daniel reported `Could not fetch Response` on the successful Agents SDK trace.
+- Verified that the pilot explicitly used `store: false` and
+  `traceIncludeSensitiveData: false`. The trace shell was exported, but OpenAI
+  could not later retrieve the Response and omitted generation input/output.
+- The historical provider Response cannot be recovered. The local task result,
+  structured recommendation, evaluation, review, usage, cost and runtime trace
+  remain intact. Daniel's usefulness verdict remains pending.
+
+Implementation:
+
+- Added an approval-bound trace policy. Controlled fixtures with no personal
+  data request provider response storage and trace content; other work retains
+  privacy-first defaults. Local review storage is mandatory in both modes.
+- Added a focused `GET /api/agent-runs/:id` review record and AI Team drawer with
+  assignment, supplied evidence, supporting evidence, counterevidence,
+  assumptions, conclusion, smallest test, metric, stop rule, risk, quality
+  checks, tokens, cost, provider IDs and 11 local runtime events for the current
+  successful run.
+- The drawer explicitly describes observable judgement rather than claiming to
+  expose private hidden model chain-of-thought.
+- Fixed approval scope hashing to handle both persisted JSON and hydrated
+  runtime objects consistently. The trace policy is part of the single-use
+  scope and cannot change after approval.
+- Added `START JARVIS.cmd` and `STOP JARVIS.cmd` with protected-mode startup,
+  Node 24 validation, first-use dependency installation, health verification,
+  scheduler startup, safe process ownership and ignored runtime logs.
+- Lifecycle proof started the correct workspace in dry-run mode, returned a
+  healthy API and stopped only the recorded process.
+- Final direct-Node verification showed that a child launched from Codex could
+  inherit Codex's process credential even with live mode off. The protected
+  launcher now clears `OPENAI_API_KEY` and both live flags before server startup.
+  Final health reports credential not loaded and live execution disabled.
+
+Official guidance review:
+
+- Installed and verified the global `openaiDeveloperDocs` MCP integration at
+  `https://developers.openai.com/mcp`.
+- Reviewed the runtime against current official TypeScript Agents SDK guidance.
+  Code-owned orchestration, narrow specialists, structured output and separate
+  human usefulness judgement remain the correct first-stage design.
+- Recorded the next SDK additions in
+  `docs/reviews/OPENAI-AGENTS-SDK-ARCHITECTURE-REVIEW-2026-07-16.md`: SDK-native
+  interruptions when tools arrive, bounded guardrails, manager-style Chief of
+  Staff orchestration after specialist proof, and sessions only when multi-turn
+  work genuinely requires them.
+
+Verification:
+
+- The live focused API returned the preserved run, two supporting evidence
+  points, two counterevidence points, 11 trace events, 1,329 input tokens, 335
+  output tokens, a 2-cent successful-call allocation and a pending verdict.
+- The browser automation surface rejected control of the local `127.0.0.1` tab
+  under its URL policy. No alternate browser bypass was attempted. The live API,
+  static scripts, syntax checks and automated tests provide the current proof;
+  Daniel can refresh the already-open dashboard for the visual review.

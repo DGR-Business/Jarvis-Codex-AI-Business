@@ -499,6 +499,10 @@ test("approvals expire, invalidate on scope changes, and can be consumed only on
     assert.deepEqual(scoped.scope.toolArguments, {});
     assert.deepEqual(scoped.scope.parameters, {});
     assert.deepEqual(scoped.scope.effects, []);
+    assert.equal(scoped.scope.tracePolicy.providerResponseStored, true);
+    assert.equal(scoped.scope.tracePolicy.providerTraceContent, true);
+    assert.equal(scoped.scope.tracePolicy.localReviewStored, true);
+    assert.equal(scoped.scope.tracePolicy.dataClass, "controlled_fixture_no_personal_data");
     assert.equal(scoped.scope.maxTurns, 1);
     assert.equal(scoped.scope.maxOutputTokens, 1200);
     assert.equal(scoped.scope.maxCostCents, 100);
@@ -818,6 +822,9 @@ test("Demand Validator pilot preparation excludes the protected baseline and nev
     assert.deepEqual(taskPayload.liveSpendRequest.tools, []);
     assert.deepEqual(taskPayload.liveSpendRequest.effects, []);
     assert.equal(taskPayload.liveSpendRequest.maxTurns, 1);
+    assert.equal(taskPayload.liveSpendRequest.tracePolicy.providerResponseStored, true);
+    assert.equal(taskPayload.liveSpendRequest.tracePolicy.providerTraceContent, true);
+    assert.equal(taskPayload.liveSpendRequest.tracePolicy.localReviewStored, true);
     assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM agent_runs").count, 0);
     assert.throws(() => prepareDemandValidatorPilot(runtime.db, fixture.id), /already prepared or completed/i);
 

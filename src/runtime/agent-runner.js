@@ -755,6 +755,7 @@ async function runAgentTask(db, task) {
           agentSdkTraceId: liveWorker.raw.traceId || null,
           structuredOutput: liveWorker.raw.structuredOutput,
           provider: liveWorker.provider,
+          tracePolicy: liveWorker.raw.tracePolicy,
         },
       );
       output = liveWorker.output;
@@ -802,6 +803,7 @@ async function runAgentTask(db, task) {
           liveWorkerResponseId: liveWorker.raw.responseId,
           agentSdkTraceId: liveWorker.raw.traceId || null,
           structuredOutput: liveWorker.raw.structuredOutput,
+          tracePolicy: liveWorker.raw.tracePolicy,
           businessDecision: workerDecisionMetadata(output),
           outputContract: output.outputContract,
           toolPolicy: {

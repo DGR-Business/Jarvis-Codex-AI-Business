@@ -52,6 +52,7 @@ const {
 } = require("./runtime/agent-pilot");
 const {
   getAgentDetail,
+  getAgentRunDetail,
   getAiTeamState,
   getBusinessTestsState,
   getCockpitState,
@@ -373,6 +374,14 @@ function createApp(options = {}) {
       const agentDetail = routeMatch(url.pathname, "/api/agents/:id");
       if (req.method === "GET" && agentDetail) {
         const result = getAgentDetail(db, agentDetail.id);
+        if (!result) notFound(res);
+        else jsonResponse(res, 200, result);
+        return;
+      }
+
+      const agentRunDetail = routeMatch(url.pathname, "/api/agent-runs/:id");
+      if (req.method === "GET" && agentRunDetail) {
+        const result = getAgentRunDetail(db, agentRunDetail.id);
         if (!result) notFound(res);
         else jsonResponse(res, 200, result);
         return;
