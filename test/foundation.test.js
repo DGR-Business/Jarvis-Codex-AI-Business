@@ -38,6 +38,12 @@ const { claimNextTask, completeTaskClaim } = require("../src/runtime/task-claims
 const { runOnce } = require("../src/runtime/orchestrator");
 const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { recoverSetupBlockedTasks } = require("../src/runtime/spend-gate");
+const {
+  ensureRetentionPolicy,
+  getRetentionPolicyState,
+  prepareRetentionPolicyDecision,
+  retentionRequirementsForTask,
+} = require("../src/runtime/retention-policy");
 const { createApp } = require("../src/server");
 const { getCockpitState, getDecisionsState, getSystemState } = require("../src/runtime/cockpit-state");
 const { commercialFoundationState, recordEvidence, setExperimentState } = require("../src/runtime/venture-case");
@@ -268,7 +274,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -305,9 +311,214 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 14);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 15);
   } finally {
     closeRuntime(runtime);
+  }
+});
+
+test("data protection plan stays out of the decision queue until it is the next operator choice", () => {
+  const runtime = runtimeDb("retention-one-decision");
+  try {
+    const policy = ensureRetentionPolicy(runtime.db);
+    const state = getRetentionPolicyState(runtime.db);
+    assert.equal(policy.policy_hash, state.policyHash);
+    assert.equal(state.status, "proposal_ready");
+    assert.equal(state.canPrepareDecision, false);
+    assert.equal(state.otherPendingDecisionCount > 0, true);
+    const prepared = prepareRetentionPolicyDecision(runtime.db);
+    assert.equal(prepared.prepared, false);
+    assert.match(prepared.reason, /current decision/i);
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM approvals WHERE scope = 'data_retention_policy'").count,
+      0,
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("declined data protection plan requires a revised version instead of recreating the same decision", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-retention-revision-"));
+  const db = openDatabase(path.join(root, "runtime.sqlite"));
+  seedDatabase(db);
+  try {
+    const prepared = prepareRetentionPolicyDecision(db);
+    assert.equal(prepared.prepared, true);
+    const approval = get(
+      db,
+      "SELECT * FROM approvals WHERE id = ?",
+      [prepared.state.approvalId],
+    );
+    decideApproval(db, approval.id, "needs_changes", "Keep financial records longer.", {
+      expectedScopeHash: approval.scope_hash,
+    });
+
+    const state = getRetentionPolicyState(db);
+    assert.equal(state.status, "revision_required");
+    assert.equal(state.label, "Changes requested");
+    assert.equal(state.canPrepareDecision, false);
+    assert.match(state.nextAction, /revised policy version/i);
+    const repeated = prepareRetentionPolicyDecision(db);
+    assert.equal(repeated.prepared, false);
+    assert.equal(
+      get(db, "SELECT COUNT(*) AS count FROM approvals WHERE scope = 'data_retention_policy'").count,
+      1,
+    );
+  } finally {
+    db.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("approved data protection plan activates exact checks without deleting records", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-retention-policy-"));
+  const db = openDatabase(path.join(root, "runtime.sqlite"));
+  seedDatabase(db);
+  try {
+    const originalEventCount = get(db, "SELECT COUNT(*) AS count FROM events").count;
+    const prepared = prepareRetentionPolicyDecision(db);
+    assert.equal(prepared.prepared, true);
+    const state = getRetentionPolicyState(db);
+    assert.equal(state.status, "waiting_for_decision");
+    assert.equal(state.schedule.find((item) => item.id === "financial_and_legal").duration, "7 years");
+    const approval = get(
+      db,
+      "SELECT * FROM approvals WHERE id = ?",
+      [state.approvalId],
+    );
+    const payload = JSON.parse(approval.payload);
+    assert.equal(payload.noDeletion, true);
+    assert.equal(payload.providerPolicy.providerResponseStoredByDefault, false);
+    assert.equal(payload.policySummary.length, 7);
+    const decision = getDecisionsState(db).approvals.find((item) => item.id === approval.id);
+    assert.equal(decision.noDeletion, true);
+    assert.equal(decision.policySummary.length, 7);
+
+    decideApproval(db, approval.id, "approved", "Approve the plain-language data plan.", {
+      expectedScopeHash: approval.scope_hash,
+    });
+    const activationPending = getRetentionPolicyState(db);
+    assert.equal(activationPending.status, "activation_pending");
+    assert.equal(activationPending.canPrepareDecision, false);
+    assert.equal(prepareRetentionPolicyDecision(db).prepared, false);
+    const execution = await runOnce(db, { taskId: approval.task_id });
+    assert.equal(execution.status, "completed");
+    assert.equal(execution.result.retentionPolicyActivated, true);
+    assert.equal(execution.result.noRecordsDeleted, true);
+    assert.equal(execution.result.maintenancePreview.deletionRun, false);
+    const active = getRetentionPolicyState(db);
+    assert.equal(active.status, "active");
+    assert.ok(active.activeAt);
+    assert.equal(get(db, "SELECT COUNT(*) AS count FROM retention_tombstones").count, 0);
+    assert.equal(get(db, "SELECT COUNT(*) AS count FROM events").count > originalEventCount, true);
+    assert.throws(
+      () => run(db, "UPDATE data_retention_policies SET title = 'Changed' WHERE id = ?", [active.id]),
+      /immutable/i,
+    );
+  } finally {
+    db.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("retention gate permits the controlled fixture and blocks wider storage or live web until approved", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-retention-gate-"));
+  const db = openDatabase(path.join(root, "runtime.sqlite"));
+  seedDatabase(db);
+  try {
+    const controlled = {
+      kind: "live_ai_worker_execution",
+      agent: "demand_validator",
+      payload: {
+        comparisonSource: {
+          type: "versioned_agent_pilot_fixture",
+          fixtureId: "fixture-demand-validator-v1",
+          fixtureHash: "fixture-hash",
+        },
+        pilotFixture: {
+          id: "fixture-demand-validator-v1",
+          hash: "fixture-hash",
+          baselineExcluded: true,
+          constraints: {
+            evaluationOnly: true,
+            realBusinessEvidence: false,
+            externalActionsAllowed: false,
+            tools: [],
+            handoffs: [],
+          },
+        },
+        liveSpendRequest: {
+          requested: true,
+          scope: "live_ai_worker_spend",
+          worker: { id: "demand_validator" },
+          comparisonSource: {
+            type: "versioned_agent_pilot_fixture",
+            fixtureId: "fixture-demand-validator-v1",
+            fixtureHash: "fixture-hash",
+          },
+          fixtureHash: "fixture-hash",
+          tools: [],
+          effects: [],
+          maxTurns: 1,
+          maxToolCalls: 0,
+          maxOutputTokens: 1200,
+          maxCostCents: 100,
+          tracePolicy: {
+            providerResponseStored: true,
+            providerTraceContent: true,
+            dataClass: "controlled_fixture_no_personal_data",
+          },
+        },
+      },
+    };
+    assert.deepEqual(retentionRequirementsForTask(db, controlled), []);
+
+    const copiedLabel = structuredClone(controlled);
+    copiedLabel.payload.liveSpendRequest.fixtureHash = "different-hash";
+    const copiedLabelBlock = retentionRequirementsForTask(db, copiedLabel);
+    assert.equal(copiedLabelBlock.length, 1);
+    assert.equal(copiedLabelBlock[0].name, "sensitive_provider_storage");
+
+    const liveWeb = {
+      payload: {
+        liveSpendRequest: {
+          requested: true,
+          tools: ["research_adapter"],
+          effects: [],
+          tracePolicy: {
+            providerResponseStored: false,
+            providerTraceContent: false,
+            dataClass: "business_internal_non_personal",
+          },
+        },
+      },
+    };
+    const missingPolicy = retentionRequirementsForTask(db, liveWeb);
+    assert.equal(missingPolicy.length, 1);
+    assert.equal(missingPolicy[0].name, "data_retention_policy");
+
+    const sensitiveStorage = {
+      payload: {
+        contextSnapshot: { includePersonalData: true },
+        liveSpendRequest: {
+          requested: true,
+          tools: [],
+          effects: [],
+          tracePolicy: {
+            providerResponseStored: true,
+            providerTraceContent: true,
+            dataClass: "customer_personal",
+          },
+        },
+      },
+    };
+    const safetyBlock = retentionRequirementsForTask(db, sensitiveStorage);
+    assert.equal(safetyBlock.length, 1);
+    assert.equal(safetyBlock[0].name, "sensitive_provider_storage");
+  } finally {
+    db.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

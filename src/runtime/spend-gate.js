@@ -8,6 +8,7 @@ const {
   validateApprovalScope,
   verifyExecutionDescriptor,
 } = require("./approval-scope");
+const { retentionRequirementsForTask } = require("./retention-policy");
 
 function safeId(value) {
   return String(value || "task")
@@ -85,9 +86,17 @@ function missingPreflightRequirements(request = {}) {
   return missing;
 }
 
+function missingTaskRequirements(db, task, request = {}) {
+  return [
+    ...missingPreflightRequirements(request),
+    ...retentionRequirementsForTask(db, task),
+  ];
+}
+
 function requirementLabel(requirement) {
   if (requirement.kind === "env") return `missing env ${requirement.name}`;
   if (requirement.kind === "flag") return `${requirement.name} != ${requirement.expected || "1"}`;
+  if (requirement.kind === "policy") return requirement.message;
   if (requirement.kind === "safety") return requirement.message;
   return `runtime capability ${requirement.name} not ready`;
 }
@@ -157,7 +166,7 @@ function getSpendApprovalState(db, task, options = {}) {
   const scopeValidation = approval
     ? validateApprovalScope(db, approvalId, { ...task, approval_id: approvalId }, undefined, validationOptions)
     : { valid: false, reason: "A persisted approval is required." };
-  const missingRequirements = missingPreflightRequirements(request);
+  const missingRequirements = missingTaskRequirements(db, task, request);
   if (approval && !scopeValidation.valid) {
     missingRequirements.push({
       kind: "safety",
@@ -185,7 +194,13 @@ function getSpendApprovalState(db, task, options = {}) {
 }
 
 function blockForProviderReadiness(db, task, approval, request, amountCents, missingRequirements, ts) {
-  const subject = `Provider setup needed: ${task.title}`;
+  const policyBlocked = missingRequirements.some((requirement) => requirement.kind === "policy");
+  const safetyBlocked = missingRequirements.some((requirement) => requirement.kind === "safety");
+  const subject = policyBlocked
+    ? `Data protection decision needed: ${task.title}`
+    : safetyBlocked
+      ? `Safety check needed: ${task.title}`
+      : `Provider setup needed: ${task.title}`;
   const labels = missingRequirements.map(requirementLabel);
   const result = {
     blockedBy: approval.id,
@@ -198,7 +213,11 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
     noSpendOccurred: true,
     requestedWorker: request.worker?.id || task.payload?.requestedWorker || task.agent || null,
     worker: request.worker || null,
-    nextAction: "Configure the missing provider/runtime requirements before live paid work can run.",
+    nextAction: policyBlocked
+      ? "Review the data protection plan before this exact work can run."
+      : safetyBlocked
+        ? "Correct the safety settings and prepare a new exact approval."
+        : "Configure the missing provider/runtime requirements before live paid work can run.",
   };
 
   run(
@@ -209,7 +228,15 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
   run(
     db,
     `UPDATE workflows SET status = 'blocked_for_credentials', current_step = ?, approval_required = 1, updated_at = ? WHERE id = ?`,
-    [`Provider setup needed: ${labels.join(", ")}`, ts, task.workflow_id],
+    [
+      policyBlocked
+        ? "Waiting for the data protection decision"
+        : safetyBlocked
+          ? "Waiting for corrected safety settings"
+          : `Provider setup needed: ${labels.join(", ")}`,
+      ts,
+      task.workflow_id,
+    ],
   );
 
   const existing = get(
@@ -228,7 +255,9 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
         "urgent",
         "open",
         subject,
-        `The spend approval is approved, but no live spend occurred. Missing: ${labels.join(", ")}.`,
+        policyBlocked
+          ? "The task approval is recorded, but no live spend occurred. Review the data protection plan before this work uses sensitive records, live web research, or provider-side storage."
+          : `The spend approval is approved, but no live spend occurred. Missing: ${labels.join(", ")}.`,
         ts,
         toJson({ approvalId: approval.id, missingRequirements, provider: request.provider || "not_selected" }),
       ],
@@ -238,10 +267,12 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
   insertEvent(db, {
     level: "warn",
     actor: "spend-gate",
-    type: "spend_approval.provider_blocked",
+    type: policyBlocked ? "spend_approval.policy_blocked" : "spend_approval.provider_blocked",
     entityType: "task",
     entityId: task.id,
-    message: `Approved paid work remains blocked for ${task.title}; provider/runtime setup is incomplete.`,
+    message: policyBlocked
+      ? `Approved paid work remains blocked for ${task.title}; the data protection plan is not active.`
+      : `Approved paid work remains blocked for ${task.title}; provider/runtime setup is incomplete.`,
     metadata: { approvalId: approval.id, missingRequirements, estimatedCostCents: amountCents, currency: CONFIG.currency },
   });
 
@@ -406,7 +437,7 @@ function ensureSpendApproval(db, task, options = {}) {
     };
   }
 
-  const missingRequirements = missingPreflightRequirements(request);
+  const missingRequirements = missingTaskRequirements(db, task, request);
   if (missingRequirements.length > 0) {
     return blockForProviderReadiness(db, task, approval, request, amountCents, missingRequirements, ts);
   }
@@ -430,7 +461,7 @@ function recoverSetupBlockedTasks(db) {
   for (const row of blocked) {
     const task = { ...row, payload: fromJson(row.payload), result: fromJson(row.result) };
     const request = spendRequestForTask(task);
-    const missingRequirements = missingPreflightRequirements(request || {});
+    const missingRequirements = request ? missingTaskRequirements(db, task, request) : [];
     if (!request || missingRequirements.length) {
       stillBlocked.push({ taskId: task.id, missingRequirements });
       continue;
@@ -469,6 +500,7 @@ module.exports = {
   ensureSpendApproval,
   getSpendApprovalState,
   missingPreflightRequirements,
+  missingTaskRequirements,
   recoverSetupBlockedTasks,
   spendRequestForTask,
 };

@@ -41,8 +41,8 @@ Phase 1 includes:
 - supplied-evidence work before any new live research;
 - one separately approved and capped Demand Validator live-web proof;
 - a receipt, audit, and monitoring contract for protected and live work;
-- documented Luna, Terra, and Sol routing intent, without claiming a router
-  that does not yet exist;
+- implemented Luna, Terra, and Sol assignment routing with approval-bound
+  selection and no silent fallback;
 - supervised Product Builder and Quality Reviewer work;
 - one operator view of material decisions, unknown outcomes, failures, and
   budget exposure;
@@ -127,6 +127,15 @@ A handoff creates a new bounded assignment. It does not silently pass the
 previous worker's tools, approval, budget, or authority to the next worker. The
 Chief of Staff may recommend the next assignment, but Jarvis remains the owner
 of queue state, limits, and approvals.
+
+Workers may receive finance, production, legal, customer, evidence, and other
+venture records when the exact assignment needs them. Jarvis supplies a
+purpose-bound snapshot containing the relevant record classes and logs its
+fingerprint with the assignment. Credentials, raw identity documents, direct
+customer identifiers, and unrelated records stay out unless the exact task has
+a recorded need and the applicable approval and retention rules allow them.
+This is focused access to the business, not an artificial information shortage
+or permanent unrestricted access.
 
 ## Demand Validator Proof Order
 
@@ -313,45 +322,56 @@ tests and the live System Checks view passed on 2026-07-17.
 
 ## Retention And Privacy Decision
 
-Before ongoing live-web work, provider-side storage for business evidence, or
-any customer-data worker is enabled, Daniel must approve a written retention
-schedule covering:
+Jarvis now stores an immutable, plain-language retention proposal and enforces
+its pre-approval boundary. It is deliberately held behind the current Demand
+Validator decision so Daniel sees one consequential choice at a time.
 
-- how long assignments, model inputs/outputs, receipts, traces, sources,
-  evaluations, and generated assets remain local;
-- whether any provider response or trace content may be stored, for which data
-  classes, and for how long;
-- how source snapshots and removed web content are handled;
-- how rejected or superseded generated assets are deleted;
-- which approval, accounting, security, and audit records must be retained;
-- how backups honour deletion and legal retention requirements;
-- how buyer identifiers, feedback, and other personal data are minimised,
-  hashed, redacted, exported, or deleted.
+The proposed schedule is:
 
-Until that decision is recorded:
+- financial, tax, executed contract, consequential approval, compliance, money,
+  and linked audit evidence: seven years;
+- accepted venture work, commercial evidence, final assets, evaluations, and
+  learning: while active plus three years;
+- transaction evidence: seven years, with non-financial personal detail
+  de-identified twelve months after fulfilment, refund, and dispute duties end;
+- identity, KYC, and sensitive legal documents: private operator storage,
+  annual review, and retention only while their verified purpose or legal duty
+  continues;
+- rejected, superseded, and temporary drafts: ninety days unless an active
+  dispute, audit, accepted decision, or legal hold requires them;
+- routine technical logs: ninety days; security and approval audit records:
+  two years, or seven when linked to finance, contracts, compliance, or money;
+- encrypted backups: seven daily and four weekly, with durable deletion markers
+  so restored records do not silently return.
 
-- provider response storage and trace content stay off for business or personal
-  data;
-- an exact approval may enable them only for a controlled, non-personal fixture;
-- live worker packets exclude raw buyer names, email addresses, credentials,
-  browser profiles, and unnecessary personal text;
-- Jarvis retains the existing local audit and backup records rather than
-  silently deleting evidence;
-- no new long-term model memory, remote/mobile access, or customer-data agent
-  operation is introduced.
+Provider response storage and provider trace content remain off by default.
+Jarvis keeps structured local evidence and never stores private chain-of-thought.
+Sensitive provider storage is forbidden; controlled non-personal storage would
+need its own exact approval. Source records prefer URL, access date, excerpt,
+and hash over full-page copies.
 
-This is a required operator decision, not a detail for a worker to infer.
+Approval of this proposal activates future checks and deletes nothing. Any
+destructive maintenance remains a separate operator action and produces a
+preview first. A decline or request for changes makes the proposal revision
+required; Jarvis cannot recreate the same approval.
+
+Until Daniel records the exact decision, only the existing controlled,
+non-personal, no-tool Demand Validator fixture may pass the pre-policy
+exception. Ongoing live web, provider storage, personal-data work, and sensitive
+work remain blocked. This is an operating control informed by OpenAI data
+controls, OAIC APP 11, ASIC record-keeping guidance, and ATO record-keeping
+guidance; it is not legal advice.
 
 ## Gates And Current Status
 
 | Gate | Evidence required | Status on 2026-07-17 |
 | --- | --- | --- |
 | 0. Operating contract | Active plan, accepted decision record, current pointers, and fixed roster. | Passed on 2026-07-17. |
-| 1. Bounded worker operations | Persisted work packets, handoffs, exact approvals, attempt states, receipts, audit links, and focused monitoring tests. | Passed on 2026-07-17: schemas 12-14, immutable receipts, task-scoped context, exact Chief assignment lifecycle, frozen Quality Reviewer inputs, provider-dispatch safety, model routing, focused monitor checks, 136 tests, doctor, backup restore, and real-browser proof. |
+| 1. Bounded worker operations | Persisted work packets, handoffs, exact approvals, attempt states, receipts, audit links, and focused monitoring tests. | Passed on 2026-07-17: schemas 12-15, immutable receipts, task-scoped context, exact Chief assignment lifecycle, frozen Quality Reviewer inputs, provider-dispatch safety, model routing, focused monitor checks, 141 tests, doctor, backup restore, and real-browser proof. |
 | 2. Demand Validator supplied evidence | One active no-tool run within cap, complete receipt, technical pass, and Daniel usefulness verdict. | Exact run prepared on 2026-07-17 and waiting for Daniel's approval. It uses Sol, one turn, 1,200 output tokens, no tools/effects, an A$0.10 priced upper bound, and an A$1 hard cap. No provider call has occurred. |
 | 3. Demand Validator live web | Separate approved A$2/three-search/120-second run with grounded sources, receipt, cost review, and no external side effect. | Tool bridge and controls are present; live search-enabled SDK proof is not recorded as complete. |
 | 4. Supervised build and review | Product Builder produces one bounded local product/asset result and Quality Reviewer inspects exact approved inputs, both with receipts and Daniel review. | Runtime foundation passed locally with a mocked SDK runner: exact image approval, one validated local asset, readable work result, atomic/replay-safe quality records, safe dashboard preview, and no publishing. The separately approved paid Product Builder and Quality Reviewer proof is still pending. |
-| 5. Retention and privacy | Daniel approves the data classes, storage locations, durations, deletion rules, and provider-storage policy. | Decision required. |
+| 5. Retention and privacy | Daniel approves the data classes, storage locations, durations, deletion rules, and provider-storage policy. | Immutable proposal, exact-decision path, pre-approval gate, deletion preview, restore-safe tombstones, and tests are implemented. It remains unapproved and will become the next decision only after the current Demand Validator choice is resolved. |
 | 6. Phase 1 release | Complete tests, health check, monitor cycle, one safe queued proof, event-timeline update, recovery check, and ordinary-language operator review. | Pending. |
 
 No later gate can waive an earlier one. A failed gate returns the exact

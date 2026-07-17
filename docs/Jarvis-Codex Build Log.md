@@ -33,6 +33,10 @@ commercial move.
 | 2026-07-17 | Keep provider reasoning review structured and truthful. | Live Runs records evidence, conclusions, tools, sources, traces, cost, and evals without claiming private chain-of-thought. |
 | 2026-07-17 | Store the standalone OpenAI credential with Windows-user-bound encryption. | Explorer startup must work without storing a plaintext key or weakening per-run approvals. |
 | 2026-07-17 | Use a fixed, supervised 11-worker Autonomous Agent Operations Phase 1. | Bounded assignments, receipts, monitoring, and staged capability proof must precede wider autonomy. |
+| 2026-07-17 | Give workers purpose-bound access to all relevant venture record classes. | Finance, production, legal, customer, evidence, and operating context must be available when needed without exposing unrelated records, credentials, or reusable unrestricted access. |
+| 2026-07-17 | Make Jarvis monitoring runtime-backed and independent of the Codex chat. | Every dashboard action and worker run must remain reviewable through durable logs, receipts, evaluations, and scheduler checks even when Codex is not open. |
+| 2026-07-17 | Let Chief coordinate the fixed team one bounded assignment at a time. | Daniel wants manager-style delegation, while runtime-created roles and open-ended teams remain too complex before the first commercial loop proves itself. |
+| 2026-07-17 | Present one immutable data-retention plan after the current business decision. | Workers need broad task context, but sensitive/provider storage, deletion, and long-lived records need one explicit, ordinary-language operating rule. |
 
 ## 2026-07-17 Foundation Hardening
 
@@ -232,6 +236,62 @@ The bounded-worker foundation received its final pre-live verification on
 No approval was clicked, no provider call was made, and no external business
 action occurred during this verification.
 
+### Task access and retention foundation
+
+Daniel's operating preferences were translated into enforceable runtime
+boundaries later on 2026-07-17:
+
+- workers may receive the relevant finance, production, legal, customer,
+  evidence, and venture records through immutable task-scoped snapshots;
+- credentials, unrelated records, raw identity documents, and direct customer
+  identifiers stay out unless an exact task records the need and the applicable
+  approval and retention rules permit access;
+- Jarvis's durable event, receipt, evaluation, cost, and monitor records remain
+  the bridge between dashboard operation and later Codex engineering review;
+- Chief remains free to choose among the fixed specialists within exact
+  assignment limits, while runtime-created teams stay deferred;
+- schema migration 15 added immutable retention-policy records and deletion
+  markers designed to survive restore;
+- the prepared plan uses seven years for finance, tax, contract, money,
+  compliance, and linked audit evidence; active plus three years for accepted
+  venture work; ninety days for temporary drafts and routine logs; and the
+  existing seven-daily/four-weekly encrypted-backup rotation;
+- provider response and trace-content storage stay off by default, sensitive
+  provider storage is forbidden, and the existing controlled, non-personal,
+  no-tool fixture is the only pre-policy exception. The exception is bound to
+  the exact Demand Validator worker, matching fixture IDs and hashes, supplied
+  evidence classification, one turn, zero tools/effects, and the A$1 ceiling;
+- approval of the plan activates checks and deletes nothing. Cleanup requires a
+  separate previewed operator action, while a decline or request for changes
+  forces Jarvis to prepare a new policy version.
+
+Verification at this checkpoint:
+
+- all 141 tests passed, including migrations, task-scoped records, exact
+  approvals, Agents SDK interruption and resumption, provider-dispatch recovery,
+  cost accounting, security, backups, Product Builder/Quality Reviewer,
+  retention gating, and the new revision-required decision state;
+- provider-facing tests used controlled fakes, so they made no paid OpenAI call;
+- the real Demand Validator approval remained pending and unconsumed, with zero
+  active-runtime model calls;
+- the retention plan remained a proposal and did not enter the decision queue
+  ahead of the Demand Validator choice;
+- fresh encrypted source, database, and artifact backups authenticated and
+  restored independently before the live migration. SQLite quick, integrity,
+  and foreign-key checks passed;
+- Jarvis Doctor passed Node, dependencies, SQLite, archive/PDF tooling, writable
+  runtime and private backup locations, database integrity, and backup
+  encryption. Its only warning was the expected occupied dashboard port;
+- the live runtime restarted on schema 15 with paid AI available only behind an
+  exact approval. It retained one Demand Validator decision, one blocked exact
+  task, zero model calls, zero agent runs, one retention proposal, and zero
+  retention approvals;
+- a real-browser review of an isolated snapshot of that exact live database
+  passed at 1280x720 with no horizontal overflow or console errors. It showed
+  one Demand Validator decision and the data plan as ready only after that
+  decision. The production bootstrap token remained protected and was not
+  exposed to browser automation.
+
 ## Accounting Preserved At Reset
 
 - ChatGPT Pro active monthly commitment: A$100.00.
@@ -285,7 +345,8 @@ Daniel reviews and approves, changes, or declines the prepared supplied-evidence
 Demand Validator run. After an approved run, Jarvis must inspect the immutable
 receipt, provider identifiers, tokens, cost state, deterministic evaluation, and
 structured result before Daniel records usefulness. Only an accepted result may
-lead to the separate A$2 read-only live-web decision. Daniel must also approve a
-plain-language retention schedule before ongoing live research or sensitive
-worker use widens. Do not create a Gumroad account, publish, spend beyond the
-exact approval, or contact buyers.
+lead to the separate A$2 read-only live-web decision. Once the current choice is
+resolved, Jarvis presents the prepared plain-language retention plan as the next
+separate decision. Until then, ongoing live research, provider storage,
+personal-data work, and sensitive worker use remain blocked. Do not create a
+Gumroad account, publish, spend beyond the exact approval, or contact buyers.

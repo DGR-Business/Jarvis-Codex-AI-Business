@@ -4,7 +4,7 @@ const { randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 
-const LATEST_SCHEMA_VERSION = 14;
+const LATEST_SCHEMA_VERSION = 15;
 
 function now() {
   return new Date().toISOString();
@@ -1292,6 +1292,69 @@ function applyDeliverableQualityReviewMigration(db) {
   }
 }
 
+function applyDataRetentionPolicyMigration(db) {
+  if (migrationApplied(db, 15)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS data_retention_policies (
+        id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        policy TEXT NOT NULL,
+        policy_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS retention_tombstones (
+        id TEXT PRIMARY KEY,
+        policy_id TEXT NOT NULL,
+        record_class TEXT NOT NULL,
+        record_key_hash TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        deleted_at TEXT NOT NULL,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        UNIQUE(policy_id, record_class, record_key_hash, deleted_at),
+        FOREIGN KEY (policy_id) REFERENCES data_retention_policies(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_retention_tombstones_record
+        ON retention_tombstones(record_class, record_key_hash, deleted_at DESC);
+
+      CREATE TRIGGER IF NOT EXISTS trg_data_retention_policies_immutable_update
+      BEFORE UPDATE ON data_retention_policies
+      BEGIN
+        SELECT RAISE(ABORT, 'Data-retention policies are immutable; create a new version.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_data_retention_policies_immutable_delete
+      BEFORE DELETE ON data_retention_policies
+      BEGIN
+        SELECT RAISE(ABORT, 'Data-retention policies are immutable.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_retention_tombstones_immutable_update
+      BEFORE UPDATE ON retention_tombstones
+      BEGIN
+        SELECT RAISE(ABORT, 'Retention deletion markers are immutable.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_retention_tombstones_immutable_delete
+      BEFORE DELETE ON retention_tombstones
+      BEGIN
+        SELECT RAISE(ABORT, 'Retention deletion markers are immutable.');
+      END;
+    `);
+
+    recordMigration(db, 15, "data-retention-policy-and-deletion-markers");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2100,6 +2163,7 @@ function migrate(db) {
   applyAgentOperationsEvidenceMigration(db);
   applyAgentContextMigration(db);
   applyDeliverableQualityReviewMigration(db);
+  applyDataRetentionPolicyMigration(db);
 }
 
 function putSetting(db, key, value) {

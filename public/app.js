@@ -522,11 +522,16 @@ function renderSystemPanel(data) {
   if (store.systemTab === "health") {
     const ai = data.health.liveAi;
     const research = data.health.liveResearch;
+    const retention = data.health.retention;
+    const retentionAction = retention.canPrepareDecision
+      ? `<button class="secondary-button" data-action="prepare-retention-decision">${icon("shield-check")}Review this plan</button>`
+      : "";
     return `<div class="card-grid">
       <article class="item-card"><header><h3>Runtime database</h3>${badge(data.health.database === "ok" ? "Operating normally" : "Needs attention")}</header><p>The durable operating state passed its latest integrity check.</p></article>
       <article class="item-card"><header><h3>AI worker connection</h3>${badge(ai.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(ai.ready ? "OpenAI workers can run from this dashboard when their exact capped task is approved." : compact(ai.blockers?.join(" ") || "Credentials and live permission are not configured."))}</p></article>
       <article class="item-card"><header><h3>Live research</h3>${badge(research.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(research.ready ? "Read-only sourced research can run from this dashboard after its exact cost approval." : compact(research.blockers?.join(" ") || "The research connection is not configured."))}</p></article>
       <article class="item-card"><header><h3>Product visuals</h3>${badge(ai.imageGeneration?.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(ai.imageGeneration?.ready ? "Product Builder can prepare one reviewed local visual after an exact cost approval. Publishing remains blocked." : compact(ai.imageGeneration?.blockers?.join(" ") || "The reviewed product-visual capability is not connected."))}</p></article>
+      <article class="item-card"><header><h3>Data protection</h3>${badge(retention.label, retention.status === "active" ? "mint" : "amber")}</header><p>${escapeHtml(retention.summary)} ${escapeHtml(retention.nextAction)}</p>${retentionAction}</article>
       <article class="item-card"><header><h3>External actions</h3>${badge("Your approval required", "mint")}</header><p>Publishing, customer contact, account changes and spend still require your explicit decision.</p></article>
     </div>`;
   }
@@ -867,6 +872,9 @@ async function showDetail(kind, id, options = {}) {
     const businessContext = item.businessContext
       ? detailSection("Business records", `<p>${escapeHtml(item.businessContext.purpose)}</p><div class="review-facts"><div><span>Records supplied</span><strong>${escapeHtml(String(item.businessContext.recordCount))}</strong></div><div><span>Categories</span><strong>${escapeHtml(item.businessContext.recordClasses.map(humanStatus).join(", "))}</strong></div></div><p class="muted-text">This approval is bound to one frozen record snapshot. Credentials, unrelated ventures, local-only records, and direct customer identifiers are excluded by default.</p>`)
       : "";
+    const policySummary = item.policySummary?.length
+      ? detailSection("Data protection plan", `<div class="plain-list">${item.policySummary.map((rule) => `<article class="plain-row"><div><h3>${escapeHtml(rule.label)}</h3><p>${escapeHtml(rule.rule)}</p></div>${badge(rule.duration)}</article>`).join("")}</div><p class="muted-text">${item.noDeletion ? "Approving this plan activates future checks. It does not delete any records." : ""}</p>`)
+      : "";
     const pricedBound = item.pricedWorstCaseCostCents
       ? `<br>Current priced upper-bound estimate: ${money(item.pricedWorstCaseCostCents)}. Actual provider usage is reconciled after the run.`
       : "";
@@ -875,6 +883,7 @@ async function showDetail(kind, id, options = {}) {
       detailSection("Expected result", `<p>${escapeHtml(item.expectedUpside)}</p>`),
       assignment,
       businessContext,
+      policySummary,
       execution,
       detailSection("Boundaries", `<p>Hard maximum cost: ${money(item.maxCostCents)}.${pricedBound}<br>Risk: ${escapeHtml(humanStatus(item.risk))}.<br>External actions: ${item.effects?.length ? escapeHtml(item.effects.join(", ")) : "None"}.<br>This decision applies only to the exact work shown here. The model cannot switch automatically after approval.${item.tracePolicy?.providerTraceContent ? " Provider trace input and output will be available for this approved non-personal run." : ""}</p>`),
       detailSection("Your decision", approvalButtons(item)),
@@ -977,6 +986,13 @@ async function handleAction(button) {
     await postJson("/api/monitor/run", {});
     toast("Maintenance completed.");
     return loadView("system", { silent: true });
+  }
+  if (action === "prepare-retention-decision") {
+    await postJson("/api/system/retention/prepare-decision", {});
+    store.view = "decisions";
+    store.decisionTab = "approvals";
+    syncNavigation();
+    return loadView("decisions", { silent: true });
   }
   if (action === "run-next") {
     const result = await withRunPolling(() => postJson("/api/runtime/tick", {}));

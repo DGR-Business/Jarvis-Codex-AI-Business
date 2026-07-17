@@ -10,6 +10,7 @@ const { getLatestDigest } = require("./executive-digest");
 const { getAccountingSummary } = require("./accounting-ledger");
 const { monthlyBudgetExposure } = require("./cost-ledger");
 const { latestAgentRunReceipt, verifyAgentRunReceiptChain } = require("./agent-execution-evidence");
+const { getRetentionPolicyState } = require("./retention-policy");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -106,6 +107,8 @@ function decisionCard(approval) {
       snapshotHash: contextSnapshot.snapshotHash,
     } : null,
     tracePolicy: payload.tracePolicy || null,
+    policySummary: Array.isArray(payload.policySummary) ? payload.policySummary : null,
+    noDeletion: payload.noDeletion === true,
     actions: ["approve", "changes", "reject"],
   };
 }
@@ -991,6 +994,7 @@ function getSystemState(db) {
       database: get(db, "PRAGMA integrity_check").integrity_check,
       liveAi: getLiveAiWorkerReadiness(db),
       liveResearch: getLiveResearchReadiness(db),
+      retention: getRetentionPolicyState(db),
     },
     queue: parseRows(all(
       db,

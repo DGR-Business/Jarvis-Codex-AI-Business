@@ -50,6 +50,10 @@ const { generateWeeklyDigest } = require("../src/runtime/executive-digest");
 const { runMonitorCycle } = require("../src/runtime/monitor");
 const { createLiveAiWorkerSmokeTest, requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { createLiveResearchSmokeTest, requestLiveResearch } = require("../src/runtime/live-research");
+const {
+  getRetentionPolicyState,
+  prepareRetentionPolicyDecision,
+} = require("../src/runtime/retention-policy");
 const { AI_TEAM_DEFINITIONS, createAgentRun, decideAgentHandoff, findAgentDefinition, finishAgentRun } = require("../src/runtime/ai-team");
 const { ensureSchedulerJobs, runDueSchedulerJobs, runSchedulerJob, setSchedulerJobStatus } = require("../src/runtime/scheduler");
 const { recordCommercialFeedback, recordCommercialResult } = require("../src/runtime/commercial-results");
@@ -72,6 +76,31 @@ function seededDb(name) {
   const db = openDatabase(tempDbPath(name));
   seedDatabase(db, { includeDemoProof: true });
   return db;
+}
+
+async function activateRetentionPolicyForTest(db) {
+  const pending = all(
+    db,
+    "SELECT id FROM approvals WHERE status = 'pending' AND scope <> 'data_retention_policy' ORDER BY requested_at",
+  );
+  for (const approval of pending) {
+    decideApproval(db, approval.id, "rejected", "Clear unrelated fixture decision before retention-policy test setup.");
+  }
+  const prepared = prepareRetentionPolicyDecision(db);
+  if (!prepared.prepared && prepared.state?.status !== "waiting_for_decision") {
+    throw new Error(prepared.reason || "Could not prepare the retention policy for this test.");
+  }
+  const state = getRetentionPolicyState(db);
+  if (state.status === "active") return state;
+  const approval = get(db, "SELECT * FROM approvals WHERE id = ?", [state.approvalId]);
+  decideApproval(db, approval.id, "approved", "Activate the test data-protection policy.", {
+    expectedScopeHash: approval.scope_hash,
+  });
+  const execution = await runOnce(db, { taskId: approval.task_id });
+  if (execution.status !== "completed") {
+    throw new Error(`Test data-protection policy did not activate: ${JSON.stringify(execution)}`);
+  }
+  return getRetentionPolicyState(db);
 }
 
 test("seedDatabase creates durable runtime state", () => {
@@ -2715,6 +2744,7 @@ test("live research request creates approval gate and blocks until provider is r
 
   const db = seededDb("live-research-request");
   try {
+    await activateRetentionPolicyForTest(db);
     const planned = createCommandPlan(db, {
       text: "Evaluate a premium Notion finance dashboard template and prepare a decision pack",
       source: "test",
@@ -3182,6 +3212,7 @@ test("SDK tool interruption uses Jarvis approval and resumes the same serialized
 
   const db = seededDb("sdk-tool-resume");
   try {
+    await activateRetentionPolicyForTest(db);
     const planned = createCommandPlan(db, {
       text: "Evaluate a tiny digital checklist and prepare a decision pack",
       source: "test",
@@ -3429,6 +3460,7 @@ test("approved live research uses provider adapter, records sources, cost, and s
 
   const db = seededDb("live-research-success");
   try {
+    await activateRetentionPolicyForTest(db);
     const planned = createCommandPlan(db, {
       text: "Evaluate a premium Notion finance dashboard template and prepare a decision pack",
       source: "test",
@@ -3534,6 +3566,7 @@ test("definite live research rejection releases the reservation and fails safely
 
   const db = seededDb("live-research-failure");
   try {
+    await activateRetentionPolicyForTest(db);
     const planned = createCommandPlan(db, {
       text: "Evaluate a premium Notion finance dashboard template and prepare a decision pack",
       source: "test",
@@ -4522,6 +4555,55 @@ test("HTTP API exposes focused cockpit sections and retires unsafe legacy routes
 
     const retiredLink = await fetch(`${baseUrl}/api/approval-actions/legacy-token`);
     assert.equal(retiredLink.status, 410);
+  } finally {
+    await new Promise((resolve) => app.wss.close(resolve));
+    await new Promise((resolve) => app.server.close(resolve));
+    db.close();
+  }
+});
+
+test("HTTP API keeps the data plan behind the current decision and prepares it exactly once", async () => {
+  const db = seededDb("server-retention-decision");
+  const app = createApp({ db, dbPath: tempDbPath("server-retention-decision-unused"), security: false });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  try {
+    const blockedResponse = await fetch(`${baseUrl}/api/system/retention/prepare-decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const blocked = await blockedResponse.json();
+    assert.equal(blockedResponse.status, 409);
+    assert.equal(blocked.result.state.label, "Ready after the current decision");
+    assert.equal(
+      get(db, "SELECT COUNT(*) AS count FROM approvals WHERE scope = 'data_retention_policy'").count,
+      0,
+    );
+
+    decideApproval(db, "appr-digital-product-dry-run", "rejected", "Clear the current fixture decision.");
+    const preparedResponse = await fetch(`${baseUrl}/api/system/retention/prepare-decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const prepared = await preparedResponse.json();
+    assert.equal(preparedResponse.status, 201);
+    assert.equal(prepared.result.state.status, "waiting_for_decision");
+    assert.equal(prepared.decisions.approvals.length, 1);
+    assert.equal(prepared.decisions.approvals[0].noDeletion, true);
+
+    const repeatedResponse = await fetch(`${baseUrl}/api/system/retention/prepare-decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(repeatedResponse.status, 409);
+    assert.equal(
+      get(db, "SELECT COUNT(*) AS count FROM approvals WHERE scope = 'data_retention_policy'").count,
+      1,
+    );
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));

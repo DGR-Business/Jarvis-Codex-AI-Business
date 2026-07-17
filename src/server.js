@@ -44,6 +44,10 @@ const { ensureCapabilityAutonomy } = require("./runtime/capability-autonomy");
 const { getGumroadSalesState, importGumroadCsv } = require("./runtime/gumroad-import");
 const { reconcileProviderUsageBatch } = require("./runtime/cost-ledger");
 const {
+  ensureRetentionPolicy,
+  prepareRetentionPolicyDecision,
+} = require("./runtime/retention-policy");
+const {
   latestAgentRunReceipt,
   verifyAgentRunReceiptChain,
 } = require("./runtime/agent-execution-evidence");
@@ -249,6 +253,7 @@ function ensureRuntimeFoundation(db) {
   ensureActiveVentureCase(db);
   ensureCapabilityAutonomy(db);
   ensureWeeklyDigest(db);
+  ensureRetentionPolicy(db);
 }
 
 function createRuntime(options = {}) {
@@ -489,6 +494,17 @@ function createApp(options = {}) {
 
       if (req.method === "GET" && url.pathname === "/api/system/health") {
         jsonResponse(res, 200, getSystemState(db).health);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/system/retention/prepare-decision") {
+        const result = prepareRetentionPolicyDecision(db);
+        if (!result.prepared) {
+          jsonResponse(res, 409, { error: result.reason, result });
+          return;
+        }
+        broadcastState();
+        jsonResponse(res, 201, { result, decisions: getDecisionsState(db) });
         return;
       }
 

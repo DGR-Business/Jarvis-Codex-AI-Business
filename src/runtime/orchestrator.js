@@ -17,6 +17,7 @@ const { consumeApproval, validateApprovalScope } = require("./approval-scope");
 const { reserveBudget, resolveReservation } = require("./cost-ledger");
 const { claimNextTask, completeTaskClaim, releaseTaskClaim } = require("./task-claims");
 const { finalizeAgentExecutionReceipt } = require("./agent-execution-evidence");
+const { activateRetentionPolicy } = require("./retention-policy");
 
 function hydrateTask(task) {
   if (!task) return null;
@@ -101,6 +102,13 @@ async function executeTask(db, task, options = {}) {
   const workflow = hydrateWorkflow(get(db, "SELECT * FROM workflows WHERE id = ?", [task.workflow_id]));
   if (!workflow) throw new Error(`Workflow missing for task ${task.id}`);
 
+  if (task.kind === "activate_retention_policy") {
+    const approval = task.approval_id
+      ? get(db, "SELECT * FROM approvals WHERE id = ?", [task.approval_id])
+      : null;
+    return activateRetentionPolicy(db, task, approval);
+  }
+
   if (task.kind === "publish_gelato_dry_run") {
     const result = await createProductDraft(workflow, { dryRun: true });
     run(
@@ -160,6 +168,24 @@ function remainingWorkflowTasks(db, workflowId) {
 function updateWorkflowAfterCompletion(db, task, result, done) {
   const current = get(db, "SELECT status FROM workflows WHERE id = ?", [task.workflow_id]);
   if (["cancelled", "failed", "needs_changes", "needs_attention"].includes(current?.status)) return;
+  if (task.kind === "activate_retention_policy") {
+    run(
+      db,
+      `UPDATE workflows
+       SET status = 'completed', current_step = 'Data protection plan active',
+           quality_score = 100, approval_required = 0, updated_at = ?
+       WHERE id = ?`,
+      [done, task.workflow_id],
+    );
+    run(
+      db,
+      `UPDATE messages
+       SET status = 'resolved', resolved_at = ?
+       WHERE task_id = ? AND status = 'open'`,
+      [done, task.id],
+    );
+    return;
+  }
   if (task.kind === "publish_gelato_dry_run") {
     run(
       db,

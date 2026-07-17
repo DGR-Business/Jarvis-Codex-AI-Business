@@ -83,6 +83,20 @@ workers or grant authority. Product, copy, and distribution outputs are frozen
 for an independent Quality Reviewer check before they can become ready for
 operator use.
 
+Task-scoped does not mean information-starved. A worker may receive the
+venture's relevant finance, production, legal, customer, evidence, and operating
+records when its exact assignment needs them. Jarvis records which classes were
+supplied and withholds unrelated records, credentials, raw identity documents,
+and direct identifiers unless the assignment has a recorded need and the
+applicable approval and retention rules permit them.
+
+Jarvis monitoring is part of the runtime, not a feature that depends on this
+Codex conversation being open. Dashboard actions, assignments, provider calls,
+tools, approvals, outputs, costs, evaluations, and failures write durable
+records for scheduler-backed checks and later engineering review. Chief of
+Staff may coordinate the fixed team one bounded specialist assignment at a
+time; runtime-created teams remain a later capability.
+
 ## AI Team
 
 The Phase 1 business roster is fixed at 11 workers, grouped for clarity:
@@ -160,8 +174,14 @@ it never claims or exposes private chain-of-thought.
   movement is authorised by a general dashboard instruction.
 - Remote/mobile operation and runtime-created workers remain deferred.
 - Provider-side storage for business or personal data and ongoing sensitive
-  worker operations remain blocked until Daniel approves a retention and privacy
-  schedule.
+  worker operations remain blocked until Daniel approves the prepared retention
+  and privacy schedule. The proposal keeps finance, tax, contract, money,
+  compliance, and linked audit evidence for seven years; accepted venture work
+  while active plus three years; routine drafts and diagnostics for ninety days;
+  and encrypted backups on the existing seven-daily/four-weekly rotation.
+  Provider response and trace-content storage remain off by default, sensitive
+  provider storage is forbidden, and approval activates checks without deleting
+  anything. Destructive cleanup always remains a separate, previewed action.
 
 ## Financial Truth
 
@@ -183,15 +203,18 @@ it never claims or exposes private chain-of-thought.
 - Maintain the recoverable, clean first-use baseline.
 - Operate against the fixed 11-worker Phase 1 contract. Its bounded assignment,
   receipt, audit, task-scoped context, Chief assignment, Quality Reviewer,
-  monitoring, and model-routing foundation passed locally on 2026-07-17.
+  monitoring, model-routing, and retention-enforcement foundation passed locally
+  on 2026-07-17.
 - Use the cockpit to prepare one Evidence Brief that ranks three plausible
   digital-product opportunities.
 - Run the prepared Demand Validator supplied-evidence decision first. It is
   waiting for Daniel's exact approval and remains no-tool, one-turn, and capped.
 - Only after that result is accepted, offer Daniel one separately approved,
   capped live-web proof; do not treat the supplied-evidence approval as reusable.
-- Record Daniel's retention and privacy decision before ongoing live research or
-  sensitive data use widens.
+- After the current Demand Validator decision, present Daniel with the prepared
+  plain-language retention and privacy decision. Keep ongoing live research,
+  provider storage, personal-data work, and sensitive work blocked until it is
+  accepted.
 - Present one concise opportunity-selection decision to Daniel.
 
 ### Next
