@@ -4,14 +4,32 @@ const { buildAgentContextSnapshot, persistAgentContextSnapshot } = require("./ag
 const { AI_TEAM_DEFINITIONS, ensureAiTeam } = require("./ai-team");
 const { buildWorkerModelPacket } = require("./agent-model-contracts");
 const { buildAgentsSdkCapabilityPlan, buildVisualAssetApprovalBinding } = require("./agent-sdk-capabilities");
-const { createExecutionDescriptor, scopeHash } = require("./approval-scope");
+const {
+  canonicalWorkerApprovalPolicy,
+  createExecutionDescriptor,
+  scopeHash,
+  workerDefinitionHash,
+} = require("./approval-scope");
 const { worstCaseExecutionCostAud } = require("./model-pricing");
-const { selectModelRoute } = require("./model-routing");
+const {
+  createModelRouteSignature,
+  readModelRouteHistory,
+  selectModelRoute,
+} = require("./model-routing");
 const { createCommandPlan } = require("./planner");
 const { ensureSpendApproval } = require("./spend-gate");
 
 const MIN_LIVE_AI_WORKER_BUDGET_CENTS = 40;
 const MAX_LIVE_AI_WORKER_BUDGET_CENTS = 5000;
+const DEMAND_VALIDATOR_FIXTURE_CAPABILITY = "demand_validator.reasoning_on_supplied_evidence";
+const SUPPLIED_EVIDENCE_CONTEXT_EXCEPTION = Object.freeze({
+  schema: "jarvis.agent-context-exception.v1",
+  id: "demand-validator-versioned-supplied-evidence",
+  policyVersion: "2026-07-17.1",
+});
+const SUPPLIED_EVIDENCE_EXPECTED_OUTPUT = "A structured recommendation with evidence, counterevidence, assumptions, price/channel hypothesis, smallest test, metric, stop rule, confidence and risks.";
+const SUPPLIED_EVIDENCE_EXPECTED_METRIC = "Deterministic scope, source, structure and cost checks pass; Daniel separately judges commercial usefulness.";
+const SUPPLIED_EVIDENCE_TRACE_PURPOSE = "Make the supplied fixture and structured recommendation reviewable in OpenAI traces while retaining the local audit record.";
 
 function safeId(value) {
   return String(value || "workflow")
@@ -125,6 +143,167 @@ function normalizeRequestedWorker(options = {}, sourceTask = null) {
   return AI_TEAM_DEFINITIONS.find((candidate) => candidate.id === "chief_of_staff");
 }
 
+function exactSuppliedEvidenceFixtureException(
+  db,
+  workflow,
+  command,
+  sourceTask,
+  workerDefinition,
+  options,
+  controls,
+) {
+  if (!options.fixtureInput) return null;
+  if (workerDefinition.id !== "demand_validator") {
+    throw new Error("Only the Demand Validator versioned supplied-evidence fixture may omit venture context.");
+  }
+  const fixtureId = String(options.fixtureInput.id || "").trim();
+  const fixture = fixtureId
+    ? get(db, "SELECT * FROM agent_pilot_fixtures WHERE id = ?", [fixtureId])
+    : null;
+  if (!fixture || !["ready", "prepared"].includes(fixture.status)) {
+    throw new Error("The supplied-evidence context exception needs an active persisted pilot fixture.");
+  }
+  const fixtureVersion = Number(fixture.fixture_version);
+  const sources = fromJson(fixture.sources, []);
+  const constraints = fromJson(fixture.constraints, {});
+  const expectedInput = {
+    id: fixture.id,
+    version: fixtureVersion,
+    hash: fixture.fixture_hash,
+    question: fixture.question,
+    buyer: fixture.buyer,
+    hypothesis: fixture.hypothesis,
+    sources,
+    constraints,
+  };
+  const calculatedFixtureHash = scopeHash({
+    fixtureVersion,
+    question: fixture.question,
+    buyer: fixture.buyer,
+    hypothesis: fixture.hypothesis,
+    sources,
+    constraints,
+  });
+  if (!Number.isInteger(fixtureVersion)
+      || fixtureVersion < 1
+      || calculatedFixtureHash !== fixture.fixture_hash
+      || scopeHash(options.fixtureInput) !== scopeHash(expectedInput)
+      || options.fixtureHash !== fixture.fixture_hash) {
+    throw new Error("The supplied-evidence fixture version or hash does not match its persisted record.");
+  }
+  const comparison = options.comparisonSource || {};
+  if (comparison.type !== "versioned_agent_pilot_fixture"
+      || comparison.fixtureId !== fixture.id
+      || comparison.fixtureHash !== fixture.fixture_hash) {
+    throw new Error("The supplied-evidence context exception needs its exact versioned comparison source.");
+  }
+  const workflowMetadata = workflow.metadata || {};
+  const commandMetadata = fromJson(command?.metadata, {});
+  if (workflow.type !== "agent_sdk_pilot"
+      || workflow.venture_id !== fixture.venture_id
+      || workflow.title !== "Demand Validator controlled proof"
+      || workflowMetadata.fixtureId !== fixture.id
+      || workflowMetadata.fixtureHash !== fixture.fixture_hash
+      || workflowMetadata.capabilityKey !== DEMAND_VALIDATOR_FIXTURE_CAPABILITY
+      || workflowMetadata.baselineExcludedFromWorker !== true
+      || sourceTask
+      || command?.source !== "agent-pilot"
+      || command?.intent !== "evaluate_supplied_evidence"
+      || command?.raw_text !== fixture.question
+      || commandMetadata.fixtureId !== fixture.id
+      || commandMetadata.fixtureHash !== fixture.fixture_hash
+      || commandMetadata.baselineExcludedFromWorker !== true) {
+    throw new Error("The supplied-evidence context exception is restricted to its exact agent-pilot workflow.");
+  }
+  const constraintTools = Array.isArray(constraints.tools) ? constraints.tools : [];
+  const constraintHandoffs = Array.isArray(constraints.handoffs) ? constraints.handoffs : [];
+  const protectedEvidence = sources.map((source) => `${source.title}: ${source.summary}`);
+  const optionParameters = options.parameters || {};
+  const parameterKeys = Object.keys(optionParameters);
+  const retryParameterKeys = new Set([
+    "attemptNumber",
+    "technicalRetry",
+    "retryOfTaskId",
+    "priorOutcome",
+    "priorOutcomeAcknowledged",
+  ]);
+  const validRetryParameters = parameterKeys.length === 0
+    || (
+      parameterKeys.every((key) => retryParameterKeys.has(key))
+      && optionParameters.technicalRetry === true
+      && Number.isInteger(Number(optionParameters.attemptNumber))
+      && Number(optionParameters.attemptNumber) >= 2
+      && String(optionParameters.retryOfTaskId || "").trim()
+      && optionParameters.priorOutcome === "unknown"
+      && optionParameters.priorOutcomeAcknowledged === true
+    );
+  const businessContext = options.businessContext || {};
+  if (constraintTools.length
+      || constraintHandoffs.length
+      || Number(constraints.maxTurns) !== 1
+      || !Number.isInteger(Number(constraints.maxOutputTokens))
+      || Number(constraints.maxOutputTokens) < 1
+      || Number(constraints.maxOutputTokens) > 1200
+      || !Number.isInteger(Number(constraints.maxCostCents))
+      || Number(constraints.maxCostCents) < 1
+      || Number(constraints.maxCostCents) > 100
+      || constraints.externalActionsAllowed !== false
+      || controls.tools.length
+      || controls.maxTurns !== 1
+      || controls.maxToolCalls !== 0
+      || controls.maxOutputTokens > Number(constraints.maxOutputTokens)
+      || controls.amountCents > Number(constraints.maxCostCents)
+      || (Array.isArray(options.effects) && options.effects.length)
+      || Object.keys(options.toolArguments || {}).length
+      || Object.values(businessContext).some((value) => value !== null && value !== undefined && value !== "")
+      || options.workBrief
+      || options.contextClasses
+      || options.includePersonalData === true
+      || options.taskTitle !== "Demand Validator controlled proof"
+      || options.approvalTitle !== "Approve this Demand Validator proof"
+      || options.expectedOutput !== SUPPLIED_EVIDENCE_EXPECTED_OUTPUT
+      || options.expectedMetric !== SUPPLIED_EVIDENCE_EXPECTED_METRIC
+      || scopeHash(options.protectedEvidence || []) !== scopeHash(protectedEvidence)
+      || !validRetryParameters
+      || options.model
+      || options.highConsequence === true
+      || options.qualityEscalation === true
+      || options.tracePolicy?.providerResponseStored !== true
+      || options.tracePolicy?.providerTraceContent !== true
+      || options.tracePolicy?.localReviewStored !== true
+      || options.tracePolicy?.dataClass !== "controlled_fixture_no_personal_data"
+      || options.tracePolicy?.purpose !== SUPPLIED_EVIDENCE_TRACE_PURPOSE) {
+    throw new Error("The supplied-evidence context exception is limited to the no-tool, one-turn, non-personal Demand Validator proof.");
+  }
+  return {
+    binding: {
+      ...SUPPLIED_EVIDENCE_CONTEXT_EXCEPTION,
+      capabilityKey: DEMAND_VALIDATOR_FIXTURE_CAPABILITY,
+      fixtureId: fixture.id,
+      fixtureVersion,
+      fixtureHash: fixture.fixture_hash,
+      ventureContextOmitted: true,
+    },
+    fixtureInput: expectedInput,
+  };
+}
+
+function modelCapabilityKey(options, workerDefinition, contextException) {
+  if (contextException) return DEMAND_VALIDATOR_FIXTURE_CAPABILITY;
+  const explicit = String(options.capabilityKey || "").trim();
+  if (explicit) return explicit;
+  if (workerDefinition.id === "chief_of_staff" && options.chiefOrchestration?.enabled === true) {
+    return "chief_of_staff.next_bounded_specialist";
+  }
+  if (workerDefinition.id === "quality_reviewer" && options.parameters?.reviewOfTaskId) {
+    return "quality_reviewer.exact_deliverable_review";
+  }
+  if (options.parameters?.chiefAssignment?.schema === "jarvis.chief-specialist-assignment.v1") {
+    return `${workerDefinition.id}.chief_bounded_specialist`;
+  }
+  return `${workerDefinition.id}.live_assignment`;
+}
+
 function approvalIdForRequest(db, taskId, workflowId, requestedAt) {
   const existing = hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]));
   const existingApprovalId = existing?.payload?.liveSpendRequest?.approvalId;
@@ -143,6 +322,13 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const command = latestCommand(db, workflowId);
   const sourceTask = sourceWorkerTask(db, workflowId);
   const workerDefinition = normalizeRequestedWorker(options, sourceTask);
+  const persistedWorkerDefinition = get(db, "SELECT * FROM agent_definitions WHERE id = ?", [workerDefinition.id]);
+  const actualWorkerDefinition = persistedWorkerDefinition || workerDefinition;
+  const workerApprovalPolicy = canonicalWorkerApprovalPolicy(actualWorkerDefinition);
+  const actualWorkerDefinitionHash = workerDefinitionHash(actualWorkerDefinition);
+  if (options.disableVentureContext === true) {
+    throw new Error("Task-scoped venture context cannot be disabled by a live-worker request.");
+  }
   const businessContext = options.businessContext || {};
   const subject = businessContext.subject || workflow.metadata.subject || sourceTask?.payload?.subject || workflow.title || "this business idea";
   const channel = businessContext.channel || workflow.metadata.channel || sourceTask?.payload?.channel || workflow.type || "Business Idea";
@@ -157,7 +343,22 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const protectedEvidence = Array.isArray(options.protectedEvidence) ? options.protectedEvidence.filter(Boolean).slice(0, 8) : [];
   const comparisonSource = options.comparisonSource || null;
   const expectedMetric = options.expectedMetric || "Compare live output quality, trace coverage, cost, and usefulness against protected worker proof.";
-  const contextSnapshot = options.fixtureInput || options.disableVentureContext === true
+  const toolControls = requestedToolControls(options);
+  const maxOutputTokens = Number(options.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 1200);
+  const contextException = exactSuppliedEvidenceFixtureException(
+    db,
+    workflow,
+    command,
+    sourceTask,
+    workerDefinition,
+    options,
+    {
+      amountCents,
+      maxOutputTokens,
+      ...toolControls,
+    },
+  );
+  const contextSnapshot = contextException
     ? null
     : buildAgentContextSnapshot(db, {
       ventureId: workflow.venture_id,
@@ -180,7 +381,6 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       }
       : options,
   );
-  const toolControls = requestedToolControls(options);
   const toolArguments = JSON.parse(JSON.stringify(options.toolArguments || {}));
   const workBrief = cleanWorkBrief(options.workBrief);
   const qualityReviewedWorker = ["product_builder", "copy_conversion_agent", "distribution_operator"].includes(workerDefinition.id);
@@ -188,15 +388,27 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     ...(options.parameters || {}),
     ...(qualityReviewedWorker ? { requiredReviewer: "quality_reviewer" } : {}),
   };
-  const maxOutputTokens = Number(options.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 1200);
   const effects = Array.isArray(options.effects) ? options.effects : [];
   const provider = options.provider || CONFIG.liveModelProvider;
-  const modelRoute = selectModelRoute({
+  const routeSignature = createModelRouteSignature({
+    workerId: workerDefinition.id,
+    capabilityKey: modelCapabilityKey(options, workerDefinition, contextException),
+    tools: toolControls.tools,
+  });
+  const routeHistory = readModelRouteHistory(db, routeSignature);
+  const selectedModelRoute = selectModelRoute({
     model: options.model,
     modelClass: workerDefinition.modelClass,
     highConsequence: options.highConsequence === true,
     qualityEscalation: options.qualityEscalation === true,
+    routeHistory,
   });
+  const modelRoute = {
+    ...selectedModelRoute,
+    capabilityKey: routeSignature.capabilityKey,
+    toolSignature: routeSignature.toolSignature,
+    historySignature: routeSignature.historySignature,
+  };
   const model = modelRoute.model;
   const maxInputTokens = toolControls.tools.length
     ? Number(options.maxInputTokens || CONFIG.liveModelToolMaxInputTokens)
@@ -222,13 +434,14 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     requestedWorkerModelClass: workerDefinition.modelClass,
     expectedOutput,
     comparisonSource,
-    pilotFixture: options.fixtureInput ? {
-      ...options.fixtureInput,
+    pilotFixture: contextException ? {
+      ...contextException.fixtureInput,
       baselineExcluded: true,
     } : null,
     protectedEvidence,
     expectedMetric,
     contextSnapshot,
+    ventureContextException: contextException?.binding || null,
     workBrief,
     ...(options.chiefOrchestration ? { chiefOrchestration: options.chiefOrchestration } : {}),
     liveSpendRequest: {
@@ -247,7 +460,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       comparisonSource,
       protectedEvidence,
       expectedMetric,
-      fixtureHash: options.fixtureHash || null,
+      fixtureHash: contextException?.binding.fixtureHash || null,
       tools: toolControls.tools,
       toolArguments,
       parameters: {
@@ -262,11 +475,18 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
             recordCount: contextSnapshot.recordCount,
           },
         } : {}),
+        ...(contextException ? { ventureContextException: contextException.binding } : {}),
         modelRoute: {
           tier: modelRoute.tier,
           policyVersion: modelRoute.policyVersion,
           reason: modelRoute.reason,
+          capabilityKey: modelRoute.capabilityKey,
+          toolSignature: modelRoute.toolSignature,
+          historySignature: modelRoute.historySignature,
+          routeHistory: modelRoute.routeHistory,
+          selectedBeforeApproval: true,
           automaticFallbackAllowed: false,
+          automaticRetryAllowed: false,
         },
       },
       maxTurns: toolControls.maxTurns,
@@ -286,6 +506,9 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
         role: workerDefinition.role,
         modelClass: workerDefinition.modelClass,
         outputContract: workerDefinition.outputContract,
+        approvalPolicy: workerApprovalPolicy,
+        approvalPolicyHash: scopeHash(workerApprovalPolicy),
+        definitionHash: actualWorkerDefinitionHash,
       },
     },
   };
@@ -310,14 +533,6 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     };
   }
   const materializedPacket = buildWorkerModelPacket(db, descriptorTask, workerDefinition);
-  const workerDefinitionHash = scopeHash({
-    id: workerDefinition.id,
-    name: workerDefinition.name,
-    role: workerDefinition.role,
-    instructions: workerDefinition.instructions,
-    outputContract: workerDefinition.outputContract,
-    approvalPolicy: workerDefinition.approval_policy,
-  });
   const worstCaseCost = worstCaseExecutionCostAud({
     model,
     materializedInput: materializedPacket,
@@ -340,7 +555,9 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     provider,
     model,
     workerId: workerDefinition.id,
-    workerDefinitionHash,
+    workerDefinitionHash: actualWorkerDefinitionHash,
+    workerApprovalPolicy,
+    workerApprovalPolicyHash: scopeHash(workerApprovalPolicy),
     materializedInputHash: scopeHash(materializedPacket),
     sourceStateHash: stableWorkerPacketHash(materializedPacket),
     materializedInput: materializedPacket,
@@ -389,6 +606,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       recordClasses: contextSnapshot.recordClasses,
       recordCount: contextSnapshot.recordCount,
     } : null,
+    ventureContextException: contextException?.binding || null,
   };
 
   const existing = hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]));
@@ -450,6 +668,9 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       contextSnapshotHash: contextSnapshot?.snapshotHash || null,
       contextRecordClasses: contextSnapshot?.recordClasses || [],
       contextRecordCount: contextSnapshot?.recordCount || 0,
+      ventureContextExceptionId: contextException?.binding.id || null,
+      modelRouteHistorySignature: modelRoute.historySignature,
+      modelRoutePriorDecision: modelRoute.routeHistory?.decision || "normal",
     },
   });
 
@@ -516,7 +737,9 @@ function createLiveAiWorkerSmokeTest(db, options = {}) {
 }
 
 module.exports = {
+  DEMAND_VALIDATOR_FIXTURE_CAPABILITY,
   MIN_LIVE_AI_WORKER_BUDGET_CENTS,
+  SUPPLIED_EVIDENCE_CONTEXT_EXCEPTION,
   createLiveAiWorkerSmokeTest,
   requestLiveAiWorker,
 };

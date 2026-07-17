@@ -1,8 +1,23 @@
-const { all, fromJson, get, insertEvent, now, run, toJson } = require("../db");
+const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
+const { appendReceiptForOperatorUsefulnessReview } = require("./agent-execution-evidence");
 
 const AI_PILOT_REVIEW_SCHEMA = "jarvis_ai_pilot_review_v1";
 const LIVE_RUN_MODES = new Set(["openai-agents-sdk", "live-ai-worker", "live-agent"]);
 const REVIEW_DECISIONS = new Set(["mark_useful", "request_changes", "repeat_capped_test", "promote_narrow_use", "stop_pilot"]);
+
+function withSavepoint(db, prefix, operation) {
+  const name = `${prefix}_${randomId().replace(/[^a-zA-Z0-9]/g, "")}`;
+  db.exec(`SAVEPOINT ${name}`);
+  try {
+    const value = operation();
+    db.exec(`RELEASE SAVEPOINT ${name}`);
+    return value;
+  } catch (error) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${name}`);
+    db.exec(`RELEASE SAVEPOINT ${name}`);
+    throw error;
+  }
+}
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -132,11 +147,11 @@ function buildActions({ status, packet, approval, liveRun }) {
   }
   if (liveRun?.status === "completed") {
     return [
-      { label: "Mark Useful", action: "ai-pilot-review", decision: "mark_useful", agentId: "demand_validator", tone: "success" },
-      { label: "Request Changes", action: "ai-pilot-review", decision: "request_changes", agentId: "demand_validator", tone: "warning" },
-      { label: "Repeat Capped Test", action: "ai-pilot-review", decision: "repeat_capped_test", agentId: "demand_validator" },
-      { label: "Promote Narrow Use", action: "ai-pilot-review", decision: "promote_narrow_use", agentId: "demand_validator", tone: "success" },
-      { label: "Stop Pilot", action: "ai-pilot-review", decision: "stop_pilot", agentId: "demand_validator", tone: "danger" },
+      { label: "Mark Useful", action: "ai-pilot-review", decision: "mark_useful", agentId: "demand_validator", runId: liveRun.id, tone: "success" },
+      { label: "Request Changes", action: "ai-pilot-review", decision: "request_changes", agentId: "demand_validator", runId: liveRun.id, tone: "warning" },
+      { label: "Repeat Capped Test", action: "ai-pilot-review", decision: "repeat_capped_test", agentId: "demand_validator", runId: liveRun.id },
+      { label: "Promote Narrow Use", action: "ai-pilot-review", decision: "promote_narrow_use", agentId: "demand_validator", runId: liveRun.id, tone: "success" },
+      { label: "Stop Pilot", action: "ai-pilot-review", decision: "stop_pilot", agentId: "demand_validator", runId: liveRun.id, tone: "danger" },
     ];
   }
   if (packet?.workflowId) {
@@ -254,13 +269,14 @@ function recordAiPilotReviewDecision(db, agentId, decision, options = {}) {
   if (!REVIEW_DECISIONS.has(decision)) {
     throw new Error(`Unsupported AI pilot review decision: ${decision}`);
   }
+  const runId = String(options.runId || "").trim();
+  if (!runId) throw new Error("An exact AI run ID is required for an operator review.");
   const runRow = get(
     db,
     `SELECT * FROM agent_runs
-     WHERE agent_id = ? AND mode IN ('openai-agents-sdk', 'live-ai-worker', 'live-agent')
-     ORDER BY started_at DESC
-     LIMIT 1`,
-    [agentId],
+     WHERE id = ? AND agent_id = ?
+       AND mode IN ('openai-agents-sdk', 'live-ai-worker', 'live-agent')`,
+    [runId, agentId],
   );
   if (!runRow) throw new Error(`No live AI pilot run exists for ${agentId}.`);
   const ts = now();
@@ -279,23 +295,26 @@ function recordAiPilotReviewDecision(db, agentId, decision, options = {}) {
       stop_pilot: "Stop live worker testing and keep the worker protected.",
     }[decision],
   };
-  run(db, "UPDATE agent_runs SET metadata = ? WHERE id = ?", [
-    toJson({ ...metadata, pilotReview }),
-    runRow.id,
-  ]);
-  insertEvent(db, {
-    actor: "operator",
-    type: "ai_pilot_review.decision_recorded",
-    entityType: "agent_run",
-    entityId: runRow.id,
-    message: `AI pilot review recorded for ${agentId}: ${decision}.`,
-    metadata: {
-      agentId,
-      runId: runRow.id,
-      decision,
-      note: options.note || "",
-      noExternalAction: true,
-    },
+  const receipt = withSavepoint(db, "record_ai_pilot_review", () => {
+    run(db, "UPDATE agent_runs SET metadata = ? WHERE id = ?", [
+      toJson({ ...metadata, pilotReview }),
+      runRow.id,
+    ]);
+    insertEvent(db, {
+      actor: "operator",
+      type: "ai_pilot_review.decision_recorded",
+      entityType: "agent_run",
+      entityId: runRow.id,
+      message: `AI pilot review recorded for ${agentId}: ${decision}.`,
+      metadata: {
+        agentId,
+        runId: runRow.id,
+        decision,
+        note: options.note || "",
+        noExternalAction: true,
+      },
+    });
+    return appendReceiptForOperatorUsefulnessReview(db, runRow.id);
   });
   return {
     status: "recorded",
@@ -303,6 +322,11 @@ function recordAiPilotReviewDecision(db, agentId, decision, options = {}) {
     agentId,
     decision,
     pilotReview,
+    receipt: {
+      id: receipt.id,
+      sequence: receipt.sequence,
+      status: receipt.status,
+    },
   };
 }
 

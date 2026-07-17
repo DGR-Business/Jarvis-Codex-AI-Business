@@ -125,7 +125,7 @@ finally { $sha256.Dispose() }
 function Get-JarvisHealth {
   try {
     $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2
-    if ($health.ok -ne $true) { return $null }
+    if ($health.alive -ne $true -and $health.ok -ne $true) { return $null }
     return $health
   } catch {
     return $null
@@ -233,10 +233,46 @@ if (-not $health) {
   $bootstrapToken = Unprotect-LocalValue ([string]$metadata.bootstrapProtected)
 }
 
+for ($attempt = 0; $attempt -lt 60 -and $health.ok -ne $true; $attempt += 1) {
+  if ($health.scheduler.enabled -eq $false -or $health.monitoring.job.enabled -eq $false) { break }
+  Start-Sleep -Milliseconds 500
+  $refreshedHealth = Get-JarvisHealth
+  if ($refreshedHealth -and [string]$refreshedHealth.instanceId -eq [string]$health.instanceId) {
+    $health = $refreshedHealth
+  }
+}
+
 $operatorUrl = "$dashboardUrl#bootstrap=$bootstrapToken"
 if (-not $NoOpen) {
   Start-Process $operatorUrl
 }
 
-Write-Host "Jarvis is ready at $dashboardUrl"
+if ($health.ok -eq $true) {
+  Write-Host "Jarvis is ready at $dashboardUrl"
+  Write-Host "Independent monitoring: ready; latest check $($health.monitoring.latestCompletedCheck.completedAt)."
+  Write-Host "Outside business actions: $($health.externalActionsMode). Paid AI: $(if ($health.paidAiArmed) { 'available behind exact approval' } else { 'setup needed' })."
+  return
+}
+
+Write-Warning "Jarvis is alive at $dashboardUrl, but operations are not ready."
+switch ([string]$health.monitoring.reason) {
+  "scheduler_disabled" {
+    Write-Warning "Independent monitoring is disabled by JARVIS_SCHEDULER_ENABLED=0. Enable it and restart Jarvis before relying on unattended operation."
+  }
+  "scheduler_not_running" {
+    Write-Warning "The scheduler did not start. Check $stderrPath before relying on unattended operation."
+  }
+  "monitor_job_disabled" {
+    Write-Warning "The runtime monitor job is disabled. Enable Runtime monitor cycle in System, then restart Jarvis."
+  }
+  "monitor_job_failed" {
+    Write-Warning "The latest scheduled monitor run failed. Check System activity and $stderrPath."
+  }
+  "monitor_check_overdue" {
+    Write-Warning "The latest completed monitor check is overdue. Last check: $($health.monitoring.latestCompletedCheck.completedAt)."
+  }
+  default {
+    Write-Warning "Jarvis did not complete its startup monitor check. Monitoring state: $($health.monitoring.reason). Check $stderrPath."
+  }
+}
 Write-Host "Outside business actions: $($health.externalActionsMode). Paid AI: $(if ($health.paidAiArmed) { 'available behind exact approval' } else { 'setup needed' })."

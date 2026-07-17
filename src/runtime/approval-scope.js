@@ -30,6 +30,68 @@ function scopeHash(value) {
   return crypto.createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
+function definitionValue(definition, camelKey, snakeKey, fallback = null) {
+  if (!definition || typeof definition !== "object") return fallback;
+  if (Object.prototype.hasOwnProperty.call(definition, camelKey) && definition[camelKey] !== undefined) {
+    return definition[camelKey];
+  }
+  if (Object.prototype.hasOwnProperty.call(definition, snakeKey) && definition[snakeKey] !== undefined) {
+    return definition[snakeKey];
+  }
+  return fallback;
+}
+
+function parsedDefinitionObject(value, label) {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new Error(`The worker ${label} is not valid JSON.`);
+    }
+  }
+  if (parsed === null || parsed === undefined) return {};
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`The worker ${label} must be an exact object.`);
+  }
+  return parsed;
+}
+
+function canonicalWorkerApprovalPolicy(definition = {}) {
+  const hasCamel = Object.prototype.hasOwnProperty.call(definition, "approvalPolicy")
+    && definition.approvalPolicy !== undefined;
+  const hasSnake = Object.prototype.hasOwnProperty.call(definition, "approval_policy")
+    && definition.approval_policy !== undefined;
+  const camelPolicy = hasCamel
+    ? canonicalValue(parsedDefinitionObject(definition.approvalPolicy, "approval policy"))
+    : null;
+  const snakePolicy = hasSnake
+    ? canonicalValue(parsedDefinitionObject(definition.approval_policy, "approval policy"))
+    : null;
+  if (camelPolicy && snakePolicy && canonicalJson(camelPolicy) !== canonicalJson(snakePolicy)) {
+    throw new Error("The worker approval policy fields disagree.");
+  }
+  return camelPolicy || snakePolicy || {};
+}
+
+function canonicalWorkerDefinition(definition = {}) {
+  return canonicalValue({
+    id: definition.id || null,
+    name: definition.name || null,
+    role: definition.role || null,
+    instructions: definition.instructions || "",
+    outputContract: parsedDefinitionObject(
+      definitionValue(definition, "outputContract", "output_contract", {}),
+      "output contract",
+    ),
+    approvalPolicy: canonicalWorkerApprovalPolicy(definition),
+  });
+}
+
+function workerDefinitionHash(definition = {}) {
+  return scopeHash(canonicalWorkerDefinition(definition));
+}
+
 function descriptorBody(value = {}) {
   const { descriptorHash, ...body } = value && typeof value === "object" ? value : {};
   return body;
@@ -64,6 +126,22 @@ function verifyExecutionDescriptor(descriptor) {
   }
   if (!String(descriptor.provider || "").trim() || !String(descriptor.model || "").trim()) {
     return { valid: false, reason: "The execution descriptor has no exact provider and model.", currentHash };
+  }
+  if (descriptor.kind === "live_ai_worker") {
+    let approvalPolicy;
+    try {
+      approvalPolicy = canonicalWorkerApprovalPolicy({ approvalPolicy: descriptor.workerApprovalPolicy });
+    } catch (error) {
+      return { valid: false, reason: error.message, currentHash };
+    }
+    if (!String(descriptor.workerId || "").trim()
+        || !String(descriptor.workerDefinitionHash || "").trim()
+        || !String(descriptor.workerApprovalPolicyHash || "").trim()) {
+      return { valid: false, reason: "The execution descriptor has no exact worker policy binding.", currentHash };
+    }
+    if (scopeHash(approvalPolicy) !== descriptor.workerApprovalPolicyHash) {
+      return { valid: false, reason: "The execution descriptor worker approval policy hash is inconsistent.", currentHash };
+    }
   }
   if (!Array.isArray(descriptor.tools) || !Array.isArray(descriptor.externalEffects)) {
     return { valid: false, reason: "The execution descriptor tools and external effects must be exact lists.", currentHash };
@@ -155,6 +233,8 @@ function buildApprovalScope(approval, task) {
     worstCaseCostCents: Number(descriptor?.worstCaseCost?.amountCents || 0),
     executionDescriptorHash: descriptor?.descriptorHash || null,
     materializedInputHash: descriptor?.materializedInputHash || null,
+    workerDefinitionHash: descriptor?.workerDefinitionHash || null,
+    workerApprovalPolicyHash: descriptor?.workerApprovalPolicyHash || null,
     effects: descriptor?.externalEffects || spend.effects || approvalPayload.effects || parsedValue(approval.expected_effects, []),
     tracePolicy: descriptor?.tracePolicy || spend.tracePolicy || approvalPayload.tracePolicy || {
       providerResponseStored: false,
@@ -220,22 +300,30 @@ function currentResearchRequestHash(db, task) {
   return scopeHash(buildOpenAIRequest(hydratedTask, workflow, command, query));
 }
 
-function currentWorkerPacketHash(db, task, descriptor) {
+function currentWorkerPacketState(db, task, descriptor) {
   const { AI_TEAM_DEFINITIONS } = require("./ai-team");
   const { buildWorkerModelPacket } = require("./agent-model-contracts");
   const hydratedTask = { ...task, payload: parsedValue(task?.payload, {}), result: parsedValue(task?.result, {}) };
   const workerId = descriptor.workerId || hydratedTask.payload.requestedWorker || task.agent;
   const definition = AI_TEAM_DEFINITIONS.find((candidate) => candidate.id === workerId);
-  if (!definition) return null;
-  const definitionHash = scopeHash({
-    id: definition.id,
-    name: definition.name,
-    role: definition.role,
-    instructions: definition.instructions,
-    outputContract: definition.outputContract,
-    approvalPolicy: definition.approval_policy,
-  });
-  if (descriptor.workerDefinitionHash && descriptor.workerDefinitionHash !== definitionHash) return null;
+  if (!definition) return { valid: false, reason: "The approved worker is no longer in the fixed team." };
+  const persistedDefinition = get(db, "SELECT * FROM agent_definitions WHERE id = ?", [workerId]);
+  const actualDefinition = persistedDefinition || definition;
+  let approvalPolicy;
+  try {
+    approvalPolicy = canonicalWorkerApprovalPolicy(actualDefinition);
+  } catch (error) {
+    return { valid: false, reason: error.message };
+  }
+  const approvalPolicyHash = scopeHash(approvalPolicy);
+  if (descriptor.workerApprovalPolicyHash !== approvalPolicyHash
+      || scopeHash(descriptor.workerApprovalPolicy) !== approvalPolicyHash) {
+    return { valid: false, reason: "The worker approval policy changed after approval was requested." };
+  }
+  const definitionHash = workerDefinitionHash(actualDefinition);
+  if (descriptor.workerDefinitionHash !== definitionHash) {
+    return { valid: false, reason: "The worker definition changed after approval was requested." };
+  }
   const packet = buildWorkerModelPacket(db, hydratedTask, definition);
   const stablePacket = JSON.parse(JSON.stringify(packet));
   delete stablePacket.packetHash;
@@ -244,7 +332,7 @@ function currentWorkerPacketHash(db, task, descriptor) {
     delete stablePacket.workflow.status;
     delete stablePacket.workflow.currentStep;
   }
-  return scopeHash(stablePacket);
+  return { valid: true, currentMaterializedHash: scopeHash(stablePacket) };
 }
 
 function executionRequestEnvelopes(spend, descriptor) {
@@ -298,6 +386,14 @@ function executionRequestEnvelopes(spend, descriptor) {
   if (workerId !== undefined) {
     envelope.workerId = workerId;
     approved.workerId = descriptor.workerId;
+    envelope.workerDefinitionHash = spend.worker?.definitionHash || spend.workerDefinitionHash || null;
+    approved.workerDefinitionHash = descriptor.workerDefinitionHash || null;
+    envelope.workerApprovalPolicy = canonicalWorkerApprovalPolicy(spend.worker || spend);
+    approved.workerApprovalPolicy = canonicalWorkerApprovalPolicy({
+      approvalPolicy: descriptor.workerApprovalPolicy,
+    });
+    envelope.workerApprovalPolicyHash = spend.worker?.approvalPolicyHash || spend.workerApprovalPolicyHash || null;
+    approved.workerApprovalPolicyHash = descriptor.workerApprovalPolicyHash || null;
   }
   if (Object.prototype.hasOwnProperty.call(spend, "parameters")) {
     envelope.parameters = spend.parameters;
@@ -328,7 +424,9 @@ function validateMaterializedExecution(db, task, descriptor) {
   let currentMaterializedHash = null;
   let expectedMaterializedHash = descriptor.materializedInputHash;
   if (descriptor.kind === "live_ai_worker") {
-    currentMaterializedHash = currentWorkerPacketHash(db, task, descriptor);
+    const workerState = currentWorkerPacketState(db, task, descriptor);
+    if (!workerState.valid) return workerState;
+    currentMaterializedHash = workerState.currentMaterializedHash;
     expectedMaterializedHash = descriptor.sourceStateHash || descriptor.materializedInputHash;
   } else if (descriptor.kind === "live_research") {
     currentMaterializedHash = currentResearchRequestHash(db, task);
@@ -391,6 +489,7 @@ module.exports = {
   EXECUTION_DESCRIPTOR_SCHEMA,
   buildApprovalScope,
   canonicalJson,
+  canonicalWorkerApprovalPolicy,
   consumeApproval,
   createExecutionDescriptor,
   executionRequestEnvelopes,
@@ -400,4 +499,5 @@ module.exports = {
   validateApprovalScope,
   validateMaterializedExecution,
   verifyExecutionDescriptor,
+  workerDefinitionHash,
 };

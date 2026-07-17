@@ -19,6 +19,8 @@ const { consumeApproval, ensureApprovalScope, validateApprovalScope } = require(
 const { promoteCapability, recordCapabilityReview } = require("../src/runtime/capability-autonomy");
 const { createCommercialExperiment } = require("../src/runtime/commercial-results");
 const { demandValidatorPilotOutputSchema } = require("../src/runtime/agent-runtime");
+const { ensureAiTeam } = require("../src/runtime/ai-team");
+const { recordAiPilotReviewDecision } = require("../src/runtime/ai-pilot-review");
 const { getAccountingSummary, recordAccountingEntry } = require("../src/runtime/accounting-ledger");
 const { reconcileProviderUsageBatch, reserveBudget, reservedThisMonth, resolveReservation } = require("../src/runtime/cost-ledger");
 const { estimateModelUsageAud } = require("../src/runtime/model-pricing");
@@ -38,6 +40,7 @@ const { claimNextTask, completeTaskClaim } = require("../src/runtime/task-claims
 const { runOnce } = require("../src/runtime/orchestrator");
 const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { recoverSetupBlockedTasks } = require("../src/runtime/spend-gate");
+const { ensureSchedulerJobs } = require("../src/runtime/scheduler");
 const {
   ensureRetentionPolicy,
   getRetentionPolicyState,
@@ -274,7 +277,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -311,7 +314,7 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 15);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 16);
   } finally {
     closeRuntime(runtime);
   }
@@ -1285,10 +1288,237 @@ test("system activity keeps business events and hides housekeeping jargon", () =
                'Prepare the Evidence Brief completed by the dry-run agent runner.', '{}', 'venture-digital-products')`,
       [ts],
     );
+    run(
+      runtime.db,
+      `INSERT INTO events
+       (ts, level, actor, type, entity_type, entity_id, message, metadata, venture_id)
+       VALUES (?, 'info', 'notification-adapter', 'notification.queued_dry_run', 'approval', 'approval-test',
+               'Dry-run email escalation queued for approval appr_internal_identifier; no email was sent.',
+               '{}', 'venture-digital-products')`,
+      [ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO events
+       (ts, level, actor, type, entity_type, entity_id, message, metadata, venture_id)
+       VALUES (?, 'info', 'agent-pilot', 'agent_pilot.fixture_created', 'agent_run', 'run-proof',
+               'A versioned Demand Validator evidence fixture is ready for a protected comparison.',
+               '{}', 'venture-digital-products')`,
+      [ts],
+    );
     const activity = getSystemState(runtime.db).activity;
     assert.equal(activity.some((event) => event.type === "scheduler.job.completed"), false);
+    assert.equal(activity.some((event) => event.type === "notification.queued_dry_run"), false);
     assert.ok(activity.some((event) => event.message === "Prepare the Evidence Brief is ready."));
-    assert.equal(activity.some((event) => /dry[- ]run|scheduler\.job/i.test(event.message)), false);
+    assert.ok(activity.some((event) => event.message === "Supplied evidence is locked and ready for the Demand Validator proof."));
+    assert.equal(activity.some((event) => /dry[- ]run|scheduler\.job|appr_/i.test(event.message)), false);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("system connections show only the services needed for the first revenue loop", () => {
+  const runtime = runtimeDb("focused-connections");
+  try {
+    const connections = getSystemState(runtime.db).connections;
+    assert.deepEqual(connections.map((item) => item.id).sort(), [
+      "ai_workers",
+      "digital_products",
+      "live_research",
+    ]);
+    assert.equal(connections.find((item) => item.id === "ai_workers").name, "OpenAI AI Team");
+    assert.equal(connections.find((item) => item.id === "live_research").name, "OpenAI Live Research");
+    const gumroad = connections.find((item) => item.id === "digital_products");
+    assert.equal(gumroad.name, "Gumroad Direct");
+    assert.equal(gumroad.health, "not_configured");
+    assert.match(gumroad.metadata.use, /after the first product opportunity is selected/i);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("operator AI review rolls back when its exact evidence receipt cannot be appended", () => {
+  const runtime = runtimeDb("atomic-ai-review");
+  const ts = new Date().toISOString();
+  try {
+    ensureAiTeam(runtime.db);
+    run(
+      runtime.db,
+      `INSERT INTO agent_runs
+       (id, agent_id, mode, status, metadata, started_at, completed_at)
+       VALUES ('agent-run-without-attempt', 'demand_validator', 'openai-agents-sdk',
+               'completed', '{}', ?, ?)`,
+      [ts, ts],
+    );
+    const eventsBefore = get(
+      runtime.db,
+      "SELECT COUNT(*) AS count FROM events WHERE type = 'ai_pilot_review.decision_recorded'",
+    ).count;
+    assert.throws(
+      () => recordAiPilotReviewDecision(runtime.db, "demand_validator", "mark_useful", {
+        runId: "agent-run-without-attempt",
+        note: "This must not be stored without the matching receipt.",
+      }),
+      /no exact terminal task attempt/i,
+    );
+    assert.deepEqual(
+      JSON.parse(get(runtime.db, "SELECT metadata FROM agent_runs WHERE id = 'agent-run-without-attempt'").metadata),
+      {},
+    );
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'ai_pilot_review.decision_recorded'").count,
+      eventsBefore,
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("operator run controls distinguish protected internal work from approved provider work", () => {
+  const runtime = runtimeDb("operator-run-safety");
+  try {
+    const protectedPlan = createCommandPlan(runtime.db, {
+      text: "Prepare a protected digital product evidence plan",
+      mode: "plan_only",
+      ventureId: "venture-digital-products",
+    });
+    const providerPlan = createCommandPlan(runtime.db, {
+      text: "Prepare a second protected digital product evidence plan",
+      mode: "plan_only",
+      ventureId: "venture-digital-products",
+    });
+    const providerTask = providerPlan.tasks[0];
+    run(
+      runtime.db,
+      `UPDATE tasks
+       SET kind = 'live_ai_worker_execution', agent = 'demand_validator',
+           approval_id = 'approval-provider-proof', cost_budget_cents = 100,
+           payload = ?, status = 'queued'
+       WHERE id = ?`,
+      [
+        toJson({
+          liveSpendRequest: {
+            requested: true,
+            provider: "openai-agents-sdk",
+            tools: [],
+            maxTurns: 1,
+            maxCostCents: 100,
+          },
+        }),
+        providerTask.id,
+      ],
+    );
+
+    const queue = getSystemState(runtime.db).queue;
+    const protectedTask = queue.find((task) => task.id === protectedPlan.tasks[0].id);
+    const paidTask = queue.find((task) => task.id === providerTask.id);
+    assert.equal(protectedTask.safe_to_run, true);
+    assert.equal(protectedTask.run_label, "Run internal step");
+    assert.equal(paidTask.safe_to_run, false);
+    assert.equal(paidTask.execution_kind, "approved_ai_or_external");
+    assert.equal(paidTask.max_cost_cents, 100);
+    assert.equal(paidTask.run_label, "Start approved AI work");
+
+    const important = getCockpitState(runtime.db).importantWork.find((item) => item.id === providerTask.id);
+    assert.equal(important.type, "approved_work");
+    assert.match(important.recommendation, /not internal-only/i);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("system health reports independent Jarvis monitoring without confusing findings with monitor failure", () => {
+  const runtime = runtimeDb("monitoring-health");
+  const completedAt = new Date().toISOString();
+  try {
+    ensureSchedulerJobs(runtime.db);
+    run(
+      runtime.db,
+      `INSERT INTO monitor_runs
+       (id, status, severity, finding_count, started_at, completed_at, metadata)
+       VALUES ('monitor-health-proof', 'attention', 'warn', 2, ?, ?, '{}')`,
+      [completedAt, completedAt],
+    );
+    run(
+      runtime.db,
+      `UPDATE scheduler_jobs
+       SET last_run_at = ?, next_run_at = ?, locked_at = NULL, lock_owner = NULL
+       WHERE id = 'job-monitor-cycle'`,
+      [completedAt, new Date(Date.now() + 15 * 60 * 1000).toISOString()],
+    );
+
+    const monitoring = getSystemState(runtime.db).health.monitoring;
+    assert.equal(monitoring.status, "operating");
+    assert.equal(monitoring.label, "Operating normally");
+    assert.equal(monitoring.latestReviewStatus, "attention");
+    assert.equal(monitoring.latestFindingCount, 2);
+    assert.equal(monitoring.lastCheckAt, completedAt);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("monitor reports a genuinely overdue independent check and ignores an active on-time check", () => {
+  const runtime = runtimeDb("monitoring-overdue");
+  const overdueAt = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+  try {
+    ensureSchedulerJobs(runtime.db);
+    run(
+      runtime.db,
+      `UPDATE scheduler_jobs
+       SET last_run_at = ?, next_run_at = ?, locked_at = NULL, lock_owner = NULL
+       WHERE id = 'job-monitor-cycle'`,
+      [overdueAt, overdueAt],
+    );
+    assert.ok(collectFindings(runtime.db).some(
+      (finding) => finding.category === "runtime_oversight" && finding.title === "Jarvis monitoring is overdue",
+    ));
+
+    run(
+      runtime.db,
+      `UPDATE scheduler_jobs
+       SET locked_at = ?, lock_owner = 'sched-active-proof'
+       WHERE id = 'job-monitor-cycle'`,
+      [new Date().toISOString()],
+    );
+    assert.equal(collectFindings(runtime.db).some(
+      (finding) => finding.category === "runtime_oversight",
+    ), false);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("monitor presents one issue for a pending approval and its linked notification", () => {
+  const runtime = runtimeDb("monitoring-linked-approval");
+  const ts = new Date().toISOString();
+  try {
+    run(
+      runtime.db,
+      `INSERT INTO approvals
+       (id, scope, title, status, risk_level, requested_by, requested_at, payload)
+       VALUES ('approval-linked-proof', 'live_ai_worker', 'Approve exact proof', 'pending',
+               'low', 'test', ?, '{}')`,
+      [ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO messages
+       (id, severity, status, subject, body, created_at, metadata)
+       VALUES ('message-linked-proof', 'approval', 'open', 'Approve exact proof',
+               'This notification points to the same decision.', ?, ?)`,
+      [ts, toJson({ approvalId: "approval-linked-proof" })],
+    );
+
+    const findings = collectFindings(runtime.db);
+    assert.ok(findings.some(
+      (finding) => finding.category === "approvals"
+        && finding.metadata.approvals.some((approval) => approval.id === "approval-linked-proof"),
+    ));
+    assert.equal(findings.some(
+      (finding) => finding.category === "messages"
+        && finding.metadata.messages?.some((message) => message.id === "message-linked-proof"),
+    ), false);
   } finally {
     closeRuntime(runtime);
   }

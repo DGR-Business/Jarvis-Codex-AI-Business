@@ -18,6 +18,7 @@ const {
 } = require("../src/runtime/agent-context");
 const { ensureAiTeam } = require("../src/runtime/ai-team");
 const { ensureAgentTools } = require("../src/runtime/agent-tools");
+const { createPilotFixture, prepareDemandValidatorPilot } = require("../src/runtime/agent-pilot");
 const { validateMaterializedExecution } = require("../src/runtime/approval-scope");
 const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 
@@ -165,22 +166,41 @@ test("live worker approvals bind a persisted context snapshot while supplied-evi
       true,
     );
 
-    insertWorkflow(runtime.db, "wf-fixture-isolation");
-    const fixture = requestLiveAiWorker(runtime.db, "wf-fixture-isolation", {
-      worker: "demand_validator",
+    insertWorkflow(runtime.db, "wf-context-disable-rejected");
+    assert.throws(() => requestLiveAiWorker(runtime.db, "wf-context-disable-rejected", {
+      worker: "finance_analyst",
       requestedBy: "test",
       estimatedCostCents: 100,
       maxOutputTokens: 200,
-      fixtureInput: {
-        id: "fixture-only",
-        question: "Does supplied evidence justify a test?",
-        buyer: "A test buyer",
-        hypothesis: "A bounded hypothesis",
-        sources: [{ id: "source-1", title: "Fixture source", sourceType: "test_fixture", summary: "Controlled evidence." }],
-      },
+      disableVentureContext: true,
+    }), /cannot be disabled/i);
+
+    const fixtureRecord = createPilotFixture(runtime.db, {
+      id: "fixture-only",
+      ventureId: "venture-digital-products",
+      fixtureVersion: 1,
+      question: "Does supplied evidence justify a test?",
+      buyer: "A test buyer",
+      hypothesis: "A bounded hypothesis",
+      sources: [{
+        id: "source-1",
+        title: "Fixture source",
+        sourceType: "test_fixture",
+        summary: "Controlled evidence.",
+      }],
+      constraints: { evaluationOnly: true, realBusinessEvidence: false },
     });
+    const fixture = prepareDemandValidatorPilot(runtime.db, fixtureRecord.id, {
+      requestedBy: "test",
+      estimatedCostCents: 100,
+    }).requested;
     assert.equal(fixture.task.payload.contextSnapshot, null);
     assert.equal(fixture.task.payload.liveSpendRequest.parameters.contextSnapshot, undefined);
+    assert.equal(
+      fixture.task.payload.ventureContextException.id,
+      "demand-validator-versioned-supplied-evidence",
+    );
+    assert.equal(fixture.task.payload.ventureContextException.fixtureHash, fixtureRecord.fixture_hash);
   } finally {
     closeRuntime(runtime);
   }

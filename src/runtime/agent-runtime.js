@@ -329,11 +329,37 @@ function sdkUsage(result) {
     || lastUsage.inputTokensDetails
     || lastUsage.input_tokens_details
     || {};
+  const metric = (primaryKeys, secondaryKeys = primaryKeys) => {
+    for (const key of primaryKeys) {
+      if (Object.prototype.hasOwnProperty.call(usage, key) && usage[key] !== null && usage[key] !== undefined) {
+        const value = Number(usage[key]);
+        if (Number.isFinite(value) && value >= 0) return { known: true, value };
+      }
+    }
+    for (const key of secondaryKeys) {
+      if (Object.prototype.hasOwnProperty.call(lastUsage, key) && lastUsage[key] !== null && lastUsage[key] !== undefined) {
+        const value = Number(lastUsage[key]);
+        if (Number.isFinite(value) && value >= 0) return { known: true, value };
+      }
+    }
+    return { known: false, value: 0 };
+  };
+  const input = metric(["inputTokens", "input_tokens"], ["inputTokens", "input_tokens"]);
+  const output = metric(["outputTokens", "output_tokens"], ["outputTokens", "output_tokens"]);
+  const total = metric(["totalTokens", "total_tokens"], ["totalTokens", "total_tokens"]);
+  const cachedValue = inputDetails.cachedTokens ?? inputDetails.cached_tokens;
+  const cachedKnown = cachedValue !== null && cachedValue !== undefined && Number.isFinite(Number(cachedValue));
+  const knownCount = [input, output, total].filter((item) => item.known).length;
   return {
-    input_tokens: Number(usage.inputTokens ?? lastUsage.inputTokens ?? lastUsage.input_tokens ?? 0),
-    output_tokens: Number(usage.outputTokens ?? lastUsage.outputTokens ?? lastUsage.output_tokens ?? 0),
-    total_tokens: Number(usage.totalTokens ?? lastUsage.totalTokens ?? lastUsage.total_tokens ?? 0),
-    cached_input_tokens: Number(inputDetails.cachedTokens ?? inputDetails.cached_tokens ?? 0),
+    input_tokens: input.value,
+    output_tokens: output.value,
+    total_tokens: total.value,
+    cached_input_tokens: cachedKnown ? Number(cachedValue) : 0,
+    input_tokens_known: input.known,
+    output_tokens_known: output.known,
+    total_tokens_known: total.known,
+    cached_input_tokens_known: cachedKnown,
+    usage_status: knownCount === 0 ? "unknown" : knownCount === 3 ? "reported" : "partial",
   };
 }
 
@@ -569,6 +595,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       agentId: agentDefinition.id,
       agentName: agentDefinition.name,
       runId: options.agentRunId || null,
+      attemptId: options.taskClaim?.attemptId || null,
       task,
       toolId: spec.toolId,
       mode: "live",
@@ -644,6 +671,20 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     if (!error.providerDispatchStatus) error.providerDispatchStatus = error.outcomeUnknown ? "outcome_unknown" : "not_dispatched";
     traceId = error.agentSdkTraceId || null;
     error.agentRunId = options.agentRunId || null;
+    error.taskAttemptId = options.taskClaim?.attemptId || null;
+    error.modelCallId = dispatchCall?.id || error.modelCallId || null;
+    for (const invocation of toolInvocations) {
+      recordAgentToolObservation(db, invocation.gate.id, {
+        attemptId: options.taskClaim?.attemptId || null,
+        status: error.outcomeUnknown === true ? "unknown" : "missing",
+        toolName: invocation.spec.sdkName,
+        toolId: invocation.spec.toolId,
+        activity: null,
+        outputSummary: error.outcomeUnknown === true
+          ? `${invocation.spec.sdkName} was approved, but provider activity is unknown because the provider outcome is unresolved.`
+          : `${invocation.spec.sdkName} was approved, but no matching provider activity was observed before the run failed.`,
+      });
+    }
     recordLiveWorkerFailureCost(db, task, error);
     const failedCall = recordLiveWorkerModelCall(db, task, null, approvedCapCents, requestBody.model, "failed", {
       modelCallId: dispatchCall?.id,
@@ -734,15 +775,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     incurredEstimateCents: estimateCents,
     deadlineMs: capabilityPlan.deadlineMs,
   };
-  const sdkResearch = persistAgentsSdkResearchEvidence(db, {
-    task,
-    runId: options.agentRunId,
-    attemptId: options.taskClaim?.attemptId || null,
-    modelCallId: providerCall.id,
-    responseId,
-    traceId,
-    toolActivity,
-  });
+  let sdkResearch = null;
   try {
   const interruptions = sdkInterruptionDetails(result);
   if (interruptions.length) {
@@ -755,10 +788,21 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       error.outcomeUnknown = false;
       throw error;
     }
+    sdkResearch = persistAgentsSdkResearchEvidence(db, {
+      task,
+      runId: options.agentRunId,
+      attemptId: options.taskClaim?.attemptId || null,
+      modelCallId: providerCall.id,
+      responseId,
+      traceId,
+      toolActivity,
+    });
     const pausedCall = recordLiveWorkerModelCall(db, task, { id: responseId, usage, output: [] }, estimateCents, requestBody.model, "waiting_approval", {
       modelCallId: providerCall.id,
       provider: AGENTS_SDK_PROVIDER,
       sdkRunner: true,
+      agentRunId: options.agentRunId || null,
+      taskAttemptId: options.taskClaim?.attemptId || null,
       agentSdkTraceId: traceId,
       rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
       interruptionCount: interruptions.length,
@@ -771,11 +815,30 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       inputAssets,
       outcomeUnknown: false,
     });
+    for (const invocation of toolInvocations) {
+      const interruptedInvocation = invocation.spec === interruptedSpec;
+      recordAgentToolObservation(db, invocation.gate.id, {
+        attemptId: options.taskClaim?.attemptId || null,
+        status: interruptedInvocation ? "interrupted" : "missing",
+        toolName: invocation.spec.sdkName,
+        toolId: invocation.spec.toolId,
+        activity: interruptedInvocation ? {
+          callId: interruption.callId || null,
+          toolName: interruption.toolName || null,
+          arguments: interruption.arguments || null,
+          status: "waiting_approval",
+        } : null,
+        outputSummary: interruptedInvocation
+          ? `${invocation.spec.sdkName} reached provider approval interruption ${interruption.callId || "without a call id"}; it has not completed.`
+          : `${invocation.spec.sdkName} was approved, but no matching provider activity was observed before the SDK run paused.`,
+      });
+    }
     const sdkRunStateHash = crypto.createHash("sha256").update(interruption.serializedRunState).digest("hex");
     const gate = requestAgentToolUse(db, {
       agentId: agentDefinition.id,
       agentName: agentDefinition.name,
       runId: options.agentRunId || null,
+      attemptId: options.taskClaim?.attemptId || null,
       task,
       toolId,
       mode: "live",
@@ -828,12 +891,14 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   }
 
   const generatedAssets = persistGeneratedAssets(db, task, capabilityPlan, result);
+  const missingProviderTools = [];
   for (const invocation of toolInvocations) {
     const observed = invocation.spec.kind === "model_input"
       ? { type: invocation.spec.sdkName, status: "completed", assets: inputAssets }
       : toolActivity.find((item) => item.type === invocation.spec.sdkName);
     recordAgentToolObservation(db, invocation.gate.id, {
-      status: observed?.status === "failed" ? "failed" : "completed",
+      attemptId: options.taskClaim?.attemptId || null,
+      status: observed ? (observed.status === "failed" ? "failed" : "completed") : "missing",
       toolName: invocation.spec.sdkName,
       toolId: invocation.spec.toolId,
       activity: observed || null,
@@ -848,6 +913,22 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
           : `${invocation.spec.sdkName} completed; provider activity and provenance were recorded for review.`
         : `${invocation.spec.sdkName} was approved but no matching provider tool-call item was returned. Review the trace before accepting the run.`,
     });
+    if (!observed) missingProviderTools.push(invocation.spec.sdkName);
+  }
+  sdkResearch = persistAgentsSdkResearchEvidence(db, {
+    task,
+    runId: options.agentRunId,
+    attemptId: options.taskClaim?.attemptId || null,
+    modelCallId: providerCall.id,
+    responseId,
+    traceId,
+    toolActivity,
+  });
+  if (missingProviderTools.length) {
+    const error = new Error(`Approved provider tool activity was missing for: ${missingProviderTools.join(", ")}.`);
+    error.errorKind = "approved_provider_tool_activity_missing";
+    error.missingProviderTools = missingProviderTools;
+    throw error;
   }
 
   const rawText = sdkOutputText(result.finalOutput);
@@ -872,6 +953,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     modelCallId: providerCall.id,
     provider: AGENTS_SDK_PROVIDER,
     sdkRunner: true,
+    agentRunId: options.agentRunId || null,
+    taskAttemptId: options.taskClaim?.attemptId || null,
     agentSdkTraceId: traceId,
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
     interruptionCount: interruptions.length,
@@ -1000,6 +1083,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         modelCallId: providerCall.id,
         provider: AGENTS_SDK_PROVIDER,
         sdkRunner: true,
+        agentRunId: options.agentRunId || null,
+        taskAttemptId: options.taskClaim?.attemptId || null,
         agentSdkTraceId: traceId,
         error: error.message,
         errorKind: error.errorKind,

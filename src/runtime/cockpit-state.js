@@ -11,6 +11,7 @@ const { getAccountingSummary } = require("./accounting-ledger");
 const { monthlyBudgetExposure } = require("./cost-ledger");
 const { latestAgentRunReceipt, verifyAgentRunReceiptChain } = require("./agent-execution-evidence");
 const { getRetentionPolicyState } = require("./retention-policy");
+const { unsafeTaskReason } = require("./scheduler");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -147,11 +148,44 @@ function handoffCard(handoff) {
   };
 }
 
+function taskExecutionPresentation(task) {
+  const payload = task.payload && typeof task.payload === "object"
+    ? task.payload
+    : fromJson(task.payload, {});
+  const unsafeReason = unsafeTaskReason({ ...task, payload });
+  const liveRequest = payload.liveSpendRequest || {};
+  const maxCostCents = Math.max(
+    0,
+    Number(
+      liveRequest.maxCostCents
+      || liveRequest.executionDescriptor?.worstCaseCost?.amountCents
+      || task.cost_budget_cents
+      || 0,
+    ),
+  );
+  return {
+    safe_to_run: !unsafeReason,
+    execution_kind: unsafeReason ? "approved_ai_or_external" : "internal",
+    safety_reason: unsafeReason,
+    max_cost_cents: maxCostCents,
+    run_label: unsafeReason
+      ? maxCostCents > 0
+        ? "Start approved AI work"
+        : "Start approved work"
+      : "Run internal step",
+  };
+}
+
 function importantWork(db) {
-  const items = [
+  const riskRank = { high: 0, medium: 1, low: 2 };
+  const consequentialChoices = [
     ...pendingApprovals(db).map(decisionCard),
     ...pendingHandoffs(db).map(handoffCard),
-  ];
+  ].sort((left, right) => (
+    (riskRank[left.risk] ?? 3) - (riskRank[right.risk] ?? 3)
+    || String(left.requestedAt || "").localeCompare(String(right.requestedAt || ""))
+  ));
+  const items = [];
   const unknownTasks = parseRows(all(
     db,
     "SELECT id, venture_id, workflow_id, title, status, error, payload, result, created_at, updated_at, '{}' AS metadata FROM tasks WHERE outcome_status = 'unknown' OR status = 'needs_attention' ORDER BY updated_at DESC",
@@ -199,10 +233,14 @@ function importantWork(db) {
       expectedUpside: "Resolve the issue that is stopping trusted progress.",
     });
   }
+  if (consequentialChoices.length) {
+    items.push(consequentialChoices[0]);
+  }
   const waitingTasks = parseRows(all(
     db,
     `SELECT tasks.id, tasks.venture_id, tasks.workflow_id, tasks.title, tasks.kind,
-            tasks.agent, tasks.status, tasks.payload, tasks.result, tasks.created_at,
+            tasks.agent, tasks.status, tasks.approval_id, tasks.cost_budget_cents,
+            tasks.payload, tasks.result, tasks.created_at,
             tasks.updated_at, agent_definitions.name AS worker_name
      FROM tasks
      LEFT JOIN agent_definitions ON agent_definitions.id = tasks.agent
@@ -223,14 +261,20 @@ function importantWork(db) {
   ), ["payload", "result"]);
   for (const task of waitingTasks) {
     if (items.some((item) => item.id === task.id)) continue;
+    const execution = taskExecutionPresentation(task);
     items.push({
       id: task.id,
-      type: "queued_work",
+      type: execution.safe_to_run ? "queued_work" : "approved_work",
       title: `${task.title} is waiting to start`,
-      risk: "low",
-      recommendation: `${task.worker_name || task.agent || "The AI team"} has a safe internal step queued. Run this exact item now or leave it queued without starting other work.`,
-      expectedUpside: "Advances the approved work without enabling broad autopilot or any unapproved external action.",
+      risk: execution.safe_to_run ? "low" : "medium",
+      recommendation: execution.safe_to_run
+        ? `${task.worker_name || task.agent || "The AI team"} has a protected internal step queued. Run this exact item now or leave it queued.`
+        : `${task.worker_name || task.agent || "The AI team"} has an exact approved action ready. Starting it is not internal-only${execution.max_cost_cents > 0 ? ` and may use up to ${execution.max_cost_cents} cents AUD` : ""}.`,
+      expectedUpside: execution.safe_to_run
+        ? "Advances protected work without enabling broad autopilot or an external action."
+        : "Runs only the exact previously approved action while keeping its provider, tools, limits and cost cap fixed.",
       workflowId: task.workflow_id,
+      ...execution,
     });
   }
   return items.slice(0, 12);
@@ -857,6 +901,16 @@ function getAiTeamState(db) {
 
 function humanActivityMessage(event) {
   const metadata = event.metadata || {};
+  if (event.type === "spend_approval.requested") {
+    const subject = String(event.message || "").match(/for (.+?)\.\s*No spend/i)?.[1] || "The exact paid AI task";
+    return `${subject} is ready for your decision. No charge has occurred.`;
+  }
+  if (event.type === "live_ai_worker.requested") {
+    return `${metadata.workerName || "The AI worker"} proof is prepared. It will start only after you approve its exact scope and cost cap.`;
+  }
+  if (event.type === "agent_pilot.fixture_created") {
+    return "Supplied evidence is locked and ready for the Demand Validator proof.";
+  }
   if (event.type === "agent.handoff_decided") {
     return {
       approve: "The recommended next step was approved.",
@@ -872,6 +926,17 @@ function humanActivityMessage(event) {
     const title = String(event.message || "Work")
       .replace(/ completed by the (?:dry-run|protected) agent runner\.?$/i, "")
       .trim();
+    const liveProvider = metadata.modelPolicy?.provider
+      || (String(metadata.mode || "").includes("openai") ? metadata.mode : null);
+    if (liveProvider) {
+      return `${title} completed one approved OpenAI run and is ready for review.`;
+    }
+    if (String(metadata.mode || "").includes("live-research")) {
+      return `${title} completed one approved live research run and is ready for review.`;
+    }
+    if (String(event.message || "").includes("dry-run mode")) {
+      return `${title.replace(/ completed in dry-run mode.*$/i, "")} completed internally; no external action occurred.`;
+    }
     return `${title} is ready.`;
   }
   if (event.type === "venture_scorecard.updated") {
@@ -894,11 +959,43 @@ function activityState(db) {
      WHERE ts >= ?
        AND type NOT IN (
          'scheduler.job.completed', 'monitor.completed', 'executive_digest.generated',
-         'task.started', 'agent.handoff_created'
+         'task.started', 'agent.handoff_created', 'notification.queued_dry_run'
        )
      ORDER BY id DESC LIMIT 40`,
     [foundationAt],
   )).map((event) => ({ ...event, message: humanActivityMessage(event) }));
+}
+
+function operatorConnectionsState(db) {
+  const current = new Set(["ai_workers", "live_research", "digital_products"]);
+  return parseRows(all(db, "SELECT * FROM integrations ORDER BY name"))
+    .filter((item) => current.has(item.id))
+    .map((item) => {
+      if (item.id === "ai_workers") {
+        return {
+          ...item,
+          name: "OpenAI AI Team",
+          metadata: { ...item.metadata, use: "Agents SDK specialists for exact, approved and capped work." },
+        };
+      }
+      if (item.id === "live_research") {
+        return {
+          ...item,
+          name: "OpenAI Live Research",
+          metadata: { ...item.metadata, use: "Read-only market research after its own exact approval." },
+        };
+      }
+      return {
+        ...item,
+        name: "Gumroad Direct",
+        status: "planned",
+        health: "not_configured",
+        metadata: {
+          ...item.metadata,
+          use: "Checkout and delivery setup begins after the first product opportunity is selected.",
+        },
+      };
+    });
 }
 
 function agentSystemChecks(db) {
@@ -985,41 +1082,169 @@ function agentSystemChecks(db) {
     verifiedReceiptCount: verification.checked,
     receiptChainVerified: verification.ok,
     items: items.slice(0, 50),
+    monitor: monitorFindingState(db),
+  };
+}
+
+function monitorFindingAction(item) {
+  if (item.entity_type === "agent_run") {
+    return { kind: "agent_run", id: item.entity_id, label: "Review AI run" };
+  }
+  if (["approvals", "approval_integrity"].includes(item.category)) {
+    return { kind: "view", id: "decisions", label: "Review decisions" };
+  }
+  if (["cost", "budget"].includes(item.category)) {
+    return { kind: "system_tab", id: "spend", label: "Review spend" };
+  }
+  if (["tasks", "queue", "unknown_outcome", "unsafe_retry", "chief_assignment"].includes(item.category)) {
+    return { kind: "system_tab", id: "queue", label: "Open queue" };
+  }
+  if (item.category === "runtime_oversight") {
+    return { kind: "maintenance", id: null, label: "Run check now" };
+  }
+  return null;
+}
+
+function monitorFindingState(db) {
+  const rows = parseRows(all(
+    db,
+    `SELECT id, run_id, severity, category, entity_type, entity_id, title, detail,
+            status, metadata, first_seen, last_seen, occurrence_count
+     FROM monitor_findings
+     WHERE status = 'open'
+     ORDER BY CASE severity WHEN 'error' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END,
+              last_seen DESC
+     LIMIT 50`,
+  ));
+  return {
+    openCount: rows.length,
+    criticalCount: rows.filter((item) => item.severity === "error").length,
+    items: rows.map((item) => ({
+      ...item,
+      action: monitorFindingAction(item),
+    })),
+  };
+}
+
+function runtimeMonitoringHealth(db) {
+  const job = get(
+    db,
+    "SELECT * FROM scheduler_jobs WHERE id = 'job-monitor-cycle'",
+  );
+  const latestMonitor = get(
+    db,
+    `SELECT id, status, severity, finding_count, started_at, completed_at
+     FROM monitor_runs
+     ORDER BY started_at DESC
+     LIMIT 1`,
+  );
+  const latestSchedulerRun = get(
+    db,
+    `SELECT id, status, started_at, completed_at, error
+     FROM scheduler_runs
+     WHERE job_id = 'job-monitor-cycle'
+     ORDER BY started_at DESC
+     LIMIT 1`,
+  );
+  const intervalSeconds = Math.max(60, Number(job?.interval_seconds || 15 * 60));
+  const graceSeconds = Math.max(120, Math.ceil(intervalSeconds / 4));
+  const nowMs = Date.now();
+  const nextRunMs = Date.parse(job?.next_run_at || "");
+  const lockedAtMs = Date.parse(job?.locked_at || "");
+  const metadata = fromJson(job?.metadata, {});
+  const leaseSeconds = Math.max(60, Number(metadata.leaseSeconds || 15 * 60));
+  const activeLock = Boolean(
+    job?.lock_owner
+    && Number.isFinite(lockedAtMs)
+    && nowMs - lockedAtMs <= leaseSeconds * 1000,
+  );
+  const latestFailed = latestSchedulerRun
+    && ["failed", "needs_attention", "abandoned"].includes(latestSchedulerRun.status);
+  const overdue = Boolean(
+    job?.status === "enabled"
+    && !activeLock
+    && Number.isFinite(nextRunMs)
+    && nowMs > nextRunMs + graceSeconds * 1000,
+  );
+
+  let status = "operating";
+  let label = "Operating normally";
+  let summary = `Jarvis checks the system every ${Math.round(intervalSeconds / 60)} minutes.`;
+  if (!job) {
+    status = "starting";
+    label = "Starting";
+    summary = "Jarvis monitoring starts with the business runtime.";
+  } else if (job.status !== "enabled") {
+    status = "paused";
+    label = "Needs attention";
+    summary = "Independent system checks are paused.";
+  } else if (latestFailed || overdue) {
+    status = "needs_attention";
+    label = "Needs attention";
+    summary = latestFailed
+      ? "The latest independent system check did not finish cleanly."
+      : "The next independent system check is overdue.";
+  } else if (!latestMonitor?.completed_at && !activeLock) {
+    status = "starting";
+    label = "Starting";
+    summary = "The monitoring schedule is enabled and waiting for its first completed check.";
+  } else if (activeLock) {
+    status = "operating";
+    label = "Checking now";
+    summary = "Jarvis is checking the system now.";
+  }
+
+  return {
+    status,
+    label,
+    summary,
+    enabled: job?.status === "enabled",
+    intervalMinutes: Math.round(intervalSeconds / 60),
+    lastCheckAt: latestMonitor?.completed_at || job?.last_run_at || null,
+    nextCheckAt: job?.next_run_at || null,
+    latestReviewStatus: latestMonitor?.status || null,
+    latestFindingCount: Number(latestMonitor?.finding_count || 0),
+    latestRunId: latestMonitor?.id || null,
   };
 }
 
 function getSystemState(db) {
+  const queue = parseRows(all(
+    db,
+    `SELECT tasks.*,
+            CASE
+              WHEN tasks.status IN ('planned', 'queued')
+               AND NOT EXISTS (
+                 SELECT 1 FROM tasks AS earlier
+                 WHERE earlier.workflow_id = tasks.workflow_id
+                   AND earlier.id <> tasks.id
+                   AND earlier.status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
+                   AND (
+                     earlier.priority < tasks.priority
+                     OR (earlier.priority = tasks.priority AND earlier.created_at < tasks.created_at)
+                     OR (earlier.priority = tasks.priority AND earlier.created_at = tasks.created_at AND earlier.id < tasks.id)
+                   )
+               ) THEN 1 ELSE 0
+            END AS can_run
+     FROM tasks
+     WHERE tasks.status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
+     ORDER BY CASE tasks.status WHEN 'running' THEN 0 WHEN 'needs_attention' THEN 1 WHEN 'blocked' THEN 2 ELSE 3 END,
+              tasks.updated_at DESC LIMIT 50`,
+  ), ["payload", "result"]).map((task) => ({
+    ...task,
+    ...taskExecutionPresentation(task),
+  }));
   return {
     health: {
       database: get(db, "PRAGMA integrity_check").integrity_check,
+      monitoring: runtimeMonitoringHealth(db),
       liveAi: getLiveAiWorkerReadiness(db),
       liveResearch: getLiveResearchReadiness(db),
       retention: getRetentionPolicyState(db),
     },
-    queue: parseRows(all(
-      db,
-      `SELECT tasks.*,
-              CASE
-                WHEN tasks.status IN ('planned', 'queued')
-                 AND NOT EXISTS (
-                   SELECT 1 FROM tasks AS earlier
-                   WHERE earlier.workflow_id = tasks.workflow_id
-                     AND earlier.id <> tasks.id
-                     AND earlier.status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
-                     AND (
-                       earlier.priority < tasks.priority
-                       OR (earlier.priority = tasks.priority AND earlier.created_at < tasks.created_at)
-                       OR (earlier.priority = tasks.priority AND earlier.created_at = tasks.created_at AND earlier.id < tasks.id)
-                     )
-                 ) THEN 1 ELSE 0
-              END AS can_run
-       FROM tasks
-       WHERE tasks.status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
-       ORDER BY CASE tasks.status WHEN 'running' THEN 0 WHEN 'needs_attention' THEN 1 WHEN 'blocked' THEN 2 ELSE 3 END,
-                tasks.updated_at DESC LIMIT 50`,
-    ), ["payload", "result"]),
+    queue,
     spend: spendState(db),
-    connections: parseRows(all(db, "SELECT * FROM integrations ORDER BY name")),
+    connections: operatorConnectionsState(db),
     outputs: parseRows(all(
       db,
       "SELECT * FROM deliverables ORDER BY CASE status WHEN 'archived' THEN 1 ELSE 0 END, updated_at DESC LIMIT 50",

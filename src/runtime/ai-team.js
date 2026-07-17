@@ -1,5 +1,5 @@
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
-const { sha256 } = require("./agent-execution-evidence");
+const { bindAgentRunToAttempt, sha256 } = require("./agent-execution-evidence");
 
 const OFFICIAL_AGENT_GUIDANCE = {
   basis: "OpenAI agent guidance: define narrow specialists, keep local runtime context separate from model context, use manager-controlled orchestration where useful, pause for human review on sensitive actions, inspect traces, and evaluate workflows.",
@@ -511,10 +511,10 @@ function findAgentDefinition(db, task = {}) {
   const kind = String(task.kind || "").toLowerCase();
   const agent = String(task.agent || "").toLowerCase();
   const requestedWorker = String(task.payload?.requestedWorker || task.payload?.worker || "").toLowerCase();
-  return definitions.find((definition) => (definition.metadata.taskKinds || []).includes(kind))
-    || definitions.find((definition) => [agent, requestedWorker].includes(String(definition.id || "").toLowerCase()))
+  return definitions.find((definition) => [agent, requestedWorker].includes(String(definition.id || "").toLowerCase()))
     || definitions.find((definition) => [agent, requestedWorker].some((key) => key && (definition.metadata.aliases || []).includes(key)))
     || definitions.find((definition) => (definition.metadata.aliases || []).includes(agent))
+    || definitions.find((definition) => (definition.metadata.taskKinds || []).includes(kind))
     || definitions.find((definition) => definition.id === "chief_of_staff");
 }
 
@@ -537,20 +537,23 @@ function createAgentRun(db, definition, task, options = {}) {
       "running",
       options.inputSummary || task.title || "",
       options.approvalRequired ? 1 : 0,
-      toJson({
-        taskKind: task.kind || null,
-        taskAgent: task.agent || null,
-        modelClass: definition.model_class,
-        officialGuidance: OFFICIAL_AGENT_GUIDANCE,
-      }),
+       toJson({
+         taskKind: task.kind || null,
+         taskAgent: task.agent || null,
+         taskAttemptId: options.attemptId || null,
+         modelClass: definition.model_class,
+         officialGuidance: OFFICIAL_AGENT_GUIDANCE,
+       }),
       ts,
     ],
   );
+  if (options.attemptId) bindAgentRunToAttempt(db, options.attemptId, runId);
   addAgentTrace(db, runId, "run_started", "Worker started", `${definition.name} started ${task.title || "a task"}.`, {
     workflowId: task.workflow_id || null,
     taskId: task.id || null,
+    taskAttemptId: options.attemptId || null,
   });
-  return { id: runId, agentId: definition.id, startedAt: ts };
+  return { id: runId, agentId: definition.id, startedAt: ts, attemptId: options.attemptId || null };
 }
 
 function nextTraceSequence(db, runId) {
@@ -568,6 +571,8 @@ function addAgentTrace(db, runId, type, title, detail, metadata = {}) {
 }
 
 function evaluateAgentOutput(db, definition, runRecord, task, output, context = {}) {
+  const attemptId = context.attemptId || null;
+  if (attemptId) bindAgentRunToAttempt(db, attemptId, runRecord.id);
   const criteria = normalizeJson(definition.eval_criteria, []);
   const findings = [];
   let score = 100;
@@ -683,14 +688,15 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
   run(
     db,
     `INSERT INTO agent_eval_results
-      (id, run_id, agent_id, task_id, status, score, criteria, findings, metadata,
+      (id, run_id, agent_id, task_id, attempt_id, status, score, criteria, findings, metadata,
        evaluator_version, subject_hash, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       evalId,
       runRecord.id,
       definition.id,
       task.id || null,
+      attemptId,
       status,
       finalScore,
       toJson(criteria),
@@ -713,7 +719,79 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
     evalId,
     findings,
   });
-  return { id: evalId, status, score: finalScore, findings, criteria };
+  return { id: evalId, attemptId, status, score: finalScore, findings, criteria };
+}
+
+function recordTerminalAgentEvaluation(db, definition, runRecord, task, input = {}) {
+  const attemptId = input.attemptId || null;
+  if (attemptId) bindAgentRunToAttempt(db, attemptId, runRecord.id);
+  const existing = attemptId
+    ? get(db, "SELECT * FROM agent_eval_results WHERE attempt_id = ? ORDER BY created_at DESC, id DESC LIMIT 1", [attemptId])
+    : null;
+  if (existing) {
+    return {
+      ...existing,
+      criteria: fromJson(existing.criteria, []),
+      findings: fromJson(existing.findings, []),
+      metadata: fromJson(existing.metadata, {}),
+      existing: true,
+    };
+  }
+
+  const outcomeUnknown = input.outcomeUnknown === true || input.outcomeStatus === "unknown";
+  const status = outcomeUnknown ? "unknown" : "not_evaluable";
+  const findings = [outcomeUnknown
+    ? "Provider outcome is unknown, so deterministic output evaluation cannot be completed."
+    : "No accepted terminal output was available for deterministic evaluation."];
+  if (input.error) findings.push(String(input.error));
+  const evalId = `agent_eval_${randomId()}`;
+  const createdAt = now();
+  const metadata = {
+    terminal: true,
+    evaluable: false,
+    scoreKnown: false,
+    numericScoreCompatibility: 0,
+    providerOutcome: outcomeUnknown ? "unknown" : (input.outcomeStatus || "failed"),
+    errorKind: input.errorKind || null,
+    providerRequestId: input.providerRequestId || null,
+    providerCallOccurred: input.providerCallOccurred === true,
+    noAutomaticRetry: input.providerCallOccurred === true || outcomeUnknown,
+  };
+  run(
+    db,
+    `INSERT INTO agent_eval_results
+      (id, run_id, agent_id, task_id, attempt_id, status, score, criteria, findings, metadata,
+       evaluator_version, subject_hash, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 0, '[]', ?, ?, 'local-terminal-outcome-v1', ?, ?)`,
+    [
+      evalId,
+      runRecord.id,
+      definition.id,
+      task.id || null,
+      attemptId,
+      status,
+      toJson(findings),
+      toJson(metadata),
+      sha256({
+        attemptId,
+        runId: runRecord.id,
+        status,
+        outcomeStatus: input.outcomeStatus || null,
+        errorKind: input.errorKind || null,
+        providerRequestId: input.providerRequestId || null,
+      }),
+      createdAt,
+    ],
+  );
+  addAgentTrace(
+    db,
+    runRecord.id,
+    outcomeUnknown ? "eval_unknown" : "eval_not_evaluable",
+    outcomeUnknown ? "Evaluation outcome unknown" : "Output not evaluable",
+    findings[0],
+    { evalId, attemptId, ...metadata },
+  );
+  return { id: evalId, attemptId, status, score: null, findings, criteria: [], metadata };
 }
 
 function finishAgentRun(db, runId, payload) {
@@ -879,10 +957,12 @@ function humanAgentName(agentId) {
 
 function recordAgentFailure(db, runRecord, definition, error, metadata = {}) {
   if (!runRecord?.id) return null;
+  const evalStatus = metadata.evaluation?.status
+    || (error.outcomeUnknown === true ? "unknown" : "not_evaluable");
   finishAgentRun(db, runRecord.id, {
     status: "failed",
     outputSummary: error.message,
-    evalStatus: "failed",
+    evalStatus,
     metadata: { error: error.message, ...metadata },
   });
   insertEvent(db, {
@@ -903,6 +983,7 @@ function recordProtectedWorkerOutcome(db, taskLike = {}, output = {}, options = 
     mode: options.mode || "dry-run",
     inputSummary: options.inputSummary || taskLike.title || output.heading || "Protected worker outcome",
     approvalRequired: Boolean(options.approvalRequired),
+    attemptId: options.attemptId || null,
   });
   addAgentTrace(
     db,
@@ -933,6 +1014,7 @@ function recordProtectedWorkerOutcome(db, taskLike = {}, output = {}, options = 
     },
   );
   const evalResult = evaluateAgentOutput(db, definition, runRecord, taskLike, output, {
+    attemptId: options.attemptId || null,
     requiresApproval: Boolean(options.approvalRequired),
     research: options.research || null,
     deliverables: options.deliverables || [],
@@ -1311,5 +1393,6 @@ module.exports = {
   recordAgentHandoff,
   recordProtectedWorkerOutcome,
   recordAgentFailure,
+  recordTerminalAgentEvaluation,
   workerDecisionMetadata,
 };

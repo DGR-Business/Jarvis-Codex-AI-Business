@@ -1,5 +1,8 @@
 const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
+const { bindModelCallToAttempt } = require("../runtime/agent-execution-evidence");
+const { recordAgentToolObservation } = require("../runtime/agent-tool-gate");
+const { markTaskAttemptProviderDispatched } = require("../runtime/task-claims");
 
 const DEFAULT_RESEARCH_BUDGET_CENTS = 75;
 const LIVE_RESEARCH_PROVIDER = "openai-responses-web-search";
@@ -281,12 +284,40 @@ function collectLiveSources(response, parsed) {
     .slice(0, 12);
 }
 
+function usageMetric(usage, keys, knownKey) {
+  if (usage[knownKey] === false) return { known: false, value: 0 };
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(usage, key) || usage[key] === null || usage[key] === undefined) continue;
+    const value = Number(usage[key]);
+    if (Number.isFinite(value) && value >= 0) return { known: true, value };
+  }
+  return { known: false, value: 0 };
+}
+
 function tokenUsage(response) {
-  const usage = response.usage || {};
+  const usage = response?.usage || {};
+  const forcedUnknown = usage.usage_status === "unknown" || usage.status === "unknown";
+  const input = forcedUnknown
+    ? { known: false, value: 0 }
+    : usageMetric(usage, ["input_tokens", "inputTokens", "prompt_tokens"], "input_tokens_known");
+  const output = forcedUnknown
+    ? { known: false, value: 0 }
+    : usageMetric(usage, ["output_tokens", "outputTokens", "completion_tokens"], "output_tokens_known");
+  const total = forcedUnknown
+    ? { known: false, value: 0 }
+    : usageMetric(usage, ["total_tokens", "totalTokens"], "total_tokens_known");
+  const knownCount = [input, output, total].filter((metric) => metric.known).length;
   return {
-    inputTokens: Number(usage.input_tokens || usage.prompt_tokens || 0),
-    outputTokens: Number(usage.output_tokens || usage.completion_tokens || 0),
-    totalTokens: Number(usage.total_tokens || 0),
+    inputTokens: input.value,
+    outputTokens: output.value,
+    totalTokens: total.value,
+    evidence: {
+      status: knownCount === 0 ? "unknown" : knownCount === 3 ? "reported" : "partial",
+      inputTokens: input.known ? input.value : null,
+      outputTokens: output.known ? output.value : null,
+      totalTokens: total.known ? total.value : null,
+      cachedInputTokens: null,
+    },
   };
 }
 
@@ -318,15 +349,44 @@ function recordLiveResearchCost(db, task, estimateCents, response, metadata = {}
   });
   const updated = run(
     db,
-    `UPDATE costs SET status = ?, amount_cents = ?, occurred_at = ?, metadata = ? WHERE id = ?`,
-    ["incurred_estimate", estimateCents, ts, payload, costId],
+    `UPDATE costs
+     SET status = ?, amount_cents = ?, occurred_at = ?, metadata = ?,
+         run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
+         model_call_id = COALESCE(?, model_call_id)
+     WHERE id = ?`,
+    [
+      "incurred_estimate",
+      estimateCents,
+      ts,
+      payload,
+      metadata.agentRunId || null,
+      task.id,
+      metadata.modelCallId || null,
+      costId,
+    ],
   );
   if (updated.changes === 0) {
     run(
       db,
-      `INSERT INTO costs (id, workflow_id, venture_id, category, source, status, amount_cents, currency, occurred_at, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [costId, task.workflow_id, task.venture_id || null, "live_research", LIVE_RESEARCH_PROVIDER, "incurred_estimate", estimateCents, CONFIG.currency, ts, payload],
+      `INSERT INTO costs
+       (id, workflow_id, venture_id, run_id, task_id, model_call_id, category, source,
+        status, amount_cents, currency, occurred_at, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        costId,
+        task.workflow_id,
+        task.venture_id || null,
+        metadata.agentRunId || null,
+        task.id,
+        metadata.modelCallId || null,
+        "live_research",
+        LIVE_RESEARCH_PROVIDER,
+        "incurred_estimate",
+        estimateCents,
+        CONFIG.currency,
+        ts,
+        payload,
+      ],
     );
   }
 }
@@ -378,7 +438,8 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model, s
       toJson({
         provider: LIVE_RESEARCH_PROVIDER,
         responseId: response?.id || null,
-        totalTokens: usage.totalTokens,
+        totalTokens: usage.evidence.totalTokens,
+        tokenUsage: usage.evidence,
         exactBillingPending: providerCompleted,
         reason: "Live research used the OpenAI Responses API hosted web_search tool after approval.",
         ...metadata,
@@ -394,6 +455,7 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model, s
       errorKind,
     ],
   );
+  if (metadata.taskAttemptId) bindModelCallToAttempt(db, metadata.taskAttemptId, callId);
 
   return {
     id: callId,
@@ -402,8 +464,9 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model, s
     selectedModel: model,
     mode: "live",
     status,
-    estimatedInputTokens: usage.inputTokens,
-    estimatedOutputTokens: usage.outputTokens,
+    estimatedInputTokens: usage.evidence.inputTokens,
+    estimatedOutputTokens: usage.evidence.outputTokens,
+    tokenUsage: usage.evidence,
     estimatedCostCents: estimateCents,
     actualCostCents: 0,
     incurredEstimateCents: providerCompleted ? estimateCents : 0,
@@ -411,6 +474,33 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model, s
     currency: CONFIG.currency,
     exactBillingPending: providerCompleted,
   };
+}
+
+function researchToolInvocation(db, task, options = {}) {
+  const attemptId = options.taskClaim?.attemptId || null;
+  const runId = options.agentRunId || null;
+  if (!attemptId || !runId) return null;
+  return get(
+    db,
+    `SELECT id FROM agent_tool_invocations
+     WHERE task_id = ? AND run_id = ? AND tool_id = 'research_adapter'
+       AND attempt_id = ?
+     ORDER BY requested_at DESC, id DESC
+     LIMIT 1`,
+    [task.id, runId, attemptId],
+  );
+}
+
+function observeResearchTool(db, invocation, options = {}) {
+  if (!invocation?.id) return null;
+  return recordAgentToolObservation(db, invocation.id, {
+    attemptId: options.taskClaim?.attemptId || null,
+    status: options.status,
+    toolName: "web_search",
+    toolId: "research_adapter",
+    activity: options.activity || null,
+    outputSummary: options.outputSummary,
+  });
 }
 
 async function readJsonResponse(response) {
@@ -502,9 +592,21 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
   const requestBody = buildOpenAIRequest(task, workflow, command, query);
   const estimateCents = liveCostEstimateCents(task);
   const deadlineMs = approvedDeadlineMs(task, options);
+  const taskAttemptId = options.taskClaim?.attemptId || null;
+  const agentRunId = options.agentRunId || null;
+  const toolInvocation = researchToolInvocation(db, task, options);
   const dispatchCall = recordLiveResearchModelCall(db, task, null, estimateCents, requestBody.model, "dispatching", {
+    agentRunId,
+    taskAttemptId,
     dispatchIntent: { status: "dispatched", recordedAt: ts, deadlineMs },
   });
+  if (options.taskClaim) {
+    markTaskAttemptProviderDispatched(db, options.taskClaim, {
+      modelCallId: dispatchCall.id,
+      provider: LIVE_RESEARCH_PROVIDER,
+      model: requestBody.model,
+    });
+  }
   let response;
   try {
     response = await callOpenAIResponses(requestBody, { ...options, deadlineMs });
@@ -512,30 +614,79 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
     if (!error.providerDispatchStatus) {
       error = providerError(error, "outcome_unknown", { providerRequestStarted: true });
     }
+    error.agentRunId = agentRunId;
+    error.taskAttemptId = taskAttemptId;
+    error.modelCallId = dispatchCall.id;
+    observeResearchTool(db, toolInvocation, {
+      ...options,
+      status: error.outcomeUnknown === true ? "unknown" : "missing",
+      outputSummary: error.outcomeUnknown === true
+        ? "The web-search outcome is unknown because the provider request did not return a definitive result."
+        : "The approved web search did not complete before the provider rejected the request.",
+    });
     const costId = costIdForTask(task);
     const existingCost = get(db, "SELECT metadata FROM costs WHERE id = ?", [costId]);
     if (error.outcomeUnknown === true && existingCost) {
       run(
         db,
-        "UPDATE costs SET status = 'unknown', amount_cents = ?, occurred_at = ?, metadata = ? WHERE id = ?",
-        [estimateCents, now(), toJson({ ...fromJson(existingCost.metadata), outcomeUnknown: true, error: error.message, noSpendOccurred: null, taskId: task.id }), costId],
+        `UPDATE costs
+         SET status = 'unknown', amount_cents = ?, occurred_at = ?, metadata = ?,
+             run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
+             model_call_id = COALESCE(?, model_call_id)
+         WHERE id = ?`,
+        [
+          estimateCents,
+          now(),
+          toJson({ ...fromJson(existingCost.metadata), outcomeUnknown: true, error: error.message, noSpendOccurred: null, taskId: task.id }),
+          agentRunId,
+          task.id,
+          dispatchCall.id,
+          costId,
+        ],
       );
     } else if (error.outcomeUnknown === true) {
       run(
         db,
-        `INSERT INTO costs (id, workflow_id, venture_id, category, source, status, amount_cents, currency, occurred_at, metadata)
-         VALUES (?, ?, ?, 'live_research', ?, 'unknown', ?, ?, ?, ?)`,
-        [costId, task.workflow_id, task.venture_id || null, LIVE_RESEARCH_PROVIDER, estimateCents, CONFIG.currency, now(), toJson({ taskId: task.id, outcomeUnknown: true, error: error.message, noSpendOccurred: null })],
+        `INSERT INTO costs
+         (id, workflow_id, venture_id, run_id, task_id, model_call_id, category, source,
+          status, amount_cents, currency, occurred_at, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, 'live_research', ?, 'unknown', ?, ?, ?, ?)`,
+        [
+          costId,
+          task.workflow_id,
+          task.venture_id || null,
+          agentRunId,
+          task.id,
+          dispatchCall.id,
+          LIVE_RESEARCH_PROVIDER,
+          estimateCents,
+          CONFIG.currency,
+          now(),
+          toJson({ taskId: task.id, outcomeUnknown: true, error: error.message, noSpendOccurred: null }),
+        ],
       );
     } else if (existingCost) {
       run(
         db,
-        "UPDATE costs SET status = 'released', amount_cents = 0, occurred_at = ?, metadata = ? WHERE id = ?",
-        [now(), toJson({ ...fromJson(existingCost.metadata), taskId: task.id, outcomeUnknown: false, noSpendOccurred: true, providerDispatchStatus: error.providerDispatchStatus, error: error.message }), costId],
+        `UPDATE costs
+         SET status = 'released', amount_cents = 0, occurred_at = ?, metadata = ?,
+             run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
+             model_call_id = COALESCE(?, model_call_id)
+         WHERE id = ?`,
+        [
+          now(),
+          toJson({ ...fromJson(existingCost.metadata), taskId: task.id, outcomeUnknown: false, noSpendOccurred: true, providerDispatchStatus: error.providerDispatchStatus, error: error.message }),
+          agentRunId,
+          task.id,
+          dispatchCall.id,
+          costId,
+        ],
       );
     }
     const failedCall = recordLiveResearchModelCall(db, task, null, estimateCents, requestBody.model, "failed", {
       modelCallId: dispatchCall.id,
+      agentRunId,
+      taskAttemptId,
       outcomeUnknown: error.outcomeUnknown === true,
       errorKind: error.outcomeUnknown === true ? "provider_outcome_unknown" : "provider_rejected",
       providerDispatchStatus: error.providerDispatchStatus,
@@ -594,6 +745,8 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
   const parsed = parseJsonOutput(text);
   const providerCall = recordLiveResearchModelCall(db, task, response, estimateCents, requestBody.model, "provider_completed", {
     modelCallId: dispatchCall.id,
+    agentRunId,
+    taskAttemptId,
     structuredOutput: Boolean(parsed),
     deadlineMs,
     providerReceiptRecordedAt: now(),
@@ -610,11 +763,15 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
     recordLiveResearchCost(db, task, estimateCents, response, {
       taskId: task.id,
       modelCallId: providerCall.id,
+      agentRunId,
+      taskAttemptId,
       status: "needs_attention",
       model: requestBody.model,
     });
     recordLiveResearchModelCall(db, task, response, estimateCents, requestBody.model, "needs_attention", {
       modelCallId: providerCall.id,
+      agentRunId,
+      taskAttemptId,
       structuredOutput: false,
       errorKind: "malformed_structured_output",
       providerReceipt,
@@ -659,13 +816,53 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
     throw error;
   }
   const sources = collectLiveSources(response, parsed);
+  const searchActivity = (response.output || []).find((item) => item?.type === "web_search_call") || null;
+  observeResearchTool(db, toolInvocation, {
+    ...options,
+    status: searchActivity ? "completed" : "missing",
+    activity: searchActivity
+      ? {
+        id: searchActivity.id || null,
+        type: "web_search",
+        status: searchActivity.status || "completed",
+        query: searchActivity.action?.query || null,
+        sourceCount: sources.length,
+      }
+      : null,
+    outputSummary: searchActivity
+      ? `OpenAI web search completed and returned ${sources.length} grounded source${sources.length === 1 ? "" : "s"} for review.`
+      : "The provider returned a response without a matching web-search activity record.",
+  });
+  if (!searchActivity) {
+    const error = new Error("Live research returned no matching provider web-search activity.");
+    error.outcomeUnknown = false;
+    error.providerCallOccurred = true;
+    error.needsAttention = true;
+    error.providerDispatchStatus = "completed";
+    error.incurredEstimateCents = estimateCents;
+    error.providerRequestId = response.id || null;
+    error.modelCallId = providerCall.id;
+    error.errorKind = "approved_provider_tool_activity_missing";
+    error.providerReceipt = providerReceipt;
+    throw error;
+  }
   const status = sourceCountStatus(sources);
   const modelCall = recordLiveResearchModelCall(db, task, response, estimateCents, requestBody.model, "completed", {
     modelCallId: providerCall.id,
+    agentRunId,
+    taskAttemptId,
     structuredOutput: true,
     groundedSourceCount: sources.length,
   });
-  recordLiveResearchCost(db, task, estimateCents, response, { taskId: task.id, modelCallId: modelCall.id, sourceCount: sources.length, status, model: requestBody.model });
+  recordLiveResearchCost(db, task, estimateCents, response, {
+    taskId: task.id,
+    modelCallId: modelCall.id,
+    agentRunId,
+    taskAttemptId,
+    sourceCount: sources.length,
+    status,
+    model: requestBody.model,
+  });
   const summary = compactText(parsed.summary || "Live research completed with source-backed evidence.", 1000);
 
   run(

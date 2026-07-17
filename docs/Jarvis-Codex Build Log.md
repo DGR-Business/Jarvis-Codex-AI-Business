@@ -292,6 +292,66 @@ Verification at this checkpoint:
   decision. The production bootstrap token remained protected and was not
   exposed to browser automation.
 
+### Autonomous operations release hardening
+
+The pre-live foundation received a final independent evidence and operator-path
+review later on 2026-07-17:
+
+- schema 16 added exact immutable attempt links for the agent run, model call,
+  evaluation, tool observation, cost, and receipt chain. Pre-schema records are
+  labelled legacy compatibility rather than silently presented as exact;
+- receipt finalisation is mandatory. Missing receipt evidence moves the task
+  and workflow to Needs Attention, blocks retry, and cannot be reported as a
+  normal completion;
+- provider dispatch is recorded before outbound use, missing approved provider
+  tool activity stops for review, terminal failures receive an evaluation, and
+  absent token usage is shown as unknown rather than zero;
+- approval descriptors bind the canonical worker definition, policy, context,
+  model, tools, limits, cost, and effects. Normal callers cannot remove
+  task-scoped context or widen Chief's fixed specialist roster;
+- routing now uses the exact worker, capability, and tool history. A reviewed
+  failure escalates only the next matching approval to Sol, and a later matching
+  pass clears that escalation without fallback or retry;
+- startup distinguishes liveness from operations readiness, completes a monitor
+  cycle before reporting ready, and safely requeues only exact approved work
+  that was blocked solely by setup;
+- Quality Reviewer is the final protected reviewer for Decision Packs and
+  supervised Product Builder output. Operator usefulness reviews are atomic
+  with their next append-only receipt;
+- the cockpit shows one consequential item, a truthful empty Live Runs view,
+  scheduled Jarvis findings, explicit `A$` values, and only the OpenAI AI Team,
+  OpenAI Live Research, and Gumroad Direct on the current Connections view.
+  Duplicate notification events and internal identifiers are hidden from
+  normal Activity.
+
+Verification at this checkpoint:
+
+- all 161 tests passed, including concurrency, approval drift, provider
+  dispatch, exact receipts, failure evaluations, unknown usage, task context,
+  model routing, Chief boundaries, Quality Reviewer, startup readiness,
+  monitoring, accounting, security, backup, and HTTP/WebSocket paths;
+- Jarvis Doctor passed Node 24, the lockfile and dependencies, `node:sqlite`,
+  archive and PDF tools, writable runtime/artifact/private-backup locations,
+  database integrity, and backup encryption. Its only warning was the expected
+  occupied port while the owned runtime was running;
+- fresh encrypted source, database, and artifact backups authenticated and
+  restored independently into a temporary release-proof location. Payload
+  hashes matched and the restored database passed quick, integrity, and
+  foreign-key checks;
+- the normal launcher opened a fresh signed operator session. A separate plain
+  localhost tab was correctly refused access;
+- authenticated browser review passed Command Center, exact Decision details,
+  Business Tests, all 11 workers, empty Live Runs, System Health, Checks, Queue,
+  Spend, focused Connections, Outputs, Activity, and a safe maintenance cycle
+  at 1440x900, 1280x720, and 1024x768. There was no Jarvis console error,
+  horizontal overflow, hidden provider activity, or accidental approval;
+- the active runtime remained on one pending supplied-evidence Demand Validator
+  decision, zero active-runtime model calls, locked external actions, and paid
+  AI available only behind the exact A$1 approval.
+
+No approval was clicked, no model or research call was made, and no external
+business action occurred during this hardening.
+
 ## Accounting Preserved At Reset
 
 - ChatGPT Pro active monthly commitment: A$100.00.

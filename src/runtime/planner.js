@@ -101,7 +101,7 @@ function taskTemplates(intent, wantsMockups) {
     ["Prepare the Evidence Brief", "market_research", "demand_validator", 1, "evidence_brief", ["opportunity_scout", "demand_validator"]],
     ["Prepare the Test Pack", "offer_architecture", "offer_architect", 2, "test_pack", ["offer_architect", "finance_analyst", "quality_reviewer"]],
     ["Prepare the Publish Pack", "product_action_plan", "product_builder", 3, "publish_pack", ["product_builder", "copy_conversion_agent", "distribution_operator"]],
-    ["Prepare the Decision Pack", "operator_pack_qc", "chief_of_staff", 4, "decision_pack", ["customer_voice_agent", "growth_analyst", "finance_analyst", "chief_of_staff"]],
+    ["Review the Decision Pack", "operator_pack_qc", "quality_reviewer", 4, "decision_pack", ["chief_of_staff", "quality_reviewer"]],
   ];
 }
 

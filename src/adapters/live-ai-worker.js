@@ -6,6 +6,8 @@ const {
   outputSchemaName,
   workerOutputJsonSchema,
 } = require("../runtime/agent-model-contracts");
+const { bindModelCallToAttempt } = require("../runtime/agent-execution-evidence");
+const { markTaskAttemptProviderDispatched } = require("../runtime/task-claims");
 
 const LIVE_AI_WORKER_PROVIDER = "openai-responses-live-worker";
 const DEFAULT_PROVIDER_DEADLINE_MS = 60_000;
@@ -42,12 +44,45 @@ function compactText(value, max = 1000) {
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 }
 
+function usageMetric(usage, keys, knownKey) {
+  if (usage[knownKey] === false) return { known: false, value: 0 };
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(usage, key) || usage[key] === null || usage[key] === undefined) continue;
+    const value = Number(usage[key]);
+    if (Number.isFinite(value) && value >= 0) return { known: true, value };
+  }
+  return { known: false, value: 0 };
+}
+
 function tokenUsage(response) {
-  const usage = response.usage || {};
+  const usage = response?.usage || {};
+  const forcedUnknown = usage.usage_status === "unknown" || usage.status === "unknown";
+  const input = forcedUnknown
+    ? { known: false, value: 0 }
+    : usageMetric(usage, ["input_tokens", "inputTokens", "prompt_tokens"], "input_tokens_known");
+  const output = forcedUnknown
+    ? { known: false, value: 0 }
+    : usageMetric(usage, ["output_tokens", "outputTokens", "completion_tokens"], "output_tokens_known");
+  const total = forcedUnknown
+    ? { known: false, value: 0 }
+    : usageMetric(usage, ["total_tokens", "totalTokens"], "total_tokens_known");
+  const cached = forcedUnknown
+    ? { known: false, value: 0 }
+    : usageMetric(usage, ["cached_input_tokens", "cachedInputTokens"], "cached_input_tokens_known");
+  const knownCount = [input, output, total].filter((metric) => metric.known).length;
+  const status = knownCount === 0 ? "unknown" : knownCount === 3 ? "reported" : "partial";
   return {
-    inputTokens: Number(usage.input_tokens || usage.prompt_tokens || 0),
-    outputTokens: Number(usage.output_tokens || usage.completion_tokens || 0),
-    totalTokens: Number(usage.total_tokens || 0),
+    inputTokens: input.value,
+    outputTokens: output.value,
+    totalTokens: total.value,
+    cachedInputTokens: cached.value,
+    evidence: {
+      status,
+      inputTokens: input.known ? input.value : null,
+      outputTokens: output.known ? output.value : null,
+      totalTokens: total.known ? total.value : null,
+      cachedInputTokens: cached.known ? cached.value : null,
+    },
   };
 }
 
@@ -408,7 +443,8 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
       toJson({
         provider: LIVE_AI_WORKER_PROVIDER,
         responseId: response?.id || null,
-        totalTokens: usage.totalTokens,
+        totalTokens: usage.evidence.totalTokens,
+        tokenUsage: usage.evidence,
         exactBillingPending: providerCompleted,
         ...metadata,
         modelCallId: undefined,
@@ -423,6 +459,7 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
       errorKind,
     ],
   );
+  if (metadata.taskAttemptId) bindModelCallToAttempt(db, metadata.taskAttemptId, callId);
 
   return {
     id: callId,
@@ -431,8 +468,9 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
     selectedModel: model || CONFIG.liveModel,
     mode: "live",
     status,
-    estimatedInputTokens: usage.inputTokens,
-    estimatedOutputTokens: usage.outputTokens,
+    estimatedInputTokens: usage.evidence.inputTokens,
+    estimatedOutputTokens: usage.evidence.outputTokens,
+    tokenUsage: usage.evidence,
     estimatedCostCents: estimateCents,
     actualCostCents: 0,
     incurredEstimateCents: providerCompleted ? estimateCents : 0,
@@ -504,11 +542,10 @@ function recordLiveWorkerFailureCost(db, task, error) {
   const ts = now();
   const costId = costIdForTask(task);
   const existing = get(db, "SELECT metadata FROM costs WHERE id = ?", [costId]);
-  const agentRunId = error.agentRunId || get(
-    db,
-    "SELECT id FROM agent_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
-    [task.id],
-  )?.id || null;
+  const boundAttempt = error.taskAttemptId
+    ? get(db, "SELECT agent_run_id FROM task_attempts WHERE id = ? AND task_id = ?", [error.taskAttemptId, task.id])
+    : null;
+  const agentRunId = error.agentRunId || boundAttempt?.agent_run_id || null;
   const modelCallId = error.modelCallId || null;
   if (error.outcomeUnknown !== true) {
     if (existing) {
@@ -655,8 +692,17 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
   const deadlineMs = approvedDeadlineMs(task, options);
   const dispatchCall = recordLiveWorkerModelCall(db, task, null, estimateCents, requestBody.model, "dispatching", {
     reservedCostCents: estimateCents,
+    agentRunId: options.agentRunId || null,
+    taskAttemptId: options.taskClaim?.attemptId || null,
     dispatchIntent: { status: "dispatched", recordedAt: now(), deadlineMs },
   });
+  if (options.taskClaim) {
+    markTaskAttemptProviderDispatched(db, options.taskClaim, {
+      modelCallId: dispatchCall.id,
+      provider: LIVE_AI_WORKER_PROVIDER,
+      model: requestBody.model,
+    });
+  }
   let response;
   try {
     response = await callOpenAIResponses(requestBody, { ...options, deadlineMs });
@@ -664,9 +710,14 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
     if (!error.providerDispatchStatus) {
       error = providerError(error, "outcome_unknown", { providerRequestStarted: true });
     }
+    error.agentRunId = options.agentRunId || null;
+    error.taskAttemptId = options.taskClaim?.attemptId || null;
+    error.modelCallId = dispatchCall.id;
     recordLiveWorkerFailureCost(db, task, error);
     const failedCall = recordLiveWorkerModelCall(db, task, null, estimateCents, requestBody.model, "failed", {
       modelCallId: dispatchCall.id,
+      agentRunId: options.agentRunId || null,
+      taskAttemptId: options.taskClaim?.attemptId || null,
       error: error.message,
       outcomeUnknown: error.outcomeUnknown === true,
       errorKind: error.outcomeUnknown === true ? "provider_outcome_unknown" : "provider_rejected",
@@ -704,6 +755,8 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
   const parsed = parseJsonOutput(text);
   const providerCall = recordLiveWorkerModelCall(db, task, response, estimateCents, requestBody.model, "provider_completed", {
     modelCallId: dispatchCall.id,
+    agentRunId: options.agentRunId || null,
+    taskAttemptId: options.taskClaim?.attemptId || null,
     structuredOutput: Boolean(parsed),
     annotationCount: annotations.length,
     deadlineMs,
@@ -713,6 +766,8 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
   recordLiveWorkerCost(db, task, estimateCents, response, {
     model: requestBody.model,
     modelCallId: providerCall.id,
+    agentRunId: options.agentRunId || null,
+    taskAttemptId: options.taskClaim?.attemptId || null,
     structuredOutput: Boolean(parsed),
     annotationCount: annotations.length,
   });
@@ -727,6 +782,8 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     const modelCall = recordLiveWorkerModelCall(db, task, response, estimateCents, requestBody.model, "needs_attention", {
       modelCallId: providerCall.id,
+      agentRunId: options.agentRunId || null,
+      taskAttemptId: options.taskClaim?.attemptId || null,
       structuredOutput: false,
       annotationCount: annotations.length,
       errorKind: "malformed_structured_output",
@@ -758,6 +815,8 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
   output.roleOutput = roleOutput?.roleOutput || null;
   const modelCall = recordLiveWorkerModelCall(db, task, response, estimateCents, requestBody.model, "completed", {
     modelCallId: providerCall.id,
+    agentRunId: options.agentRunId || null,
+    taskAttemptId: options.taskClaim?.attemptId || null,
     structuredOutput: Boolean(parsed),
     annotationCount: annotations.length,
     reason: "Live AI worker used the OpenAI Responses API after approval; no external tools or side effects were exposed.",

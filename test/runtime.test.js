@@ -1672,10 +1672,13 @@ test("execution pack turns a promoted test into a ready manual market-contact pa
   assert.equal(pack.metadata.aiTeam.financeRun.agentId, "finance_analyst");
   assert.equal(pack.metadata.aiTeam.distributionRun.agentId, "distribution_operator");
   assert.equal(pack.metadata.aiTeam.chiefRun.agentId, "chief_of_staff");
+  assert.equal(pack.metadata.aiTeam.qualityRun.agentId, "quality_reviewer");
   assert.equal(pack.metadata.aiTeam.financeRun.evalStatus, "passed");
   assert.equal(pack.metadata.aiTeam.financeRun.evalScore, 100);
   assert.equal(pack.metadata.aiTeam.chiefRun.evalStatus, "passed");
   assert.equal(pack.metadata.aiTeam.chiefRun.evalScore, 100);
+  assert.equal(pack.metadata.aiTeam.qualityRun.evalStatus, "passed");
+  assert.equal(pack.metadata.aiTeam.qualityRun.evalScore, 100);
   assert.ok(Array.isArray(pack.metadata.outreachVariants));
   assert.ok(readyMove);
   assert.equal(readyMove.executionPackId, pack.id);
@@ -1688,14 +1691,16 @@ test("execution pack turns a promoted test into a ready manual market-contact pa
   const packHandoffs = state.aiTeam.handoffs.filter((handoff) => handoff.metadata.executionPackId === pack.id);
   const financeRun = packWorkerRuns.find((runRecord) => runRecord.agent_id === "finance_analyst");
   const chiefRun = packWorkerRuns.find((runRecord) => runRecord.agent_id === "chief_of_staff");
+  const qualityRun = packWorkerRuns.find((runRecord) => runRecord.agent_id === "quality_reviewer");
   const packet = pack.metadata.aiTeam.chiefOfStaffPacket;
-  assert.equal(packWorkerRuns.length, 5);
+  assert.equal(packWorkerRuns.length, 6);
   assert.deepEqual(
     new Set(packWorkerRuns.map((runRecord) => runRecord.agent_id)),
-    new Set(["product_builder", "copy_conversion_agent", "finance_analyst", "distribution_operator", "chief_of_staff"]),
+    new Set(["product_builder", "copy_conversion_agent", "finance_analyst", "distribution_operator", "chief_of_staff", "quality_reviewer"]),
   );
   assert.ok(financeRun);
   assert.ok(chiefRun);
+  assert.ok(qualityRun);
   assert.equal(financeRun.metadata.businessDecision.externalActionsAllowed, false);
   assert.match(financeRun.metadata.businessDecision.moneyMove, /smallest manual test|record real revenue|increasing scope/i);
   assert.equal(financeRun.metadata.unitEconomics.priceCents, 3900);
@@ -1705,6 +1710,7 @@ test("execution pack turns a promoted test into a ready manual market-contact pa
   assert.equal(packet.owner, "chief_of_staff");
   assert.equal(packet.workerRunIds.financeAndUnitEconomics, pack.metadata.aiTeam.financeRun.runId);
   assert.equal(packet.workerRunIds.chiefOfStaff, pack.metadata.aiTeam.chiefRun.runId);
+  assert.equal(packet.workerRunIds.qualityReviewer, pack.metadata.aiTeam.qualityRun.runId);
   assert.equal(packet.costCapCents, 0);
   assert.equal(packet.priceCents, 3900);
   assert.equal(packet.allowedOperatorActions.includes("Approve manual test"), true);
@@ -1734,8 +1740,8 @@ test("execution pack turns a promoted test into a ready manual market-contact pa
   assert.equal(state.manualMarketCockpit.metrics.zeroSpendReadyPacks, 1);
   assert.equal(state.manualMarketCockpit.topAction.packId, pack.id);
   assert.equal(state.manualMarketCockpit.topAction.handoffId, packHandoffs[0].id);
-  assert.equal(state.manualMarketCockpit.topAction.workerSummary.runs, 5);
-  assert.equal(state.manualMarketCockpit.topAction.workerSummary.passed, 5);
+  assert.equal(state.manualMarketCockpit.topAction.workerSummary.runs, 6);
+  assert.equal(state.manualMarketCockpit.topAction.workerSummary.passed, 6);
   assert.deepEqual(
     state.manualMarketCockpit.topAction.actions.slice(0, 3).map((action) => action.label),
     ["Approve", "Request Changes", "Deny"],
@@ -1904,7 +1910,7 @@ test("command planning creates staged agent work and human-facing deliverables",
   assert.ok(tasks.some((task) => task.agent === "demand_validator"));
   assert.ok(tasks.some((task) => task.kind === "offer_architecture" && task.agent === "offer_architect"));
   assert.ok(tasks.some((task) => task.kind === "product_action_plan" && task.agent === "product_builder"));
-  assert.ok(tasks.some((task) => task.kind === "operator_pack_qc" && task.agent === "chief_of_staff"));
+  assert.ok(tasks.some((task) => task.kind === "operator_pack_qc" && task.agent === "quality_reviewer"));
 
   const deliverables = state.deliverables.filter((deliverable) => deliverable.workflow_id === workflow.id);
   assert.ok(deliverables.length >= 4);
@@ -2018,7 +2024,7 @@ test("dry-run agent runner executes planned workflow steps with guardrails", asy
   assert.equal(agentRuns.length, tasks.length);
   assert.deepEqual(
     [...runAgents].sort(),
-    ["chief_of_staff", "demand_validator", "offer_architect", "product_builder"],
+    ["demand_validator", "offer_architect", "product_builder", "quality_reviewer"],
   );
   assert.ok(agentRuns.every((runRecord) => runRecord.status === "completed"));
   assert.ok(agentRuns.every((runRecord) => runRecord.mode === "dry-run"));
@@ -3119,10 +3125,22 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(state.aiPilotReview.cost.incurredEstimateCents, completed.result.cost.estimatedCents);
     assert.equal(state.operatorCockpit.pilotReview.status, "live_output_ready_for_review");
     assert.equal(state.aiPilotReview.actions.some((action) => action.action === "ai-pilot-review" && action.decision === "mark_useful"), true);
+    assert.equal(
+      state.aiPilotReview.actions.find((action) => action.action === "ai-pilot-review" && action.decision === "mark_useful").runId,
+      liveRun.id,
+    );
+    assert.throws(
+      () => recordAiPilotReviewDecision(db, "demand_validator", "mark_useful", { note: "Ambiguous review." }),
+      /exact AI run ID/i,
+    );
 
-    const review = recordAiPilotReviewDecision(db, "demand_validator", "mark_useful", { note: "Useful enough for this capped test." });
+    const review = recordAiPilotReviewDecision(db, "demand_validator", "mark_useful", {
+      runId: liveRun.id,
+      note: "Useful enough for this capped test.",
+    });
     assert.equal(review.status, "recorded");
     assert.equal(review.decision, "mark_useful");
+    assert.equal(review.receipt.sequence, 2);
     const reviewedState = getDashboardState(db);
     assert.equal(reviewedState.aiPilotReview.latestReview.decision, "mark_useful");
     assert.equal(reviewedState.aiPilotReview.recommendation.includes("mark_useful") || reviewedState.aiPilotReview.recommendation.includes("Latest operator review recorded"), true);
@@ -3203,7 +3221,19 @@ test("SDK tool interruption uses Jarvis approval and resumes the same serialized
         },
       },
       lastResponseId: "resp_sdk_resumed",
-      rawResponses: [{ responseId: "resp_sdk_resumed", usage: { input_tokens: 620, output_tokens: 280, total_tokens: 900 } }],
+      rawResponses: [{
+        responseId: "resp_sdk_resumed",
+        usage: { input_tokens: 620, output_tokens: 280, total_tokens: 900 },
+        output: [{
+          id: "call_search_1",
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            query: "buyer demand evidence",
+            sources: [{ title: "Buyer demand evidence", url: "https://example.com/buyer-demand" }],
+          },
+        }],
+      }],
       runContext: { usage: { inputTokens: 620, outputTokens: 280, totalTokens: 900 } },
       lastAgent: { name: "Demand Validator" },
       interruptions: [],
@@ -3351,22 +3381,34 @@ test("live AI worker provider failure records failed run and no-spend evidence",
     const state = getDashboardState(db);
     const liveTask = state.tasks.find((task) => task.workflow_id === workflowId && task.kind === "live_ai_worker_execution");
     const liveRun = state.aiTeam.runs.find((runRecord) => runRecord.task_id === liveTask.id);
+    const liveEval = state.aiTeam.evalResults.find((result) => result.run_id === liveRun.id);
     const modelCall = state.modelCalls.find((call) => call.task_id === liveTask.id && call.mode === "live");
     const cost = state.costs.find((item) => item.id === `cost_spend_${liveTask.id}`);
     const event = state.events.find((item) => item.type === "live_ai_worker.failed");
+    const attempt = get(db, "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC LIMIT 1", [liveTask.id]);
+    const receipt = get(db, "SELECT * FROM agent_run_receipts WHERE attempt_id = ? ORDER BY sequence DESC LIMIT 1", [attempt.id]);
 
     assert.equal(liveTask.status, "needs_attention");
     assert.equal(liveTask.cost_actual_cents, 0);
     assert.equal(liveRun.status, "failed");
     assert.equal(liveRun.mode, "openai-agents-sdk");
     assert.equal(liveRun.actual_cost_cents, 0);
+    assert.equal(liveEval.attempt_id, attempt.id);
+    assert.equal(liveEval.status, "unknown");
     assert.equal(modelCall.status, "failed");
     assert.equal(modelCall.actual_cost_cents, 0);
     assert.equal(modelCall.outcome_status, "unknown");
     assert.equal(modelCall.metadata.provider, "openai-agents-sdk");
+    assert.equal(modelCall.attempt_id, attempt.id);
     assert.equal(cost.status, "unknown");
     assert.equal(cost.amount_cents, 140);
     assert.equal(cost.metadata.outcomeUnknown, true);
+    assert.equal(cost.run_id, liveRun.id);
+    assert.equal(cost.task_id, liveTask.id);
+    assert.equal(cost.model_call_id, modelCall.id);
+    assert.equal(attempt.agent_run_id, liveRun.id);
+    assert.equal(attempt.model_call_id, modelCall.id);
+    assert.equal(receipt.status, "needs_review");
     assert.equal(state.runtime.liveAiWorkers.failedLiveRuns, 1);
     assert.equal(state.aiTeam.workbench.byAgent.chief_of_staff.promotionGate.status, "live_failed_review");
     assert.ok(state.aiTeam.workbench.byAgent.chief_of_staff.promotionGate.risks.some((risk) => /failed/i.test(risk)));
@@ -3498,7 +3540,17 @@ test("approved live research uses provider adapter, records sources, cost, and s
     const liveTask = state.tasks.find((task) => task.workflow_id === workflowId && task.kind === "live_market_research");
     const researchRun = state.researchRuns.find((runRecord) => runRecord.task_id === liveTask.id);
     const sources = state.researchSources.filter((source) => source.run_id === researchRun.id);
+    const liveRun = state.aiTeam.runs.find((runRecord) => runRecord.task_id === liveTask.id);
+    const attempt = get(db, "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC LIMIT 1", [liveTask.id]);
+    const modelCall = state.modelCalls.find((call) => call.task_id === liveTask.id && call.mode === "live");
     const cost = state.costs.find((item) => item.id === `cost_spend_${liveTask.id}`);
+    const toolInvocation = get(
+      db,
+      `SELECT * FROM agent_tool_invocations
+       WHERE task_id = ? AND attempt_id = ? AND tool_id = 'research_adapter'
+       ORDER BY requested_at DESC LIMIT 1`,
+      [liveTask.id, attempt.id],
+    );
     const scorecard = state.ventureScorecards.find((item) => item.workflow_id === workflowId);
     const bridgeBrief = state.commercialBriefs.find((brief) => brief.metadata.sourceResearchRunId === researchRun.id);
     const bridgeCandidates = state.commercialTestCandidates.filter((candidate) => candidate.brief_id === bridgeBrief?.id);
@@ -3517,6 +3569,14 @@ test("approved live research uses provider adapter, records sources, cost, and s
     assert.equal(cost.status, "incurred_estimate");
     assert.equal(cost.amount_cents, completed.result.cost.estimatedCents);
     assert.equal(cost.metadata.exactBillingPending, true);
+    assert.equal(attempt.agent_run_id, liveRun.id);
+    assert.equal(attempt.model_call_id, modelCall.id);
+    assert.equal(modelCall.attempt_id, attempt.id);
+    assert.equal(cost.run_id, liveRun.id);
+    assert.equal(cost.task_id, liveTask.id);
+    assert.equal(cost.model_call_id, modelCall.id);
+    assert.equal(toolInvocation.status, "allowed");
+    assert.equal(toolInvocation.observed_attempt_id, attempt.id);
     assert.equal(scorecard.metadata.hasLiveResearch, true);
     assert.equal(scorecard.confidence, "medium_with_live_research");
     assert.notEqual(scorecard.verdict, "research_required");
@@ -4490,7 +4550,9 @@ test("HTTP API exposes focused cockpit sections and retires unsafe legacy routes
     const healthResponse = await fetch(`${baseUrl}/api/health`);
     const health = await healthResponse.json();
     assert.equal(healthResponse.status, 200);
-    assert.equal(health.ok, true);
+    assert.equal(health.alive, true);
+    assert.equal(health.operationsReady, false);
+    assert.equal(health.monitoring.reason, "scheduler_not_running");
     assert.equal(health.externalActionsMode, "locked");
     assert.equal(typeof health.providerProof.completedCalls, "number");
 

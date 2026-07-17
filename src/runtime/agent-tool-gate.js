@@ -18,6 +18,7 @@ class AgentToolApprovalRequiredError extends Error {
     this.toolId = result.tool?.id || input.toolId || input.tool_id || null;
     this.agentId = input.agentId || input.agent_id || null;
     this.runId = input.runId || null;
+    this.attemptId = input.attemptId || null;
     this.taskId = input.task?.id || input.taskId || null;
     this.workflowId = input.task?.workflow_id || input.workflowId || null;
     this.providerCallOccurred = input.providerCallOccurred === true;
@@ -417,16 +418,17 @@ function recordInvocation(db, payload) {
   run(
     db,
     `INSERT INTO agent_tool_invocations
-      (id, agent_id, run_id, task_id, workflow_id, tool_id, assignment_id, approval_id,
+      (id, agent_id, run_id, task_id, workflow_id, attempt_id, tool_id, assignment_id, approval_id,
        requested_mode, status, decision, permission, risk_level, input_summary,
        output_summary, metadata, requested_at, resolved_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       invocationId,
       payload.agentId,
       payload.runId || null,
       payload.task?.id || payload.taskId || null,
       payload.task?.workflow_id || payload.workflowId || null,
+      payload.attemptId || payload.metadata?.taskAttemptId || null,
       payload.toolId,
       payload.assignmentId || null,
       payload.approvalId || null,
@@ -451,12 +453,37 @@ function recordInvocation(db, payload) {
 function recordAgentToolObservation(db, invocationId, observation = {}) {
   const invocation = parseInvocation(get(db, "SELECT * FROM agent_tool_invocations WHERE id = ?", [invocationId]));
   if (!invocation) throw new Error(`Agent tool invocation not found: ${invocationId}`);
+  const attemptId = observation.attemptId || null;
+  if (attemptId) {
+    const attempt = get(db, "SELECT task_id, agent_run_id FROM task_attempts WHERE id = ?", [attemptId]);
+    if (!attempt || attempt.task_id !== invocation.task_id) {
+      throw new Error(`Tool observation attempt ${attemptId} does not match invocation ${invocationId}.`);
+    }
+    if (attempt.agent_run_id && invocation.run_id && attempt.agent_run_id !== invocation.run_id) {
+      throw new Error(`Tool observation attempt ${attemptId} is bound to a different agent run.`);
+    }
+  }
   const ts = now();
   const failed = observation.status === "failed";
-  const status = failed ? "blocked" : "allowed";
+  const missing = ["missing", "unknown", "needs_review"].includes(observation.status);
+  const interrupted = ["interrupted", "waiting_approval"].includes(observation.status);
+  const status = failed ? "blocked" : (missing || interrupted) ? "needs_review" : "allowed";
+  const decision = failed
+    ? "provider_execution_failed"
+    : interrupted
+      ? "provider_activity_interrupted"
+    : missing
+      ? "provider_activity_missing"
+      : invocation.decision;
   const outputSummary = String(
     observation.outputSummary
-      || (failed ? `${observation.toolName || invocation.tool_id} failed during provider execution.` : `${observation.toolName || invocation.tool_id} completed and its evidence was recorded.`),
+      || (failed
+        ? `${observation.toolName || invocation.tool_id} failed during provider execution.`
+        : interrupted
+          ? `${observation.toolName || invocation.tool_id} reached a provider approval interruption and did not complete.`
+        : missing
+          ? `${observation.toolName || invocation.tool_id} was approved, but no matching provider activity was observed.`
+          : `${observation.toolName || invocation.tool_id} completed and its evidence was recorded.`),
   ).slice(0, 1200);
   const metadata = {
     ...invocation.metadata,
@@ -468,9 +495,10 @@ function recordAgentToolObservation(db, invocationId, observation = {}) {
   run(
     db,
     `UPDATE agent_tool_invocations
-     SET status = ?, output_summary = ?, metadata = ?, resolved_at = ?
+     SET status = ?, decision = ?, observed_attempt_id = COALESCE(?, observed_attempt_id),
+         output_summary = ?, metadata = ?, resolved_at = ?
      WHERE id = ?`,
-    [status, outputSummary, toJson(metadata), ts, invocationId],
+    [status, decision, attemptId, outputSummary, toJson(metadata), ts, invocationId],
   );
   return parseInvocation(get(db, "SELECT * FROM agent_tool_invocations WHERE id = ?", [invocationId]));
 }
@@ -602,6 +630,7 @@ function requestAgentToolUse(db, input = {}) {
     approvedApprovalId: approvedUse.valid ? approval.id : null,
     providerCapability: tool?.provider_capability || null,
     liveFlag: tool?.live_flag || null,
+    taskAttemptId: input.attemptId || null,
     ...(input.metadata || {}),
   };
 
@@ -928,7 +957,7 @@ function getAgentToolGateState(db) {
   const invocations = listAgentToolInvocations(db);
   return {
     schema: TOOL_GATE_SCHEMA,
-    status: invocations.some((item) => item.status === "blocked") ? "attention" : "ready",
+    status: invocations.some((item) => ["blocked", "needs_review"].includes(item.status)) ? "attention" : "ready",
     summary: invocations.length
       ? `${invocations.length} worker tool check${invocations.length === 1 ? "" : "s"} recorded.`
       : "No worker tool calls have been checked yet.",
@@ -937,6 +966,7 @@ function getAgentToolGateState(db) {
       allowed: invocations.filter((item) => item.status === "allowed").length,
       approvalRequired: invocations.filter((item) => item.status === "approval_required").length,
       blocked: invocations.filter((item) => item.status === "blocked").length,
+      needsReview: invocations.filter((item) => item.status === "needs_review").length,
       approvedLive: invocations.filter((item) => item.decision === "approved_live").length,
     },
     invocations,

@@ -242,6 +242,84 @@ function updateWorkflowAfterCompletion(db, task, result, done) {
   );
 }
 
+function markReceiptFinalizationNeedsAttention(db, claim, task, receiptError) {
+  const failedAt = now();
+  const message = `Jarvis could not finalize exact execution evidence for ${task.title}: ${receiptError.message}`;
+  const attempt = get(db, "SELECT metadata FROM task_attempts WHERE id = ?", [claim.attemptId]);
+  const currentTask = get(db, "SELECT result FROM tasks WHERE id = ?", [task.id]);
+  run(
+    db,
+    `UPDATE task_attempts
+     SET status = 'needs_attention', error_kind = 'receipt_finalization_failed', error = ?,
+         completed_at = COALESCE(completed_at, ?), metadata = ?
+     WHERE id = ?`,
+    [
+      message,
+      failedAt,
+      toJson({
+        ...fromJson(attempt?.metadata, {}),
+        receiptFinalization: { status: "failed", failedAt, error: receiptError.message },
+        noAutomaticRetry: true,
+      }),
+      claim.attemptId,
+    ],
+  );
+  run(
+    db,
+    `UPDATE tasks
+     SET status = 'needs_attention', error = ?, result = ?, completed_at = COALESCE(completed_at, ?),
+         claim_token = NULL, claimed_at = NULL, updated_at = ?
+     WHERE id = ?`,
+    [
+      message,
+      toJson({
+        ...fromJson(currentTask?.result, {}),
+        executionEvidence: { status: "missing", attemptId: claim.attemptId, error: receiptError.message },
+      }),
+      failedAt,
+      failedAt,
+      task.id,
+    ],
+  );
+  run(
+    db,
+    `UPDATE workflows
+     SET status = 'needs_attention', current_step = ?, approval_required = 1, updated_at = ?
+     WHERE id = ?`,
+    [`Execution evidence needs developer review for ${task.title}`, failedAt, task.workflow_id],
+  );
+  run(
+    db,
+    `INSERT INTO messages (id, task_id, venture_id, severity, status, subject, body, created_at, metadata)
+     VALUES (?, ?, ?, 'urgent', 'open', ?, ?, ?, ?)`,
+    [
+      `msg_${randomId()}`,
+      task.id,
+      task.venture_id || null,
+      `Execution evidence missing: ${task.title}`,
+      "The work cannot be reported as normally completed because its immutable execution receipt was not finalized. No automatic retry is allowed.",
+      failedAt,
+      toJson({ workflowId: task.workflow_id, attemptId: claim.attemptId, error: receiptError.message }),
+    ],
+  );
+  insertEvent(db, {
+    level: "error",
+    actor: "orchestrator",
+    type: "agent_receipt.finalization_failed",
+    entityType: "task_attempt",
+    entityId: claim.attemptId,
+    message: "Jarvis could not finalize the immutable execution receipt, so the task and workflow now need attention.",
+    metadata: { taskId: task.id, workflowId: task.workflow_id, error: receiptError.message, noAutomaticRetry: true },
+  });
+  return {
+    status: "needs_attention",
+    task: { ...task, status: "needs_attention" },
+    error: message,
+    attemptId: claim.attemptId,
+    receipt: { status: "missing", error: receiptError.message },
+  };
+}
+
 async function runOnce(db, options = {}) {
   const claim = claimNextTask(db, {
     workflowId: options.workflowId,
@@ -574,17 +652,12 @@ async function runOnce(db, options = {}) {
     );
     if (completedAttempt?.completed_at) {
       try {
-        finalizeAgentExecutionReceipt(db, { attemptId: claim.attemptId });
+        const receipt = finalizeAgentExecutionReceipt(db, { attemptId: claim.attemptId });
+        if (receipt.status === "incomplete") {
+          throw new Error(`Execution receipt is incomplete: ${receipt.missing_fields.join(", ") || "missing exact evidence"}.`);
+        }
       } catch (receiptError) {
-        insertEvent(db, {
-          level: "error",
-          actor: "orchestrator",
-          type: "agent_receipt.missing",
-          entityType: "task_attempt",
-          entityId: claim.attemptId,
-          message: "Jarvis could not finalize the local execution receipt. The monitor will keep this visible for developer review.",
-          metadata: { taskId: task.id, error: receiptError.message },
-        });
+        return markReceiptFinalizationNeedsAttention(db, claim, task, receiptError);
       }
     }
   }

@@ -4,7 +4,7 @@ const { randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 
-const LATEST_SCHEMA_VERSION = 15;
+const LATEST_SCHEMA_VERSION = 16;
 
 function now() {
   return new Date().toISOString();
@@ -1355,6 +1355,221 @@ function applyDataRetentionPolicyMigration(db) {
   }
 }
 
+function applyExecutionEvidenceBindingMigration(db) {
+  if (migrationApplied(db, 16)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    addColumn(db, "task_attempts", "agent_run_id TEXT REFERENCES agent_runs(id)");
+    addColumn(db, "task_attempts", "model_call_id TEXT REFERENCES model_calls(id)");
+    addColumn(db, "task_attempts", "evidence_binding_status TEXT NOT NULL DEFAULT 'exact_required'");
+    addColumn(db, "model_calls", "attempt_id TEXT REFERENCES task_attempts(id)");
+    addColumn(db, "agent_eval_results", "attempt_id TEXT REFERENCES task_attempts(id)");
+    addColumn(db, "agent_tool_invocations", "attempt_id TEXT REFERENCES task_attempts(id)");
+    addColumn(db, "agent_tool_invocations", "observed_attempt_id TEXT REFERENCES task_attempts(id)");
+
+    // Rows that predate exact bindings may use the narrowly labelled compatibility path.
+    run(
+      db,
+      `UPDATE task_attempts
+       SET evidence_binding_status = 'legacy_compatibility',
+           metadata = json_set(
+             CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+             '$.evidenceBindingMigration',
+             json_object(
+               'schemaVersion', 16,
+               'mode', 'legacy_compatibility',
+               'note', 'Created before exact attempt evidence bindings were required.'
+             )
+           )`,
+    );
+
+    // Preserve explicit IDs already written into provider metadata. No timestamp matching is used.
+    run(
+      db,
+      `UPDATE model_calls
+       SET attempt_id = json_extract(metadata, '$.taskAttemptId')
+       WHERE attempt_id IS NULL
+         AND json_valid(metadata)
+         AND json_type(metadata, '$.taskAttemptId') = 'text'
+         AND EXISTS (
+           SELECT 1 FROM task_attempts
+           WHERE task_attempts.id = json_extract(model_calls.metadata, '$.taskAttemptId')
+             AND task_attempts.task_id = model_calls.task_id
+         )`,
+    );
+    run(
+      db,
+      `UPDATE model_calls
+       SET attempt_id = (
+         SELECT attempts.id FROM task_attempts AS attempts
+         WHERE attempts.provider_dispatch_model_call_id = model_calls.id
+           AND attempts.task_id = model_calls.task_id
+         LIMIT 1
+       )
+       WHERE attempt_id IS NULL
+         AND 1 = (
+           SELECT COUNT(*) FROM task_attempts AS attempts
+           WHERE attempts.provider_dispatch_model_call_id = model_calls.id
+             AND attempts.task_id = model_calls.task_id
+         )`,
+    );
+    run(
+      db,
+      `UPDATE task_attempts
+       SET model_call_id = COALESCE(
+         CASE WHEN EXISTS (
+           SELECT 1 FROM model_calls
+           WHERE model_calls.id = task_attempts.provider_dispatch_model_call_id
+             AND model_calls.task_id = task_attempts.task_id
+         ) THEN provider_dispatch_model_call_id END,
+         (
+           SELECT model_calls.id FROM model_calls
+           WHERE model_calls.attempt_id = task_attempts.id
+             AND model_calls.task_id = task_attempts.task_id
+           ORDER BY model_calls.created_at DESC, model_calls.id DESC
+           LIMIT 1
+         )
+       )
+       WHERE model_call_id IS NULL`,
+    );
+    run(
+      db,
+      `UPDATE task_attempts
+       SET agent_run_id = (
+         SELECT json_extract(model_calls.metadata, '$.agentRunId')
+         FROM model_calls
+         JOIN agent_runs
+           ON agent_runs.id = json_extract(model_calls.metadata, '$.agentRunId')
+          AND agent_runs.task_id = task_attempts.task_id
+         WHERE model_calls.attempt_id = task_attempts.id
+           AND json_valid(model_calls.metadata)
+           AND json_type(model_calls.metadata, '$.agentRunId') = 'text'
+         ORDER BY model_calls.created_at DESC, model_calls.id DESC
+         LIMIT 1
+       )
+       WHERE agent_run_id IS NULL
+         AND EXISTS (
+           SELECT 1 FROM model_calls
+           JOIN agent_runs
+             ON agent_runs.id = json_extract(model_calls.metadata, '$.agentRunId')
+            AND agent_runs.task_id = task_attempts.task_id
+           WHERE model_calls.attempt_id = task_attempts.id
+             AND json_valid(model_calls.metadata)
+             AND json_type(model_calls.metadata, '$.agentRunId') = 'text'
+         )`,
+    );
+    run(
+      db,
+      `UPDATE task_attempts
+       SET agent_run_id = (
+         SELECT agent_runs.id FROM agent_runs
+         WHERE agent_runs.model_call_id = task_attempts.model_call_id
+           AND agent_runs.task_id = task_attempts.task_id
+         LIMIT 1
+       )
+       WHERE agent_run_id IS NULL
+         AND model_call_id IS NOT NULL
+         AND 1 = (
+           SELECT COUNT(*) FROM agent_runs
+           WHERE agent_runs.model_call_id = task_attempts.model_call_id
+             AND agent_runs.task_id = task_attempts.task_id
+         )`,
+    );
+    run(
+      db,
+      `UPDATE agent_eval_results
+       SET attempt_id = (
+         SELECT attempts.id FROM task_attempts AS attempts
+         WHERE attempts.agent_run_id = agent_eval_results.run_id
+           AND attempts.task_id = agent_eval_results.task_id
+         LIMIT 1
+       )
+       WHERE attempt_id IS NULL
+         AND 1 = (
+           SELECT COUNT(*) FROM task_attempts AS attempts
+           WHERE attempts.agent_run_id = agent_eval_results.run_id
+             AND attempts.task_id = agent_eval_results.task_id
+         )`,
+    );
+    run(
+      db,
+      `UPDATE agent_tool_invocations
+       SET attempt_id = json_extract(metadata, '$.taskAttemptId')
+       WHERE attempt_id IS NULL
+         AND json_valid(metadata)
+         AND json_type(metadata, '$.taskAttemptId') = 'text'
+         AND EXISTS (
+           SELECT 1 FROM task_attempts
+           WHERE task_attempts.id = json_extract(agent_tool_invocations.metadata, '$.taskAttemptId')
+             AND task_attempts.task_id = agent_tool_invocations.task_id
+         )`,
+    );
+
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_task_attempts_agent_run
+        ON task_attempts(agent_run_id, completed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_task_attempts_model_call
+        ON task_attempts(model_call_id);
+      CREATE INDEX IF NOT EXISTS idx_model_calls_attempt
+        ON model_calls(attempt_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_eval_results_attempt
+        ON agent_eval_results(attempt_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_tool_invocations_attempt
+        ON agent_tool_invocations(attempt_id, requested_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_tool_invocations_observed_attempt
+        ON agent_tool_invocations(observed_attempt_id, resolved_at);
+
+      CREATE TRIGGER IF NOT EXISTS trg_task_attempt_agent_run_binding_immutable
+      BEFORE UPDATE OF agent_run_id ON task_attempts
+      FOR EACH ROW WHEN OLD.agent_run_id IS NOT NULL AND NEW.agent_run_id IS NOT OLD.agent_run_id
+      BEGIN
+        SELECT RAISE(ABORT, 'An attempt cannot be rebound to a different agent run.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_task_attempt_model_call_binding_immutable
+      BEFORE UPDATE OF model_call_id ON task_attempts
+      FOR EACH ROW WHEN OLD.model_call_id IS NOT NULL AND NEW.model_call_id IS NOT OLD.model_call_id
+      BEGIN
+        SELECT RAISE(ABORT, 'An attempt cannot be rebound to a different model call.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_model_call_attempt_binding_immutable
+      BEFORE UPDATE OF attempt_id ON model_calls
+      FOR EACH ROW WHEN OLD.attempt_id IS NOT NULL AND NEW.attempt_id IS NOT OLD.attempt_id
+      BEGIN
+        SELECT RAISE(ABORT, 'A model call cannot be rebound to a different attempt.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_agent_eval_attempt_binding_immutable
+      BEFORE UPDATE OF attempt_id ON agent_eval_results
+      FOR EACH ROW WHEN OLD.attempt_id IS NOT NULL AND NEW.attempt_id IS NOT OLD.attempt_id
+      BEGIN
+        SELECT RAISE(ABORT, 'An evaluation cannot be rebound to a different attempt.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_agent_tool_attempt_binding_immutable
+      BEFORE UPDATE OF attempt_id ON agent_tool_invocations
+      FOR EACH ROW WHEN OLD.attempt_id IS NOT NULL AND NEW.attempt_id IS NOT OLD.attempt_id
+      BEGIN
+        SELECT RAISE(ABORT, 'A tool request cannot be rebound to a different attempt.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_agent_tool_observation_binding_immutable
+      BEFORE UPDATE OF observed_attempt_id ON agent_tool_invocations
+      FOR EACH ROW WHEN OLD.observed_attempt_id IS NOT NULL AND NEW.observed_attempt_id IS NOT OLD.observed_attempt_id
+      BEGIN
+        SELECT RAISE(ABORT, 'A provider tool observation cannot be rebound to a different attempt.');
+      END;
+    `);
+
+    recordMigration(db, 16, "exact-agent-execution-evidence-bindings");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2164,6 +2379,7 @@ function migrate(db) {
   applyAgentContextMigration(db);
   applyDeliverableQualityReviewMigration(db);
   applyDataRetentionPolicyMigration(db);
+  applyExecutionEvidenceBindingMigration(db);
 }
 
 function putSetting(db, key, value) {

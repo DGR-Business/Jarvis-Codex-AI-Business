@@ -2,15 +2,21 @@
 
 ## Session Start
 
-1. Read `docs/Jarvis-Codex Master Plan.md`.
-2. Read `docs/Jarvis-Codex Build Log.md`.
-3. For worker operations, read
+1. Start Jarvis with `START JARVIS.cmd` and use the secure dashboard window it
+   opens. A manually opened localhost tab is not an authenticated operator
+   session.
+2. Confirm `/api/health` reports `alive`, `operationsReady`, a running
+   scheduler, and a recent completed monitor check. `alive` alone means only
+   that the local process is responding.
+3. Read `docs/Jarvis-Codex Master Plan.md`.
+4. Read `docs/Jarvis-Codex Build Log.md`.
+5. For worker operations, read
    `docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md` and
    `docs/decisions/0006-autonomous-agent-operations-foundation.md`.
-4. Check the active task against `AGENTS.md` and `config/guardrails.md`.
-5. Check the current venture, queue, approvals, monthly exposure, provider
+6. Check the active task against `AGENTS.md` and `config/guardrails.md`.
+7. Check the current venture, queue, approvals, monthly exposure, provider
    readiness, latest monitor result, and unresolved unknown outcomes.
-6. Treat `archive/historical/` as context only.
+8. Treat `archive/historical/` as context only.
 
 ## Worker Operating Modes
 
@@ -130,8 +136,10 @@ Until then:
 After runtime or worker-operation changes:
 
 1. Run `npm.cmd test` on Windows PowerShell.
-2. Start the server with `npm.cmd start` or `node src/server.js`.
-3. Check `/api/health`.
+2. Start the operator runtime with `START JARVIS.cmd`; use `npm.cmd start` or
+   `node src/server.js` only for isolated development proof.
+3. Check `/api/health` for liveness and operations readiness, including the
+   scheduler and latest monitor cycle.
 4. Run the monitor and review any Important Work or unknown outcome.
 5. Use a real browser to confirm the dashboard loads, one queued safe proof can
    run, and its receipt and event timeline update.

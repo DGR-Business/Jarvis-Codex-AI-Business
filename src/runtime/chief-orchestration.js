@@ -4,9 +4,19 @@ const { AI_TEAM_DEFINITIONS, recordAgentHandoff } = require("./ai-team");
 const { requestLiveAiWorker } = require("./live-ai-workers");
 
 const CHIEF_ASSIGNMENT_SCHEMA = "jarvis.chief-specialist-assignment.v1";
-const DEFAULT_ALLOWED_WORKERS = AI_TEAM_DEFINITIONS
-  .filter((definition) => definition.id !== "chief_of_staff")
-  .map((definition) => definition.id);
+const SUPPORTED_CHIEF_SPECIALISTS = Object.freeze([
+  "opportunity_scout",
+  "demand_validator",
+  "offer_architect",
+  "product_builder",
+  "copy_conversion_agent",
+  "distribution_operator",
+  "finance_analyst",
+  "customer_voice_agent",
+  "growth_analyst",
+]);
+const SUPPORTED_CHIEF_SPECIALIST_SET = new Set(SUPPORTED_CHIEF_SPECIALISTS);
+const DEFAULT_ALLOWED_WORKERS = Object.freeze([...SUPPORTED_CHIEF_SPECIALISTS]);
 const QUALITY_REVIEWED_WORKERS = new Set([
   "product_builder",
   "copy_conversion_agent",
@@ -25,14 +35,22 @@ function list(value) {
 }
 
 function specialistDefinition(workerId) {
+  if (!SUPPORTED_CHIEF_SPECIALIST_SET.has(workerId)) return null;
   return AI_TEAM_DEFINITIONS.find((definition) => definition.id === workerId) || null;
+}
+
+function supportedAllowedWorkers(value, useDefault = false) {
+  const requested = useDefault ? DEFAULT_ALLOWED_WORKERS : list(value);
+  return requested.filter((workerId) => SUPPORTED_CHIEF_SPECIALIST_SET.has(workerId));
 }
 
 function normalizedPolicy(task) {
   const configured = task.payload?.chiefOrchestration?.policy || {};
-  const allowedWorkers = list(configured.allowedWorkers).length
-    ? list(configured.allowedWorkers)
-    : DEFAULT_ALLOWED_WORKERS;
+  const hasConfiguredWorkers = Object.prototype.hasOwnProperty.call(configured, "allowedWorkers");
+  const allowedWorkers = supportedAllowedWorkers(
+    configured.allowedWorkers,
+    !hasConfiguredWorkers,
+  );
   return {
     allowedWorkers,
     allowedModes: list(configured.allowedModes).length
@@ -352,7 +370,10 @@ function requestChiefOrchestration(db, workflowId, options = {}) {
     chiefOrchestration: {
       enabled: true,
       policy: {
-        allowedWorkers: options.allowedWorkers || DEFAULT_ALLOWED_WORKERS,
+        allowedWorkers: supportedAllowedWorkers(
+          options.allowedWorkers,
+          !Object.prototype.hasOwnProperty.call(options, "allowedWorkers"),
+        ),
         allowedModes: options.allowedModes || ["protected", "supervised_live"],
         maxSpecialistCostCents: Number(options.maxSpecialistCostCents || 100),
       },
@@ -364,6 +385,7 @@ function requestChiefOrchestration(db, workflowId, options = {}) {
 module.exports = {
   CHIEF_ASSIGNMENT_SCHEMA,
   DEFAULT_ALLOWED_WORKERS,
+  SUPPORTED_CHIEF_SPECIALISTS,
   prepareChiefSpecialistAssignment,
   requestChiefOrchestration,
   updateChiefAssignmentLifecycle,

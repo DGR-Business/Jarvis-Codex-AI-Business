@@ -97,6 +97,13 @@ records for scheduler-backed checks and later engineering review. Chief of
 Staff may coordinate the fixed team one bounded specialist assignment at a
 time; runtime-created teams remain a later capability.
 
+Every provider-bound task attempt now owns exact, immutable links to its agent
+run, model call, evaluation, tools, cost, and append-only receipt chain. Missing
+usage is recorded as unknown rather than zero, missing approved provider-tool
+activity stops for review, and a terminal failure still receives an evaluation.
+An operator usefulness verdict is committed atomically with its new receipt, so
+the dashboard cannot show a review that is absent from the execution evidence.
+
 ## AI Team
 
 The Phase 1 business roster is fixed at 11 workers, grouped for clarity:
@@ -144,6 +151,11 @@ Normal screens use ordinary business language. Technical identifiers, traces,
 and diagnostics remain available on demand. Live Runs shows structured inputs,
 evidence, tools, sources, conclusions, timing, tokens, cost, errors, and evals;
 it never claims or exposes private chain-of-thought.
+
+All operator money is labelled explicitly in Australian dollars. Activity hides
+duplicate internal notification records and translates runtime actors into
+business language. Connections shows only the current first-revenue services:
+the OpenAI AI Team, separately governed live research, and Gumroad Direct.
 
 ## Safety And Autonomy
 
@@ -203,8 +215,10 @@ it never claims or exposes private chain-of-thought.
 - Maintain the recoverable, clean first-use baseline.
 - Operate against the fixed 11-worker Phase 1 contract. Its bounded assignment,
   receipt, audit, task-scoped context, Chief assignment, Quality Reviewer,
-  monitoring, model-routing, and retention-enforcement foundation passed locally
-  on 2026-07-17.
+  monitoring, model-routing, retention-enforcement, exact attempt binding, and
+  startup-readiness foundation passed locally on 2026-07-17 with schema 16,
+  161 automated tests, encrypted restore proof, and authenticated real-browser
+  proof at all supported desktop sizes.
 - Use the cockpit to prepare one Evidence Brief that ranks three plausible
   digital-product opportunities.
 - Run the prepared Demand Validator supplied-evidence decision first. It is

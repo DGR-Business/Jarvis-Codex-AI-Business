@@ -14,6 +14,8 @@ const {
 const { ensureAiTeam } = require("../src/runtime/ai-team");
 const { ensureAgentTools } = require("../src/runtime/agent-tools");
 const {
+  bindAgentRunToAttempt,
+  bindModelCallToAttempt,
   finalizeAgentExecutionReceipt,
   persistAgentsSdkResearchEvidence,
   verifyAgentRunReceiptChain,
@@ -164,13 +166,15 @@ test("completed SDK work receives an immutable grounded receipt that preserves h
         "2026-07-17T00:00:05.000Z",
       ],
     );
+    bindAgentRunToAttempt(runtime.db, "attempt-receipt", "run-receipt");
+    bindModelCallToAttempt(runtime.db, "attempt-receipt", "model-receipt");
     run(
       runtime.db,
       `INSERT INTO agent_eval_results
-       (id, run_id, agent_id, task_id, status, score, criteria, findings, metadata,
-        evaluator_version, subject_hash, created_at)
-       VALUES ('eval-receipt', 'run-receipt', 'demand_validator', 'task-receipt',
-        'passed', 95, '[]', '[]', '{}', 'local-structural-v2', 'subject-hash', ?)`,
+        (id, run_id, agent_id, task_id, attempt_id, status, score, criteria, findings, metadata,
+         evaluator_version, subject_hash, created_at)
+        VALUES ('eval-receipt', 'run-receipt', 'demand_validator', 'task-receipt', 'attempt-receipt',
+         'passed', 95, '[]', '[]', '{}', 'local-structural-v2', 'subject-hash', ?)`,
       ["2026-07-17T00:00:04.000Z"],
     );
     run(
@@ -278,11 +282,12 @@ test("stale recovery never retries an attempt after provider dispatch was record
   }
 });
 
-test("migration 12 installs receipt and provenance immutability controls", () => {
+test("migration 16 installs receipt immutability and exact attempt bindings", () => {
   const runtime = makeRuntime();
   try {
-    assert.equal(get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version, 15);
+    assert.equal(get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version, 16);
     assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 12").name, "agent-operations-evidence-and-receipts");
+    assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 16").name, "exact-agent-execution-evidence-bindings");
     const tables = all(
       runtime.db,
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('agent_run_receipts', 'agent_run_provenance') ORDER BY name",
@@ -291,6 +296,9 @@ test("migration 12 installs receipt and provenance immutability controls", () =>
     const attemptColumns = all(runtime.db, "PRAGMA table_info(task_attempts)").map((row) => row.name);
     assert.ok(attemptColumns.includes("provider_dispatched_at"));
     assert.ok(attemptColumns.includes("provider_dispatch_model_call_id"));
+    assert.ok(attemptColumns.includes("agent_run_id"));
+    assert.ok(attemptColumns.includes("model_call_id"));
+    assert.ok(attemptColumns.includes("evidence_binding_status"));
   } finally {
     closeRuntime(runtime);
   }

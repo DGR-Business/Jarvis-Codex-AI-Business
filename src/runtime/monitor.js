@@ -43,10 +43,17 @@ function addFinding(findings, finding) {
     title: finding.title,
     detail: finding.detail || "",
     metadata: finding.metadata || {},
+    fingerprintKey: finding.fingerprintKey || null,
   });
 }
 
 function findingFingerprint(finding) {
+  if (finding.fingerprintKey) {
+    return crypto.createHash("sha256").update([
+      finding.category || "runtime",
+      finding.fingerprintKey,
+    ].join("|")).digest("hex");
+  }
   return crypto.createHash("sha256").update([
     finding.category || "runtime",
     finding.entityType || "",
@@ -272,12 +279,121 @@ function collectChiefAssignmentFindings(db, findings) {
   }
 }
 
+function collectRuntimeOversightFindings(db, findings, options = {}) {
+  const monitorJob = get(
+    db,
+    "SELECT * FROM scheduler_jobs WHERE id = 'job-monitor-cycle'",
+  );
+  if (!monitorJob) return;
+
+  if (monitorJob.status !== "enabled") {
+    addFinding(findings, {
+      severity: "error",
+      category: "runtime_oversight",
+      entityType: "scheduler_job",
+      entityId: monitorJob.id,
+      title: "Jarvis monitoring is paused",
+      detail: "Independent system checks are disabled. Restart them before relying on unattended work.",
+      metadata: { status: monitorJob.status },
+    });
+    return;
+  }
+
+  const latestRun = get(
+    db,
+    `SELECT id, status, started_at, completed_at, error
+     FROM scheduler_runs
+     WHERE job_id = ?
+     ORDER BY started_at DESC
+     LIMIT 1`,
+    [monitorJob.id],
+  );
+  if (latestRun && ["failed", "needs_attention", "abandoned"].includes(latestRun.status)) {
+    addFinding(findings, {
+      severity: "error",
+      category: "runtime_oversight",
+      entityType: "scheduler_run",
+      entityId: latestRun.id,
+      title: "Jarvis monitoring needs recovery",
+      detail: latestRun.error || "The latest independent system check did not finish cleanly.",
+      metadata: {
+        jobId: monitorJob.id,
+        runStatus: latestRun.status,
+        startedAt: latestRun.started_at,
+        completedAt: latestRun.completed_at,
+      },
+    });
+    return;
+  }
+
+  const referenceTime = options.at || now();
+  const referenceMs = Date.parse(referenceTime);
+  const lockedAtMs = Date.parse(monitorJob.locked_at || "");
+  const metadata = fromJson(monitorJob.metadata, {});
+  const leaseSeconds = Math.max(60, Number(metadata.leaseSeconds || 15 * 60));
+  if (monitorJob.lock_owner && Number.isFinite(lockedAtMs)) {
+    if (Number.isFinite(referenceMs) && referenceMs - lockedAtMs > leaseSeconds * 1000) {
+      addFinding(findings, {
+        severity: "error",
+        category: "runtime_oversight",
+        entityType: "scheduler_job",
+        entityId: monitorJob.id,
+        title: "Jarvis monitoring appears stuck",
+        detail: "The scheduled check has held its execution lease longer than its allowed window.",
+        metadata: {
+          lockOwner: monitorJob.lock_owner,
+          lockedAt: monitorJob.locked_at,
+          leaseSeconds,
+        },
+      });
+    }
+    return;
+  }
+
+  const nextRunMs = Date.parse(monitorJob.next_run_at || "");
+  const intervalSeconds = Math.max(60, Number(monitorJob.interval_seconds || 15 * 60));
+  const graceSeconds = Math.max(120, Math.ceil(intervalSeconds / 4));
+  if (!monitorJob.last_run_at) {
+    addFinding(findings, {
+      severity: "warn",
+      category: "runtime_oversight",
+      entityType: "scheduler_job",
+      entityId: monitorJob.id,
+      title: "Jarvis monitoring has not completed its first check",
+      detail: "The schedule is enabled, but no independent system check has completed yet.",
+      metadata: { nextRunAt: monitorJob.next_run_at },
+    });
+  } else if (
+    Number.isFinite(referenceMs)
+    && Number.isFinite(nextRunMs)
+    && referenceMs > nextRunMs + graceSeconds * 1000
+  ) {
+    addFinding(findings, {
+      severity: "warn",
+      category: "runtime_oversight",
+      entityType: "scheduler_job",
+      entityId: monitorJob.id,
+      title: "Jarvis monitoring is overdue",
+      detail: "The next independent system check did not start within its expected window.",
+      metadata: {
+        lastRunAt: monitorJob.last_run_at,
+        nextRunAt: monitorJob.next_run_at,
+        graceSeconds,
+      },
+    });
+  }
+}
+
 function collectFindings(db, options = {}) {
   const findings = [];
   const staleTaskCutoff = minutesAgo(Number(options.staleTaskMinutes || 30));
   const staleRunCutoff = minutesAgo(Number(options.staleRunMinutes || 30));
+  const staleQueuedCutoff = minutesAgo(Number(options.staleQueuedMinutes || 24 * 60));
+
+  collectRuntimeOversightFindings(db, findings, options);
 
   const pendingApprovals = all(db, "SELECT id, title, risk_level FROM approvals WHERE status = 'pending' ORDER BY requested_at ASC");
+  const pendingApprovalIds = new Set(pendingApprovals.map((approval) => approval.id));
   if (pendingApprovals.length > 0) {
     addFinding(findings, {
       severity: "warn",
@@ -287,13 +403,69 @@ function collectFindings(db, options = {}) {
       title: `${pendingApprovals.length} approval${pendingApprovals.length === 1 ? "" : "s"} pending`,
       detail: "Operator approval is required before blocked work can continue.",
       metadata: { approvals: pendingApprovals },
+      fingerprintKey: "pending_approvals",
+    });
+  }
+
+  const expiredApprovals = all(
+    db,
+    `SELECT id, title, expires_at
+     FROM approvals
+     WHERE status = 'pending'
+       AND expires_at IS NOT NULL
+       AND expires_at <= ?
+     ORDER BY expires_at ASC`,
+    [options.at || now()],
+  );
+  for (const approval of expiredApprovals) {
+    addFinding(findings, {
+      severity: "warn",
+      category: "approval_integrity",
+      entityType: "approval",
+      entityId: approval.id,
+      title: `Decision expired: ${approval.title}`,
+      detail: "This approval can no longer start work. Prepare a fresh exact decision if the action is still justified.",
+      metadata: { expiresAt: approval.expires_at },
+    });
+  }
+
+  const continuedAfterDenial = all(
+    db,
+    `SELECT approvals.id AS approval_id, approvals.title, approvals.decided_at,
+            tasks.id AS task_id, tasks.title AS task_title, tasks.status, tasks.updated_at
+     FROM approvals
+     JOIN tasks ON tasks.approval_id = approvals.id
+     WHERE approvals.status IN ('rejected', 'needs_changes')
+       AND tasks.status IN ('running', 'completed')
+       AND approvals.decided_at IS NOT NULL
+       AND tasks.updated_at >= approvals.decided_at
+     ORDER BY tasks.updated_at DESC`,
+  );
+  for (const item of continuedAfterDenial) {
+    addFinding(findings, {
+      severity: "error",
+      category: "approval_integrity",
+      entityType: "task",
+      entityId: item.task_id,
+      title: `Work continued after a stop decision: ${item.task_title}`,
+      detail: "The linked decision was declined or sent back for changes, but the work record later shows execution.",
+      metadata: {
+        approvalId: item.approval_id,
+        approvalTitle: item.title,
+        decidedAt: item.decided_at,
+        taskStatus: item.status,
+      },
     });
   }
 
   const openEscalations = all(
     db,
-    "SELECT id, subject, severity FROM messages WHERE status = 'open' AND severity IN ('urgent', 'approval') ORDER BY created_at ASC",
-  );
+    "SELECT id, subject, severity, metadata FROM messages WHERE status = 'open' AND severity IN ('urgent', 'approval') ORDER BY created_at ASC",
+  ).filter((message) => {
+    if (message.severity !== "approval") return true;
+    const linkedApprovalId = fromJson(message.metadata, {}).approvalId;
+    return !linkedApprovalId || !pendingApprovalIds.has(linkedApprovalId);
+  });
   if (openEscalations.length > 0) {
     addFinding(findings, {
       severity: openEscalations.some((message) => message.severity === "urgent") ? "error" : "warn",
@@ -303,6 +475,34 @@ function collectFindings(db, options = {}) {
       title: `${openEscalations.length} open escalation${openEscalations.length === 1 ? "" : "s"}`,
       detail: "Open urgent or approval messages need operator attention.",
       metadata: { messages: openEscalations },
+      fingerprintKey: "open_escalations",
+    });
+  }
+
+  const staleQueuedTasks = all(
+    db,
+    `SELECT id, title, workflow_id, status, updated_at
+     FROM tasks
+     WHERE status IN ('planned', 'queued')
+       AND updated_at < ?
+     ORDER BY updated_at ASC
+     LIMIT 25`,
+    [staleQueuedCutoff],
+  );
+  for (const task of staleQueuedTasks) {
+    addFinding(findings, {
+      severity: "warn",
+      category: "queue",
+      entityType: "task",
+      entityId: task.id,
+      title: `Queued work has not moved: ${task.title}`,
+      detail: "This work has stayed ready or planned beyond its expected window. Confirm it is still the right next step or stop it.",
+      metadata: {
+        workflowId: task.workflow_id,
+        status: task.status,
+        updatedAt: task.updated_at,
+        staleQueuedMinutes: Number(options.staleQueuedMinutes || 24 * 60),
+      },
     });
   }
 
@@ -355,6 +555,61 @@ function collectFindings(db, options = {}) {
       title: `${failedTasks.length} failed task${failedTasks.length === 1 ? "" : "s"}`,
       detail: "Failed tasks require recovery or operator review before this workflow can be trusted.",
       metadata: { failedTasks },
+      fingerprintKey: "failed_tasks",
+    });
+  }
+
+  const unknownAttempts = all(
+    db,
+    `SELECT attempts.id, attempts.task_id, attempts.provider_request_id,
+            attempts.completed_at, tasks.title
+     FROM task_attempts AS attempts
+     LEFT JOIN tasks ON tasks.id = attempts.task_id
+     WHERE attempts.outcome_status = 'unknown'
+     ORDER BY attempts.completed_at DESC`,
+  );
+  for (const attempt of unknownAttempts) {
+    addFinding(findings, {
+      severity: "error",
+      category: "unknown_outcome",
+      entityType: "task_attempt",
+      entityId: attempt.id,
+      title: `Provider outcome is unknown: ${attempt.title || attempt.task_id}`,
+      detail: "Do not retry this work until the provider outcome and any cost are reconciled.",
+      metadata: {
+        taskId: attempt.task_id,
+        providerRequestId: attempt.provider_request_id,
+        completedAt: attempt.completed_at,
+      },
+    });
+  }
+
+  const unsafeRetries = all(
+    db,
+    `SELECT earlier.id AS unknown_attempt_id, later.id AS later_attempt_id,
+            earlier.task_id, tasks.title, later.started_at
+     FROM task_attempts AS earlier
+     JOIN task_attempts AS later
+       ON later.task_id = earlier.task_id
+      AND later.started_at > COALESCE(earlier.completed_at, earlier.started_at)
+     LEFT JOIN tasks ON tasks.id = earlier.task_id
+     WHERE earlier.outcome_status = 'unknown'
+     ORDER BY later.started_at DESC`,
+  );
+  for (const retry of unsafeRetries) {
+    addFinding(findings, {
+      severity: "error",
+      category: "unsafe_retry",
+      entityType: "task_attempt",
+      entityId: retry.later_attempt_id,
+      title: `Work restarted before an unknown outcome was resolved: ${retry.title || retry.task_id}`,
+      detail: "A later attempt exists after a provider outcome became unknown. Stop further execution and reconcile both attempts.",
+      metadata: {
+        taskId: retry.task_id,
+        unknownAttemptId: retry.unknown_attempt_id,
+        laterAttemptId: retry.later_attempt_id,
+        laterStartedAt: retry.started_at,
+      },
     });
   }
 
@@ -484,6 +739,59 @@ function collectFindings(db, options = {}) {
         budgetCents,
         currency: CONFIG.currency,
       },
+      fingerprintKey: "monthly_budget",
+    });
+  }
+
+  const unknownCosts = all(
+    db,
+    `SELECT id, task_id, workflow_id, amount_cents, currency, occurred_at
+     FROM costs
+     WHERE status = 'unknown'
+     ORDER BY occurred_at ASC`,
+  );
+  const unknownReservations = all(
+    db,
+    `SELECT id, task_id, workflow_id, amount_cents, currency, reserved_at
+     FROM budget_reservations
+     WHERE status = 'unknown'
+     ORDER BY reserved_at ASC`,
+  );
+  if (unknownCosts.length || unknownReservations.length) {
+    addFinding(findings, {
+      severity: "error",
+      category: "cost",
+      entityType: "budget",
+      entityId: "unknown_costs",
+      title: "Provider cost needs reconciliation",
+      detail: "At least one provider attempt has an unknown charge. Reconcile it before approving more spend for the same work.",
+      metadata: { costs: unknownCosts, reservations: unknownReservations },
+      fingerprintKey: "unknown_costs",
+    });
+  }
+
+  const staleReservedCutoff = minutesAgo(Number(options.staleReservationMinutes || 60));
+  const staleReservations = all(
+    db,
+    `SELECT reservations.id, reservations.task_id, reservations.amount_cents,
+            reservations.currency, reservations.reserved_at, tasks.title, tasks.status AS task_status
+     FROM budget_reservations AS reservations
+     LEFT JOIN tasks ON tasks.id = reservations.task_id
+     WHERE reservations.status = 'reserved'
+       AND reservations.reserved_at < ?
+       AND COALESCE(tasks.status, '') <> 'running'
+     ORDER BY reservations.reserved_at ASC`,
+    [staleReservedCutoff],
+  );
+  for (const reservation of staleReservations) {
+    addFinding(findings, {
+      severity: "warn",
+      category: "cost",
+      entityType: "budget_reservation",
+      entityId: reservation.id,
+      title: `Unused budget is still reserved: ${reservation.title || reservation.task_id}`,
+      detail: "The work is not running, but its budget remains held. Release or reconcile the reservation.",
+      metadata: reservation,
     });
   }
 

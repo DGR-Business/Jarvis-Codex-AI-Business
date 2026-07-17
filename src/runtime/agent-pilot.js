@@ -3,11 +3,26 @@ const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { canonicalJson } = require("./approval-scope");
 const { recordCapabilityReview } = require("./capability-autonomy");
+const { appendReceiptForOperatorUsefulnessReview } = require("./agent-execution-evidence");
 const { requestLiveAiWorker } = require("./live-ai-workers");
 
 const PILOT_CAPABILITY = "demand_validator.reasoning_on_supplied_evidence";
 const MAX_REASONING_FIXTURES = 5;
 const PILOT_COST_CAP_CENTS = 100;
+
+function withSavepoint(db, prefix, operation) {
+  const name = `${prefix}_${randomId().replace(/[^a-zA-Z0-9]/g, "")}`;
+  db.exec(`SAVEPOINT ${name}`);
+  try {
+    const value = operation();
+    db.exec(`RELEASE SAVEPOINT ${name}`);
+    return value;
+  } catch (error) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${name}`);
+    db.exec(`RELEASE SAVEPOINT ${name}`);
+    throw error;
+  }
+}
 
 function digest(value) {
   return crypto.createHash("sha256").update(canonicalJson(value)).digest("hex");
@@ -489,24 +504,27 @@ function reviewPilotRun(db, runId, input) {
   const passed = review.deterministic_status === "passed" && verdict === "useful" && usefulnessScore >= 3;
   const criteria = fromJson(review.criteria, {});
   const ts = now();
-  run(
-    db,
-    `UPDATE agent_pilot_reviews
-     SET operator_verdict = ?, usefulness_score = ?, note = ?, reviewed_at = ? WHERE run_id = ?`,
-    [verdict, usefulnessScore, String(input.note || ""), ts, runId],
-  );
-  recordCapabilityReview(db, review.capability_key, {
-    operatorReviewed: true,
-    useful: passed,
-    usefulnessScore,
-    scopeViolation: criteria.scopeCompliance !== true,
-    costViolation: criteria.costCompliance !== true,
-    riskViolation: criteria.unsupportedClaims !== true,
-    outcomeKnown: true,
-    runId,
-    fixtureId: review.fixture_id,
+  withSavepoint(db, "review_pilot_run", () => {
+    run(
+      db,
+      `UPDATE agent_pilot_reviews
+       SET operator_verdict = ?, usefulness_score = ?, note = ?, reviewed_at = ? WHERE run_id = ?`,
+      [verdict, usefulnessScore, String(input.note || ""), ts, runId],
+    );
+    recordCapabilityReview(db, review.capability_key, {
+      operatorReviewed: true,
+      useful: passed,
+      usefulnessScore,
+      scopeViolation: criteria.scopeCompliance !== true,
+      costViolation: criteria.costCompliance !== true,
+      riskViolation: criteria.unsupportedClaims !== true,
+      outcomeKnown: true,
+      runId,
+      fixtureId: review.fixture_id,
+    });
+    run(db, "UPDATE agent_pilot_fixtures SET status = 'reviewed' WHERE id = ?", [review.fixture_id]);
+    appendReceiptForOperatorUsefulnessReview(db, runId);
   });
-  run(db, "UPDATE agent_pilot_fixtures SET status = 'reviewed' WHERE id = ?", [review.fixture_id]);
   return getPilotState(db);
 }
 

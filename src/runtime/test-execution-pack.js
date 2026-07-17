@@ -779,8 +779,69 @@ function recordExecutionPackWorkers(db, { pack, experiment, candidate, copy }) {
   packet.chiefEvalStatus = chiefRun.evalStatus;
   packet.chiefEvalScore = chiefRun.evalScore;
   packet.workerRunIds.chiefOfStaff = chiefRun.runId;
+  const reviewedRunIds = Object.values(packet.workerRunIds).filter(Boolean);
+  const qualityRun = recordProtectedWorkerOutcome(
+    db,
+    {
+      kind: "operator_pack_qc",
+      agent: "quality_reviewer",
+      workflow_id: workflowId,
+      title: `Independently review the execution packet for ${experiment.name}`,
+      payload: {
+        executionPackId: pack.id,
+        reviewedRunIds,
+        buyer: copy.buyer,
+        problem: copy.problem,
+        offer: copy.offer,
+        channel: copy.channel,
+      },
+    },
+    {
+      heading: "Independent execution packet review",
+      summary: `Quality Reviewer checked the exact protected worker records assembled for ${copy.offer}.`,
+      evidence: [
+        `Reviewed worker records: ${reviewedRunIds.join(", ")}.`,
+        `Buyer, problem, offer and channel are present for ${copy.buyer}.`,
+        `Price, margin, test cap, success signal and stop rule are present in the Chief of Staff packet.`,
+        "No account action, publishing, customer contact, payment or provider call occurred.",
+      ],
+      risks: packet.risks,
+      operatorDecision: "approve",
+      nextAction: "Daniel may review this protected packet. Any real publishing, customer contact or spend still needs its own exact approval and live quality gate.",
+      confidence: "medium_for_protected_packet_structure",
+    },
+    {
+      metadata: {
+        ...sharedMetadata,
+        reviewOfRunId: chiefRun.runId,
+        reviewedRunIds,
+        protectedStructureReview: true,
+        noProviderCall: true,
+      },
+      trace: [
+        {
+          type: "protected_packet_reviewed",
+          title: "Independent packet review completed",
+          detail: "Quality Reviewer checked the exact protected worker records before the packet became ready for operator review.",
+          metadata: { executionPackId: pack.id, reviewedRunIds },
+        },
+      ],
+    },
+  );
+  packet.qualityRunId = qualityRun.runId;
+  packet.qualityEvalStatus = qualityRun.evalStatus;
+  packet.qualityEvalScore = qualityRun.evalScore;
+  packet.workerRunIds.qualityReviewer = qualityRun.runId;
 
-  return { productRun, copyRun, financeRun, distributionRun, chiefRun, chiefOfStaffPacket: packet };
+  return {
+    productRun,
+    copyRun,
+    financeRun,
+    distributionRun,
+    chiefRun,
+    qualityRun,
+    chiefOfStaffPacket: packet,
+  };
 }
 
 function generateExecutionPack(db, input = {}) {
@@ -846,7 +907,7 @@ function generateExecutionPack(db, input = {}) {
       candidate?.brief_id || experiment.metadata?.briefId || null,
       experiment.workflow_id || candidate?.workflow_id || null,
       experiment.venture_id || candidate?.venture_id || null,
-      "ready_to_test",
+      "quality_review_pending",
       title,
       copy.offerPageCopy,
       copy.productDescription,
@@ -872,8 +933,13 @@ function generateExecutionPack(db, input = {}) {
   const aiTeam = recordExecutionPackWorkers(db, { pack, experiment, candidate, copy });
   run(
     db,
-    "UPDATE commercial_execution_packs SET metadata = ?, updated_at = ? WHERE id = ?",
-    [toJson({ ...metadata, aiTeam }), now(), packId],
+    "UPDATE commercial_execution_packs SET status = ?, metadata = ?, updated_at = ? WHERE id = ?",
+    [
+      aiTeam.qualityRun.evalStatus === "passed" ? "ready_to_test" : "needs_changes",
+      toJson({ ...metadata, aiTeam }),
+      now(),
+      packId,
+    ],
   );
 
   return {

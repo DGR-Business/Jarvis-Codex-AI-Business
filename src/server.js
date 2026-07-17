@@ -71,13 +71,16 @@ const {
 } = require("./runtime/cockpit-state");
 const {
   ensureSchedulerJobs,
+  inspectSafeWorkflow,
   runDueSchedulerJobs,
   runSchedulerJob,
   setSchedulerJobStatus,
   startSchedulerLoop,
+  unsafeTaskReason,
 } = require("./runtime/scheduler");
 
 const PUBLIC_DIR = path.join(CONFIG.rootDir, "public");
+const MONITOR_JOB_ID = "job-monitor-cycle";
 
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -244,7 +247,8 @@ function serveDeliverableFile(db, res, id) {
 }
 
 function ensureRuntimeFoundation(db) {
-  refreshIntegrationHealth(db);
+  const integrationHealth = refreshIntegrationHealth(db);
+  const setupRecovery = recoverSetupBlockedTasks(db);
   ensureAiTeam(db);
   ensureAgentTools(db);
   ensureAgentWorkbench(db);
@@ -254,6 +258,150 @@ function ensureRuntimeFoundation(db) {
   ensureCapabilityAutonomy(db);
   ensureWeeklyDigest(db);
   ensureRetentionPolicy(db);
+  return { integrationHealth, setupRecovery };
+}
+
+function getMonitoringReadiness(db, runtimeState) {
+  const job = get(
+    db,
+    `SELECT id, name, status, interval_seconds, last_run_at, next_run_at,
+            locked_at, lock_owner, updated_at
+     FROM scheduler_jobs
+     WHERE id = ?`,
+    [MONITOR_JOB_ID],
+  );
+  const latestCompleted = get(
+    db,
+    `SELECT id, status, severity, finding_count, started_at, completed_at
+     FROM monitor_runs
+     WHERE completed_at IS NOT NULL
+     ORDER BY completed_at DESC, started_at DESC
+     LIMIT 1`,
+  );
+  const latestSchedulerRun = get(
+    db,
+    `SELECT id, status, started_at, completed_at
+     FROM scheduler_runs
+     WHERE job_id = ?
+     ORDER BY started_at DESC
+     LIMIT 1`,
+    [MONITOR_JOB_ID],
+  );
+  const intervalSeconds = Math.max(60, Number(job?.interval_seconds || 15 * 60));
+  const pollSeconds = Math.max(10, Math.ceil(Number(runtimeState.schedulerPollMs || CONFIG.schedulerPollMs) / 1000));
+  const graceSeconds = Math.max(120, Math.ceil(intervalSeconds / 4), pollSeconds * 2);
+  const maxAgeSeconds = intervalSeconds + graceSeconds;
+  const currentMs = Date.now();
+  const completedMs = Date.parse(latestCompleted?.completed_at || "");
+  const nextRunMs = Date.parse(job?.next_run_at || "");
+  const runtimeStartedMs = Date.parse(runtimeState.startedAt || "");
+  const ageSeconds = Number.isFinite(completedMs)
+    ? Math.max(0, Math.floor((currentMs - completedMs) / 1000))
+    : null;
+  const recent = ageSeconds !== null && ageSeconds <= maxAgeSeconds;
+  const scheduleOverdue = Boolean(
+    job?.status === "enabled"
+      && !job.lock_owner
+      && Number.isFinite(nextRunMs)
+      && currentMs > nextRunMs + graceSeconds * 1000,
+  );
+  const latestSchedulerRunFailed = Boolean(
+    latestSchedulerRun
+      && ["failed", "needs_attention", "abandoned"].includes(latestSchedulerRun.status),
+  );
+  const currentProcessCheckCompleted = Boolean(
+    Number.isFinite(completedMs)
+      && Number.isFinite(runtimeStartedMs)
+      && completedMs >= runtimeStartedMs,
+  );
+  const startupCheckCompleted = runtimeState.startupMonitoring.status === "completed"
+    || currentProcessCheckCompleted;
+
+  let reason = null;
+  if (!runtimeState.schedulerEnabled) reason = "scheduler_disabled";
+  else if (!runtimeState.schedulerRunning) reason = "scheduler_not_running";
+  else if (!job) reason = "monitor_job_missing";
+  else if (job.status !== "enabled") reason = "monitor_job_disabled";
+  else if (latestSchedulerRunFailed) reason = "monitor_job_failed";
+  else if (!latestCompleted) reason = "monitor_check_pending";
+  else if (!startupCheckCompleted) reason = "startup_monitor_incomplete";
+  else if (!recent || scheduleOverdue) reason = "monitor_check_overdue";
+
+  return {
+    scheduler: {
+      enabled: runtimeState.schedulerEnabled,
+      running: runtimeState.schedulerRunning,
+      pollMs: runtimeState.schedulerPollMs,
+    },
+    monitoring: {
+      ready: reason === null,
+      recent,
+      overdue: Boolean(latestCompleted && (!recent || scheduleOverdue)),
+      reason,
+      maxAgeSeconds,
+      ageSeconds,
+      startup: {
+        status: runtimeState.startupMonitoring.status,
+        reason: runtimeState.startupMonitoring.reason || null,
+        schedulerRunId: runtimeState.startupMonitoring.schedulerRunId || null,
+        monitorRunId: runtimeState.startupMonitoring.monitorRunId || null,
+        completedAt: runtimeState.startupMonitoring.completedAt || null,
+      },
+      job: job ? {
+        id: job.id,
+        name: job.name,
+        status: job.status,
+        enabled: job.status === "enabled",
+        running: Boolean(job.lock_owner),
+        intervalSeconds,
+        lastRunAt: job.last_run_at,
+        nextRunAt: job.next_run_at,
+        lockedAt: job.locked_at,
+        latestRun: latestSchedulerRun ? {
+          id: latestSchedulerRun.id,
+          status: latestSchedulerRun.status,
+          startedAt: latestSchedulerRun.started_at,
+          completedAt: latestSchedulerRun.completed_at,
+        } : null,
+      } : null,
+      latestCompletedCheck: latestCompleted ? {
+        id: latestCompleted.id,
+        status: latestCompleted.status,
+        severity: latestCompleted.severity,
+        findingCount: Number(latestCompleted.finding_count || 0),
+        startedAt: latestCompleted.started_at,
+        completedAt: latestCompleted.completed_at,
+      } : null,
+    },
+  };
+}
+
+function selectSafeRuntimeTickTask(db) {
+  const candidates = all(
+    db,
+    `SELECT tasks.*
+     FROM tasks
+     JOIN workflows ON workflows.id = tasks.workflow_id
+     WHERE tasks.status IN ('queued', 'planned')
+       AND workflows.status IN ('planned', 'ready', 'agent_running', 'agent_retrying')
+     ORDER BY CASE tasks.status WHEN 'queued' THEN 0 ELSE 1 END,
+              tasks.priority ASC, tasks.created_at ASC, tasks.id ASC`,
+  );
+  const rejectedReasons = {};
+  for (const task of candidates) {
+    const taskReason = unsafeTaskReason(task);
+    if (taskReason) {
+      rejectedReasons[taskReason] = (rejectedReasons[taskReason] || 0) + 1;
+      continue;
+    }
+    const workflowSafety = inspectSafeWorkflow(db, task.workflow_id);
+    if (!workflowSafety.safe) {
+      rejectedReasons[workflowSafety.reason] = (rejectedReasons[workflowSafety.reason] || 0) + 1;
+      continue;
+    }
+    return { task, rejectedReasons };
+  }
+  return { task: null, rejectedReasons };
 }
 
 function createRuntime(options = {}) {
@@ -295,6 +443,17 @@ function createApp(options = {}) {
   const instanceId = String(options.instanceId || process.env.JARVIS_RUNTIME_INSTANCE_ID || crypto.randomUUID());
   const workspaceId = crypto.createHash("sha256").update(path.resolve(CONFIG.rootDir)).digest("hex").slice(0, 20);
   const controlToken = String(options.controlToken || process.env.JARVIS_CONTROL_TOKEN || crypto.randomBytes(32).toString("base64url"));
+  const schedulerEnabled = Boolean(options.schedulerEnabled ?? CONFIG.schedulerEnabled);
+  const runtimeState = {
+    startedAt: now(),
+    schedulerEnabled,
+    schedulerRunning: false,
+    schedulerPollMs: Number(options.scheduler?.pollMs || CONFIG.schedulerPollMs),
+    startupMonitoring: {
+      status: schedulerEnabled ? "pending" : "disabled",
+      reason: schedulerEnabled ? null : "scheduler_disabled",
+    },
+  };
   const security = createLocalSecurity({
     enabled: options.security !== false,
     secret: options.sessionSecret,
@@ -355,6 +514,7 @@ function createApp(options = {}) {
         const authenticated = Boolean(security.sessionForRequest(req));
         const liveResearch = getLiveResearchReadiness(db);
         const liveAiWorkers = getLiveAiWorkerReadiness(db);
+        const monitoringReadiness = getMonitoringReadiness(db, runtimeState);
         const providerProof = get(
           db,
           `SELECT
@@ -363,10 +523,14 @@ function createApp(options = {}) {
            FROM model_calls`,
         ) || {};
         const payload = {
-          ok: true,
+          alive: true,
+          ok: monitoringReadiness.monitoring.ready,
+          operationsReady: monitoringReadiness.monitoring.ready,
           instanceId,
           workspaceId,
           time: now(),
+          scheduler: monitoringReadiness.scheduler,
+          monitoring: monitoringReadiness.monitoring,
           externalActionsMode: CONFIG.dryRun ? "locked" : "enabled",
           paidAiArmed: Boolean(process.env.OPENAI_API_KEY)
             && (process.env.JARVIS_ENABLE_LIVE_MODELS === "1" || process.env.JARVIS_ENABLE_LIVE_RESEARCH === "1"),
@@ -832,7 +996,19 @@ function createApp(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/api/runtime/tick") {
-        const result = await runOnce(db);
+        const selection = selectSafeRuntimeTickTask(db);
+        const result = selection.task
+          ? await runOnce(db, {
+            taskId: selection.task.id,
+            workflowId: selection.task.workflow_id,
+            claimant: "runtime_tick_protected",
+          })
+          : {
+            status: "idle",
+            reason: "no_safe_internal_task",
+            message: "No strictly protected internal work is ready to run.",
+            rejectedReasons: selection.rejectedReasons,
+          };
         broadcastState();
         jsonResponse(res, 200, { result });
         return;
@@ -1173,6 +1349,7 @@ function createApp(options = {}) {
     if (shuttingDown) return Promise.resolve();
     shuttingDown = true;
     server.schedulerLoop?.stop?.();
+    runtimeState.schedulerRunning = false;
     for (const client of wss.clients) client.terminate();
     return new Promise((resolve) => {
       const finish = () => {
@@ -1186,7 +1363,8 @@ function createApp(options = {}) {
     });
   };
 
-  return { server, db, wss, security, instanceId, workspaceId };
+  server.runtimeState = runtimeState;
+  return { server, db, wss, security, instanceId, workspaceId, runtimeState };
 }
 
 function startServer(options = {}) {
@@ -1195,17 +1373,65 @@ function startServer(options = {}) {
   return new Promise((resolve, reject) => {
     const onError = (error) => reject(error);
     app.server.once("error", onError);
-    app.server.listen(port, "127.0.0.1", () => {
+    app.server.listen(port, "127.0.0.1", async () => {
       app.server.off("error", onError);
       const address = app.server.address();
       const url = `http://127.0.0.1:${address.port}`;
       let schedulerLoop = null;
-      if (options.schedulerEnabled ?? CONFIG.schedulerEnabled) {
-        schedulerLoop = startSchedulerLoop(app.db, options.scheduler || {});
+      if (app.runtimeState.schedulerEnabled) {
+        try {
+          schedulerLoop = startSchedulerLoop(app.db, options.scheduler || {});
+          app.runtimeState.schedulerRunning = true;
+          app.runtimeState.schedulerPollMs = schedulerLoop.pollMs;
+        } catch (error) {
+          app.runtimeState.schedulerRunning = false;
+          console.error(`Jarvis-Codex scheduler could not start: ${error.message}`);
+        }
       }
       app.server.schedulerLoop = schedulerLoop;
       console.log(`Jarvis-Codex Control running at ${url}`);
       if (schedulerLoop) console.log(`Jarvis-Codex scheduler polling every ${schedulerLoop.pollMs}ms`);
+
+      if (app.runtimeState.schedulerEnabled) {
+        const monitorJob = get(app.db, "SELECT status FROM scheduler_jobs WHERE id = ?", [MONITOR_JOB_ID]);
+        if (!monitorJob || monitorJob.status !== "enabled") {
+          app.runtimeState.startupMonitoring = {
+            status: "disabled",
+            reason: monitorJob ? "monitor_job_disabled" : "monitor_job_missing",
+            completedAt: now(),
+          };
+          console.error("Jarvis-Codex independent monitoring is disabled; operations readiness is not satisfied.");
+        } else {
+          app.runtimeState.startupMonitoring = { status: "running", reason: null };
+          try {
+            const startupRun = await runSchedulerJob(app.db, MONITOR_JOB_ID, {
+              manual: true,
+              actor: "server-startup",
+            });
+            app.runtimeState.startupMonitoring = {
+              status: startupRun.status,
+              reason: startupRun.status === "completed"
+                ? null
+                : startupRun.result?.reason || startupRun.error || "monitor_startup_failed",
+              schedulerRunId: startupRun.id || null,
+              monitorRunId: startupRun.result?.monitorRunId || null,
+              completedAt: now(),
+            };
+            if (startupRun.status === "completed") {
+              console.log("Jarvis-Codex startup monitor cycle completed.");
+            } else {
+              console.error(`Jarvis-Codex startup monitor did not complete: ${app.runtimeState.startupMonitoring.reason}`);
+            }
+          } catch (error) {
+            app.runtimeState.startupMonitoring = {
+              status: "failed",
+              reason: "monitor_startup_failed",
+              completedAt: now(),
+            };
+            console.error(`Jarvis-Codex startup monitor failed: ${error.message}`);
+          }
+        }
+      }
       resolve({ ...app, url, schedulerLoop });
     });
   });

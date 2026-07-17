@@ -12,8 +12,10 @@ const {
   findAgentDefinition,
   finishAgentRun,
   recordAgentFailure,
+  recordTerminalAgentEvaluation,
   workerDecisionMetadata,
 } = require("./ai-team");
+const { bindAgentRunToAttempt, bindModelCallToAttempt } = require("./agent-execution-evidence");
 const { isAgentToolApprovalRequiredError, requireAgentToolUse } = require("./agent-tool-gate");
 const { getAgentToolPolicyForAgent } = require("./agent-tools");
 const { createResearchToExperimentPlanFromResearch } = require("./research-to-experiment");
@@ -745,6 +747,7 @@ function checkWorkerTool(db, agentRun, task, agentDefinition, toolId, options = 
     agentId: agentDefinition.id,
     agentName: agentDefinition.name,
     runId: agentRun.id,
+    attemptId: options.attemptId || null,
     task,
     toolId,
     mode: options.mode || "protected",
@@ -860,11 +863,14 @@ async function runAgentTask(db, task, options = {}) {
   const isLiveResearchTask = task.kind === "live_market_research";
   const isLiveAiWorkerTask = task.kind === "live_ai_worker_execution";
   const humanReviewRequired = task.kind === "operator_pack_qc" || task.kind === "risk_screen" || isLiveResearchTask || isLiveAiWorkerTask;
+  const taskAttemptId = options.taskClaim?.attemptId || null;
   const agentRun = resumeExactSdkAgentRun(db, task, agentDefinition) || createAgentRun(db, agentDefinition, task, {
     mode: isLiveResearchTask ? "approval-gated-live-ready" : isLiveAiWorkerTask ? "openai-agents-sdk" : "dry-run",
     inputSummary: `${task.title} for workflow ${task.workflow_id}`,
     approvalRequired: humanReviewRequired,
+    attemptId: taskAttemptId,
   });
+  if (taskAttemptId) bindAgentRunToAttempt(db, taskAttemptId, agentRun.id);
 
   let modelCall = null;
   let research = null;
@@ -899,6 +905,7 @@ async function runAgentTask(db, task, options = {}) {
     enforceBudget(task, policy);
     applyFailureProofControls(task);
     toolChecks.push(summarizeToolCheck(checkWorkerTool(db, agentRun, task, agentDefinition, "runtime_state", {
+      attemptId: taskAttemptId,
       reason: "Read local runtime state before worker execution.",
     })));
 
@@ -965,6 +972,7 @@ async function runAgentTask(db, task, options = {}) {
         },
       );
       toolChecks.push(summarizeToolCheck(checkWorkerTool(db, agentRun, task, agentDefinition, "local_deliverables", {
+        attemptId: taskAttemptId,
         reason: "Update local review outputs with the live worker result.",
       })));
       touchedDeliverables = updateDeliverables(db, task, output);
@@ -976,7 +984,11 @@ async function runAgentTask(db, task, options = {}) {
         outputHeading: output.heading,
       });
       effectiveModelCall = liveWorker.modelCall;
+      if (taskAttemptId && effectiveModelCall?.id) {
+        bindModelCallToAttempt(db, taskAttemptId, effectiveModelCall.id);
+      }
       const evalResult = evaluateAgentOutput(db, agentDefinition, agentRun, task, output, {
+        attemptId: taskAttemptId,
         requiresApproval: humanReviewRequired,
         deliverables: touchedDeliverables,
         research: liveWorker.raw.sdkResearch
@@ -1201,6 +1213,7 @@ async function runAgentTask(db, task, options = {}) {
 
     modelCall = isLiveResearchTask ? null : recordModelCall(db, task, policy);
     if (modelCall) {
+      if (taskAttemptId) bindModelCallToAttempt(db, taskAttemptId, modelCall.id);
       addAgentTrace(db, agentRun.id, "model_route_recorded", "AI usage route recorded", `${modelCall.selectedModel} is recorded in protected mode; no paid model call was made.`, {
         modelCallId: modelCall.id,
         estimatedCostCents: modelCall.estimatedCostCents,
@@ -1210,6 +1223,7 @@ async function runAgentTask(db, task, options = {}) {
     const isResearchTask = ["market_research", "live_market_research"].includes(task.kind);
     if (isResearchTask) {
       toolChecks.push(summarizeToolCheck(checkWorkerTool(db, agentRun, task, agentDefinition, "research_adapter", {
+        attemptId: taskAttemptId,
         strict: true,
         mode: isLiveResearchTask ? "live" : "protected",
         reason: isLiveResearchTask
@@ -1217,7 +1231,16 @@ async function runAgentTask(db, task, options = {}) {
           : "Use the protected research adapter path without live web spend.",
       })));
     }
-    research = isResearchTask ? await runResearchTask(db, task, workflow, command, { live: isLiveResearchTask }) : null;
+    research = isResearchTask
+      ? await runResearchTask(db, task, workflow, command, {
+        live: isLiveResearchTask,
+        taskClaim: options.taskClaim || null,
+        agentRunId: agentRun.id,
+      })
+      : null;
+    if (taskAttemptId && research?.modelCall?.id) {
+      bindModelCallToAttempt(db, taskAttemptId, research.modelCall.id);
+    }
     providerReceipt = research?.providerReceipt || providerReceipt;
     if (research) {
       addAgentTrace(db, agentRun.id, "tool_result_recorded", "Research tool result recorded", `Research captured ${research.sources.length} source record${research.sources.length === 1 ? "" : "s"}.`, {
@@ -1282,6 +1305,7 @@ async function runAgentTask(db, task, options = {}) {
     );
 
     toolChecks.push(summarizeToolCheck(checkWorkerTool(db, agentRun, task, agentDefinition, "local_deliverables", {
+      attemptId: taskAttemptId,
       reason: "Update local review outputs with the worker result.",
     })));
     touchedDeliverables = updateDeliverables(db, task, output);
@@ -1304,6 +1328,7 @@ async function runAgentTask(db, task, options = {}) {
     };
     const actualCostCents = Number(research?.actualCents ?? effectiveModelCall.actualCostCents ?? 0);
     const evalResult = evaluateAgentOutput(db, agentDefinition, agentRun, task, output, {
+      attemptId: taskAttemptId,
       requiresApproval: humanReviewRequired,
       research,
       deliverables: touchedDeliverables,
@@ -1465,10 +1490,27 @@ async function runAgentTask(db, task, options = {}) {
       error.modelCallId = providerReceipt.modelCallId || error.modelCallId || null;
       error.errorKind = error.errorKind || "local_processing_after_provider_success";
     }
+    if (taskAttemptId && error.modelCallId) {
+      bindModelCallToAttempt(db, taskAttemptId, error.modelCallId);
+    }
+    const terminalEvaluation = recordTerminalAgentEvaluation(db, agentDefinition, agentRun, task, {
+      attemptId: taskAttemptId,
+      outcomeUnknown: error.outcomeUnknown === true,
+      outcomeStatus: error.outcomeUnknown === true
+        ? "unknown"
+        : error.providerCallOccurred === true || error.providerReceipt
+          ? "known_provider_result_needs_review"
+          : "failed_before_effect",
+      error: error.message,
+      errorKind: error.errorKind || null,
+      providerRequestId: error.providerRequestId || error.providerReceipt?.providerRequestId || null,
+      providerCallOccurred: error.providerCallOccurred === true || Boolean(error.providerReceipt),
+    });
     recordAgentFailure(db, agentRun, agentDefinition, error, {
       taskKind: task.kind,
       workflowId: task.workflow_id,
       providerReceipt: error.providerReceipt || null,
+      evaluation: terminalEvaluation,
     });
     updateChiefAssignmentLifecycle(db, task, {
       status: "specialist_work_failed",

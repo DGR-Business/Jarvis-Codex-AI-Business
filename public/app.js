@@ -94,6 +94,17 @@ function humanStatus(value) {
   return labels[key] || key.replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function humanActor(value) {
+  const key = String(value || "").toLowerCase();
+  return {
+    operator: "Daniel",
+    "spend-gate": "Cost control",
+    "agent-pilot": "Demand Validator",
+    "runtime-monitor": "Jarvis monitoring",
+    scheduler: "Jarvis scheduler",
+  }[key] || humanStatus(value);
+}
+
 function statusTone(value) {
   const key = String(value || "").toLowerCase();
   if (/(failed|attention|unknown|rejected|stopped|cancel)/.test(key)) return "coral";
@@ -112,7 +123,21 @@ function canPreview(format, filePath = true) {
 }
 
 function money(cents, currency = "AUD") {
-  return new Intl.NumberFormat("en-AU", { style: "currency", currency, maximumFractionDigits: 2 }).format(Number(cents || 0) / 100);
+  const amount = Number(cents || 0) / 100;
+  if (currency === "AUD") {
+    const sign = amount < 0 ? "-" : "";
+    const absolute = new Intl.NumberFormat("en-AU", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(Math.abs(amount));
+    return `${sign}A$${absolute}`;
+  }
+  return new Intl.NumberFormat("en-AU", {
+    style: "currency",
+    currency,
+    currencyDisplay: "code",
+    maximumFractionDigits: 2,
+  }).format(amount);
 }
 
 function shortDate(value) {
@@ -238,8 +263,13 @@ function emptyState(title, message, iconName = "check-circle-2") {
 function approvalButtons(item, compactButtons = false) {
   const sizeClass = compactButtons ? "" : "";
   const action = item.decisionKind === "handoff" ? "handoff-decision" : "approval";
+  const approvalLabel = item.decisionKind === "handoff"
+    ? "Approve next step"
+    : Number(item.maxCostCents || 0) > 0 || item.provider
+      ? `Approve & start${Number(item.maxCostCents || 0) > 0 ? ` · up to ${money(item.maxCostCents)}` : ""}`
+      : "Approve";
   return `<div class="work-actions ${sizeClass}">
-    <button class="primary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="approve" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("check")}Approve</button>
+    <button class="primary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="approve" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("check")}${escapeHtml(approvalLabel)}</button>
     <button class="secondary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="changes" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("pencil-line")}Changes</button>
     <button class="danger-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="reject" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("x")}Decline</button>
   </div>`;
@@ -270,11 +300,11 @@ function renderImportantWork(items) {
     <div class="priority-header"><div><span class="eyebrow">Important work</span><h2>${items.length} item${items.length === 1 ? " needs" : "s need"} a decision, check, or start</h2></div>${onlyWaitingToStart ? badge("Work waiting", "amber") : badge("Needs attention", "coral")}</div>
     <div class="priority-list">${items.map((item) => `<article class="work-item">
       <span class="risk-bar ${escapeHtml(item.risk || "medium")}"></span>
-      <div class="work-copy"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(compact(item.recommendation, 260))}</p>${item.expectedUpside ? `<small>Why it matters: ${escapeHtml(compact(item.expectedUpside, 180))}</small>` : ""}</div>
+      <div class="work-copy"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(compact(item.recommendation, 260))}</p>${item.expectedUpside ? `<small>Why it matters: ${escapeHtml(compact(item.expectedUpside, 180))}</small>` : ""}${item.type === "decision" && (Number(item.maxCostCents || 0) > 0 || item.provider) ? `<small>What approval does: starts this one exact ${escapeHtml(item.worker || "AI")} action${Number(item.maxCostCents || 0) > 0 ? `, capped at ${money(item.maxCostCents)}` : ""}. No wider authority is granted.</small>` : ""}</div>
       ${item.type === "decision"
         ? approvalButtons(item, true)
-        : item.type === "queued_work"
-          ? `<button class="primary-button" data-action="run-task" data-id="${escapeHtml(item.id)}">${icon("play")}Run now</button>`
+        : ["queued_work", "approved_work"].includes(item.type)
+          ? `<button class="primary-button" data-action="run-task" data-id="${escapeHtml(item.id)}" data-execution-kind="${escapeHtml(item.execution_kind || "internal")}">${icon("play")}${escapeHtml(item.run_label || "Run internal step")}${Number(item.max_cost_cents || 0) > 0 ? ` · up to ${money(item.max_cost_cents)}` : ""}</button>`
           : `<button class="secondary-button" data-action="open-drawer" data-kind="work" data-id="${escapeHtml(item.id)}">${icon("arrow-right")}Review</button>`}
     </article>`).join("")}</div>
   </section>`;
@@ -523,36 +553,73 @@ function renderSystemPanel(data) {
     const ai = data.health.liveAi;
     const research = data.health.liveResearch;
     const retention = data.health.retention;
+    const monitoring = data.health.monitoring || {
+      status: "starting",
+      label: "Starting",
+      summary: "Jarvis monitoring starts with the business runtime.",
+      latestFindingCount: 0,
+      lastCheckAt: null,
+    };
+    const monitoringTone = monitoring.status === "operating"
+      ? "mint"
+      : monitoring.status === "starting"
+        ? "sky"
+        : "amber";
+    const monitoringDetail = monitoring.lastCheckAt
+      ? `Latest check: ${shortDate(monitoring.lastCheckAt)}. ${Number(monitoring.latestFindingCount || 0)} item${Number(monitoring.latestFindingCount || 0) === 1 ? "" : "s"} surfaced.`
+      : "No completed independent check has been recorded yet.";
     const retentionAction = retention.canPrepareDecision
       ? `<button class="secondary-button" data-action="prepare-retention-decision">${icon("shield-check")}Review this plan</button>`
       : "";
     return `<div class="card-grid">
-      <article class="item-card"><header><h3>Runtime database</h3>${badge(data.health.database === "ok" ? "Operating normally" : "Needs attention")}</header><p>The durable operating state passed its latest integrity check.</p></article>
-      <article class="item-card"><header><h3>AI worker connection</h3>${badge(ai.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(ai.ready ? "OpenAI workers can run from this dashboard when their exact capped task is approved." : compact(ai.blockers?.join(" ") || "Credentials and live permission are not configured."))}</p></article>
-      <article class="item-card"><header><h3>Live research</h3>${badge(research.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(research.ready ? "Read-only sourced research can run from this dashboard after its exact cost approval." : compact(research.blockers?.join(" ") || "The research connection is not configured."))}</p></article>
-      <article class="item-card"><header><h3>Product visuals</h3>${badge(ai.imageGeneration?.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(ai.imageGeneration?.ready ? "Product Builder can prepare one reviewed local visual after an exact cost approval. Publishing remains blocked." : compact(ai.imageGeneration?.blockers?.join(" ") || "The reviewed product-visual capability is not connected."))}</p></article>
+      <article class="item-card"><header><h3>Jarvis monitoring</h3>${badge(monitoring.label, monitoringTone)}</header><p>${escapeHtml(monitoring.summary)} ${escapeHtml(monitoringDetail)} ${escapeHtml(data.health.database === "ok" ? "The operating record also passed its integrity check." : "The operating record needs an integrity review.")}</p></article>
+      <article class="item-card"><header><h3>AI worker connection</h3>${badge(ai.ready ? "Ready for approved work" : "Setup needed")}</header><p>${escapeHtml(ai.ready ? "The local Agents SDK path is configured. One exact capped approval is still required for each paid worker run." : compact(ai.blockers?.join(" ") || "Credentials and live permission are not configured."))}</p></article>
+      <article class="item-card"><header><h3>Live research</h3>${badge(research.ready ? "Ready for approved test" : "Setup needed")}</header><p>${escapeHtml(research.ready ? "The read-only research path is configured. Provider reachability is proven only by an approved live test." : compact(research.blockers?.join(" ") || "The research connection is not configured."))}</p></article>
+      <article class="item-card"><header><h3>Product visuals</h3>${badge(ai.imageGeneration?.ready ? "Ready for approved test" : "Setup needed")}</header><p>${escapeHtml(ai.imageGeneration?.ready ? "Product Builder's reviewed visual path is configured. A paid test and separate quality review are still required." : compact(ai.imageGeneration?.blockers?.join(" ") || "The reviewed product-visual capability is not connected."))}</p></article>
       <article class="item-card"><header><h3>Data protection</h3>${badge(retention.label, retention.status === "active" ? "mint" : "amber")}</header><p>${escapeHtml(retention.summary)} ${escapeHtml(retention.nextAction)}</p>${retentionAction}</article>
-      <article class="item-card"><header><h3>External actions</h3>${badge("Your approval required", "mint")}</header><p>Publishing, customer contact, account changes and spend still require your explicit decision.</p></article>
+      <article class="item-card"><header><h3>External actions</h3>${badge("Locked", "amber")}</header><p>Publishing, customer contact, account changes and money movement remain locked. An approval cannot bypass a locked adapter.</p></article>
     </div>`;
   }
   if (store.systemTab === "checks") {
-    const checks = data.checks || { status: "operating_normally", openCount: 0, items: [] };
+    const checks = data.checks || { status: "operating_normally", openCount: 0, items: [], monitor: { openCount: 0, criticalCount: 0, items: [] } };
+    const monitor = checks.monitor || { openCount: 0, criticalCount: 0, items: [] };
+    const monitorAction = (item) => {
+      if (!item.action) return badge(item.severity);
+      if (item.action.kind === "agent_run") {
+        return `<button class="secondary-button" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(item.action.id)}">${icon("file-search")}${escapeHtml(item.action.label)}</button>`;
+      }
+      if (item.action.kind === "view") {
+        return `<button class="secondary-button" data-view="${escapeHtml(item.action.id)}">${icon("arrow-right")}${escapeHtml(item.action.label)}</button>`;
+      }
+      if (item.action.kind === "system_tab") {
+        return `<button class="secondary-button" data-action="system-tab" data-tab="${escapeHtml(item.action.id)}">${icon("arrow-right")}${escapeHtml(item.action.label)}</button>`;
+      }
+      if (item.action.kind === "maintenance") {
+        return `<button class="secondary-button" data-action="maintenance">${icon("wrench")}${escapeHtml(item.action.label)}</button>`;
+      }
+      return badge(item.severity);
+    };
     return `<div class="view-stack">
       <section>${sectionHeading("System checks", "Jarvis verifies that genuine AI work left a complete local record and did not hide an uncertain outcome.")}
         <div class="metric-grid"><div class="metric ${checks.openCount ? "amber" : "mint"}"><span>Current status</span><strong>${escapeHtml(humanStatus(checks.status))}</strong><small>${checks.openCount ? `${checks.openCount} item${checks.openCount === 1 ? "" : "s"} to review` : "No unresolved execution-record issues"}</small></div><div class="metric sky"><span>Receipts verified</span><strong>${Number(checks.verifiedReceiptCount || 0)}</strong><small>${checks.receiptChainVerified ? "Integrity checks passed" : "Integrity review required"}</small></div></div>
       </section>
       <section>${checks.items?.length ? `<div class="plain-list">${checks.items.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.detail)}</p>${item.workerName ? `<small>${escapeHtml(item.workerName)}</small>` : ""}</div>${item.runId ? `<button class="secondary-button" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(item.runId)}">${icon("file-search")}Review</button>` : badge(item.status)}</article>`).join("")}</div>` : emptyState("All execution records are complete", "Jarvis found no missing receipts, uncertain provider outcomes or broken evidence links.", "shield-check")}</section>
+      <section>${sectionHeading("Jarvis findings", "Current risks, stalled work and exceptions found by the independent runtime monitor.")}
+        <div class="metric-grid"><div class="metric ${monitor.openCount ? "amber" : "mint"}"><span>Open findings</span><strong>${Number(monitor.openCount || 0)}</strong><small>${monitor.openCount ? "Each item remains visible until resolved" : "No current runtime exception"}</small></div><div class="metric ${monitor.criticalCount ? "coral" : "mint"}"><span>Critical</span><strong>${Number(monitor.criticalCount || 0)}</strong><small>${monitor.criticalCount ? "Stop and review before retrying affected work" : "No critical monitor finding"}</small></div></div>
+        ${monitor.items?.length ? `<div class="plain-list">${monitor.items.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.detail)}</p><small>Last checked ${escapeHtml(shortDate(item.last_seen || item.first_seen))}${Number(item.occurrence_count || 0) > 1 ? ` · seen ${Number(item.occurrence_count)} times` : ""}</small></div>${monitorAction(item)}</article>`).join("")}</div>` : emptyState("Jarvis found no current exception", "Scheduled checks will place a concrete issue and next action here when something needs review.", "check-circle-2")}
+      </section>
     </div>`;
   }
   if (store.systemTab === "queue") {
-    return data.queue.length ? `<div class="table-wrap"><table><thead><tr><th>Work</th><th>Worker</th><th>Status</th><th>Updated</th><th>Action</th></tr></thead><tbody>${data.queue.map((item) => `<tr><td data-label="Work"><strong>${escapeHtml(item.title)}</strong></td><td data-label="Worker">${escapeHtml(humanStatus(item.agent))}</td><td data-label="Status">${badge(item.approval_id && ["blocked", "waiting_approval"].includes(item.status) ? "Waiting for decision" : item.status)}</td><td data-label="Updated">${escapeHtml(shortDate(item.updated_at))}</td><td data-label="Action">${item.can_run ? `<button class="secondary-button" data-action="run-task" data-id="${escapeHtml(item.id)}">${icon("play")}Run now</button>` : ["blocked", "waiting_approval", "needs_attention"].includes(item.status) ? `<button class="text-button" data-view="decisions">Review</button>` : `<span class="muted-text">After earlier work</span>`}</td></tr>`).join("")}</tbody></table></div>` : emptyState("The queue is empty", "Create internal work from the Command Center when there is a clear business purpose.", "list-checks");
+    return data.queue.length ? `<div class="table-wrap"><table><thead><tr><th>Work</th><th>Worker</th><th>Status</th><th>Updated</th><th>Action</th></tr></thead><tbody>${data.queue.map((item) => `<tr><td data-label="Work"><strong>${escapeHtml(item.title)}</strong>${Number(item.max_cost_cents || 0) > 0 ? `<small>Maximum approved cost: ${money(item.max_cost_cents)}</small>` : ""}</td><td data-label="Worker">${escapeHtml(humanStatus(item.agent))}</td><td data-label="Status">${badge(item.approval_id && ["blocked", "waiting_approval"].includes(item.status) ? "Waiting for decision" : item.can_run && !item.safe_to_run ? "Approved AI work ready" : item.status)}</td><td data-label="Updated">${escapeHtml(shortDate(item.updated_at))}</td><td data-label="Action">${item.can_run ? `<button class="secondary-button" data-action="run-task" data-id="${escapeHtml(item.id)}" data-execution-kind="${escapeHtml(item.execution_kind)}">${icon("play")}${escapeHtml(item.run_label)}</button>` : ["blocked", "waiting_approval", "needs_attention"].includes(item.status) ? `<button class="text-button" data-view="decisions">Review</button>` : `<span class="muted-text">After earlier work</span>`}</td></tr>`).join("")}</tbody></table></div>` : emptyState("The queue is empty", "Create internal work from the Command Center when there is a clear business purpose.", "list-checks");
   }
   if (store.systemTab === "spend") {
     const spend = data.spend;
     const accounting = spend.accounting || { currency: "AUD", cashPaidCents: 0, recurringMonthlyCents: 0, recent: [] };
     return `<div class="view-stack">
       <section>${sectionHeading("AI and tool budget", "Approval caps and measured provider usage for controlled business work.")}
-        <div class="metric-grid"><div class="metric sky"><span>Monthly cap</span><strong>${money(spend.monthlyCapCents, spend.currency)}</strong><small>Pre-revenue limit</small></div><div class="metric mint"><span>Reconciled usage</span><strong>${money(spend.reconciledCents, spend.currency)}</strong><small>Confirmed provider cost</small></div><div class="metric amber"><span>Estimated usage</span><strong>${money(spend.incurredEstimateCents, spend.currency)}</strong><small>Awaiting provider reconciliation</small></div><div class="metric coral"><span>Unresolved</span><strong>${money(spend.unknownCents, spend.currency)}</strong><small>Requires provider reconciliation</small></div></div>
+        <div class="metric-grid"><div class="metric sky"><span>Monthly cap</span><strong>${money(spend.monthlyCapCents, spend.currency)}</strong><small>Pre-revenue limit</small></div><div class="metric mint"><span>Available now</span><strong>${money(spend.availableCents, spend.currency)}</strong><small>After all current exposure</small></div><div class="metric sky"><span>Total exposure</span><strong>${money(spend.exposureCents, spend.currency)}</strong><small>Confirmed, estimated, unknown and reserved</small></div><div class="metric mint"><span>Confirmed usage</span><strong>${money(spend.reconciledCents, spend.currency)}</strong><small>Reconciled provider cost</small></div></div>
+        <div class="plain-list"><article class="plain-row"><div><h3>Estimated provider usage</h3><p>Provider work completed; final billing reconciliation is pending.</p></div><strong>${money(spend.incurredEstimateCents, spend.currency)}</strong></article><article class="plain-row"><div><h3>Reserved capacity</h3><p>Approved budget held for work that has not yet incurred a charge.</p></div><strong>${money(spend.reservedCents, spend.currency)}</strong></article><article class="plain-row"><div><h3>Unknown cost</h3><p>Provider outcome or charge must be reconciled before related work is repeated.</p></div><strong>${money(spend.unknownCents, spend.currency)}</strong></article></div>
       </section>
       <section>${sectionHeading("Operating costs", "Actual cash records stay separate from the AI execution cap and are stored in Australian dollars.")}
         <div class="metric-grid"><div class="metric coral"><span>Cash paid this month</span><strong>${money(accounting.cashPaidCents, accounting.currency)}</strong><small>Subscriptions and prepaid services</small></div><div class="metric sky"><span>Recurring monthly overhead</span><strong>${money(accounting.recurringMonthlyCents, accounting.currency)}</strong><small>Current active commitments</small></div></div>
@@ -561,7 +628,7 @@ function renderSystemPanel(data) {
     </div>`;
   }
   if (store.systemTab === "connections") {
-    return `<div class="connection-list">${data.connections.map((item) => `<article class="connection-row"><div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.metadata?.use || "Runtime connection")}</p></div>${badge(item.health)}</article>`).join("")}</div>`;
+    return `<div class="connection-list">${data.connections.map((item) => `<article class="connection-row"><div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.metadata?.use || "Runtime connection")} ${item.last_checked_at ? `Configuration checked ${shortDate(item.last_checked_at)}.` : ""}</p></div>${badge(item.status === "configured" ? "Configured" : item.health)}</article>`).join("")}</div>`;
   }
   if (store.systemTab === "outputs") {
     const current = data.outputs.filter((item) => item.status !== "archived");
@@ -574,12 +641,12 @@ function renderSystemPanel(data) {
       ${store.showArchivedOutputs && archived.length ? `<section>${sectionHeading("Past outputs", "Historical proofs remain available without crowding current work.")}${outputRows(archived)}</section>` : ""}
     </div>`;
   }
-  return data.activity.length ? `<div class="activity-list">${data.activity.map((item) => `<article class="activity-row"><div><h3>${escapeHtml(item.message)}</h3><p>${escapeHtml(shortDate(item.ts))} | ${escapeHtml(humanStatus(item.actor))}</p></div></article>`).join("")}</div>` : emptyState("No activity recorded", "Runtime actions will appear here in ordinary business language.", "activity");
+  return data.activity.length ? `<div class="activity-list">${data.activity.map((item) => `<article class="activity-row"><div><h3>${escapeHtml(item.message)}</h3><p>${escapeHtml(shortDate(item.ts))} | ${escapeHtml(humanActor(item.actor))}</p></div></article>`).join("")}</div>` : emptyState("No activity recorded", "Runtime actions will appear here in ordinary business language.", "activity");
 }
 
 function renderSystem() {
   const data = store.data.system;
-  const runnableWork = data.queue.some((item) => item.can_run);
+  const runnableWork = data.queue.some((item) => item.can_run && item.safe_to_run);
   $("#view").innerHTML = `<div class="view-stack">${systemTabs()}<section><div class="system-toolbar"><button class="secondary-button" data-action="run-next"${runnableWork ? "" : " disabled"}>${icon("play")}${runnableWork ? "Run next internal step" : "No internal step ready"}</button><button class="secondary-button" data-action="maintenance">${icon("wrench")}Run maintenance now</button></div>${renderSystemPanel(data)}</section></div>`;
 }
 
