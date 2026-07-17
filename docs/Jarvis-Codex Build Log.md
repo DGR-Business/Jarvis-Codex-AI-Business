@@ -69,8 +69,39 @@ available through encrypted recovery, not the normal cockpit.
 
 ## Verification Record
 
-Final first-use verification is recorded here after the atomic reset, clean
-checkout, backup restore, launcher, API, and real-browser proof complete.
+The first-use foundation passed its release proof on 2026-07-17:
+
+- Encrypted source, database, and artifact backups were created in the private
+  OneDrive backup destination, authenticated by SHA-256, restored independently,
+  and checked byte-for-byte. The restored database passed integrity and
+  foreign-key checks.
+- The atomic reset manifest
+  `48ca93d83fe83f0e79daa3f598c62f9d3309d01435fa8ac6c46b084f6b662e47`
+  removed pilot workflows, decisions, packs, calls, runs, tests, messages, and
+  business evidence while preserving the exact accounting records above.
+- The complete local suite passed 118 of 118 tests. A fresh clone of commit
+  `bd07d2c011fb0232efb5e75e6127ba5c0f9228ca` installed from the lockfile,
+  passed the same 118 tests, started independently, and produced one venture
+  with zero workflows, tasks, approvals, outputs, or agent runs.
+- Seventy-five JavaScript files passed syntax checks. The production dependency
+  audit reported zero known vulnerabilities.
+- The workstation doctor passed Node 24, dependency lock, SQLite, archive, PDF,
+  data, artifact, backup, database, and encrypted-backup checks. Its only
+  warning was the expected occupied dashboard port while Jarvis was running.
+- The one-click launcher stopped and restarted the exact owned process. The real
+  runtime reported a healthy database, connected Agents SDK workers, connected
+  read-only research, locked external actions, and zero post-reset provider
+  calls.
+- Focused APIs reported zero Important Work, decisions, reviews, suggestions,
+  live tests, queue items, outputs, and Live Runs; all 11 workers were visible
+  and on standby.
+- Real-browser proof passed at 1440x900, 1280x720, 1024x768, 390x844, and
+  320x568 with no console errors, horizontal overflow, or clipped controls.
+- The verified baseline was published to the private GitHub repository on
+  `main` at commit `bd07d2c`.
+
+No paid OpenAI call or external business action was made during this release
+review.
 
 ## Next Best Work
 

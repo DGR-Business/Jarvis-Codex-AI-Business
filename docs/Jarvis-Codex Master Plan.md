@@ -167,6 +167,9 @@ it never claims or exposes private chain-of-thought.
 
 ## Release Gates
 
+Status: satisfied for the first-use foundation on 2026-07-17. Future changes
+that affect these boundaries must repeat proportionate proof.
+
 Foundation is releasable only when:
 
 - encrypted source, database, and artifact backups restore successfully;

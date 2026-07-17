@@ -1,7 +1,7 @@
 # Pre-First-Use Engineering And Security Review
 
 Date: 2026-07-17
-Status: implementation complete; final reset proof pending
+Status: verified for first use
 Scope: runtime, database, approvals, finance, OpenAI execution, scheduler,
 recovery, local security, dashboard, operational startup, documentation, and
 repository clutter
@@ -126,15 +126,23 @@ decision, or money movement was performed during this review.
   meaningful dependency upgrades.
 - No third-party penetration test has been performed.
 
-## Release Proof Required
+## Release Proof
 
-- full automated suite;
-- authenticated source, database, and artifact restore;
-- exact post-reset accounting and empty operational-history counts;
-- clean checkout, `npm ci`, tests, and healthy start;
-- one-click start/stop ownership proof;
-- authenticated focused API and WebSocket path;
-- real-browser desktop and fallback-mobile checks with no console errors or
-  horizontal overflow;
-- private Git publication of the verified baseline.
+- Full automated suite: 118 of 118 passed locally and from a fresh clone.
+- Recovery: source, database, and artifact backups authenticated and restored;
+  restored SQLite integrity passed with no foreign-key violations.
+- Reset: manifest `48ca93d83fe83f0e79daa3f598c62f9d3309d01435fa8ac6c46b084f6b662e47`
+  applied; real AUD accounting and A$0.05 provider usage remained exact.
+- Clean checkout: lockfile install, tests, clean database seed, and healthy
+  isolated server start passed at commit `bd07d2c`.
+- Operations: launcher ownership, graceful stop, restart, doctor, focused APIs,
+  signed session, CSRF, and WebSocket security passed.
+- Browser: Command Center, Decisions, Business Tests, AI Team, Live Runs, and
+  System passed in a real browser with no console errors. Layouts passed at
+  1440x900, 1280x720, 1024x768, 390x844, and 320x568 without horizontal
+  overflow or clipped controls.
+- Dependencies: production audit reported zero known vulnerabilities.
+- Publication: the verified code baseline was pushed to the private repository
+  on `main` at `bd07d2c`.
 
+No paid OpenAI call or external business action occurred during verification.
