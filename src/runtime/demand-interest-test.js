@@ -36,7 +36,7 @@ function prepareDemandInterestResearch(db, task, action) {
     tools: ["research_adapter"],
     toolArguments: {
       research_adapter: {
-        searchContextSize: "medium",
+        searchContextSize: "low",
         allowedDomains: [],
       },
     },

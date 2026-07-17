@@ -5,6 +5,7 @@ const CONFIG = require("../config");
 const { get } = require("../db");
 
 const SDK_CAPABILITY_SCHEMA = "jarvis_agents_sdk_capability_plan_v1";
+const VISUAL_ASSET_BINDING_SCHEMA = "jarvis_visual_asset_binding_v1";
 const DEFAULT_DEADLINE_MS = 60_000;
 const MAX_VISUAL_ASSET_BYTES = 10 * 1024 * 1024;
 const MAX_VISUAL_INPUT_BYTES = 20 * 1024 * 1024;
@@ -81,8 +82,11 @@ function capabilityOptions(toolId, request) {
   const args = request.toolArguments?.[toolId] || request.toolArguments || {};
   if (["research_adapter", "live_web_with_approval"].includes(toolId)) {
     const allowedDomains = uniqueList(args.allowedDomains).slice(0, 12);
+    if (args.searchContextSize && args.searchContextSize !== "low") {
+      throw new Error("The first live web capability is restricted to low search context until a larger context is separately priced and approved.");
+    }
     return {
-      searchContextSize: ["low", "medium", "high"].includes(args.searchContextSize) ? args.searchContextSize : "medium",
+      searchContextSize: "low",
       externalWebAccess: true,
       allowedDomains,
       userLocation: args.userLocation || undefined,
@@ -187,12 +191,8 @@ function approvedAssetPath(filePath) {
   return realCandidate;
 }
 
-function buildAgentsSdkModelInput(db, task, textInput, plan) {
-  const visualSpec = plan.specs.find((spec) => spec.kind === "model_input" && spec.sdkName === "image_understanding");
-  if (!visualSpec) return { input: textInput, assets: [] };
-
+function loadVisualAssets(db, task, visualSpec) {
   const assets = [];
-  const content = [{ type: "input_text", text: textInput }];
   let totalBytes = 0;
   for (const assetId of visualSpec.options.assetIds) {
     const deliverable = get(
@@ -209,24 +209,93 @@ function buildAgentsSdkModelInput(db, task, textInput, plan) {
     if (bytes.length > MAX_VISUAL_ASSET_BYTES) throw new Error(`Approved visual asset ${assetId} exceeds the 10 MB per-file limit.`);
     totalBytes += bytes.length;
     if (totalBytes > MAX_VISUAL_INPUT_BYTES) throw new Error("Approved visual assets exceed the 20 MB total input limit.");
-    const hash = crypto.createHash("sha256").update(bytes).digest("hex");
-    content.push({
-      type: "input_image",
-      image: `data:${mediaType};base64,${bytes.toString("base64")}`,
-      detail: visualSpec.options.detail,
-    });
     assets.push({
       id: deliverable.id,
       name: deliverable.human_name,
       mediaType,
-      bytes: bytes.length,
-      sha256: hash,
+      bytes,
+      byteLength: bytes.length,
+      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
       detail: visualSpec.options.detail,
+    });
+  }
+  return assets;
+}
+
+function visualBindingFromAssets(task, assets) {
+  const binding = {
+    schema: VISUAL_ASSET_BINDING_SCHEMA,
+    taskId: task.id || null,
+    workflowId: task.workflow_id || null,
+    assets: assets.map((asset) => ({
+      id: asset.id,
+      mediaType: asset.mediaType,
+      bytes: asset.byteLength,
+      sha256: asset.sha256,
+      detail: asset.detail,
+    })),
+  };
+  return { ...binding, bindingHash: crypto.createHash("sha256").update(JSON.stringify(binding)).digest("hex") };
+}
+
+function buildVisualAssetApprovalBinding(db, task, plan) {
+  const visualSpec = plan.specs.find((spec) => spec.kind === "model_input" && spec.sdkName === "image_understanding");
+  if (!visualSpec) return null;
+  return visualBindingFromAssets(task, loadVisualAssets(db, task, visualSpec));
+}
+
+function approvedVisualAssetBinding(task) {
+  const request = requestFor(task);
+  return request.parameters?.approvedAssetBinding
+    || request.toolArguments?.visual_asset_review?.approvedAssetBinding
+    || null;
+}
+
+function assertVisualBinding(task, actualBinding) {
+  const approved = approvedVisualAssetBinding(task);
+  if (!approved && task.approval_id) {
+    throw new Error("Visual review approval is missing the exact asset byte hashes. Prepare a new approval before sending any image.");
+  }
+  if (!approved) return;
+  const { bindingHash: approvedHash, ...approvedCore } = approved;
+  const { bindingHash: actualHash, ...actualCore } = actualBinding;
+  const expectedApprovedHash = crypto.createHash("sha256").update(JSON.stringify(approvedCore)).digest("hex");
+  if (approved.schema !== VISUAL_ASSET_BINDING_SCHEMA || approvedHash !== expectedApprovedHash) {
+    throw new Error("The approved visual-asset binding is invalid. Prepare a new approval before sending any image.");
+  }
+  if (approvedHash !== actualHash || JSON.stringify(approvedCore) !== JSON.stringify(actualCore)) {
+    throw new Error("An approved visual asset changed after approval. Prepare a new approval for the current file bytes.");
+  }
+}
+
+function buildAgentsSdkModelInput(db, task, textInput, plan) {
+  const visualSpec = plan.specs.find((spec) => spec.kind === "model_input" && spec.sdkName === "image_understanding");
+  if (!visualSpec) return { input: textInput, assets: [] };
+
+  const loadedAssets = loadVisualAssets(db, task, visualSpec);
+  const binding = visualBindingFromAssets(task, loadedAssets);
+  assertVisualBinding(task, binding);
+  const assets = [];
+  const content = [{ type: "input_text", text: textInput }];
+  for (const asset of loadedAssets) {
+    content.push({
+      type: "input_image",
+      image: `data:${asset.mediaType};base64,${asset.bytes.toString("base64")}`,
+      detail: asset.detail,
+    });
+    assets.push({
+      id: asset.id,
+      name: asset.name,
+      mediaType: asset.mediaType,
+      bytes: asset.byteLength,
+      sha256: asset.sha256,
+      detail: asset.detail,
     });
   }
   return {
     input: [{ type: "message", role: "user", content }],
     assets,
+    binding,
   };
 }
 
@@ -358,8 +427,10 @@ module.exports = {
   CAPABILITIES,
   DEFAULT_DEADLINE_MS,
   SDK_CAPABILITY_SCHEMA,
+  VISUAL_ASSET_BINDING_SCHEMA,
   buildAgentsSdkModelInput,
   buildAgentsSdkCapabilityPlan,
+  buildVisualAssetApprovalBinding,
   extractAgentsSdkToolActivity,
   extractGeneratedImages,
   materializeAgentsSdkTools,

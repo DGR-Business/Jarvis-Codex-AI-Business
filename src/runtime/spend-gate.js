@@ -2,7 +2,12 @@ const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { queueApprovalEscalation } = require("../adapters/notifications");
 const { isAgentRuntimeSdkAvailable } = require("./agent-runtime");
-const { ensureApprovalScope, validateApprovalScope } = require("./approval-scope");
+const {
+  ensureApprovalScope,
+  persistApprovalScope,
+  validateApprovalScope,
+  verifyExecutionDescriptor,
+} = require("./approval-scope");
 
 function safeId(value) {
   return String(value || "task")
@@ -25,7 +30,7 @@ function costIdForTask(task) {
 }
 
 function amountForRequest(task, request) {
-  return Math.max(0, Number(request.estimatedCostCents || request.maxCostCents || task.cost_budget_cents || 0));
+  return Math.max(0, Number(request.maxCostCents || request.estimatedCostCents || task.cost_budget_cents || 0));
 }
 
 function riskForAmount(cents) {
@@ -47,6 +52,16 @@ const RUNTIME_CAPABILITY_CHECKS = {
 
 function missingPreflightRequirements(request = {}) {
   const missing = [];
+  const descriptorCheck = verifyExecutionDescriptor(request.executionDescriptor);
+  if (!descriptorCheck.valid) {
+    missing.push({ kind: "safety", name: "execution_descriptor", message: descriptorCheck.reason });
+  } else if (Number(request.executionDescriptor.worstCaseCost.amountCents) > Number(request.maxCostCents || request.estimatedCostCents || 0)) {
+    missing.push({
+      kind: "safety",
+      name: "worst_case_cost",
+      message: "The priced worst-case execution cost is above the approved per-run cap.",
+    });
+  }
 
   for (const name of asArray(request.requiresProviderEnv)) {
     if (!process.env[name]) {
@@ -73,6 +88,7 @@ function missingPreflightRequirements(request = {}) {
 function requirementLabel(requirement) {
   if (requirement.kind === "env") return `missing env ${requirement.name}`;
   if (requirement.kind === "flag") return `${requirement.name} != ${requirement.expected || "1"}`;
+  if (requirement.kind === "safety") return requirement.message;
   return `runtime capability ${requirement.name} not ready`;
 }
 
@@ -87,12 +103,14 @@ function approvalPayload(task, request, amountCents) {
     type: request.type || "ai_work",
     provider: request.provider || "not_selected",
     model: request.model || CONFIG.liveModel || null,
+    executionDescriptor: request.executionDescriptor || null,
     providerRequirements: {
       env: asArray(request.requiresProviderEnv),
       flags: asArray(request.requiresLiveFlag),
       capabilities: asArray(request.requiresRuntimeCapability),
     },
     estimatedCostCents: amountCents,
+    worstCaseCostCents: Number(request.executionDescriptor?.worstCaseCost?.amountCents || 0),
     currency: CONFIG.currency,
     reason: request.reason || "Operator approval required before paid AI/tool work can run.",
     commercialPurpose: request.commercialPurpose || "Not captured yet.",
@@ -106,10 +124,11 @@ function approvalPayload(task, request, amountCents) {
     maxTurns: Number(request.maxTurns || 1),
     maxToolCalls: Number(request.maxToolCalls || 0),
     deadlineMs: Number(request.deadlineMs || 60000),
+    maxInputTokens: Number(request.maxInputTokens || request.executionDescriptor?.limits?.maxInputTokens || 0),
     maxOutputTokens: Number(request.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 0),
     maxCostCents: amountCents,
-    effects: asArray(request.effects),
-    tracePolicy: request.tracePolicy || {
+    effects: asArray(request.executionDescriptor?.externalEffects || request.effects),
+    tracePolicy: request.executionDescriptor?.tracePolicy || request.tracePolicy || {
       providerResponseStored: false,
       providerTraceContent: false,
       localReviewStored: true,
@@ -120,20 +139,40 @@ function approvalPayload(task, request, amountCents) {
   };
 }
 
-function getSpendApprovalState(db, task) {
+function getSpendApprovalState(db, task, options = {}) {
   const request = spendRequestForTask(task);
   if (!request) return null;
 
-  const approvalId = task.approval_id || request.approvalId || approvalIdForTask(task);
+  const taskApproval = task.approval_id ? get(db, "SELECT payload FROM approvals WHERE id = ?", [task.approval_id]) : null;
+  const taskApprovalPayload = fromJson(taskApproval?.payload, {});
+  const continuationParentId = taskApprovalPayload.exactScope
+    ? taskApprovalPayload.metadata?.parentApprovalId || null
+    : null;
+  const approvalId = continuationParentId || task.approval_id || request.approvalId || approvalIdForTask(task);
+  const validationOptions = continuationParentId
+    ? { ...options, allowConsumedContinuation: true }
+    : options;
   const approval = get(db, "SELECT * FROM approvals WHERE id = ?", [approvalId]);
   const scopedApproval = approval ? ensureApprovalScope(db, approvalId).approval : null;
+  const scopeValidation = approval
+    ? validateApprovalScope(db, approvalId, { ...task, approval_id: approvalId }, undefined, validationOptions)
+    : { valid: false, reason: "A persisted approval is required." };
   const missingRequirements = missingPreflightRequirements(request);
+  if (approval && !scopeValidation.valid) {
+    missingRequirements.push({
+      kind: "safety",
+      name: "approval_scope",
+      message: scopeValidation.reason,
+    });
+  }
   return {
     required: true,
     approvalId,
     status: scopedApproval?.status || "not_requested",
-    approved: scopedApproval?.status === "approved" && missingRequirements.length === 0,
+    approved: scopedApproval?.status === "approved" && scopeValidation.valid && missingRequirements.length === 0,
     approvalApproved: scopedApproval?.status === "approved",
+    approvalValid: scopeValidation.valid,
+    approvalInvalidReason: scopeValidation.valid ? null : scopeValidation.reason,
     scopeHash: scopedApproval?.scope_hash || null,
     estimatedCostCents: amountForRequest(task, request),
     currency: CONFIG.currency,
@@ -218,9 +257,15 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
   };
 }
 
-function ensureSpendApproval(db, task) {
+function ensureSpendApproval(db, task, options = {}) {
   const request = spendRequestForTask(task);
   if (!request) return { required: false, approved: true };
+
+  const descriptorCheck = verifyExecutionDescriptor(request.executionDescriptor);
+  if (!descriptorCheck.valid) throw new Error(descriptorCheck.reason);
+  if (Number(descriptorCheck.descriptor.worstCaseCost.amountCents) > amountForRequest(task, request)) {
+    throw new Error("The priced worst-case execution cost is above the requested per-run cap.");
+  }
 
   const approvalId = task.approval_id || request.approvalId || approvalIdForTask(task);
   const amountCents = amountForRequest(task, request);
@@ -248,8 +293,7 @@ function ensureSpendApproval(db, task) {
         toJson(asArray(request.effects)),
       ],
     );
-    approval = get(db, "SELECT * FROM approvals WHERE id = ?", [approvalId]);
-    approval = ensureApprovalScope(db, approvalId).approval;
+    approval = persistApprovalScope(db, approvalId).approval;
 
     run(
       db,
@@ -267,7 +311,11 @@ function ensureSpendApproval(db, task) {
         ts,
         toJson({
           approvalId,
+          taskId: task.id,
+          source: request.provider || "ai-provider-pending",
           estimatedCostCents: amountCents,
+          worstCaseCostCents: Number(request.executionDescriptor?.worstCaseCost?.amountCents || 0),
+          executionDescriptorHash: request.executionDescriptor?.descriptorHash || null,
           noSpendOccurred: true,
           reason: request.reason || "Paid work approval requested.",
           requestedWorker: request.worker?.id || task.payload?.requestedWorker || task.agent || null,
@@ -303,7 +351,9 @@ function ensureSpendApproval(db, task) {
     });
   }
 
-  approval = ensureApprovalScope(db, approval.id).approval;
+  approval = approval.scope_hash
+    ? ensureApprovalScope(db, approval.id).approval
+    : persistApprovalScope(db, approval.id).approval;
 
   if (approval.status !== "approved") {
     run(
@@ -325,6 +375,37 @@ function ensureSpendApproval(db, task) {
     return { required: true, approved: false, approval, escalation, estimatedCostCents: amountCents };
   }
 
+  const scopeValidation = validateApprovalScope(db, approval.id, task, undefined, options);
+  if (!scopeValidation.valid) {
+    return {
+      required: true,
+      approved: false,
+      approval,
+      approvalInvalid: true,
+      reason: scopeValidation.reason,
+      missingRequirements: [{ kind: "safety", name: "approval_scope", message: scopeValidation.reason }],
+      estimatedCostCents: amountCents,
+      noSpendOccurred: true,
+    };
+  }
+
+  if (options.requireConsumedApproval === true && !approval.consumed_at) {
+    return {
+      required: true,
+      approved: false,
+      approval,
+      approvalInvalid: true,
+      reason: "The parent approval was not consumed by the paused provider run.",
+      missingRequirements: [{
+        kind: "safety",
+        name: "parent_approval_consumption",
+        message: "The parent approval was not consumed by the paused provider run.",
+      }],
+      estimatedCostCents: amountCents,
+      noSpendOccurred: true,
+    };
+  }
+
   const missingRequirements = missingPreflightRequirements(request);
   if (missingRequirements.length > 0) {
     return blockForProviderReadiness(db, task, approval, request, amountCents, missingRequirements, ts);
@@ -335,7 +416,7 @@ function ensureSpendApproval(db, task) {
     approved: true,
     approval,
     estimatedCostCents: amountCents,
-    state: getSpendApprovalState(db, { ...task, approval_id: approval.id }),
+    state: getSpendApprovalState(db, { ...task, approval_id: approval.id }, options),
   };
 }
 

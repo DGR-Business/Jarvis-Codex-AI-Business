@@ -4,7 +4,16 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { decideApproval, decideApprovalByToken } = require("../src/runtime/approvals");
+const {
+  buildApprovalScope,
+  ensureApprovalScope,
+  persistApprovalScope,
+  scopeHash,
+  validateApprovalScope,
+  validateMaterializedExecution,
+} = require("../src/runtime/approval-scope");
 const { processApprovalReply } = require("../src/runtime/approval-replies");
+const { collectLiveSources } = require("../src/adapters/research");
 const { runOnce, runUntilBlocked } = require("../src/runtime/orchestrator");
 const { getDashboardState } = require("../src/runtime/state");
 const { getAgentRunDetail, getAiTeamState, getCockpitState, getDecisionsState } = require("../src/runtime/cockpit-state");
@@ -16,6 +25,7 @@ const { buildWorkerModelPacket, workerOutputJsonSchema } = require("../src/runti
 const {
   buildAgentsSdkModelInput,
   buildAgentsSdkCapabilityPlan,
+  buildVisualAssetApprovalBinding,
   extractAgentsSdkToolActivity,
   extractGeneratedImages,
   materializeAgentsSdkTools,
@@ -564,7 +574,7 @@ test("Agents SDK capability bridge exposes only exact capped worker skills", () 
         maxToolCalls: 3,
         deadlineMs: 120000,
         effects: [],
-        toolArguments: { research_adapter: { searchContextSize: "medium", allowedDomains: ["example.com"] } },
+        toolArguments: { research_adapter: { searchContextSize: "low", allowedDomains: ["example.com"] } },
       },
     },
   };
@@ -575,7 +585,11 @@ test("Agents SDK capability bridge exposes only exact capped worker skills", () 
   assert.equal(searchPlan.deadlineMs, 120000);
   assert.equal(searchTools.length, 1);
   assert.equal(searchTools[0].providerData.type, "web_search");
+  assert.equal(searchTools[0].providerData.search_context_size, "low");
   assert.deepEqual(searchTools[0].providerData.filters.allowed_domains, ["example.com"]);
+  const widerSearchTask = JSON.parse(JSON.stringify(task));
+  widerSearchTask.payload.liveSpendRequest.toolArguments.research_adapter.searchContextSize = "medium";
+  assert.throws(() => buildAgentsSdkCapabilityPlan(widerSearchTask, demandValidator), /restricted to low search context/);
   assert.throws(() => buildAgentsSdkCapabilityPlan(task, productBuilder), /restricted to demand_validator/);
 
   const imageTask = {
@@ -686,6 +700,18 @@ test("visual review sends only exact approved local images without logging image
     assert.equal(packet.approvedAssetInputs[0].name, "Approved Product Visual");
     assert.equal(JSON.stringify(packet).includes(imagePath), false);
 
+    const approvedBinding = buildVisualAssetApprovalBinding(db, task, plan);
+    const approvedTask = JSON.parse(JSON.stringify(task));
+    approvedTask.approval_id = "approval-exact-visual-bytes";
+    approvedTask.payload.liveSpendRequest.parameters.approvedAssetBinding = approvedBinding;
+    const approvedPlan = buildAgentsSdkCapabilityPlan(approvedTask, qualityReviewer);
+    assert.equal(buildAgentsSdkModelInput(db, approvedTask, "Review the approved bytes.", approvedPlan).assets[0].sha256, approvedBinding.assets[0].sha256);
+    fs.appendFileSync(imagePath, Buffer.from("changed-after-approval"));
+    assert.throws(
+      () => buildAgentsSdkModelInput(db, approvedTask, "Review the changed image.", approvedPlan),
+      /changed after approval/,
+    );
+
     const wrongWorkflowTask = { ...task, workflow_id: "wf-other" };
     assert.throws(
       () => buildAgentsSdkModelInput(db, wrongWorkflowTask, "Review the image.", buildAgentsSdkCapabilityPlan(wrongWorkflowTask, qualityReviewer)),
@@ -740,6 +766,31 @@ test("operator decision brief payload excludes raw paths and machine-facing reco
   assert.equal(serialized.includes("private/secret/path.md"), false);
   assert.equal(serialized.includes("modelPolicy"), false);
   assert.equal(serialized.includes("file_path"), false);
+});
+
+test("structured research URLs are not accepted without provider provenance", () => {
+  const parsed = {
+    sources: [{
+      title: "Model supplied URL",
+      url: "https://example.com/model-only",
+      relevance: "The model named this URL without a provider citation.",
+    }],
+  };
+  const ungrounded = collectLiveSources({ output: [] }, parsed);
+  assert.deepEqual(ungrounded, []);
+
+  const grounded = collectLiveSources({
+    output: [{
+      type: "message",
+      content: [{
+        type: "output_text",
+        text: "Grounded source",
+        annotations: [{ type: "url_citation", url: "https://example.com/model-only", title: "Provider citation" }],
+      }],
+    }],
+  }, parsed);
+  assert.equal(grounded.length, 1);
+  assert.equal(grounded[0].sourceType, "url_citation");
 });
 
 test("agent tool gate records allowed, approval-controlled, and blocked tool calls", () => {
@@ -831,6 +882,18 @@ test("agent tool gate records allowed, approval-controlled, and blocked tool cal
 
   assert.equal(approvedLiveResearch.status, "allowed");
   assert.equal(approvedLiveResearch.decision, "approved_live");
+  const replayedLiveResearch = requestAgentToolUse(db, {
+    agentId: definition.id,
+    agentName: definition.name,
+    runId: agentRun.id,
+    task,
+    toolId: "research_adapter",
+    mode: "live",
+    approvalId: liveResearch.approvalId,
+    reason: "Attempt to replay the already consumed exact approval.",
+  });
+  assert.equal(replayedLiveResearch.status, "blocked");
+  assert.equal(replayedLiveResearch.reason, "The worker-tool approval has already been used.");
   assert.equal(hardStop.status, "blocked");
   assert.equal(hardStop.decision, "hard_stop");
   assert.equal(unknown.status, "blocked");
@@ -839,10 +902,10 @@ test("agent tool gate records allowed, approval-controlled, and blocked tool cal
   const gate = getAgentToolGateState(db);
   assert.equal(gate.schema, "jarvis_agent_tool_gate_v1");
   assert.equal(gate.metrics.invocations, 6);
-  assert.equal(gate.metrics.allowed, 4);
+  assert.equal(gate.metrics.allowed, 3);
   assert.equal(gate.metrics.approvalRequired, 0);
-  assert.equal(gate.metrics.blocked, 2);
-  assert.equal(gate.metrics.approvedLive, 2);
+  assert.equal(gate.metrics.blocked, 3);
+  assert.equal(gate.metrics.approvedLive, 1);
   const traces = all(db, "SELECT * FROM agent_trace_events WHERE run_id = ?", [agentRun.id]);
   assert.ok(traces.some((trace) => trace.type === "tool_call.allowed"));
   assert.ok(traces.some((trace) => trace.type === "tool_call.approval_requested"));
@@ -864,6 +927,11 @@ test("agent tool approval decisions resume or stop paused worker tool work", asy
          retries = 0, max_retries = 0
      WHERE id = ?`,
     [baseTask.id],
+  );
+  run(
+    db,
+    "UPDATE workflows SET status = 'ready', current_step = 'Run approved internal work' WHERE id = ?",
+    [baseTask.workflow_id],
   );
 
   const paused = await runOnce(db, { workflowId: baseTask.workflow_id });
@@ -2883,7 +2951,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
       estimatedCostCents: 160,
       worker: "demand_validator",
       provider: "openai-agents-sdk",
-      model: "gpt-5.6-terra-approved",
+      model: "gpt-5.6-terra",
       maxOutputTokens: 777,
     });
     assert.equal(requested.worker.id, "demand_validator");
@@ -2901,7 +2969,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(completed.result.toolPolicy.workerBlocked.length, 0);
     assert.equal(completed.result.modelPolicy.mode, "live");
     assert.equal(completed.result.modelPolicy.status, "completed");
-    assert.equal(completed.result.modelPolicy.selectedModel, "gpt-5.6-terra-approved");
+    assert.equal(completed.result.modelPolicy.selectedModel, "gpt-5.6-terra");
     assert.equal(completed.result.cost.actualCents, 0);
     assert.equal(completed.result.output.operatorDecision, "revise");
     assert.equal(completed.result.output.businessDecision.schema, "jarvis_worker_business_decision_v1");
@@ -2924,7 +2992,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(capturedRequest.capabilityPlan.deadlineMs, 60000);
     assert.equal(capturedRequest.requestBody.metadata.agent_id, "demand_validator");
     assert.equal(capturedRequest.requestBody.metadata.adapter, "openai-agents-sdk");
-    assert.equal(capturedRequest.requestBody.model, "gpt-5.6-terra-approved");
+    assert.equal(capturedRequest.requestBody.model, "gpt-5.6-terra");
     assert.equal(capturedRequest.agentDefinition.id, "demand_validator");
     assert.match(capturedRequest.traceId, /^trace_[A-Za-z0-9_-]+$/);
     assert.equal(capturedRequest.tracePolicy.providerResponseStored, false);
@@ -2946,7 +3014,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(liveTask.agent, "demand_validator");
     assert.equal(liveTask.payload.requestedWorker, "demand_validator");
     assert.equal(liveTask.payload.liveSpendRequest.provider, "openai-agents-sdk");
-    assert.equal(liveTask.payload.liveSpendRequest.model, "gpt-5.6-terra-approved");
+    assert.equal(liveTask.payload.liveSpendRequest.model, "gpt-5.6-terra");
     assert.equal(liveTask.cost_actual_cents, 0);
     assert.equal(liveRun.agent_id, "demand_validator");
     assert.equal(liveRun.mode, "openai-agents-sdk");
@@ -2973,7 +3041,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(modelCall.metadata.agentSdkTraceId, capturedRequest.traceId);
     assert.equal(liveRun.metadata.agentSdkTraceId, capturedRequest.traceId);
     assert.equal(cost.status, "incurred_estimate");
-    assert.equal(cost.amount_cents, 160);
+    assert.equal(cost.amount_cents, completed.result.cost.estimatedCents);
     assert.equal(cost.metadata.exactBillingPending, true);
     assert.equal(state.runtime.liveAiWorkers.ready, true);
     assert.equal(state.runtime.liveAiWorkers.completedLiveRuns, 1);
@@ -3008,7 +3076,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(state.aiPilotReview.status, "live_output_ready_for_review");
     assert.equal(state.aiPilotReview.contract.status, "passed");
     assert.equal(state.aiPilotReview.cost.actualCents, 0);
-    assert.equal(state.aiPilotReview.cost.incurredEstimateCents, 160);
+    assert.equal(state.aiPilotReview.cost.incurredEstimateCents, completed.result.cost.estimatedCents);
     assert.equal(state.operatorCockpit.pilotReview.status, "live_output_ready_for_review");
     assert.equal(state.aiPilotReview.actions.some((action) => action.action === "ai-pilot-review" && action.decision === "mark_useful"), true);
 
@@ -3150,8 +3218,34 @@ test("SDK tool interruption uses Jarvis approval and resumes the same serialized
     assert.ok(resumeCandidate);
     assert.equal(JSON.parse(resumeCandidate.metadata).sdkRunState, serializedState);
     assert.equal(getApprovedSdkResumeState(db, queuedResumeTask), serializedState);
+    const continuationTask = {
+      ...queuedResumeTask,
+      approval_id: requested.approval.id,
+      payload: JSON.parse(queuedResumeTask.payload),
+      result: JSON.parse(queuedResumeTask.result),
+    };
+    const parentApproval = ensureApprovalScope(db, requested.approval.id).approval;
+    const descriptorValidation = validateMaterializedExecution(
+      db,
+      continuationTask,
+      continuationTask.payload.liveSpendRequest.executionDescriptor,
+    );
+    assert.equal(descriptorValidation.valid, true, descriptorValidation.reason);
+    assert.equal(
+      scopeHash(buildApprovalScope(parentApproval, continuationTask)),
+      parentApproval.scope_hash,
+      "The parent approval must remain bound to the same task during an exact SDK continuation.",
+    );
+    const continuationValidation = validateApprovalScope(
+      db,
+      requested.approval.id,
+      continuationTask,
+      undefined,
+      { allowConsumedContinuation: true },
+    );
+    assert.equal(continuationValidation.valid, true, continuationValidation.reason);
     const completed = await runOnce(db, { workflowId });
-    assert.equal(completed.status, "completed");
+    assert.equal(completed.status, "completed", completed.error || JSON.stringify(completed));
     assert.equal(calls, 2);
     assert.equal(resumedState, serializedState);
     assert.equal(completed.result.output.operatorDecision, "approve");
@@ -3266,7 +3360,7 @@ test("approved live research uses provider adapter, records sources, cost, and s
   process.env.OPENAI_API_KEY = "test-live-research-key";
   process.env.JARVIS_ENABLE_LIVE_RESEARCH = "1";
   delete process.env.JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER;
-  process.env.JARVIS_LIVE_RESEARCH_MODEL = "gpt-5.5-test";
+  process.env.JARVIS_LIVE_RESEARCH_MODEL = "gpt-5.5";
   process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
 
   let capturedRequest = null;
@@ -3337,7 +3431,7 @@ test("approved live research uses provider adapter, records sources, cost, and s
     decideApproval(db, requested.approval.id, "approved", "approve stubbed live research");
     const completed = await runOnce(db, { workflowId });
 
-    assert.equal(completed.status, "completed");
+    assert.equal(completed.status, "completed", completed.error || JSON.stringify(completed));
     assert.equal(completed.result.mode, "live-research-agent");
     assert.equal(completed.result.toolPolicy.externalActionsAllowed, true);
     assert.equal(completed.result.research.status, "completed_live");
@@ -3351,7 +3445,7 @@ test("approved live research uses provider adapter, records sources, cost, and s
     assert.ok(completed.result.researchBridge.recommendedCandidateId);
     assert.equal(completed.result.output.commercialTestBridge.candidateCount, 3);
     assert.equal(completed.result.modelPolicy.mode, "live");
-    assert.equal(completed.result.modelPolicy.selectedModel, "gpt-5.5-test");
+    assert.equal(completed.result.modelPolicy.selectedModel, "gpt-5.5");
     assert.equal(capturedRequest.body.tools[0].type, "web_search");
     assert.equal(capturedRequest.body.tool_choice, "required");
     assert.ok(capturedRequest.body.include.includes("web_search_call.action.sources"));
@@ -3379,7 +3473,7 @@ test("approved live research uses provider adapter, records sources, cost, and s
     assert.ok(sources.length >= 3);
     assert.ok(sources.every((source) => source.url.startsWith("https://")));
     assert.equal(cost.status, "incurred_estimate");
-    assert.equal(cost.amount_cents, 220);
+    assert.equal(cost.amount_cents, completed.result.cost.estimatedCents);
     assert.equal(cost.metadata.exactBillingPending, true);
     assert.equal(scorecard.metadata.hasLiveResearch, true);
     assert.equal(scorecard.confidence, "medium_with_live_research");
@@ -3411,7 +3505,7 @@ test("approved live research uses provider adapter, records sources, cost, and s
   }
 });
 
-test("live research provider failure records failed run and no-spend retry evidence", async () => {
+test("definite live research rejection releases the reservation and fails safely", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveResearch = process.env.JARVIS_ENABLE_LIVE_RESEARCH;
   const previousDisabledAdapter = process.env.JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER;
@@ -3442,7 +3536,7 @@ test("live research provider failure records failed run and no-spend retry evide
     run(db, "UPDATE tasks SET max_retries = 0 WHERE id = ?", [requested.task.id]);
 
     const failed = await runOnce(db, { workflowId });
-    assert.equal(failed.status, "needs_attention");
+    assert.equal(failed.status, "failed");
     assert.match(failed.error, /rate limit for test/);
 
     const state = getDashboardState(db);
@@ -3451,12 +3545,13 @@ test("live research provider failure records failed run and no-spend retry evide
     const cost = state.costs.find((item) => item.id === `cost_spend_${task.id}`);
     const event = state.events.find((item) => item.type === "research.live_failed" && item.entity_id === failedRun.id);
 
-    assert.equal(task.status, "needs_attention");
+    assert.equal(task.status, "failed");
     assert.ok(failedRun);
     assert.equal(failedRun.actual_cents, 0);
-    assert.equal(failedRun.metadata.outcomeUnknown, true);
-    assert.equal(cost.status, "unknown");
-    assert.equal(cost.amount_cents, 210);
+    assert.equal(failedRun.metadata.outcomeUnknown, false);
+    assert.equal(cost.status, "released");
+    assert.equal(cost.amount_cents, 0);
+    assert.equal(cost.metadata.noSpendOccurred, true);
     assert.ok(event);
   } finally {
     db.close();
@@ -3470,7 +3565,7 @@ test("live research provider failure records failed run and no-spend retry evide
   }
 });
 
-test("paid live work requests approval before execution and resumes after approval", async () => {
+test("paid live work without an immutable descriptor fails before approval", async () => {
   const db = seededDb("spend-gate");
   const result = createCommandPlan(db, {
     text: "Evaluate a travel checklist digital product and prepare a decision pack",
@@ -3483,7 +3578,7 @@ test("paid live work requests approval before execution and resumes after approv
 
   run(
     db,
-    "UPDATE tasks SET payload = ? WHERE id = ?",
+    "UPDATE tasks SET payload = ?, max_retries = 0 WHERE id = ?",
     [
       toJson({
         ...payload,
@@ -3500,40 +3595,14 @@ test("paid live work requests approval before execution and resumes after approv
     ],
   );
 
-  const blocked = await runOnce(db, { workflowId });
-  assert.equal(blocked.status, "blocked");
-  assert.equal(blocked.spendGate.approved, false);
-  assert.equal(blocked.approval.status, "pending");
-  assert.equal(blocked.approval.scope, "live_ai_spend");
-
-  let state = getDashboardState(db);
-  const blockedTask = state.tasks.find((item) => item.id === task.id);
-  const approval = state.approvals.find((item) => item.id === blocked.approval.id);
-  const notice = state.notificationOutbox.find((item) => item.approval_id === approval.id);
-  const cost = state.costs.find((item) => item.workflow_id === workflowId && item.status === "approval_requested");
-
-  assert.equal(blockedTask.status, "blocked");
-  assert.equal(blockedTask.approval_id, approval.id);
-  assert.equal(blockedTask.result.spendApprovalRequired, true);
-  assert.equal(approval.payload.estimatedCostCents, 50);
-  assert.equal(approval.payload.noSpendOccurred, true);
-  assert.equal(notice.status, "queued_dry_run");
-  assert.equal(cost.amount_cents, 0);
-  assert.equal(cost.metadata.estimatedCostCents, 50);
-  assert.equal(cost.metadata.noSpendOccurred, true);
-
-  decideApproval(db, approval.id, "approved", "approve paid-work gate proof");
-  const completed = await runOnce(db, { workflowId });
-  assert.equal(completed.status, "completed");
-  assert.equal(completed.result.spendApproval.status, "approved");
-  assert.equal(completed.result.spendApproval.approved, true);
-  assert.equal(completed.result.cost.actualCents, 0);
-  assert.equal(completed.result.modelPolicy.status, "not_called");
-
-  state = getDashboardState(db);
-  const completedTask = state.tasks.find((item) => item.id === task.id);
-  assert.equal(completedTask.status, "completed");
-  assert.equal(completedTask.result.spendApproval.approved, true);
+  const failed = await runOnce(db, { workflowId });
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error, /immutable execution descriptor/i);
+  const state = getDashboardState(db);
+  const failedTask = state.tasks.find((item) => item.id === task.id);
+  assert.equal(failedTask.status, "failed");
+  assert.equal(state.approvals.some((item) => item.task_id === task.id), false);
+  assert.equal(state.costs.some((item) => item.workflow_id === workflowId && item.status === "approval_requested"), false);
 
   db.close();
 });
@@ -3613,9 +3682,10 @@ test("HTTP API prepares live research smoke test without live spend", async () =
     assert.equal(smoke.result.status, "prepared");
     assert.equal(smoke.result.liveResearch.status, "blocked");
     assert.equal(smoke.result.liveResearch.approval.status, "pending");
-    assert.equal(smoke.state.runtime.liveResearch.pendingApprovals, 1);
-    assert.equal(smoke.state.runtime.liveResearch.smokeTests, 1);
-    assert.ok(smoke.state.costs.some((cost) => cost.workflow_id === smoke.result.workflow.id && cost.status === "approval_requested" && cost.amount_cents === 0));
+    const state = getDashboardState(db);
+    assert.equal(state.runtime.liveResearch.pendingApprovals, 1);
+    assert.equal(state.runtime.liveResearch.smokeTests, 1);
+    assert.ok(state.costs.some((cost) => cost.workflow_id === smoke.result.workflow.id && cost.status === "approval_requested" && cost.amount_cents === 0));
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -3661,11 +3731,12 @@ test("HTTP API prepares live AI worker smoke test without live spend", async () 
     assert.equal(smoke.result.liveWorker.worker.id, "demand_validator");
     assert.equal(smoke.result.liveWorker.worker.name, "Demand Validator");
     assert.equal(smoke.result.liveWorker.approval.status, "pending");
-    assert.equal(smoke.state.runtime.liveAiWorkers.pendingApprovals, 1);
-    assert.equal(smoke.state.runtime.liveAiWorkers.smokeTests, 1);
-    assert.ok(smoke.state.tasks.some((task) => task.workflow_id === smoke.result.workflow.id && task.kind === "live_ai_worker_execution" && task.agent === "demand_validator"));
-    assert.ok(smoke.state.approvals.some((approval) => approval.id === smoke.result.liveWorker.approval.id && approval.payload.worker.id === "demand_validator"));
-    assert.ok(smoke.state.costs.some((cost) => cost.workflow_id === smoke.result.workflow.id && cost.status === "approval_requested" && cost.amount_cents === 0));
+    const state = getDashboardState(db);
+    assert.equal(state.runtime.liveAiWorkers.pendingApprovals, 1);
+    assert.equal(state.runtime.liveAiWorkers.smokeTests, 1);
+    assert.ok(state.tasks.some((task) => task.workflow_id === smoke.result.workflow.id && task.kind === "live_ai_worker_execution" && task.agent === "demand_validator"));
+    assert.ok(state.approvals.some((approval) => approval.id === smoke.result.liveWorker.approval.id && approval.payload.worker.id === "demand_validator"));
+    assert.ok(state.costs.some((cost) => cost.workflow_id === smoke.result.workflow.id && cost.status === "approval_requested" && cost.amount_cents === 0));
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -3712,10 +3783,11 @@ test("HTTP API runs a protected AI worker proof from the Workbench", async () =>
     assert.equal(payload.result.run.status, "completed");
     assert.equal(payload.result.run.result.aiTeam.agentId, "demand_validator");
     assert.equal(payload.result.run.result.aiTeam.evalStatus, "passed");
-    assert.equal(payload.state.aiTeam.workbench.byAgent.demand_validator.comparison.dryRun.evalStatus, "passed");
-    assert.equal(payload.state.aiTeam.workbench.byAgent.demand_validator.promotionGate.requirements.find((item) => item.id === "protected_quality").ok, true);
-    assert.equal(payload.state.aiTeam.workbench.byAgent.demand_validator.promotionGate.requirements.find((item) => item.id === "protected_trace").ok, true);
-    assert.ok(payload.state.events.some((event) => event.type === "agent.workbench_proof_queued"));
+    const state = getDashboardState(db);
+    assert.equal(state.aiTeam.workbench.byAgent.demand_validator.comparison.dryRun.evalStatus, "passed");
+    assert.equal(state.aiTeam.workbench.byAgent.demand_validator.promotionGate.requirements.find((item) => item.id === "protected_quality").ok, true);
+    assert.equal(state.aiTeam.workbench.byAgent.demand_validator.promotionGate.requirements.find((item) => item.id === "protected_trace").ok, true);
+    assert.ok(state.events.some((event) => event.type === "agent.workbench_proof_queued"));
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -3760,12 +3832,13 @@ test("HTTP API runs a protected AI worker playbook rehearsal", async () => {
     assert.equal(payload.result.run.status, "completed");
     assert.equal(payload.result.run.result.aiTeam.agentId, "distribution_operator");
     assert.equal(payload.result.run.result.aiTeam.evalStatus, "passed");
-    assert.equal(payload.state.agentPlaybooks.summary.rehearsals, 1);
-    assert.equal(payload.state.agentPlaybooks.summary.passedRehearsals, 1);
-    assert.equal(payload.state.agentPlaybooks.summary.actualCostCents, 0);
-    assert.equal(payload.state.agentPlaybooks.byAgent.distribution_operator.rehearsalStatus, "rehearsed");
-    assert.equal(payload.state.agentPlaybooks.byAgent.distribution_operator.latestRehearsal.context.subject, "Client handover checklist rehearsal");
-    assert.ok(payload.state.events.some((event) => event.type === "agent.playbook_rehearsal_queued"));
+    const state = getDashboardState(db);
+    assert.equal(state.agentPlaybooks.summary.rehearsals, 1);
+    assert.equal(state.agentPlaybooks.summary.passedRehearsals, 1);
+    assert.equal(state.agentPlaybooks.summary.actualCostCents, 0);
+    assert.equal(state.agentPlaybooks.byAgent.distribution_operator.rehearsalStatus, "rehearsed");
+    assert.equal(state.agentPlaybooks.byAgent.distribution_operator.latestRehearsal.context.subject, "Client handover checklist rehearsal");
+    assert.ok(state.events.some((event) => event.type === "agent.playbook_rehearsal_queued"));
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -3809,13 +3882,14 @@ test("HTTP API runs a protected AI Team playbook rehearsal suite", async () => {
     assert.equal(payload.result.team.workerCount, 2);
     assert.equal(payload.result.tasks.length, 2);
     assert.equal(payload.result.loop.status, "ready_for_review");
-    assert.equal(payload.state.agentPlaybooks.summary.rehearsals, 2);
-    assert.equal(payload.state.agentPlaybooks.summary.passedRehearsals, 2);
-    assert.equal(payload.state.agentPlaybooks.summary.rehearsedWorkers, 2);
-    assert.equal(payload.state.agentPlaybooks.summary.actualCostCents, 0);
-    assert.equal(payload.state.preOpenAiReadiness.metrics.rehearsedPlaybookWorkers, 2);
-    assert.equal(payload.state.preOpenAiReadiness.checklist.find((item) => item.id === "playbook_rehearsal").ok, true);
-    assert.ok(payload.state.events.some((event) => event.type === "agent.playbook_rehearsal_suite_queued"));
+    const state = getDashboardState(db);
+    assert.equal(state.agentPlaybooks.summary.rehearsals, 2);
+    assert.equal(state.agentPlaybooks.summary.passedRehearsals, 2);
+    assert.equal(state.agentPlaybooks.summary.rehearsedWorkers, 2);
+    assert.equal(state.agentPlaybooks.summary.actualCostCents, 0);
+    assert.equal(state.preOpenAiReadiness.metrics.rehearsedPlaybookWorkers, 2);
+    assert.equal(state.preOpenAiReadiness.checklist.find((item) => item.id === "playbook_rehearsal").ok, true);
+    assert.ok(state.events.some((event) => event.type === "agent.playbook_rehearsal_suite_queued"));
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -3899,7 +3973,8 @@ test("HTTP API prepares a worker model comparison packet without live model use"
     const payload = await response.json();
     const packet = payload.result.packet;
     const packetList = await fetch(`${baseUrl}/api/agent-model-comparison-packets`).then((res) => res.json());
-    const approval = payload.state.approvals.find((item) => item.id === packet.approvalId);
+    const state = getDashboardState(db);
+    const approval = state.approvals.find((item) => item.id === packet.approvalId);
 
     assert.equal(response.status, 202);
     assert.equal(packet.status, "waiting_for_decision");
@@ -3911,11 +3986,11 @@ test("HTTP API prepares a worker model comparison packet without live model use"
     assert.equal(packetList.packets[0].id, packet.id);
     assert.equal(approval.payload.comparisonSource.type, "agent_model_readiness_pack");
     assert.equal(approval.payload.comparisonPacket.fixtureTitle, packet.fixtureTitle);
-    assert.equal(payload.state.agentModelReadiness.summary.pendingComparisonPackets, 1);
-    assert.equal(payload.state.preOpenAiReadiness.status, "ready_before_model_connection");
-    assert.equal(payload.state.decisionInbox.metrics.liveComparisons, 1);
-    assert.equal(payload.state.modelCalls.filter((call) => call.mode !== "dry-run").length, 0);
-    assert.equal(payload.state.metrics.modelCalls.actualCostCents, 0);
+    assert.equal(state.agentModelReadiness.summary.pendingComparisonPackets, 1);
+    assert.equal(state.preOpenAiReadiness.status, "ready_before_model_connection");
+    assert.equal(state.decisionInbox.metrics.liveComparisons, 1);
+    assert.equal(state.modelCalls.filter((call) => call.mode !== "dry-run").length, 0);
+    assert.equal(state.metrics.modelCalls.actualCostCents, 0);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -3960,19 +4035,20 @@ test("HTTP API runs a protected AI Team proof drill from the Workbench", async (
     assert.equal(payload.result.loop.status, "ready_for_review");
     assert.equal(payload.result.loop.stepsRun, 2);
     assert.ok(payload.result.loop.steps.every((step) => step.status === "completed"));
-    const workflow = payload.state.workflows.find((item) => item.id === payload.result.workflow.id);
+    let state = getDashboardState(db);
+    const workflow = state.workflows.find((item) => item.id === payload.result.workflow.id);
     assert.equal(workflow.type, "agent_workbench_team_proof");
     assert.equal(workflow.metadata.teamProofSummary.schema, "jarvis_agent_team_drill_summary_v1");
     assert.equal(workflow.metadata.teamProofSummary.workerCount, 2);
     assert.equal(workflow.metadata.teamProofSummary.passedWorkers, 2);
     assert.equal(workflow.metadata.teamProofSummary.actualCostCents, 0);
     assert.ok(workflow.metadata.teamProofSummary.chiefRunId);
-    assert.ok(payload.state.events.some((event) => event.type === "agent.workbench_team_proof_queued"));
-    assert.ok(payload.state.events.some((event) => event.type === "agent.team_drill_summary_ready" && event.entity_id === payload.result.workflow.id));
-    assert.ok(payload.state.messages.some((message) => message.subject === "AI Team drill summary ready" && message.metadata.teamProofSummary));
+    assert.ok(state.events.some((event) => event.type === "agent.workbench_team_proof_queued"));
+    assert.ok(state.events.some((event) => event.type === "agent.team_drill_summary_ready" && event.entity_id === payload.result.workflow.id));
+    assert.ok(state.messages.some((message) => message.subject === "AI Team drill summary ready" && message.metadata.teamProofSummary));
 
     for (const workerId of ["copy_conversion_agent", "finance_analyst"]) {
-      const worker = payload.state.aiTeam.workbench.byAgent[workerId];
+      const worker = state.aiTeam.workbench.byAgent[workerId];
       assert.equal(worker.comparison.dryRun.evalStatus, "passed");
       assert.equal(worker.promotionGate.requirements.find((item) => item.id === "protected_quality").ok, true);
       assert.equal(worker.promotionGate.requirements.find((item) => item.id === "protected_trace").ok, true);
@@ -3985,8 +4061,9 @@ test("HTTP API runs a protected AI Team proof drill from the Workbench", async (
       body: JSON.stringify({ estimatedCostCents: 150 }),
     });
     const comparisonPayload = await comparisonResponse.json();
-    const comparisonWorkflow = comparisonPayload.state.workflows.find((item) => item.id === payload.result.workflow.id);
-    const comparisonApproval = comparisonPayload.state.approvals.find((item) => item.id === comparisonPayload.result.comparisonRequest.approvalId);
+    state = getDashboardState(db);
+    const comparisonWorkflow = state.workflows.find((item) => item.id === payload.result.workflow.id);
+    const comparisonApproval = state.approvals.find((item) => item.id === comparisonPayload.result.comparisonRequest.approvalId);
 
     assert.equal(comparisonResponse.status, 202);
     assert.equal(comparisonPayload.result.liveWorker.worker.id, "copy_conversion_agent");
@@ -3996,7 +4073,7 @@ test("HTTP API runs a protected AI Team proof drill from the Workbench", async (
     assert.equal(comparisonApproval.payload.comparisonSource.type, "agent_workbench_team_proof");
     assert.equal(comparisonApproval.payload.comparisonSource.protectedWorkerId, "copy_conversion_agent");
     assert.ok(comparisonApproval.payload.protectedEvidence.some((item) => /protected proof/i.test(item)));
-    assert.ok(comparisonPayload.state.events.some((event) => event.type === "agent.live_comparison_requested" && event.entity_id === payload.result.workflow.id));
+    assert.ok(state.events.some((event) => event.type === "agent.live_comparison_requested" && event.entity_id === payload.result.workflow.id));
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -4011,9 +4088,7 @@ test("HTTP API runs a protected AI Team proof drill from the Workbench", async (
 test("HTTP API serves registered PDF review outputs for dashboard preview", async () => {
   const previousPackDir = process.env.JARVIS_APPROVAL_PACK_DIR;
   const packDir = path.join(
-    __dirname,
-    "..",
-    "tmp",
+    CONFIG.artifactRoot,
     `jarvis-codex-pdf-preview-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   );
   process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
@@ -4036,7 +4111,7 @@ test("HTTP API serves registered PDF review outputs for dashboard preview", asyn
     const bytes = await preview.arrayBuffer();
     assert.ok(bytes.byteLength > 1000);
 
-    const nonPdf = pack.state.deliverables.find((deliverable) => deliverable.format !== "pdf");
+    const nonPdf = get(db, "SELECT id FROM deliverables WHERE format <> 'pdf' ORDER BY created_at LIMIT 1");
     const nonPdfPreview = await fetch(`${baseUrl}/api/deliverables/${encodeURIComponent(nonPdf.id)}/file`);
     assert.equal(nonPdfPreview.status, 415);
   } finally {
@@ -4061,7 +4136,9 @@ test("HTTP API records commercial results and updates learning state", async () 
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         workflowId: "wf-digital-product-pilot-proof",
-        source: "test",
+        source: "operator",
+        verified: true,
+        verificationNote: "Checked against the controlled test result fixture.",
         views: 150,
         clicks: 24,
         leads: 6,
@@ -4074,9 +4151,10 @@ test("HTTP API records commercial results and updates learning state", async () 
     assert.equal(response.status, 201);
     const payload = await response.json();
     assert.equal(payload.result.learning.verdict, "continue");
-    assert.equal(payload.state.commercialResults.length, 1);
-    assert.equal(payload.state.metrics.commercial.sales, 2);
-    assert.ok(payload.state.commercialBrain.moneyMoves.some((move) => move.type === "learning_signal"));
+    let state = getDashboardState(db);
+    assert.equal(state.commercialResults.length, 1);
+    assert.equal(state.metrics.commercial.sales, 2);
+    assert.ok(state.commercialBrain.moneyMoves.some((move) => move.type === "learning_signal"));
     assert.equal(payload.result.scorecard.metadata.commercialEvidence.sales, 2);
 
     const feedback = await fetch(`${baseUrl}/api/commercial/feedback`, {
@@ -4084,15 +4162,18 @@ test("HTTP API records commercial results and updates learning state", async () 
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         experimentId: payload.result.experiment.id,
-        source: "test",
+        source: "operator",
+        verified: true,
+        verificationNote: "Checked against the controlled feedback fixture.",
         sentiment: "positive",
         rating: 5,
         summary: "Manual buyer feedback from dashboard path.",
       }),
     }).then((item) => item.json());
     assert.equal(feedback.result.learning.verdict, "continue");
-    assert.equal(feedback.state.commercialFeedback.length, 1);
-    assert.equal(feedback.state.commercialLearningCycles.length, 2);
+    state = getDashboardState(db);
+    assert.equal(state.commercialFeedback.length, 1);
+    assert.equal(state.commercialLearningCycles.length, 2);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -4126,10 +4207,11 @@ test("HTTP API generates next-test options and promotes one safely", async () =>
     assert.equal(response.status, 201);
     const payload = await response.json();
     assert.equal(payload.result.candidates.length, 3);
-    assert.equal(payload.state.commercialBriefs.length, 1);
-    assert.equal(payload.state.commercialTestCandidates.length, 3);
-    assert.equal(payload.state.metrics.commercial.plannedTests, 3);
-    assert.ok(payload.state.commercialBrain.moneyMoves.some((move) => move.type === "next_test"));
+    let state = getDashboardState(db);
+    assert.equal(state.commercialBriefs.length, 1);
+    assert.equal(state.commercialTestCandidates.length, 3);
+    assert.equal(state.metrics.commercial.plannedTests, 3);
+    assert.ok(state.commercialBrain.moneyMoves.some((move) => move.type === "next_test"));
 
     const promote = await fetch(`${baseUrl}/api/research-to-experiment/candidates/${encodeURIComponent(payload.result.recommended.id)}/promote`, {
       method: "POST",
@@ -4139,9 +4221,10 @@ test("HTTP API generates next-test options and promotes one safely", async () =>
     assert.equal(promote.status, 201);
     const promoted = await promote.json();
     assert.equal(promoted.result.experiment.price_cents, 2400);
-    assert.equal(promoted.state.metrics.commercial.promotedTests, 1);
-    assert.equal(promoted.state.metrics.budget.monthlySpendCents, 0);
-    assert.equal(promoted.state.commercialExperiments.some((experiment) => experiment.id === promoted.result.experiment.id), true);
+    state = getDashboardState(db);
+    assert.equal(state.metrics.commercial.promotedTests, 1);
+    assert.equal(state.metrics.budget.monthlySpendCents, 0);
+    assert.equal(state.commercialExperiments.some((experiment) => experiment.id === promoted.result.experiment.id), true);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -4186,8 +4269,9 @@ test("HTTP API creates execution packs and records pack outcomes safely", async 
     assert.equal(packResponse.status, 201);
     const packPayload = await packResponse.json();
     assert.equal(packPayload.result.pack.status, "ready_to_test");
-    assert.equal(packPayload.state.commercialExecutionPacks.length, 1);
-    const readyMove = packPayload.state.commercialBrain.moneyMoves.find((move) => move.type === "execution_ready");
+    let state = getDashboardState(db);
+    assert.equal(state.commercialExecutionPacks.length, 1);
+    const readyMove = state.commercialBrain.moneyMoves.find((move) => move.type === "execution_ready");
     assert.ok(readyMove);
     assert.equal(readyMove.source, "chief_of_staff_packet");
     assert.ok(readyMove.handoffId);
@@ -4213,12 +4297,13 @@ test("HTTP API creates execution packs and records pack outcomes safely", async 
     assert.equal(outcomePayload.result.recorded.learning.verdict, "needs_evidence");
     assert.equal(outcomePayload.result.outcomeDecision.schema, "jarvis_chief_of_staff_outcome_packet_v1");
     assert.ok(outcomePayload.result.outcomeDecision.handoffId);
-    assert.equal(outcomePayload.state.commercialResults.length, 1);
-    assert.equal(outcomePayload.state.metrics.commercial.results, 1);
-    assert.equal(outcomePayload.state.metrics.budget.monthlySpendCents, 0);
-    assert.equal(outcomePayload.state.metrics.budget.monthlyRevenueCents, 0);
-    const outcomeMove = outcomePayload.state.commercialBrain.moneyMoves.find((move) => move.learningId === outcomePayload.result.recorded.learning.id);
-    const outcomePack = outcomePayload.state.commercialExecutionPacks.find((pack) => pack.id === packPayload.result.pack.id);
+    state = getDashboardState(db);
+    assert.equal(state.commercialResults.length, 1);
+    assert.equal(state.metrics.commercial.results, 1);
+    assert.equal(state.metrics.budget.monthlySpendCents, 0);
+    assert.equal(state.metrics.budget.monthlyRevenueCents, 0);
+    const outcomeMove = state.commercialBrain.moneyMoves.find((move) => move.learningId === outcomePayload.result.recorded.learning.id);
+    const outcomePack = state.commercialExecutionPacks.find((pack) => pack.id === packPayload.result.pack.id);
     assert.equal(outcomeMove.source, "chief_of_staff_outcome_packet");
     assert.equal(outcomeMove.handoffId, outcomePayload.result.outcomeDecision.handoffId);
     assert.equal(outcomePack.metadata.latestOutcomeDecisionPacket.learningId, outcomePayload.result.recorded.learning.id);
@@ -4238,7 +4323,8 @@ test("HTTP API creates execution packs and records pack outcomes safely", async 
     assert.equal(revisionPayload.result.alreadyCreated, false);
     assert.equal(revisionPayload.result.candidates.length, 3);
     assert.equal(revisionPayload.result.brief.metadata.sourceLearningId, outcomePayload.result.recorded.learning.id);
-    assert.equal(revisionPayload.state.commercialTestCandidates.some((candidate) => candidate.id === revisionPayload.result.recommended.id), true);
+    state = getDashboardState(db);
+    assert.equal(state.commercialTestCandidates.some((candidate) => candidate.id === revisionPayload.result.recommended.id), true);
 
     const secondRevision = await fetch(`${baseUrl}/api/commercial/learning/${encodeURIComponent(outcomePayload.result.recorded.learning.id)}/revision-plan`, {
       method: "POST",
@@ -4261,6 +4347,7 @@ test("HTTP dashboard approval executes the exact authorised task immediately", a
   const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
 
   try {
+    persistApprovalScope(db, "appr-digital-product-dry-run");
     const decisions = await fetch(`${baseUrl}/api/decisions`).then((response) => response.json());
     const approval = decisions.approvals.find((item) => item.id === "appr-digital-product-dry-run");
     const response = await fetch(`${baseUrl}/api/approvals/${encodeURIComponent(approval.id)}/approve`, {
@@ -4283,16 +4370,7 @@ test("HTTP dashboard approval executes the exact authorised task immediately", a
   }
 });
 
-test("HTTP API exposes health, state, approvals, and runtime tick", async () => {
-  const previousPackDir = process.env.JARVIS_APPROVAL_PACK_DIR;
-  const previousKey = process.env.OPENAI_API_KEY;
-  const previousLiveResearch = process.env.JARVIS_ENABLE_LIVE_RESEARCH;
-  const previousAdapterReady = process.env.JARVIS_LIVE_RESEARCH_ADAPTER_READY;
-  const packDir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-codex-api-pdf-"));
-  process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
-  delete process.env.OPENAI_API_KEY;
-  delete process.env.JARVIS_ENABLE_LIVE_RESEARCH;
-  delete process.env.JARVIS_LIVE_RESEARCH_ADAPTER_READY;
+test("HTTP API exposes focused cockpit sections and retires unsafe legacy routes", async () => {
   const db = seededDb("server");
   const app = createApp({ db, dbPath: tempDbPath("server-unused"), security: false });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
@@ -4300,61 +4378,38 @@ test("HTTP API exposes health, state, approvals, and runtime tick", async () => 
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
-    const health = await fetch(`${baseUrl}/api/health`).then((response) => response.json());
+    const healthResponse = await fetch(`${baseUrl}/api/health`);
+    const health = await healthResponse.json();
+    assert.equal(healthResponse.status, 200);
     assert.equal(health.ok, true);
-    assert.equal(health.mode, "dry-run");
+    assert.equal(health.externalActionsMode, "locked");
+    assert.equal(typeof health.providerProof.completedCalls, "number");
 
-    const state = await fetch(`${baseUrl}/api/state`).then((response) => response.json());
-    assert.equal(state.approvals[0].status, "pending");
-    assert.equal(state.schedulerJobs.length, 3);
-    assert.equal(state.metrics.scheduler.enabled, 2);
-    assert.equal(state.agentOperatingBriefs.schema, "jarvis_agent_operating_briefs_v1");
-    assert.equal(state.agentOperatingBriefs.summary.complete, state.aiTeam.definitions.length);
+    const [cockpit, decisions, tests, team, system, agentRuns] = await Promise.all([
+      fetch(`${baseUrl}/api/cockpit`).then((response) => response.json()),
+      fetch(`${baseUrl}/api/decisions`).then((response) => response.json()),
+      fetch(`${baseUrl}/api/tests`).then((response) => response.json()),
+      fetch(`${baseUrl}/api/ai-team`).then((response) => response.json()),
+      fetch(`${baseUrl}/api/system`).then((response) => response.json()),
+      fetch(`${baseUrl}/api/agent-runs?limit=20`).then((response) => response.json()),
+    ]);
+    assert.equal(cockpit.activeVenture.id, "venture-digital-products");
+    assert.ok(Array.isArray(cockpit.importantWork));
+    assert.ok(Array.isArray(decisions.approvals));
+    assert.ok(Array.isArray(tests.tests.candidate));
+    assert.ok(Array.isArray(tests.tests.ready));
+    assert.ok(Array.isArray(tests.tests.running));
+    assert.ok(Array.isArray(tests.tests.completed));
+    assert.equal(team.activeVenture.id, "venture-digital-products");
+    assert.ok(Array.isArray(team.agents));
+    assert.equal(system.health.database, "ok");
+    assert.ok(Array.isArray(system.queue));
+    assert.ok(Array.isArray(agentRuns.runs));
 
-    const operatingBriefs = await fetch(`${baseUrl}/api/agent-operating-briefs`).then((response) => response.json());
-    assert.equal(operatingBriefs.schema, "jarvis_agent_operating_briefs_v1");
-    assert.equal(operatingBriefs.byAgent.growth_analyst.mustProduce.includes("Learning"), true);
-    assert.equal(operatingBriefs.byAgent.growth_analyst.hardStops.includes("autopilot promotion"), true);
+    const retiredState = await fetch(`${baseUrl}/api/state`);
+    assert.equal(retiredState.status, 410);
 
-    const agentPlaybooks = await fetch(`${baseUrl}/api/agent-playbooks`).then((response) => response.json());
-    assert.equal(agentPlaybooks.schema, "jarvis_agent_playbooks_v1");
-    assert.equal(agentPlaybooks.summary.ready, state.aiTeam.definitions.length);
-    assert.equal(agentPlaybooks.byAgent.distribution_operator.trigger.includes("manual channel test"), true);
-
-    const decisionInbox = await fetch(`${baseUrl}/api/decision-inbox`).then((response) => response.json());
-    assert.equal(decisionInbox.decisionInbox.schema, "jarvis_operator_decision_inbox_v1");
-    assert.equal(decisionInbox.decisionInbox.status, state.decisionInbox.status);
-    assert.equal(decisionInbox.metrics.total, state.metrics.decisionInbox.total);
-    assert.ok(decisionInbox.decisionInbox.items.some((item) => item.approvalId === "appr-digital-product-dry-run"));
-
-    const scheduler = await fetch(`${baseUrl}/api/scheduler`).then((response) => response.json());
-    assert.equal(scheduler.jobs.length, 3);
-    assert.equal(scheduler.metrics.enabled, 2);
-
-    const schedulerRun = await fetch(`${baseUrl}/api/scheduler/jobs/job-monitor-cycle/run`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({}),
-    }).then((response) => response.json());
-    assert.equal(schedulerRun.result.status, "completed");
-    assert.equal(schedulerRun.result.result.kind, "monitor_cycle");
-    assert.ok(schedulerRun.state.schedulerRuns.some((runRecord) => runRecord.id === schedulerRun.result.id));
-
-    const monitor = await fetch(`${baseUrl}/api/monitor/run`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ staleTaskMinutes: 1 }),
-    }).then((response) => response.json());
-    assert.ok(["attention", "critical"].includes(monitor.result.status));
-    assert.ok(monitor.state.monitorRuns.some((runRecord) => runRecord.id === monitor.result.id));
-
-    const blocked = await fetch(`${baseUrl}/api/runtime/tick`, { method: "POST" }).then((response) => response.json());
-    assert.equal(blocked.result.status, "blocked");
-    assert.equal(blocked.state.notificationOutbox.length, 1);
-    const approvalToken = blocked.state.approvalActionTokens.find((token) => token.decision === "approved");
-    assert.ok(approvalToken);
-
-    const planned = await fetch(`${baseUrl}/api/commands`, {
+    const plannedResponse = await fetch(`${baseUrl}/api/commands`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -4364,109 +4419,36 @@ test("HTTP API exposes health, state, approvals, and runtime tick", async () => 
         venture_id: "venture-digital-products",
         mode: "plan_only",
       }),
-    }).then((response) => response.json());
+    });
+    const planned = await plannedResponse.json();
+    assert.equal(plannedResponse.status, 201);
     assert.equal(planned.result.command.status, "planned");
-    assert.ok(planned.state.commands.some((command) => command.id === planned.result.command.id));
-    assert.ok(planned.state.deliverables.some((deliverable) => deliverable.human_name.includes("Pilates Product")));
+    assert.equal(planned.loop, null);
+    assert.equal(get(db, "SELECT status FROM commands WHERE id = ?", [planned.result.command.id]).status, "planned");
+    assert.equal(get(db, "SELECT venture_id FROM workflows WHERE id = ?", [planned.result.workflow.id]).venture_id, "venture-digital-products");
 
-    const pack = await fetch(`${baseUrl}/api/workflows/${planned.result.workflow.id}/approval-pack`, {
-      method: "POST",
-    }).then((response) => response.json());
-    assert.equal(pack.result.humanName.includes("Decision Brief"), true);
-    assert.equal(fs.existsSync(pack.result.filePath), true);
-    assert.ok(pack.state.deliverables.some((deliverable) => deliverable.id === pack.result.id && deliverable.format === "pdf"));
-
-    const loop = await fetch(`${baseUrl}/api/workflows/${planned.result.workflow.id}/run-until-blocked`, {
+    const monitorResponse = await fetch(`${baseUrl}/api/monitor/run`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ maxSteps: 12 }),
-    }).then((response) => response.json());
-    assert.equal(loop.result.status, "ready_for_review");
-    assert.ok(loop.result.runId);
-    assert.ok(loop.result.stepsRun >= 4);
-    assert.ok(loop.state.workflowRuns.some((run) => run.id === loop.result.runId && run.status === "ready_for_review"));
-    assert.ok(loop.state.ventureScorecards.some((scorecard) => scorecard.workflow_id === planned.result.workflow.id && scorecard.verdict === "research_required"));
+      body: JSON.stringify({ staleTaskMinutes: 1 }),
+    });
+    const monitor = await monitorResponse.json();
+    assert.equal(monitorResponse.status, 200);
+    assert.ok(["healthy", "attention", "critical"].includes(monitor.result.status));
+    assert.equal(get(db, "SELECT COUNT(*) AS count FROM monitor_runs WHERE id = ?", [monitor.result.id]).count, 1);
 
-    const liveResearch = await fetch(`${baseUrl}/api/workflows/${planned.result.workflow.id}/request-live-research`, {
+    const retiredEmail = await fetch(`${baseUrl}/api/inbound/approval-reply`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ estimatedCostCents: 200 }),
-    }).then((response) => response.json());
-    assert.equal(liveResearch.result.status, "blocked");
-    assert.equal(liveResearch.result.approval.status, "pending");
-    assert.ok(liveResearch.state.tasks.some((task) => task.workflow_id === planned.result.workflow.id && task.kind === "live_market_research"));
-    assert.equal(liveResearch.state.metrics.research.liveResearchRequests, 1);
+      body: JSON.stringify({ approvalId: "appr-digital-product-dry-run", body: "approve" }),
+    });
+    assert.equal(retiredEmail.status, 410);
 
-    const autoRun = await fetch(`${baseUrl}/api/commands`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        text: "Evaluate a reusable grocery planner template and prepare a decision pack",
-        source: "test",
-        createFiles: false,
-        autoRun: true,
-        maxSteps: 12,
-        venture_id: "venture-digital-products",
-        mode: "run_protected",
-      }),
-    }).then((response) => response.json());
-    assert.equal(autoRun.loop.status, "ready_for_review");
-    assert.ok(autoRun.loop.runId);
-    assert.ok(autoRun.loop.stepsRun >= 4);
-    assert.ok(autoRun.state.workflows.some((workflow) => workflow.id === autoRun.result.workflow.id && workflow.status === "ready_for_review"));
-    const apiHandoff = autoRun.state.aiTeam.handoffs.find((handoff) => handoff.workflow_id === autoRun.result.workflow.id && handoff.status === "needs_operator_decision");
-    assert.ok(apiHandoff);
-
-    const handoffDecision = await fetch(`${baseUrl}/api/agent-handoffs/${encodeURIComponent(apiHandoff.id)}/approve`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ note: "api handoff approval test" }),
-    }).then((response) => response.json());
-    assert.equal(handoffDecision.result.handoff.status, "approved_for_next_step");
-    assert.equal(handoffDecision.result.handoff.metadata.operatorDecision.note, "api handoff approval test");
-    assert.equal(handoffDecision.result.followupTask.kind, "handoff_followup");
-    assert.equal(handoffDecision.result.followupTask.status, "queued");
-    assert.equal(handoffDecision.result.handoff.metadata.operatorDecision.followupTaskId, handoffDecision.result.followupTask.id);
-    assert.equal(handoffDecision.execution.status, "completed");
-    assert.equal(handoffDecision.execution.task.id, handoffDecision.result.followupTask.id);
-    assert.ok(handoffDecision.state.tasks.some((task) => task.id === handoffDecision.result.followupTask.id && task.agent === "chief_of_staff" && task.status === "completed"));
-    assert.ok(handoffDecision.state.events.some((event) => event.type === "agent.handoff_decided" && event.entity_id === apiHandoff.id));
-
-    const unclearReply = await fetch(`${baseUrl}/api/inbound/approval-reply`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ approvalId: "appr-digital-product-dry-run", body: "What is the risk?", sender: "operator@example.test" }),
-    }).then((response) => response.json());
-    assert.equal(unclearReply.result.status, "needs_operator_review");
-    assert.equal(unclearReply.state.approvals[0].status, "pending");
-
-    const tokenStatus = await fetch(`${baseUrl}/api/approval-actions/${encodeURIComponent(approvalToken.token)}`).then((response) => response.json());
-    assert.equal(tokenStatus.action.status, "active");
-
-    const approved = await fetch(`${baseUrl}/api/approval-actions/${encodeURIComponent(approvalToken.token)}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ note: "api token test" }),
-    }).then((response) => response.json());
-    const approvedProof = approved.state.approvals.find((approval) => approval.id === "appr-digital-product-dry-run");
-    assert.equal(approvedProof.status, "approved");
-    assert.equal(approved.result.action.status, "used");
-
-    const tick = await fetch(`${baseUrl}/api/runtime/tick`, { method: "POST" }).then((response) => response.json());
-    assert.equal(tick.result.status, "completed");
-    const proofWorkflow = tick.state.workflows.find((workflow) => workflow.id === "wf-digital-product-pilot-proof");
-    assert.equal(proofWorkflow.status, "dry_run_complete");
+    const retiredLink = await fetch(`${baseUrl}/api/approval-actions/legacy-token`);
+    assert.equal(retiredLink.status, 410);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
     db.close();
-    if (previousPackDir === undefined) delete process.env.JARVIS_APPROVAL_PACK_DIR;
-    else process.env.JARVIS_APPROVAL_PACK_DIR = previousPackDir;
-    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = previousKey;
-    if (previousLiveResearch === undefined) delete process.env.JARVIS_ENABLE_LIVE_RESEARCH;
-    else process.env.JARVIS_ENABLE_LIVE_RESEARCH = previousLiveResearch;
-    if (previousAdapterReady === undefined) delete process.env.JARVIS_LIVE_RESEARCH_ADAPTER_READY;
-    else process.env.JARVIS_LIVE_RESEARCH_ADAPTER_READY = previousAdapterReady;
   }
 });

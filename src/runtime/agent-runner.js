@@ -723,6 +723,46 @@ function summarizeResearchBridge(bridge) {
   };
 }
 
+function resumeExactSdkAgentRun(db, task, agentDefinition) {
+  if (!task.approval_id || task.kind !== "live_ai_worker_execution") return null;
+  const approval = get(db, "SELECT status, consumed_at, payload FROM approvals WHERE id = ?", [task.approval_id]);
+  const payload = fromJson(approval?.payload, {});
+  const runId = payload.exactScope?.runId || payload.runId || null;
+  if (
+    approval?.status !== "approved"
+    || approval.consumed_at
+    || !payload.exactScope
+    || payload.exactScope.taskId !== task.id
+    || payload.exactScope.workerId !== agentDefinition.id
+    || !runId
+  ) return null;
+  const existing = get(
+    db,
+    "SELECT id, agent_id, task_id, status, started_at FROM agent_runs WHERE id = ?",
+    [runId],
+  );
+  if (
+    !existing
+    || existing.agent_id !== agentDefinition.id
+    || existing.task_id !== task.id
+    || existing.status !== "waiting_approval"
+  ) return null;
+  run(
+    db,
+    "UPDATE agent_runs SET status = 'running', completed_at = NULL WHERE id = ? AND status = 'waiting_approval'",
+    [runId],
+  );
+  addAgentTrace(
+    db,
+    runId,
+    "run_resumed",
+    "Worker resumed",
+    `${agentDefinition.name} resumed the same stored Agents SDK run after the exact tool call was approved.`,
+    { approvalId: task.approval_id, taskId: task.id, exactContinuation: true },
+  );
+  return { id: runId, agentId: agentDefinition.id, startedAt: existing.started_at, resumed: true };
+}
+
 async function runAgentTask(db, task) {
   const workflow = hydrateWorkflow(get(db, "SELECT * FROM workflows WHERE id = ?", [task.workflow_id]));
   const command = commandForWorkflow(db, task.workflow_id);
@@ -739,7 +779,7 @@ async function runAgentTask(db, task) {
   const isLiveResearchTask = task.kind === "live_market_research";
   const isLiveAiWorkerTask = task.kind === "live_ai_worker_execution";
   const humanReviewRequired = task.kind === "operator_pack_qc" || task.kind === "risk_screen" || isLiveResearchTask || isLiveAiWorkerTask;
-  const agentRun = createAgentRun(db, agentDefinition, task, {
+  const agentRun = resumeExactSdkAgentRun(db, task, agentDefinition) || createAgentRun(db, agentDefinition, task, {
     mode: isLiveResearchTask ? "approval-gated-live-ready" : isLiveAiWorkerTask ? "openai-agents-sdk" : "dry-run",
     inputSummary: `${task.title} for workflow ${task.workflow_id}`,
     approvalRequired: humanReviewRequired,
@@ -752,6 +792,7 @@ async function runAgentTask(db, task) {
   let effectiveModelCall = null;
   let spendApproval = null;
   let researchBridge = null;
+  let providerReceipt = null;
   const toolChecks = [];
 
   try {
@@ -785,6 +826,7 @@ async function runAgentTask(db, task) {
 
     if (isLiveAiWorkerTask) {
       const liveWorker = await runAgentRuntimeTask(db, task, agentDefinition, policy, { agentRunId: agentRun.id });
+      providerReceipt = liveWorker.providerReceipt || null;
       addAgentTrace(
         db,
         agentRun.id,
@@ -941,6 +983,7 @@ async function runAgentTask(db, task) {
       })));
     }
     research = isResearchTask ? await runResearchTask(db, task, workflow, command, { live: isLiveResearchTask }) : null;
+    providerReceipt = research?.providerReceipt || providerReceipt;
     if (research) {
       addAgentTrace(db, agentRun.id, "tool_result_recorded", "Research tool result recorded", `Research captured ${research.sources.length} source record${research.sources.length === 1 ? "" : "s"}.`, {
         researchRunId: research.id,
@@ -956,15 +999,16 @@ async function runAgentTask(db, task) {
         ...output.evidence,
       ];
       if (research.mode === "live") {
+        const providerGrounded = research.status === "completed_live";
         output.summary = research.summary;
         output.nextAction = research.recommendation || "Review live research and decide keep, revise, or kill.";
-        output.confidence = research.confidence || "medium_with_live_research";
-        output.liveEvidence = true;
+        output.confidence = providerGrounded ? (research.confidence || "medium_with_live_research") : "low_pending_source_review";
+        output.liveEvidence = providerGrounded;
         output.verdict = research.verdict;
         output.evidence.push(`Live research verdict: ${research.verdict || "research_inconclusive"}.`);
-        researchBridge = createResearchToExperimentPlanFromResearch(db, research.id, {
-          createdBy: agentDefinition.id,
-        });
+        researchBridge = providerGrounded
+          ? createResearchToExperimentPlanFromResearch(db, research.id, { createdBy: agentDefinition.id })
+          : { skipped: true, reason: "Provider-grounded source evidence is insufficient for commercial test candidates." };
         if (researchBridge && !researchBridge.skipped) {
           const bridgeSummary = summarizeResearchBridge(researchBridge);
           output.nextAction = bridgeSummary.recommendedTitle
@@ -1169,9 +1213,20 @@ async function runAgentTask(db, task) {
       throw error;
     }
 
+    if (providerReceipt && !error.providerReceipt) {
+      error.providerReceipt = providerReceipt;
+      error.providerCallOccurred = true;
+      error.outcomeUnknown = false;
+      error.needsAttention = true;
+      error.incurredEstimateCents = Number(providerReceipt.incurredEstimateCents || error.incurredEstimateCents || 0);
+      error.providerRequestId = providerReceipt.providerRequestId || error.providerRequestId || null;
+      error.modelCallId = providerReceipt.modelCallId || error.modelCallId || null;
+      error.errorKind = error.errorKind || "local_processing_after_provider_success";
+    }
     recordAgentFailure(db, agentRun, agentDefinition, error, {
       taskKind: task.kind,
       workflowId: task.workflow_id,
+      providerReceipt: error.providerReceipt || null,
     });
     throw error;
   }

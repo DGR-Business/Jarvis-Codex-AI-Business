@@ -3,6 +3,28 @@ const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require(
 
 const DEFAULT_RESEARCH_BUDGET_CENTS = 75;
 const LIVE_RESEARCH_PROVIDER = "openai-responses-web-search";
+const DEFAULT_PROVIDER_DEADLINE_MS = 60_000;
+
+function approvedDeadlineMs(task, options = {}) {
+  const approved = Number(options.deadlineMs || task.payload?.liveSpendRequest?.deadlineMs || DEFAULT_PROVIDER_DEADLINE_MS);
+  return Math.min(10 * 60 * 1000, Math.max(5_000, Number.isFinite(approved) ? approved : DEFAULT_PROVIDER_DEADLINE_MS));
+}
+
+function requestSignal(deadlineMs, externalSignal) {
+  const timeout = typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(deadlineMs) : null;
+  if (externalSignal && timeout && typeof AbortSignal?.any === "function") return AbortSignal.any([externalSignal, timeout]);
+  return externalSignal || timeout || undefined;
+}
+
+function providerError(error, state, extras = {}) {
+  const wrapped = error instanceof Error ? error : new Error(String(error));
+  wrapped.providerDispatchStatus = state;
+  wrapped.providerCallOccurred = state !== "not_dispatched";
+  wrapped.outcomeUnknown = state === "outcome_unknown";
+  wrapped.definiteProviderRejection = state === "definite_rejection";
+  Object.assign(wrapped, extras);
+  return wrapped;
+}
 
 function safeId(value) {
   return String(value || "task")
@@ -216,8 +238,6 @@ function collectLiveSources(response, parsed) {
     byUrl.set(key, { ...existing, ...source, url: key });
   };
 
-  for (const source of parsed?.sources || []) add(sourceFromParsed(source));
-
   const { annotations } = outputTextAndAnnotations(response);
   for (const annotation of annotations) add(sourceFromAnnotation(annotation));
 
@@ -236,6 +256,24 @@ function collectLiveSources(response, parsed) {
         sourceType: "web_search_query",
       });
     }
+  }
+
+  // Structured model output may enrich a provider-grounded URL, but it cannot
+  // introduce a URL on its own. Grounding comes only from provider citations or
+  // hosted-tool provenance.
+  for (const source of parsed?.sources || []) {
+    const structured = sourceFromParsed(source);
+    if (!structured?.url || !byUrl.has(structured.url.trim())) continue;
+    const key = structured.url.trim();
+    const grounded = byUrl.get(key);
+    byUrl.set(key, {
+      ...structured,
+      ...grounded,
+      title: structured.title || grounded.title,
+      relevance: structured.relevance || grounded.relevance,
+      url: key,
+      sourceType: grounded.sourceType,
+    });
   }
 
   return Array.from(byUrl.values())
@@ -293,15 +331,35 @@ function recordLiveResearchCost(db, task, estimateCents, response, metadata = {}
   }
 }
 
-function recordLiveResearchModelCall(db, task, response, estimateCents, model) {
-  const usage = tokenUsage(response);
-  const callId = `model_${randomId()}`;
+function recordLiveResearchModelCall(db, task, response, estimateCents, model, status = "completed", metadata = {}) {
+  const usage = tokenUsage(response || {});
+  const callId = metadata.modelCallId || `model_${randomId()}`;
+  const providerCompleted = ["completed", "provider_completed", "needs_attention"].includes(status);
+  const outcomeUnknown = metadata.outcomeUnknown === true;
+  const dispatching = status === "dispatching";
+  const costStatus = providerCompleted ? "incurred_estimate" : outcomeUnknown ? "unknown" : dispatching ? "reserved" : "released";
+  const outcomeStatus = providerCompleted ? "known" : outcomeUnknown ? "unknown" : dispatching ? "provider_dispatched" : "failed_before_effect";
+  const errorKind = metadata.errorKind
+    || (outcomeUnknown ? "provider_outcome_unknown" : status === "failed" ? "provider_rejected" : null);
   run(
     db,
     `INSERT INTO model_calls (id, workflow_id, task_id, venture_id, provider, model_class, selected_model, mode, status,
       input_tokens, output_tokens, estimated_cost_cents, actual_cost_cents, approval_required, metadata, created_at,
-      provider_request_id, cost_status, reserved_cost_cents, incurred_estimate_cents, reconciled_cost_cents, outcome_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      provider_request_id, cost_status, reserved_cost_cents, incurred_estimate_cents, reconciled_cost_cents, outcome_status,
+      error_kind)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       status = excluded.status,
+       input_tokens = excluded.input_tokens,
+       output_tokens = excluded.output_tokens,
+       estimated_cost_cents = excluded.estimated_cost_cents,
+       metadata = excluded.metadata,
+       provider_request_id = COALESCE(excluded.provider_request_id, model_calls.provider_request_id),
+       cost_status = excluded.cost_status,
+       reserved_cost_cents = excluded.reserved_cost_cents,
+       incurred_estimate_cents = excluded.incurred_estimate_cents,
+       outcome_status = excluded.outcome_status,
+       error_kind = excluded.error_kind`,
     [
       callId,
       task.workflow_id,
@@ -311,7 +369,7 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model) {
       "live-research",
       model,
       "live",
-      "completed",
+      status,
       usage.inputTokens,
       usage.outputTokens,
       estimateCents,
@@ -319,18 +377,21 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model) {
       1,
       toJson({
         provider: LIVE_RESEARCH_PROVIDER,
-        responseId: response.id || null,
+        responseId: response?.id || null,
         totalTokens: usage.totalTokens,
-        exactBillingPending: true,
+        exactBillingPending: providerCompleted,
         reason: "Live research used the OpenAI Responses API hosted web_search tool after approval.",
+        ...metadata,
+        modelCallId: undefined,
       }),
       now(),
-      response.id || null,
-      "incurred_estimate",
+      response?.id || null,
+      costStatus,
       estimateCents,
-      estimateCents,
+      providerCompleted ? estimateCents : 0,
       0,
-      "known",
+      outcomeStatus,
+      errorKind,
     ],
   );
 
@@ -340,15 +401,15 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model) {
     class: "live-research",
     selectedModel: model,
     mode: "live",
-    status: "completed",
+    status,
     estimatedInputTokens: usage.inputTokens,
     estimatedOutputTokens: usage.outputTokens,
     estimatedCostCents: estimateCents,
     actualCostCents: 0,
-    incurredEstimateCents: estimateCents,
-    costStatus: "incurred_estimate",
+    incurredEstimateCents: providerCompleted ? estimateCents : 0,
+    costStatus,
     currency: CONFIG.currency,
-    exactBillingPending: true,
+    exactBillingPending: providerCompleted,
   };
 }
 
@@ -371,35 +432,45 @@ async function readJsonResponse(response) {
 
 async function callOpenAIResponses(body, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
-  if (typeof fetchImpl !== "function") throw new Error("Fetch is not available for live research execution.");
+  if (typeof fetchImpl !== "function") throw providerError(new Error("Fetch is not available for live research execution."), "not_dispatched");
   const apiKey = options.apiKey || process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY is required for live research execution.");
+  if (!apiKey) throw providerError(new Error("OPENAI_API_KEY is required for live research execution."), "not_dispatched");
 
-  const response = await fetchImpl(options.responsesUrl || CONFIG.openaiResponsesUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal: options.signal,
-  });
+  let response;
+  try {
+    response = await fetchImpl(options.responsesUrl || CONFIG.openaiResponsesUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: requestSignal(Number(options.deadlineMs || DEFAULT_PROVIDER_DEADLINE_MS), options.signal),
+    });
+  } catch (error) {
+    throw providerError(error, "outcome_unknown", { providerRequestStarted: true });
+  }
   const json = await readJsonResponse(response);
   if (!response.ok) {
     const message = json.error?.message || json.message || json.raw || `HTTP ${response.status}`;
-    throw new Error(`OpenAI live research request failed: ${message}`);
+    throw providerError(new Error(`OpenAI live research request failed: ${message}`), "definite_rejection", {
+      httpStatus: response.status,
+      providerRequestStarted: true,
+    });
   }
   return json;
 }
 
 function buildOpenAIRequest(task, workflow, command, query) {
   const tracePolicy = task.payload?.liveSpendRequest?.tracePolicy || {};
+  const maxToolCalls = Number(task.payload?.liveSpendRequest?.maxToolCalls || 1);
   return {
     model: process.env.JARVIS_LIVE_RESEARCH_MODEL || CONFIG.liveResearchModel,
     store: tracePolicy.providerResponseStored === true,
-    tools: [{ type: "web_search", external_web_access: true }],
+    tools: [{ type: "web_search", external_web_access: true, search_context_size: "low" }],
     tool_choice: "required",
     include: ["web_search_call.action.sources"],
+    max_tool_calls: maxToolCalls,
     max_output_tokens: CONFIG.liveResearchMaxOutputTokens,
     input: [
       {
@@ -429,21 +500,57 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
   const query = queryFor(task, workflow, command);
   const budgetCents = Number(task.cost_budget_cents) || approvedEstimateCents(task);
   const requestBody = buildOpenAIRequest(task, workflow, command, query);
+  const estimateCents = liveCostEstimateCents(task);
+  const deadlineMs = approvedDeadlineMs(task, options);
+  const dispatchCall = recordLiveResearchModelCall(db, task, null, estimateCents, requestBody.model, "dispatching", {
+    dispatchIntent: { status: "dispatched", recordedAt: ts, deadlineMs },
+  });
   let response;
   try {
-    response = await callOpenAIResponses(requestBody, options);
+    response = await callOpenAIResponses(requestBody, { ...options, deadlineMs });
   } catch (error) {
-    error.outcomeUnknown = true;
-    const estimateCents = liveCostEstimateCents(task);
+    if (!error.providerDispatchStatus) {
+      error = providerError(error, "outcome_unknown", { providerRequestStarted: true });
+    }
     const costId = costIdForTask(task);
     const existingCost = get(db, "SELECT metadata FROM costs WHERE id = ?", [costId]);
-    if (existingCost) {
+    if (error.outcomeUnknown === true && existingCost) {
       run(
         db,
         "UPDATE costs SET status = 'unknown', amount_cents = ?, occurred_at = ?, metadata = ? WHERE id = ?",
-        [estimateCents, now(), toJson({ ...fromJson(existingCost.metadata), outcomeUnknown: true, error: error.message, noSpendOccurred: null }), costId],
+        [estimateCents, now(), toJson({ ...fromJson(existingCost.metadata), outcomeUnknown: true, error: error.message, noSpendOccurred: null, taskId: task.id }), costId],
+      );
+    } else if (error.outcomeUnknown === true) {
+      run(
+        db,
+        `INSERT INTO costs (id, workflow_id, venture_id, category, source, status, amount_cents, currency, occurred_at, metadata)
+         VALUES (?, ?, ?, 'live_research', ?, 'unknown', ?, ?, ?, ?)`,
+        [costId, task.workflow_id, task.venture_id || null, LIVE_RESEARCH_PROVIDER, estimateCents, CONFIG.currency, now(), toJson({ taskId: task.id, outcomeUnknown: true, error: error.message, noSpendOccurred: null })],
+      );
+    } else if (existingCost) {
+      run(
+        db,
+        "UPDATE costs SET status = 'released', amount_cents = 0, occurred_at = ?, metadata = ? WHERE id = ?",
+        [now(), toJson({ ...fromJson(existingCost.metadata), taskId: task.id, outcomeUnknown: false, noSpendOccurred: true, providerDispatchStatus: error.providerDispatchStatus, error: error.message }), costId],
       );
     }
+    const failedCall = recordLiveResearchModelCall(db, task, null, estimateCents, requestBody.model, "failed", {
+      modelCallId: dispatchCall.id,
+      outcomeUnknown: error.outcomeUnknown === true,
+      errorKind: error.outcomeUnknown === true ? "provider_outcome_unknown" : "provider_rejected",
+      providerDispatchStatus: error.providerDispatchStatus,
+      httpStatus: error.httpStatus || null,
+      error: error.message,
+    });
+    error.modelCallId = failedCall.id;
+    error.providerReceipt = {
+      modelCallId: failedCall.id,
+      providerRequestId: null,
+      provider: LIVE_RESEARCH_PROVIDER,
+      status: error.providerDispatchStatus,
+      deadlineMs,
+    };
+    error.incurredEstimateCents = 0;
     run(
       db,
       `INSERT INTO research_runs (id, workflow_id, task_id, query, provider, mode, status, budget_cents, actual_cents, summary, metadata, created_at, completed_at)
@@ -459,7 +566,15 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
         budgetCents,
         0,
         `Live research failed before usable evidence was captured: ${error.message}`,
-        toJson({ subject, channel, error: error.message, outcomeUnknown: true, request: { tool: "web_search", toolChoice: "required" } }),
+        toJson({
+          subject,
+          channel,
+          error: error.message,
+          outcomeUnknown: error.outcomeUnknown === true,
+          providerDispatchStatus: error.providerDispatchStatus,
+          modelCallId: failedCall.id,
+          request: { tool: "web_search", toolChoice: "required", deadlineMs },
+        }),
         ts,
         now(),
       ],
@@ -471,23 +586,86 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
       entityType: "research_run",
       entityId: runId,
       message: `Live research failed for ${subject}: ${error.message}`,
-      metadata: { workflowId: task.workflow_id, taskId: task.id, outcomeUnknown: true },
+      metadata: { workflowId: task.workflow_id, taskId: task.id, outcomeUnknown: error.outcomeUnknown === true, providerDispatchStatus: error.providerDispatchStatus, modelCallId: failedCall.id },
     });
     throw error;
   }
   const { text } = outputTextAndAnnotations(response);
-  const parsed = parseJsonOutput(text) || {
-    summary: compactText(text || "Live research returned an unstructured response."),
-    verdict: "research_inconclusive",
-    confidence: "low",
-    recommendation: "Review the raw live research output and rerun if sources are insufficient.",
-    sources: [],
+  const parsed = parseJsonOutput(text);
+  const providerCall = recordLiveResearchModelCall(db, task, response, estimateCents, requestBody.model, "provider_completed", {
+    modelCallId: dispatchCall.id,
+    structuredOutput: Boolean(parsed),
+    deadlineMs,
+    providerReceiptRecordedAt: now(),
+  });
+  const providerReceipt = {
+    modelCallId: providerCall.id,
+    providerRequestId: response.id || null,
+    provider: LIVE_RESEARCH_PROVIDER,
+    status: "completed",
+    incurredEstimateCents: estimateCents,
+    deadlineMs,
   };
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    recordLiveResearchCost(db, task, estimateCents, response, {
+      taskId: task.id,
+      modelCallId: providerCall.id,
+      status: "needs_attention",
+      model: requestBody.model,
+    });
+    recordLiveResearchModelCall(db, task, response, estimateCents, requestBody.model, "needs_attention", {
+      modelCallId: providerCall.id,
+      structuredOutput: false,
+      errorKind: "malformed_structured_output",
+      providerReceipt,
+    });
+    const completedAt = now();
+    run(
+      db,
+      `INSERT INTO research_runs (id, workflow_id, task_id, query, provider, mode, status, budget_cents, actual_cents, summary, metadata, created_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, 'live', 'needs_attention', ?, 0, ?, ?, ?, ?)`,
+      [
+        runId,
+        task.workflow_id,
+        task.id,
+        query,
+        LIVE_RESEARCH_PROVIDER,
+        budgetCents,
+        "The provider returned research output that did not match the required structured format.",
+        toJson({ subject, channel, providerReceipt, structuredOutput: false }),
+        ts,
+        completedAt,
+      ],
+    );
+    const error = new Error("Live research completed, but its output did not match the required structured format.");
+    error.outcomeUnknown = false;
+    error.providerCallOccurred = true;
+    error.needsAttention = true;
+    error.providerDispatchStatus = "completed";
+    error.incurredEstimateCents = estimateCents;
+    error.providerRequestId = response.id || null;
+    error.modelCallId = providerCall.id;
+    error.errorKind = "malformed_structured_output";
+    error.providerReceipt = providerReceipt;
+    insertEvent(db, {
+      level: "error",
+      actor: "research-adapter",
+      type: "research.live_output_needs_attention",
+      entityType: "research_run",
+      entityId: runId,
+      message: "The provider call completed, but the research output could not be accepted as a structured result.",
+      metadata: providerReceipt,
+    });
+    throw error;
+  }
   const sources = collectLiveSources(response, parsed);
   const status = sourceCountStatus(sources);
-  const estimateCents = liveCostEstimateCents(task);
-  const modelCall = recordLiveResearchModelCall(db, task, response, estimateCents, requestBody.model);
-  recordLiveResearchCost(db, task, estimateCents, response, { sourceCount: sources.length, status, model: requestBody.model });
+  const modelCall = recordLiveResearchModelCall(db, task, response, estimateCents, requestBody.model, "completed", {
+    modelCallId: providerCall.id,
+    structuredOutput: true,
+    groundedSourceCount: sources.length,
+  });
+  recordLiveResearchCost(db, task, estimateCents, response, { taskId: task.id, modelCallId: modelCall.id, sourceCount: sources.length, status, model: requestBody.model });
   const summary = compactText(parsed.summary || "Live research completed with source-backed evidence.", 1000);
 
   run(
@@ -513,6 +691,9 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
         responseId: response.id || null,
         model: requestBody.model,
         exactBillingPending: true,
+        groundingStatus: status === "completed_live" ? "provider_grounded" : "insufficient_provider_grounding",
+        groundedSourceCount: sources.length,
+        providerReceipt,
         request: { tool: "web_search", toolChoice: "required" },
       }),
       ts,
@@ -554,6 +735,7 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
     recommendation: parsed.recommendation || "Review live research before next spend.",
     sources: persistedSources,
     modelCall,
+    providerReceipt,
   };
 }
 

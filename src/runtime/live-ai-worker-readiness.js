@@ -1,6 +1,8 @@
 const CONFIG = require("../config");
 const { all, fromJson, get } = require("../db");
 const { getAgentRuntimeReadiness } = require("./agent-runtime");
+const { monthlyBudgetExposure } = require("./cost-ledger");
+const { modelPricing } = require("./model-pricing");
 
 function parseRows(rows, fields = ["metadata", "payload", "result"]) {
   return rows.map((row) => {
@@ -10,18 +12,6 @@ function parseRows(rows, fields = ["metadata", "payload", "result"]) {
     }
     return copy;
   });
-}
-
-function centsThisMonth(db) {
-  const prefix = new Date().toISOString().slice(0, 7);
-  const row = get(
-    db,
-    `SELECT COALESCE(SUM(amount_cents), 0) AS total
-     FROM costs
-     WHERE occurred_at LIKE ?`,
-    [`${prefix}%`],
-  );
-  return Number(row?.total || 0);
 }
 
 function setting(db, key, fallback = {}) {
@@ -45,8 +35,9 @@ function getLiveAiWorkerReadiness(db) {
   const approvals = parseRows(all(db, "SELECT * FROM approvals ORDER BY requested_at DESC"), ["payload"]);
   const tasks = parseRows(all(db, "SELECT * FROM tasks ORDER BY updated_at DESC"));
   const budget = setting(db, "budget", { monthlyBudgetCents: CONFIG.monthlyBudgetCents, currency: CONFIG.currency });
-  const monthlySpendCents = centsThisMonth(db);
-  const remainingBudgetCents = Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents) - monthlySpendCents;
+  const budgetExposure = monthlyBudgetExposure(db);
+  const monthlySpendCents = budgetExposure.totalCents;
+  const remainingBudgetCents = Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents) - budgetExposure.totalCents;
   const openaiIntegration = integrations.find((integration) => integration.id === "openai");
   const aiWorkerIntegration = integrations.find((integration) => integration.id === "ai_workers");
   const agentRuntime = getAgentRuntimeReadiness();
@@ -68,13 +59,15 @@ function getLiveAiWorkerReadiness(db) {
   const credentialsConfigured = Boolean(process.env.OPENAI_API_KEY) && openaiIntegration?.health === "ok";
   const liveFlagEnabled = process.env.JARVIS_ENABLE_LIVE_MODELS === "1";
   const adapterReady = agentRuntime.ready;
+  const pricingReady = Boolean(modelPricing(CONFIG.liveModel));
   const budgetReady = remainingBudgetCents >= Number(CONFIG.liveModelDefaultBudgetCents || 0);
-  const ready = credentialsConfigured && liveFlagEnabled && adapterReady && budgetReady;
+  const ready = credentialsConfigured && liveFlagEnabled && adapterReady && pricingReady && budgetReady;
 
   const blockers = [];
   if (!credentialsConfigured) blockers.push("OpenAI API key is not configured for this runtime process.");
   if (!liveFlagEnabled) blockers.push("JARVIS_ENABLE_LIVE_MODELS is not enabled.");
   if (!adapterReady) blockers.push(...agentRuntime.blockers);
+  if (!pricingReady) blockers.push("The selected model has no registered AUD safety pricing.");
   if (!budgetReady) blockers.push("Monthly budget remaining is below the default live AI worker cap.");
 
   return {
@@ -84,10 +77,14 @@ function getLiveAiWorkerReadiness(db) {
     defaultBudgetCents: Number(CONFIG.liveModelDefaultBudgetCents || 0),
     monthlyBudgetCents: Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents),
     monthlySpendCents,
+    monthlyRealizedCents: budgetExposure.realizedCents,
+    monthlyUnresolvedCents: budgetExposure.unresolvedCents,
+    budgetExposure,
     remainingBudgetCents,
     credentialsConfigured,
     liveFlagEnabled,
     adapterReady,
+    pricingReady,
     agentRuntime,
     sdkRunnerReady: agentRuntime.primaryReady,
     responsesFallbackReady: agentRuntime.fallbackReady,
@@ -127,6 +124,13 @@ function getLiveAiWorkerReadiness(db) {
         adapterReady,
         adapterReady ? "The OpenAI Agents SDK runner is available for review-controlled worker tests." : agentRuntime.blockers.join(" "),
         "Install @openai/agents and zod, then keep JARVIS_DISABLE_OPENAI_AGENTS_SDK and JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER unset.",
+      ),
+      checklistItem(
+        "pricing",
+        "AUD safety pricing",
+        pricingReady,
+        pricingReady ? "The selected model has a registered worst-case AUD pricing rule." : "The selected model is not priced and cannot be approved.",
+        "Choose a registered model or add verified official pricing before preparing paid work.",
       ),
       checklistItem(
         "budget",

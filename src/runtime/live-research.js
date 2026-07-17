@@ -1,5 +1,8 @@
 const CONFIG = require("../config");
 const { fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
+const { buildOpenAIRequest } = require("../adapters/research");
+const { createExecutionDescriptor, scopeHash } = require("./approval-scope");
+const { worstCaseExecutionCostAud } = require("./model-pricing");
 const { ensureSpendApproval } = require("./spend-gate");
 const { createCommandPlan } = require("./planner");
 
@@ -45,6 +48,13 @@ function sourceResearchTask(db, workflowId) {
   );
 }
 
+function queryForRequest(task, workflow, command) {
+  const subject = task.payload.subject || workflow.metadata.subject || workflow.title || "business idea";
+  const channel = task.payload.channel || workflow.metadata.channel || "Business Idea";
+  const instruction = workflow.metadata.originalInstruction || command?.raw_text || "";
+  return `${channel} ${subject} demand competitors pricing risks ${instruction}`.replace(/\s+/g, " ").trim();
+}
+
 function approvalIdForRequest(db, taskId, workflowId, requestedAt) {
   const existing = hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]));
   const existingApprovalId = existing?.payload?.liveSpendRequest?.approvalId;
@@ -77,6 +87,21 @@ function requestLiveResearch(db, workflowId, options = {}) {
     dataClass: String(requestedTracePolicy.dataClass || "business_internal"),
     purpose: String(requestedTracePolicy.purpose || "Retain cited research locally for operator review without retaining provider response content by default."),
   };
+  const provider = CONFIG.liveResearchProvider;
+  if (options.provider && options.provider !== provider) {
+    throw new Error(`Live research is blocked because ${options.provider} is not the configured outbound provider ${provider}.`);
+  }
+  const model = process.env.JARVIS_LIVE_RESEARCH_MODEL || CONFIG.liveResearchModel;
+  const maxOutputTokens = Number(CONFIG.liveResearchMaxOutputTokens);
+  if (options.maxOutputTokens && Number(options.maxOutputTokens) !== maxOutputTokens) {
+    throw new Error("Live research is blocked because the requested output limit does not match the outbound adapter limit.");
+  }
+  const maxToolCalls = Math.max(1, Number(options.maxToolCalls || 1));
+  const deadlineMs = Number(options.deadlineMs || 120000);
+  const maxInputTokens = Number(options.maxInputTokens || CONFIG.liveResearchMaxInputTokens);
+  if (maxInputTokens > CONFIG.liveResearchMaxInputTokens) {
+    throw new Error("Live research is blocked because the requested input ceiling exceeds the low-context research limit.");
+  }
   const payload = {
     subject,
     channel,
@@ -89,7 +114,10 @@ function requestLiveResearch(db, workflowId, options = {}) {
       requested: true,
       approvalId,
       type: "live_research",
-      provider: options.provider || CONFIG.liveResearchProvider,
+      provider,
+      model,
+      requestedWorker: "demand_validator",
+      worker: { id: "demand_validator", name: "Demand Validator" },
       scope: "live_research_spend",
       title: `Approve live research for ${subject}`,
       estimatedCostCents: amountCents,
@@ -97,15 +125,82 @@ function requestLiveResearch(db, workflowId, options = {}) {
       reason,
       commercialPurpose: "Validate current demand, competitors, pricing, trend freshness, and risk before paid creation or publishing.",
       tracePolicy,
+      tools: ["research_adapter"],
+      maxTurns: 1,
+      maxToolCalls,
+      deadlineMs,
+      maxInputTokens,
+      maxOutputTokens,
+      maxCostCents: amountCents,
+      effects: [],
       requiresProviderEnv: "OPENAI_API_KEY",
       requiresLiveFlag: "JARVIS_ENABLE_LIVE_RESEARCH",
       requiresRuntimeCapability: "live_research_adapter",
     },
   };
+  const descriptorTask = {
+    id: taskId,
+    workflow_id: workflowId,
+    venture_id: workflow.venture_id,
+    title,
+    kind: "live_market_research",
+    agent: "researcher",
+    cost_budget_cents: amountCents,
+    payload,
+    result: {},
+  };
+  const query = queryForRequest(descriptorTask, workflow, command);
+  const outboundRequest = buildOpenAIRequest(descriptorTask, workflow, command, query);
+  if (outboundRequest.model !== model) {
+    throw new Error("Live research is blocked because the configured model differs from the outbound request model.");
+  }
+  const materializedInputHash = scopeHash(outboundRequest);
+  const worstCaseCost = worstCaseExecutionCostAud({
+    model,
+    materializedInput: outboundRequest,
+    maxInputTokens,
+    maxOutputTokens,
+    maxTurns: 1,
+    tools: ["research_adapter"],
+    maxToolCalls,
+    audPerUsd: options.audPerUsd,
+  });
+  if (worstCaseCost.amountCents > amountCents) {
+    throw new Error(`Live research is blocked because its priced worst-case cost is ${worstCaseCost.amountCents} AUD cents, above the ${amountCents}-cent cap.`);
+  }
+  payload.liveSpendRequest.pricedWorstCaseCostCents = worstCaseCost.amountCents;
+  payload.liveSpendRequest.executionDescriptor = createExecutionDescriptor({
+    kind: "live_research",
+    provider,
+    model,
+    workerId: "demand_validator",
+    materializedInputHash,
+    materializedInput: outboundRequest,
+    tools: ["research_adapter"],
+    toolArguments: {},
+    parameters: { query },
+    limits: {
+      maxInputTokens: worstCaseCost.maxInputTokensPerTurn,
+      maxOutputTokens,
+      maxTurns: 1,
+      maxToolCalls,
+      deadlineMs,
+    },
+    tracePolicy,
+    preflightRequirements: {
+      providerEnv: ["OPENAI_API_KEY"],
+      liveFlags: ["JARVIS_ENABLE_LIVE_RESEARCH"],
+      runtimeCapabilities: ["live_research_adapter"],
+    },
+    externalEffects: [],
+    maxCostCents: amountCents,
+    worstCaseCost,
+  });
   const result = {
     note: "Live research requested. Execution is blocked until spend approval and provider readiness pass.",
     approvalId,
     estimatedCostCents: amountCents,
+    pricedWorstCaseCostCents: worstCaseCost.amountCents,
     provider: payload.liveSpendRequest.provider,
   };
 
@@ -114,11 +209,12 @@ function requestLiveResearch(db, workflowId, options = {}) {
     run(
       db,
       `INSERT INTO tasks
-       (id, workflow_id, title, kind, agent, status, priority, max_retries, approval_id, cost_budget_cents, payload, result, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, workflow_id, venture_id, title, kind, agent, status, priority, max_retries, approval_id, cost_budget_cents, payload, result, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         taskId,
         workflowId,
+        workflow.venture_id,
         title,
         "live_market_research",
         "researcher",

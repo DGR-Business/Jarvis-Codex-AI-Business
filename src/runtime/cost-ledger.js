@@ -1,5 +1,9 @@
 const CONFIG = require("../config");
-const { fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
+const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
+
+const REALIZED_COST_STATUSES = new Set(["actual", "completed", "incurred", "paid", "reconciled", "recorded", "spent"]);
+const UNRESOLVED_COST_STATUSES = new Set(["incurred_estimate", "unknown"]);
+const UNRESOLVED_RESERVATION_STATUSES = new Set(["reserved", "incurred_estimate", "unknown"]);
 
 function monthlyCapCents(db) {
   const setting = get(db, "SELECT value FROM settings WHERE key = 'budget'");
@@ -17,19 +21,120 @@ function reservedThisMonth(db) {
   )?.cents || 0);
 }
 
+function monthlyBudgetExposure(db, options = {}) {
+  const month = String(options.month || new Date().toISOString().slice(0, 7));
+  const costs = all(
+    db,
+    "SELECT * FROM costs WHERE substr(occurred_at, 1, 7) = ? ORDER BY occurred_at, id",
+    [month],
+  );
+  const reservations = all(
+    db,
+    "SELECT * FROM budget_reservations WHERE substr(reserved_at, 1, 7) = ? ORDER BY reserved_at, id",
+    [month],
+  );
+  const taskRows = all(db, "SELECT id, payload FROM tasks");
+  const modelCalls = all(db, "SELECT id, task_id FROM model_calls");
+  const tasks = new Map(taskRows.map((row) => [row.id, fromJson(row.payload, {}) ]));
+  const modelCallTasks = new Map(modelCalls.map((row) => [row.id, row.task_id]));
+  const reservationByApproval = new Map(reservations.filter((row) => row.approval_id).map((row) => [row.approval_id, row]));
+  const costByApproval = new Map();
+  for (const row of costs) {
+    const metadata = fromJson(row.metadata, {});
+    if (metadata.approvalId) costByApproval.set(metadata.approvalId, row);
+  }
+
+  const groups = new Map();
+  function add(groupKey, entry) {
+    const group = groups.get(groupKey) || { key: groupKey, realizedCents: 0, unresolvedCents: 0, entries: [] };
+    if (entry.kind === "realized") group.realizedCents = Math.max(group.realizedCents, entry.amountCents);
+    else group.unresolvedCents = Math.max(group.unresolvedCents, entry.amountCents);
+    group.entries.push(entry);
+    groups.set(groupKey, group);
+  }
+  function assertAud(row, dateField) {
+    if (row.currency !== CONFIG.currency) {
+      throw new Error(`Monthly budget exposure cannot use unconverted ${row.currency || "unknown"} at ${row[dateField]}.`);
+    }
+  }
+  function requestSource(taskId, fallback) {
+    const request = tasks.get(taskId)?.liveSpendRequest || {};
+    return String(request.provider || request.source || fallback || "unspecified");
+  }
+
+  for (const row of costs) {
+    if (!REALIZED_COST_STATUSES.has(row.status) && !UNRESOLVED_COST_STATUSES.has(row.status)) continue;
+    assertAud(row, "occurred_at");
+    const metadata = fromJson(row.metadata, {});
+    const taskId = row.task_id
+      || metadata.taskId
+      || modelCallTasks.get(row.model_call_id)
+      || modelCallTasks.get(metadata.modelCallId)
+      || reservationByApproval.get(metadata.approvalId)?.task_id
+      || null;
+    const source = String(row.source || requestSource(taskId, row.category));
+    const key = taskId ? `task:${taskId}|source:${source}` : `cost:${row.id}|source:${source}`;
+    add(key, {
+      kind: REALIZED_COST_STATUSES.has(row.status) ? "realized" : "unresolved",
+      sourceType: "cost",
+      id: row.id,
+      taskId,
+      source,
+      status: row.status,
+      amountCents: Math.max(0, Number(row.amount_cents || 0)),
+    });
+  }
+
+  for (const row of reservations) {
+    if (!UNRESOLVED_RESERVATION_STATUSES.has(row.status)) continue;
+    assertAud(row, "reserved_at");
+    const metadata = fromJson(row.metadata, {});
+    const approvalCost = row.approval_id ? costByApproval.get(row.approval_id) : null;
+    const source = String(metadata.source || approvalCost?.source || requestSource(row.task_id, "budget_reservation"));
+    add(`task:${row.task_id}|source:${source}`, {
+      kind: "unresolved",
+      sourceType: "reservation",
+      id: row.id,
+      taskId: row.task_id,
+      source,
+      status: row.status,
+      amountCents: Math.max(0, Number(row.amount_cents || 0)),
+    });
+  }
+
+  const exposureGroups = [...groups.values()].map((group) => ({
+    ...group,
+    amountCents: group.realizedCents > 0 ? group.realizedCents : group.unresolvedCents,
+    countedAs: group.realizedCents > 0 ? "realized" : "unresolved",
+  }));
+  return {
+    month,
+    currency: CONFIG.currency,
+    totalCents: exposureGroups.reduce((sum, group) => sum + group.amountCents, 0),
+    realizedCents: exposureGroups.reduce((sum, group) => sum + group.realizedCents, 0),
+    unresolvedCents: exposureGroups.reduce((sum, group) => sum + (group.realizedCents > 0 ? 0 : group.unresolvedCents), 0),
+    groups: exposureGroups,
+  };
+}
+
 function reserveBudget(db, task, approval, amountCents) {
   const amount = Math.max(0, Number(amountCents || 0));
-  const existing = get(
-    db,
-    "SELECT * FROM budget_reservations WHERE task_id = ? AND status IN ('reserved', 'incurred_estimate', 'unknown') ORDER BY reserved_at DESC LIMIT 1",
-    [task.id],
-  );
-  if (existing) return existing;
   const id = `reserve_${randomId()}`;
   const reservedAt = now();
+  let reservationId = id;
   db.exec("BEGIN IMMEDIATE");
   try {
-    const committed = reservedThisMonth(db);
+    const existing = get(
+      db,
+      "SELECT * FROM budget_reservations WHERE task_id = ? AND status IN ('reserved', 'incurred_estimate', 'unknown') ORDER BY reserved_at DESC LIMIT 1",
+      [task.id],
+    );
+    if (existing) {
+      reservationId = existing.id;
+      db.exec("COMMIT");
+      return existing;
+    }
+    const committed = monthlyBudgetExposure(db).totalCents;
     const cap = monthlyCapCents(db);
     if (amount > Number(task.cost_budget_cents || amount)) {
       throw new Error("Requested cost exceeds the task budget.");
@@ -37,19 +142,35 @@ function reserveBudget(db, task, approval, amountCents) {
     if (committed + amount > cap) {
       throw new Error(`This request would exceed the monthly pre-revenue cap of ${cap} cents.`);
     }
+    const request = typeof task.payload === "string" ? fromJson(task.payload, {})?.liveSpendRequest : task.payload?.liveSpendRequest;
     run(
       db,
       `INSERT INTO budget_reservations
        (id, venture_id, workflow_id, task_id, approval_id, status, amount_cents, currency, reserved_at, metadata)
        VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?)`,
-      [id, task.venture_id, task.workflow_id, task.id, approval?.id || null, amount, CONFIG.currency, reservedAt, toJson({ scopeHash: approval?.scope_hash || null })],
+      [
+        id,
+        task.venture_id,
+        task.workflow_id,
+        task.id,
+        approval?.id || null,
+        amount,
+        CONFIG.currency,
+        reservedAt,
+        toJson({
+          taskId: task.id,
+          source: request?.provider || request?.type || "paid_ai",
+          scopeHash: approval?.scope_hash || null,
+          executionDescriptorHash: request?.executionDescriptor?.descriptorHash || null,
+        }),
+      ],
     );
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
   }
-  return get(db, "SELECT * FROM budget_reservations WHERE id = ?", [id]);
+  return get(db, "SELECT * FROM budget_reservations WHERE id = ?", [reservationId]);
 }
 
 function resolveReservation(db, taskId, status, options = {}) {
@@ -414,6 +535,7 @@ function reconcileProviderUsageBatch(db, input = {}) {
 }
 
 module.exports = {
+  monthlyBudgetExposure,
   monthlyCapCents,
   reconcileProviderUsageBatch,
   reserveBudget,

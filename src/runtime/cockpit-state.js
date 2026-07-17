@@ -3,12 +3,12 @@ const { all, fromJson, get } = require("../db");
 const { ensureApprovalScope } = require("./approval-scope");
 const { listAgentDefinitions } = require("./ai-team");
 const { commercialFoundationState } = require("./venture-case");
-const { getPilotState } = require("./agent-pilot");
 const { ensureCapabilityAutonomy } = require("./capability-autonomy");
 const { getLiveAiWorkerReadiness } = require("./live-ai-worker-readiness");
 const { getLiveResearchReadiness } = require("./live-research-readiness");
 const { getLatestDigest } = require("./executive-digest");
 const { getAccountingSummary } = require("./accounting-ledger");
+const { monthlyBudgetExposure } = require("./cost-ledger");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -299,19 +299,27 @@ function teamState(db, ventureId) {
 
 function spendState(db) {
   const budget = fromJson(get(db, "SELECT value FROM settings WHERE key = 'budget'")?.value, {});
+  const month = new Date().toISOString().slice(0, 7);
   const rows = all(
     db,
-    "SELECT status, COALESCE(SUM(amount_cents), 0) AS cents FROM costs GROUP BY status",
+    "SELECT status, COALESCE(SUM(amount_cents), 0) AS cents FROM costs WHERE substr(occurred_at, 1, 7) = ? GROUP BY status",
+    [month],
   );
   const byStatus = Object.fromEntries(rows.map((row) => [row.status, Number(row.cents || 0)]));
   const reservations = all(
     db,
-    "SELECT status, COALESCE(SUM(amount_cents), 0) AS cents FROM budget_reservations GROUP BY status",
+    "SELECT status, COALESCE(SUM(amount_cents), 0) AS cents FROM budget_reservations WHERE substr(reserved_at, 1, 7) = ? GROUP BY status",
+    [month],
   );
   const reservedByStatus = Object.fromEntries(reservations.map((row) => [row.status, Number(row.cents || 0)]));
+  const monthlyCap = Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents);
+  const exposure = monthlyBudgetExposure(db, { month });
   return {
     currency: budget.currency || CONFIG.currency,
-    monthlyCapCents: Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents),
+    month,
+    monthlyCapCents: monthlyCap,
+    exposureCents: exposure.totalCents,
+    availableCents: Math.max(0, monthlyCap - exposure.totalCents),
     reconciledCents: Number(byStatus.reconciled || 0),
     incurredEstimateCents: Number(byStatus.incurred_estimate || 0),
     unknownCents: Number(byStatus.unknown || 0),
@@ -429,9 +437,344 @@ function getBusinessTestsState(db) {
   };
 }
 
+const ACTIVE_RUN_STATUSES = new Set(["running", "started", "in_progress"]);
+
+function parseTask(row) {
+  return row ? {
+    ...row,
+    payload: fromJson(row.payload, {}),
+    result: fromJson(row.result, {}),
+  } : null;
+}
+
+function modelCallForRun(db, runRecord) {
+  if (runRecord.model_call_id) {
+    const exact = get(db, "SELECT * FROM model_calls WHERE id = ?", [runRecord.model_call_id]);
+    if (exact) return { ...exact, metadata: fromJson(exact.metadata, {}) };
+  }
+  if (!runRecord.task_id) return null;
+  const fallback = get(
+    db,
+    "SELECT * FROM model_calls WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
+    [runRecord.task_id],
+  );
+  return fallback ? { ...fallback, metadata: fromJson(fallback.metadata, {}) } : null;
+}
+
+function exactCostForRun(db, runRecord, task, modelCall) {
+  if (!task) return null;
+  const exact = get(db, "SELECT * FROM costs WHERE id = ?", [`cost_spend_${task.id}`]);
+  if (exact) return { ...exact, metadata: fromJson(exact.metadata, {}) };
+  if (!modelCall || !task.workflow_id) return null;
+  const candidates = all(
+    db,
+    "SELECT * FROM costs WHERE workflow_id = ? AND category IN ('live_ai_worker', 'live_research') ORDER BY occurred_at DESC",
+    [task.workflow_id],
+  ).map((row) => ({ ...row, metadata: fromJson(row.metadata, {}) }));
+  return candidates.find((row) => (
+    row.metadata?.modelCallId === modelCall.id
+    || (modelCall.provider_request_id && row.metadata?.providerResponseId === modelCall.provider_request_id)
+  )) || null;
+}
+
+function researchForRun(db, runRecord, runMetadata, task) {
+  const result = task?.result || {};
+  const researchId = runMetadata.researchRunId
+    || result.researchRunId
+    || result.research?.runId
+    || result.output?.researchRunId
+    || null;
+  const row = researchId
+    ? get(db, "SELECT * FROM research_runs WHERE id = ?", [researchId])
+    : task?.id
+      ? get(db, "SELECT * FROM research_runs WHERE task_id = ? ORDER BY created_at DESC LIMIT 1", [task.id])
+      : null;
+  if (!row) return { run: null, sources: [] };
+  const research = { ...row, metadata: fromJson(row.metadata, {}) };
+  const sources = all(
+    db,
+    "SELECT * FROM research_sources WHERE run_id = ? ORDER BY retrieved_at ASC, id ASC",
+    [row.id],
+  ).map((source) => {
+    const metadata = fromJson(source.metadata, {});
+    const providerGrounded = metadata.providerGrounded === true
+      || ["url_citation", "web_search_action_source"].includes(metadata.sourceType);
+    const grounded = Boolean(
+      source.url
+      && row.mode !== "dry-run"
+      && source.confidence !== "pending_live_research"
+      && metadata.liveCaptured === true
+      && providerGrounded
+    );
+    return { ...source, metadata, grounded };
+  });
+  return { run: research, sources };
+}
+
+function observedToolsForRun(db, runId) {
+  return all(
+    db,
+    `SELECT invocations.*, agent_tools.name AS tool_name
+     FROM agent_tool_invocations AS invocations
+     LEFT JOIN agent_tools ON agent_tools.id = invocations.tool_id
+     WHERE invocations.run_id = ?
+     ORDER BY invocations.requested_at ASC, invocations.id ASC`,
+    [runId],
+  ).map((row) => ({ ...row, metadata: fromJson(row.metadata, {}) }));
+}
+
+function executionKindForRun(runRecord, modelCall, task, cost) {
+  const runMode = String(runRecord.mode || "").toLowerCase();
+  const callMode = String(modelCall?.mode || "").toLowerCase();
+  const callStatus = String(modelCall?.status || "").toLowerCase();
+  const costMetadata = cost?.metadata || {};
+  const providerEvidence = Boolean(
+    callMode === "live"
+    || modelCall?.provider_request_id
+    || modelCall?.metadata?.responseId
+    || modelCall?.metadata?.agentSdkTraceId
+    || fromJson(runRecord.metadata, {}).agentSdkTraceId
+    || Number(runRecord.actual_cost_cents || 0) > 0
+    || Number(cost?.amount_cents || 0) > 0
+  );
+  if (callStatus === "not_called" || callMode === "dry-run" || (!providerEvidence && ["dry-run", "protected"].includes(runMode))) {
+    return "protected_rehearsal";
+  }
+  const outcomeUnknown = task?.outcome_status === "unknown"
+    || modelCall?.outcome_status === "unknown"
+    || ["unknown", "outcome_unknown"].includes(callStatus)
+    || costMetadata.outcomeUnknown === true
+    || fromJson(runRecord.metadata, {}).outcomeUnknown === true;
+  return outcomeUnknown ? "provider_outcome_unknown" : "model_backed";
+}
+
+function runExecutionContext(db, runRecord, taskRow = null) {
+  const runMetadata = fromJson(runRecord.metadata, {});
+  const task = taskRow ? parseTask(taskRow) : parseTask(
+    runRecord.task_id ? get(db, "SELECT * FROM tasks WHERE id = ?", [runRecord.task_id]) : null,
+  );
+  const modelCall = modelCallForRun(db, runRecord);
+  const cost = exactCostForRun(db, runRecord, task, modelCall);
+  const kind = executionKindForRun(runRecord, modelCall, task, cost);
+  const protectedRehearsal = kind === "protected_rehearsal";
+  const liveRequest = task?.payload?.liveSpendRequest || {};
+  const modelMetadata = modelCall?.metadata || {};
+  const usageCaptured = !protectedRehearsal && Boolean(
+    modelCall
+    && modelCall.status !== "not_called"
+    && (
+      Number(modelMetadata.totalTokens || 0) > 0
+      || Number(modelMetadata.usage?.total_tokens || 0) > 0
+      || Number(modelCall.input_tokens || 0) > 0
+      || Number(modelCall.output_tokens || 0) > 0
+    )
+  );
+  const actualTokens = {
+    input: usageCaptured ? Number(modelCall.input_tokens || 0) : null,
+    output: usageCaptured ? Number(modelCall.output_tokens || 0) : null,
+    total: usageCaptured
+      ? Number(modelMetadata.totalTokens ?? (Number(modelCall.input_tokens || 0) + Number(modelCall.output_tokens || 0)))
+      : null,
+  };
+  const plannedTokens = {
+    input: Number.isFinite(Number(liveRequest.maxInputTokens))
+      ? Number(liveRequest.maxInputTokens)
+      : protectedRehearsal && modelCall ? Number(modelCall.input_tokens || 0) : null,
+    output: Number.isFinite(Number(liveRequest.maxOutputTokens))
+      ? Number(liveRequest.maxOutputTokens)
+      : protectedRehearsal && modelCall ? Number(modelCall.output_tokens || 0) : null,
+  };
+  const reviewRow = get(db, "SELECT * FROM agent_pilot_reviews WHERE run_id = ?", [runRecord.id]);
+  const review = reviewRow ? { ...reviewRow, criteria: fromJson(reviewRow.criteria, {}) } : null;
+  const evaluationRow = get(db, "SELECT * FROM agent_eval_results WHERE run_id = ? ORDER BY created_at DESC LIMIT 1", [runRecord.id]);
+  const evaluation = evaluationRow ? {
+    ...evaluationRow,
+    criteria: fromJson(evaluationRow.criteria, []),
+    findings: fromJson(evaluationRow.findings, []),
+    metadata: fromJson(evaluationRow.metadata, {}),
+  } : null;
+  const traces = parseRows(all(
+    db,
+    "SELECT * FROM agent_trace_events WHERE run_id = ? ORDER BY sequence ASC",
+    [runRecord.id],
+  ));
+  const research = researchForRun(db, runRecord, runMetadata, task);
+  const tools = observedToolsForRun(db, runRecord.id);
+  const traceId = protectedRehearsal ? null : (
+    review?.trace_id
+    || modelMetadata.agentSdkTraceId
+    || runMetadata.agentSdkTraceId
+    || null
+  );
+  const responseId = protectedRehearsal ? null : (
+    modelCall?.provider_request_id
+    || modelMetadata.responseId
+    || runMetadata.liveWorkerResponseId
+    || null
+  );
+  const reconciledCents = protectedRehearsal
+    ? null
+    : modelCall?.cost_status === "reconciled"
+      ? Number(modelCall.reconciled_cost_cents || 0)
+      : cost?.status === "reconciled"
+        ? Number(cost.amount_cents || 0)
+        : Number(review?.reconciled_cost_cents || 0) > 0
+          ? Number(review.reconciled_cost_cents)
+          : null;
+  const actualCostCaptured = !protectedRehearsal && Boolean(
+    reconciledCents !== null
+    || Number(modelCall?.actual_cost_cents || 0) > 0
+    || Number(runRecord.actual_cost_cents || 0) > 0
+  );
+  const actualCostCents = actualCostCaptured
+    ? reconciledCents !== null
+      ? reconciledCents
+      : Number(modelCall?.actual_cost_cents || 0)
+        || Number(cost?.amount_cents || 0)
+        || Number(runRecord.actual_cost_cents || 0)
+    : null;
+  return {
+    runMetadata,
+    task,
+    modelCall,
+    cost,
+    kind,
+    protectedRehearsal,
+    providerAttempted: !protectedRehearsal && Boolean(
+      modelCall?.mode === "live"
+      || responseId
+      || traceId
+      || Number(runRecord.actual_cost_cents || 0) > 0
+      || Number(cost?.amount_cents || 0) > 0
+    ),
+    liveRequest,
+    actualTokens,
+    plannedTokens,
+    actualCostCents,
+    reconciledCents,
+    costStatus: protectedRehearsal
+      ? "no_provider_call"
+      : modelCall?.cost_status || cost?.status || (actualCostCaptured ? "recorded" : "not_captured"),
+    traceId,
+    responseId,
+    review,
+    evaluation,
+    traces,
+    tools,
+    research,
+  };
+}
+
+function executionLabel(kind) {
+  return {
+    protected_rehearsal: "Internal rehearsal",
+    model_backed: "OpenAI used",
+    provider_outcome_unknown: "Outcome needs review",
+  }[kind] || "Run recorded";
+}
+
+function agentRunSummary(db, row) {
+  const context = runExecutionContext(db, row);
+  const latestTrace = context.traces.at(-1) || null;
+  const active = ACTIVE_RUN_STATUSES.has(String(row.status || "").toLowerCase());
+  const error = context.task?.error || context.runMetadata.error || (
+    ["failed", "needs_attention"].includes(row.status) ? row.output_summary : null
+  );
+  return {
+    id: row.id,
+    executionKind: context.kind,
+    executionLabel: executionLabel(context.kind),
+    providerAttempted: context.providerAttempted,
+    status: row.status,
+    active,
+    workerId: row.agent_id,
+    workerName: row.worker_name || row.agent_id,
+    taskId: row.task_id,
+    taskTitle: row.task_title || context.runMetadata.taskTitle || "AI worker run",
+    summary: context.task?.result?.output?.summary || row.output_summary || "No result summary was captured.",
+    error: error || null,
+    provider: context.protectedRehearsal ? null : (context.modelCall?.metadata?.provider || context.liveRequest.provider || context.modelCall?.provider || null),
+    requestedProvider: context.liveRequest.provider || context.modelCall?.provider || null,
+    model: context.protectedRehearsal ? null : (context.modelCall?.selected_model || context.liveRequest.model || null),
+    requestedModel: context.liveRequest.model || context.modelCall?.selected_model || null,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    durationMs: elapsedMilliseconds(row.started_at, row.completed_at),
+    currentStage: latestTrace ? { title: latestTrace.title, detail: latestTrace.detail, at: latestTrace.ts } : null,
+    actualTokens: context.actualTokens,
+    plannedTokens: context.plannedTokens,
+    cost: {
+      status: context.costStatus,
+      actualCents: context.actualCostCents,
+      reconciledCents: context.reconciledCents,
+      estimatedCents: Number(context.modelCall?.estimated_cost_cents || row.estimated_cost_cents || 0),
+      plannedCapCents: Number(context.liveRequest.maxCostCents || context.liveRequest.estimatedCostCents || context.task?.cost_budget_cents || 0),
+      currency: context.cost?.currency || CONFIG.currency,
+    },
+    tools: {
+      requested: Array.isArray(context.liveRequest.tools) ? context.liveRequest.tools : [],
+      observedCount: context.tools.length,
+    },
+    groundedSourceCount: context.research.sources.filter((source) => source.grounded).length,
+    reviewStatus: context.review?.operator_verdict || context.evaluation?.status || "not_reviewed",
+    traceId: context.traceId,
+    responseId: context.responseId,
+    updatedAt: row.completed_at || latestTrace?.ts || row.started_at,
+  };
+}
+
+function getAgentRunsState(db, filters = {}) {
+  const limit = Math.min(100, Math.max(1, Number(filters.limit || 50)));
+  const rows = all(
+    db,
+    `SELECT agent_runs.*, agent_definitions.name AS worker_name,
+            tasks.title AS task_title, tasks.status AS task_status,
+            tasks.kind, tasks.agent, tasks.payload, tasks.result, tasks.error,
+            tasks.outcome_status, tasks.cost_budget_cents, tasks.workflow_id AS task_workflow_id,
+            tasks.created_at AS task_created_at, tasks.updated_at AS task_updated_at
+     FROM agent_runs
+     LEFT JOIN agent_definitions ON agent_definitions.id = agent_runs.agent_id
+     LEFT JOIN tasks ON tasks.id = agent_runs.task_id
+     ORDER BY agent_runs.started_at DESC, agent_runs.id DESC
+     LIMIT 500`,
+  );
+  const summaries = rows.map((row) => agentRunSummary(db, row));
+  const execution = String(filters.execution || "all");
+  const state = String(filters.state || "all");
+  const status = String(filters.status || "all");
+  const worker = String(filters.worker || "all");
+  const matches = summaries.filter((runRecord) => {
+    if (execution === "live" && runRecord.executionKind === "protected_rehearsal") return false;
+    if (!["all", "live"].includes(execution) && runRecord.executionKind !== execution) return false;
+    if (state === "active" && !runRecord.active) return false;
+    if (state === "history" && runRecord.active) return false;
+    if (status !== "all" && runRecord.status !== status) return false;
+    if (worker !== "all" && runRecord.workerId !== worker) return false;
+    return true;
+  });
+  return {
+    generatedAt: new Date().toISOString(),
+    filters: { execution, state, status, worker, limit },
+    counts: {
+      total: summaries.length,
+      active: summaries.filter((item) => item.active).length,
+      modelBacked: summaries.filter((item) => item.executionKind === "model_backed").length,
+      protectedRehearsals: summaries.filter((item) => item.executionKind === "protected_rehearsal").length,
+      needsReview: summaries.filter((item) => item.executionKind === "provider_outcome_unknown" || item.reviewStatus === "pending").length,
+      reconciledCostCents: summaries.reduce((total, item) => total + Number(item.cost.reconciledCents || 0), 0),
+    },
+    totalMatching: matches.length,
+    runs: matches.slice(0, limit),
+  };
+}
+
 function getAiTeamState(db) {
   const commercial = commercialFoundationState(db);
-  return { activeVenture: commercial.venture, agents: teamState(db, commercial.venture.id), pilot: getPilotState(db) };
+  return {
+    activeVenture: commercial.venture,
+    agents: teamState(db, commercial.venture.id),
+    liveRuns: getAgentRunsState(db, { execution: "all", limit: 100 }),
+  };
 }
 
 function humanActivityMessage(event) {
@@ -553,27 +896,13 @@ function elapsedMilliseconds(startedAt, completedAt) {
 function getAgentRunDetail(db, id) {
   const runRecord = get(db, "SELECT * FROM agent_runs WHERE id = ?", [id]);
   if (!runRecord) return null;
-  const runMetadata = fromJson(runRecord.metadata, {});
+  const context = runExecutionContext(db, runRecord);
+  const runMetadata = context.runMetadata;
   const definition = get(db, "SELECT id, name, role FROM agent_definitions WHERE id = ?", [runRecord.agent_id]);
-  const taskRow = runRecord.task_id ? get(db, "SELECT * FROM tasks WHERE id = ?", [runRecord.task_id]) : null;
-  const task = taskRow ? {
-    ...taskRow,
-    payload: fromJson(taskRow.payload, {}),
-    result: fromJson(taskRow.result, {}),
-  } : null;
-  const modelCallRow = runRecord.model_call_id
-    ? get(db, "SELECT * FROM model_calls WHERE id = ?", [runRecord.model_call_id])
-    : get(db, "SELECT * FROM model_calls WHERE task_id = ? ORDER BY created_at DESC LIMIT 1", [runRecord.task_id]);
-  const modelCall = modelCallRow ? { ...modelCallRow, metadata: fromJson(modelCallRow.metadata, {}) } : null;
-  const evaluationRow = get(db, "SELECT * FROM agent_eval_results WHERE run_id = ? ORDER BY created_at DESC LIMIT 1", [id]);
-  const evaluation = evaluationRow ? {
-    ...evaluationRow,
-    criteria: fromJson(evaluationRow.criteria, []),
-    findings: fromJson(evaluationRow.findings, []),
-    metadata: fromJson(evaluationRow.metadata, {}),
-  } : null;
-  const reviewRow = get(db, "SELECT * FROM agent_pilot_reviews WHERE run_id = ?", [id]);
-  const review = reviewRow ? { ...reviewRow, criteria: fromJson(reviewRow.criteria, {}) } : null;
+  const task = context.task;
+  const modelCall = context.modelCall;
+  const evaluation = context.evaluation;
+  const review = context.review;
   const fixtureId = review?.fixture_id || task?.payload?.pilotFixture?.id || null;
   const fixtureRow = fixtureId ? get(
     db,
@@ -587,22 +916,11 @@ function getAgentRunDetail(db, id) {
     sources: fromJson(fixtureRow.sources, []),
     constraints: fromJson(fixtureRow.constraints, {}),
   } : null;
-  const traces = parseRows(all(
-    db,
-    "SELECT * FROM agent_trace_events WHERE run_id = ? ORDER BY sequence ASC",
-    [id],
-  ));
   const handoffs = parseRows(all(
     db,
     "SELECT * FROM agent_handoffs WHERE from_run_id = ? ORDER BY created_at ASC",
     [id],
   ));
-  const costRow = task ? get(
-    db,
-    "SELECT * FROM costs WHERE id = ? OR (workflow_id = ? AND category = 'live_ai_worker') ORDER BY occurred_at DESC LIMIT 1",
-    [`cost_spend_${task.id}`, task.workflow_id],
-  ) : null;
-  const cost = costRow ? { ...costRow, metadata: fromJson(costRow.metadata, {}) } : null;
   const approvalId = task?.payload?.liveSpendRequest?.approvalId || null;
   const approval = approvalId ? get(db, "SELECT id, status, scope_hash, requested_at, decided_at, consumed_at FROM approvals WHERE id = ?", [approvalId]) : null;
   const output = task?.result?.output || {};
@@ -618,16 +936,62 @@ function getAgentRunDetail(db, id) {
     risks: output.risks || [],
   };
   const approvedTracePolicy = task?.payload?.liveSpendRequest?.tracePolicy || null;
-  const tracePolicy = approvedTracePolicy || {
-    providerResponseStored: false,
-    providerTraceContent: false,
-    localReviewStored: true,
-    dataClass: "legacy_controlled_fixture",
-    purpose: "The original run used privacy-first settings; its provider response cannot be retrieved from the Platform.",
-  };
-  const inputTokens = Number(modelCall?.input_tokens || 0);
-  const outputTokens = Number(modelCall?.output_tokens || 0);
-  const reconciledCostCents = Number(modelCall?.reconciled_cost_cents || modelCall?.actual_cost_cents || (cost?.status === "reconciled" ? cost.amount_cents : 0) || 0);
+  const tracePolicy = context.protectedRehearsal
+    ? {
+        providerResponseStored: null,
+        providerTraceContent: null,
+        localReviewStored: true,
+        dataClass: "internal_rehearsal",
+        purpose: "No provider call was made; only the local rehearsal record exists.",
+      }
+    : approvedTracePolicy || {
+        providerResponseStored: false,
+        providerTraceContent: false,
+        localReviewStored: true,
+        dataClass: "legacy_controlled_input",
+        purpose: "The provider trace policy was not captured for this earlier run. Jarvis retained the local structured record.",
+      };
+  const suppliedEvidence = fixture?.sources?.length
+    ? fixture.sources.map((source) => ({
+        id: source.id || null,
+        title: source.title || "Evidence item",
+        summary: source.summary || "",
+        sourceType: source.sourceType || "supplied evidence",
+        url: source.url || null,
+      }))
+    : (task?.payload?.protectedEvidence || []).map((item, index) => ({
+        id: `supplied-${index + 1}`,
+        title: `Supplied evidence ${index + 1}`,
+        summary: typeof item === "string" ? item : item.summary || item.title || "Evidence supplied to the worker.",
+        sourceType: "supplied evidence",
+        url: typeof item === "object" ? item.url || null : null,
+      }));
+  const observedTools = context.tools.map((tool) => ({
+    id: tool.id,
+    toolId: tool.tool_id,
+    name: tool.tool_name || tool.metadata?.toolName || tool.tool_id,
+    requestedMode: tool.requested_mode,
+    status: tool.status,
+    decision: tool.decision,
+    inputSummary: tool.input_summary,
+    outputSummary: tool.output_summary,
+    requestedAt: tool.requested_at,
+    resolvedAt: tool.resolved_at,
+  }));
+  const sources = context.research.sources.map((source) => ({
+    id: source.id,
+    title: source.title,
+    url: source.url,
+    publisher: source.publisher,
+    publishedAt: source.published_at,
+    retrievedAt: source.retrieved_at,
+    relevance: source.relevance,
+    confidence: source.confidence,
+    grounded: source.grounded,
+  }));
+  const runError = task?.error || runMetadata.error || (
+    ["failed", "needs_attention"].includes(runRecord.status) ? runRecord.output_summary : null
+  );
 
   return {
     schema: "jarvis_agent_run_review_v1",
@@ -639,7 +1003,10 @@ function getAgentRunDetail(db, id) {
       taskId: runRecord.task_id,
       taskTitle: task?.title || runMetadata.taskTitle || "AI worker run",
       status: runRecord.status,
+      executionKind: context.kind,
+      executionLabel: executionLabel(context.kind),
       summary: output.summary || runRecord.output_summary || "No result summary was captured.",
+      error: runError || null,
       startedAt: runRecord.started_at,
       completedAt: runRecord.completed_at,
       durationMs: elapsedMilliseconds(runRecord.started_at, runRecord.completed_at),
@@ -649,13 +1016,7 @@ function getAgentRunDetail(db, id) {
       question: fixture?.question || task?.payload?.subject || "No question was recorded.",
       buyer: fixture?.buyer || output.businessDecision?.buyer || "No buyer was recorded.",
       hypothesis: fixture?.hypothesis || output.businessDecision?.continuousImprovement?.hypothesis || "No hypothesis was recorded.",
-      suppliedEvidence: (fixture?.sources || []).map((source) => ({
-        id: source.id || null,
-        title: source.title || "Evidence item",
-        summary: source.summary || "",
-        sourceType: source.sourceType || "unknown",
-        url: source.url || null,
-      })),
+      suppliedEvidence,
       supportingEvidence: recommendation.evidence || [],
       counterevidence: recommendation.counterevidence || [],
       assumptions: recommendation.assumptions || [],
@@ -679,16 +1040,33 @@ function getAgentRunDetail(db, id) {
       reviewedAt: review.reviewed_at,
     } : null,
     execution: {
-      provider: modelCall?.metadata?.provider || review?.provider || runRecord.mode,
-      model: modelCall?.selected_model || "Not recorded",
-      responseId: modelCall?.provider_request_id || modelCall?.metadata?.responseId || null,
-      traceId: review?.trace_id || modelCall?.metadata?.agentSdkTraceId || runMetadata.agentSdkTraceId || null,
-      inputTokens,
-      outputTokens,
-      totalTokens: Number(modelCall?.metadata?.totalTokens || inputTokens + outputTokens),
-      rawResponses: Number(modelCall?.metadata?.rawResponseCount || 0),
-      interruptions: Number(modelCall?.metadata?.interruptionCount || 0),
-      sdkTools: task?.payload?.liveSpendRequest?.tools || [],
+      kind: context.kind,
+      label: executionLabel(context.kind),
+      providerAttempted: context.providerAttempted,
+      provider: context.protectedRehearsal ? null : (modelCall?.metadata?.provider || review?.provider || context.liveRequest.provider || modelCall?.provider || null),
+      requestedProvider: context.liveRequest.provider || modelCall?.provider || null,
+      model: context.protectedRehearsal ? null : (modelCall?.selected_model || context.liveRequest.model || null),
+      requestedModel: context.liveRequest.model || modelCall?.selected_model || null,
+      responseId: context.responseId,
+      traceId: context.traceId,
+      inputTokens: context.actualTokens.input,
+      outputTokens: context.actualTokens.output,
+      totalTokens: context.actualTokens.total,
+      actualTokens: context.actualTokens,
+      plannedTokens: context.plannedTokens,
+      rawResponses: context.protectedRehearsal ? null : Number(modelCall?.metadata?.rawResponseCount || 0),
+      interruptions: context.protectedRehearsal ? null : Number(modelCall?.metadata?.interruptionCount || 0),
+      sdkTools: Array.isArray(context.liveRequest.tools) ? context.liveRequest.tools : [],
+      requestedTools: Array.isArray(context.liveRequest.tools) ? context.liveRequest.tools : [],
+      observedTools,
+      sources,
+      groundedSources: sources.filter((source) => source.grounded),
+      research: context.research.run ? {
+        id: context.research.run.id,
+        status: context.research.run.status,
+        mode: context.research.run.mode,
+        summary: context.research.run.summary,
+      } : null,
       sdkHandoffs: 0,
       runtimeHandoffs: handoffs.map((handoff) => ({
         id: handoff.id,
@@ -700,14 +1078,19 @@ function getAgentRunDetail(db, id) {
       externalEffects: task?.payload?.liveSpendRequest?.effects || [],
       tracePolicy: {
         ...tracePolicy,
-        legacyPolicyInferred: approvedTracePolicy === null,
+        legacyPolicyInferred: !context.protectedRehearsal && approvedTracePolicy === null,
       },
       cost: {
-        status: modelCall?.cost_status || cost?.status || "not_recorded",
+        status: context.costStatus,
+        actualCents: context.actualCostCents,
         estimatedCents: Number(modelCall?.estimated_cost_cents || 0),
-        reconciledCents: reconciledCostCents,
-        currency: cost?.currency || CONFIG.currency,
+        plannedCapCents: Number(context.liveRequest.maxCostCents || context.liveRequest.estimatedCostCents || task?.cost_budget_cents || 0),
+        reconciledCents: context.reconciledCents,
+        providerSpendOccurred: !context.protectedRehearsal && context.actualCostCents !== null,
+        currency: context.cost?.currency || CONFIG.currency,
       },
+      output,
+      error: runError || null,
     },
     quality: evaluation ? {
       status: evaluation.status,
@@ -721,8 +1104,9 @@ function getAgentRunDetail(db, id) {
       fixtureHash: fixture?.fixture_hash || task?.payload?.liveSpendRequest?.fixtureHash || null,
       approval,
       modelCallId: modelCall?.id || null,
+      researchRunId: context.research.run?.id || null,
       structuredOutput: output,
-      traceEvents: traces,
+      traceEvents: context.traces,
     },
   };
 }
@@ -730,6 +1114,7 @@ function getAgentRunDetail(db, id) {
 module.exports = {
   getAgentDetail,
   getAgentRunDetail,
+  getAgentRunsState,
   getAiTeamState,
   getBusinessTestsState,
   getCockpitState,

@@ -5,9 +5,16 @@ const store = {
   commandMode: "plan_only",
   decisionTab: "approvals",
   testTab: "candidate",
+  aiTeamTab: "team",
+  runFilter: "live",
   systemTab: "health",
   showArchivedOutputs: false,
   reloadTimer: null,
+  runPollTimer: null,
+  runPollBusy: false,
+  drawerState: null,
+  drawerReturnFocus: null,
+  pdfReturnFocus: null,
 };
 
 const viewConfig = {
@@ -69,6 +76,14 @@ function humanStatus(value) {
     completed_live: "Research complete",
     completed_live_needs_source_review: "Source review needed",
     blocked: "Needs attention",
+    protected_rehearsal: "Internal rehearsal",
+    model_backed: "OpenAI used",
+    provider_outcome_unknown: "Outcome needs review",
+    no_provider_call: "No provider charge",
+    not_captured: "Not captured",
+    not_reviewed: "Not reviewed",
+    passed: "Passed",
+    useful: "Useful",
   };
   return labels[key] || key.replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
@@ -96,6 +111,39 @@ function shortDate(value) {
   return new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short", year: "numeric" }).format(date);
 }
 
+function dateTime(value) {
+  if (!value) return "Not captured";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat("en-AU", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
+}
+
+function durationLabel(milliseconds) {
+  if (milliseconds === null || milliseconds === undefined) return "In progress";
+  const seconds = Number(milliseconds) / 1000;
+  return seconds < 60 ? `${seconds.toFixed(seconds < 10 ? 1 : 0)} sec` : `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} sec`;
+}
+
+function tokenCount(value) {
+  return value === null || value === undefined ? "Not captured" : Number(value).toLocaleString("en-AU");
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return ["http:", "https:"].includes(url.protocol) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function compact(value, max = 180) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
@@ -105,10 +153,16 @@ async function fetchJson(url, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
   const headers = { "content-type": "application/json", ...(options.headers || {}) };
   if (!["GET", "HEAD"].includes(method) && store.csrfToken) headers["x-jarvis-csrf"] = store.csrfToken;
-  const response = await fetch(url, { ...options, headers });
+  const response = await fetch(url, { credentials: "same-origin", ...options, headers });
   let payload;
   try { payload = await response.json(); } catch { payload = {}; }
-  if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}.`);
+  if (!response.ok) {
+    const error = new Error(response.status === 401
+      ? "Jarvis is not signed in. Start Jarvis with its launcher, then use the dashboard window it opens."
+      : payload.error || `Request failed with status ${response.status}.`);
+    error.status = response.status;
+    throw error;
+  }
   return payload;
 }
 
@@ -246,7 +300,7 @@ function renderCockpit() {
         <div class="metric mint"><span>Active venture</span><strong>${escapeHtml(data.activeVenture.name)}</strong><small>${escapeHtml(humanStatus(data.activeVenture.lifecycle_stage))}</small></div>
         <div class="metric sky"><span>Current test</span><strong>${test ? escapeHtml(test.name) : "Not started"}</strong><small>${test ? escapeHtml(humanStatus(test.status)) : "Evidence selection comes first"}</small></div>
         <div class="metric ${economics.cashContributionCents >= 0 ? "mint" : "coral"}"><span>Cash contribution</span><strong>${money(economics.cashContributionCents)}</strong><small>${economics.independentBuyers} independent buyer${economics.independentBuyers === 1 ? "" : "s"}</small></div>
-        <div class="metric amber"><span>Monthly AI and tool cap</span><strong>${money(spend.monthlyCapCents, spend.currency)}</strong><small>${money(spend.incurredEstimateCents + spend.unknownCents, spend.currency)} estimated or unresolved</small></div>
+        <div class="metric amber"><span>Monthly AI and tool cap</span><strong>${money(spend.monthlyCapCents, spend.currency)}</strong><small>${money(spend.exposureCents, spend.currency)} used or committed; ${money(spend.availableCents, spend.currency)} available</small></div>
       </div>
     </section>
     ${renderWeeklyDigest(data.weeklyDigest)}
@@ -300,7 +354,7 @@ function renderDecisions() {
   } else if (store.decisionTab === "suggestions") {
     body = data.suggestions.length ? `<div class="plain-list">${data.suggestions.map((item) => `<article class="plain-row"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p></article>`).join("")}</div>` : emptyState("No suggestions at the moment", "The team will surface non-urgent improvements here.", "lightbulb");
   } else {
-    body = data.history.length ? `<div class="table-wrap"><table><thead><tr><th>Decision</th><th>Outcome</th><th>Note</th><th>Date</th></tr></thead><tbody>${data.history.map((item) => `<tr><td><strong>${escapeHtml(item.title)}</strong></td><td>${badge(item.decision)}</td><td>${escapeHtml(item.note || "No note")}</td><td>${escapeHtml(shortDate(item.decidedAt))}</td></tr>`).join("")}</tbody></table></div>` : emptyState("No decision history yet", "Decisions will become the durable record of how the business was steered.", "history");
+    body = data.history.length ? `<div class="table-wrap"><table><thead><tr><th>Decision</th><th>Outcome</th><th>Note</th><th>Date</th></tr></thead><tbody>${data.history.map((item) => `<tr><td data-label="Decision"><strong>${escapeHtml(item.title)}</strong></td><td data-label="Outcome">${badge(item.decision)}</td><td data-label="Note">${escapeHtml(item.note || "No note")}</td><td data-label="Date">${escapeHtml(shortDate(item.decidedAt))}</td></tr>`).join("")}</tbody></table></div>` : emptyState("No decision history yet", "Decisions will become the durable record of how the business was steered.", "history");
   }
   const sectionTitle = store.decisionTab === "approvals" ? "Decisions" : humanStatus(store.decisionTab);
   $("#view").innerHTML = `<div class="view-stack">${decisionTabs()}<section>${sectionHeading(sectionTitle, store.decisionTab === "approvals" ? "Only choices with a material consequence appear here." : "This information is available without demanding an approval.")}${body}</section></div>`;
@@ -353,33 +407,83 @@ function initials(name) {
   return String(name || "AI").split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase();
 }
 
-function renderAiTeam() {
-  const data = store.data["ai-team"];
-  const groups = Object.keys(agentGroupLabels);
-  const pilot = data.pilot || {};
-  const nextFixture = pilot.fixtures?.find((fixture) => ["ready", "reviewed"].includes(fixture.status));
-  const pendingReview = pilot.reviews?.find((review) => review.operator_verdict === "pending");
-  const pilotAction = pendingReview ? `<div class="pilot-review-form">
-      <button class="secondary-button" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(pendingReview.run_id)}">${icon("scan-search")}Review what the agent did</button>
-      <select id="pilot-usefulness-score" aria-label="Commercial usefulness score"><option value="5">5 - Excellent</option><option value="4">4 - Useful</option><option value="3" selected>3 - Adequate</option><option value="2">2 - Weak</option><option value="1">1 - Not useful</option></select>
-      <input id="pilot-review-note" type="text" placeholder="Short review note" aria-label="Pilot review note">
-      <div class="work-actions"><button class="primary-button" data-action="review-pilot" data-run-id="${escapeHtml(pendingReview.run_id)}" data-verdict="useful">${icon("check")}Useful</button><button class="secondary-button" data-action="review-pilot" data-run-id="${escapeHtml(pendingReview.run_id)}" data-verdict="changes_required">${icon("pencil-line")}Needs changes</button></div>
-    </div>` : nextFixture ? `<button class="secondary-button" data-action="prepare-pilot" data-fixture-id="${escapeHtml(nextFixture.id)}">${icon("flask-conical")}Prepare controlled proof</button>` : badge("Waiting");
-  $("#view").innerHTML = `<div class="view-stack">
-    <section class="pilot-panel">
-      <div><span class="section-label">Demand Validator proof</span><h2>Reasoning over supplied evidence</h2><p>${escapeHtml(pilot.nextAction || "The first AI capability remains supervised.")}</p></div>
-      <div class="pilot-progress"><strong>${pilot.capability?.consecutive_passes || 0}/${pilot.capability?.required_passes || 5}</strong><span>reviewed successes</span></div>
-      ${pilotAction}
+function aiTeamTabs() {
+  return `<div class="view-tabs ai-team-tabs" role="tablist" aria-label="AI Team views">
+    <button role="tab" aria-selected="${store.aiTeamTab === "team"}" class="${store.aiTeamTab === "team" ? "active" : ""}" data-action="ai-team-tab" data-tab="team">Team</button>
+    <button role="tab" aria-selected="${store.aiTeamTab === "runs"}" class="${store.aiTeamTab === "runs" ? "active" : ""}" data-action="ai-team-tab" data-tab="runs">Live Runs</button>
+  </div>`;
+}
+
+function filteredAgentRuns(state) {
+  const runs = state?.runs || [];
+  if (store.runFilter === "all") return runs;
+  if (store.runFilter === "live") return runs.filter((run) => run.executionKind !== "protected_rehearsal");
+  return runs.filter((run) => run.executionKind === store.runFilter);
+}
+
+function renderAgentRunRow(run) {
+  const protectedRun = run.executionKind === "protected_rehearsal";
+  const actualTokens = run.actualTokens?.total === null || run.actualTokens?.total === undefined
+    ? "Not captured"
+    : `${tokenCount(run.actualTokens.total)} tokens`;
+  const cost = protectedRun
+    ? "No provider charge"
+    : run.cost?.actualCents === null || run.cost?.actualCents === undefined
+      ? "Cost not captured"
+      : `${money(run.cost.actualCents, run.cost.currency)} ${humanStatus(run.cost.status)}`;
+  const selected = store.drawerState?.kind === "agent-run" && store.drawerState.id === run.id;
+  return `<button class="run-row${selected ? " selected" : ""}" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(run.id)}" aria-current="${selected ? "true" : "false"}">
+    <span class="run-kind-icon ${escapeHtml(run.executionKind)}">${icon(protectedRun ? "shield-check" : run.executionKind === "provider_outcome_unknown" ? "triangle-alert" : run.active ? "loader-circle" : "sparkles")}</span>
+    <span class="run-main"><span class="run-title-line"><strong>${escapeHtml(run.taskTitle)}</strong>${badge(run.executionKind)}</span><small>${escapeHtml(run.workerName)} · ${escapeHtml(dateTime(run.startedAt))}</small>${run.currentStage && run.active ? `<em>${escapeHtml(run.currentStage.title)}</em>` : ""}</span>
+    <span class="run-facts"><span>${badge(run.status)}</span><small>${escapeHtml(actualTokens)}</small><small>${escapeHtml(cost)}</small></span>
+    ${icon("chevron-right")}
+  </button>`;
+}
+
+function renderLiveRuns(data) {
+  const state = data.liveRuns || { counts: {}, runs: [] };
+  const counts = state.counts || {};
+  const runs = filteredAgentRuns(state);
+  const activeRuns = (state.runs || []).filter((run) => run.active && run.executionKind !== "protected_rehearsal");
+  const filters = [
+    ["live", "OpenAI runs"],
+    ["model_backed", "Completed normally"],
+    ["provider_outcome_unknown", "Needs review"],
+    ["protected_rehearsal", "Internal rehearsals"],
+    ["all", "All records"],
+  ];
+  return `<div class="view-stack live-runs-view">
+    <section class="run-metrics" aria-label="AI run summary">
+      <div><span>Running now</span><strong>${activeRuns.length}</strong></div>
+      <div><span>OpenAI runs</span><strong>${Number(counts.modelBacked || 0)}</strong></div>
+      <div><span>Need review</span><strong>${Number(counts.needsReview || 0)}</strong></div>
+      <div><span>Confirmed AI cost</span><strong>${money(counts.reconciledCostCents || 0)}</strong></div>
     </section>
-    <section>${sectionHeading("The working team", "All workers are visible. Capability is earned per exact task, never granted to an agent globally.")}
-      <div class="agent-groups">${groups.map((group) => {
-        const agents = data.agents.filter((agent) => agent.group === group);
-        return `<section class="agent-group"><span class="section-label">${escapeHtml(agentGroupLabels[group])}</span><div class="agent-grid">${agents.map((agent) => `<button class="agent-card" data-action="open-drawer" data-kind="agent" data-id="${escapeHtml(agent.id)}">
-          <span class="agent-initial">${escapeHtml(initials(agent.name))}</span><div><h3>${escapeHtml(agent.name)}</h3><p>${escapeHtml(agent.assignment)}</p></div><span class="agent-meta">${badge(agent.status)}<small>${agent.autonomy.passes}/${agent.autonomy.required} for best proven skill</small></span>
-        </button>`).join("")}</div></section>`;
-      }).join("")}</div>
+    ${activeRuns.length ? `<section class="active-run-strip">${sectionHeading("Working now", "These are genuine AI executions currently in progress.")}${activeRuns.map(renderAgentRunRow).join("")}</section>` : ""}
+    <section>
+      ${sectionHeading("Run history", "See what genuinely used OpenAI, what stayed internal, and what requires reconciliation.")}
+      <div class="run-filters" role="group" aria-label="Filter AI runs">${filters.map(([id, label]) => `<button class="${store.runFilter === id ? "active" : ""}" data-action="run-filter" data-filter="${id}">${escapeHtml(label)}</button>`).join("")}</div>
+      <div class="run-list">${runs.length ? runs.map(renderAgentRunRow).join("") : emptyState(
+        store.runFilter === "live" ? "No live AI runs yet" : "No runs match this view",
+        store.runFilter === "live" ? "A genuine OpenAI worker run will appear here as soon as execution starts." : "Choose another run view to inspect the available records.",
+        "activity",
+      )}</div>
     </section>
   </div>`;
+}
+
+function renderAiTeam() {
+  const data = store.data["ai-team"] || { agents: [], liveRuns: { counts: {}, runs: [] } };
+  const groups = Object.keys(agentGroupLabels);
+  const body = store.aiTeamTab === "runs" ? renderLiveRuns(data) : `<section>${sectionHeading("The working team", "Every worker is visible. Each capability remains supervised until its exact skill is proven.")}
+    <div class="agent-groups">${groups.map((group) => {
+      const agents = data.agents.filter((agent) => agent.group === group);
+      return `<section class="agent-group"><span class="section-label">${escapeHtml(agentGroupLabels[group])}</span><div class="agent-grid">${agents.map((agent) => `<button class="agent-card" data-action="open-drawer" data-kind="agent" data-id="${escapeHtml(agent.id)}">
+        <span class="agent-initial">${escapeHtml(initials(agent.name))}</span><div><h3>${escapeHtml(agent.name)}</h3><p>${escapeHtml(agent.assignment)}</p></div><span class="agent-meta">${badge(agent.status)}<small>${agent.autonomy.passes}/${agent.autonomy.required} for best proven skill</small></span>
+      </button>`).join("")}</div></section>`;
+    }).join("")}</div>
+  </section>`;
+  $("#view").innerHTML = `<div class="view-stack">${aiTeamTabs()}${body}</div>`;
 }
 
 function systemTabs() {
@@ -403,7 +507,7 @@ function renderSystemPanel(data) {
     </div>`;
   }
   if (store.systemTab === "queue") {
-    return data.queue.length ? `<div class="table-wrap"><table><thead><tr><th>Work</th><th>Worker</th><th>Status</th><th>Updated</th><th>Action</th></tr></thead><tbody>${data.queue.map((item) => `<tr><td><strong>${escapeHtml(item.title)}</strong></td><td>${escapeHtml(humanStatus(item.agent))}</td><td>${badge(item.approval_id && ["blocked", "waiting_approval"].includes(item.status) ? "Waiting for decision" : item.status)}</td><td>${escapeHtml(shortDate(item.updated_at))}</td><td>${item.can_run ? `<button class="secondary-button" data-action="run-task" data-id="${escapeHtml(item.id)}">${icon("play")}Run now</button>` : ["blocked", "waiting_approval", "needs_attention"].includes(item.status) ? `<button class="text-button" data-view="decisions">Review</button>` : `<span class="muted-text">After earlier work</span>`}</td></tr>`).join("")}</tbody></table></div>` : emptyState("The queue is empty", "Create internal work from the Command Center when there is a clear business purpose.", "list-checks");
+    return data.queue.length ? `<div class="table-wrap"><table><thead><tr><th>Work</th><th>Worker</th><th>Status</th><th>Updated</th><th>Action</th></tr></thead><tbody>${data.queue.map((item) => `<tr><td data-label="Work"><strong>${escapeHtml(item.title)}</strong></td><td data-label="Worker">${escapeHtml(humanStatus(item.agent))}</td><td data-label="Status">${badge(item.approval_id && ["blocked", "waiting_approval"].includes(item.status) ? "Waiting for decision" : item.status)}</td><td data-label="Updated">${escapeHtml(shortDate(item.updated_at))}</td><td data-label="Action">${item.can_run ? `<button class="secondary-button" data-action="run-task" data-id="${escapeHtml(item.id)}">${icon("play")}Run now</button>` : ["blocked", "waiting_approval", "needs_attention"].includes(item.status) ? `<button class="text-button" data-view="decisions">Review</button>` : `<span class="muted-text">After earlier work</span>`}</td></tr>`).join("")}</tbody></table></div>` : emptyState("The queue is empty", "Create internal work from the Command Center when there is a clear business purpose.", "list-checks");
   }
   if (store.systemTab === "spend") {
     const spend = data.spend;
@@ -448,24 +552,103 @@ function renderView() {
   else if (store.view === "ai-team") renderAiTeam();
   else renderSystem();
   refreshIcons();
+  syncLiveRunPolling();
+}
+
+async function refreshLiveRuns() {
+  if (store.runPollBusy || store.view !== "ai-team" || store.aiTeamTab !== "runs") return;
+  store.runPollBusy = true;
+  try {
+    const liveRuns = await fetchJson("/api/agent-runs?limit=100");
+    store.data["ai-team"] = { ...(store.data["ai-team"] || {}), liveRuns };
+    if (store.view !== "ai-team" || store.aiTeamTab !== "runs") return;
+    renderAiTeam();
+    refreshIcons();
+    if (store.drawerState?.kind === "agent-run") {
+      const selected = store.data["ai-team"]?.liveRuns?.runs?.find((run) => run.id === store.drawerState.id);
+      if (selected?.active) await showDetail("agent-run", store.drawerState.id, { preserveFocus: true });
+    }
+  } finally {
+    store.runPollBusy = false;
+  }
+}
+
+function syncLiveRunPolling() {
+  const shouldPoll = store.view === "ai-team" && store.aiTeamTab === "runs";
+  if (!shouldPoll && store.runPollTimer) {
+    clearInterval(store.runPollTimer);
+    store.runPollTimer = null;
+  }
+  if (shouldPoll && !store.runPollTimer) {
+    store.runPollTimer = setInterval(() => refreshLiveRuns().catch((error) => {
+      if (error.status !== 401) setConnection(false, "Reconnecting");
+    }), 2500);
+  }
+}
+
+function updateBackgroundInert() {
+  const drawerOpen = $("#drawer").classList.contains("open");
+  const pdfOpen = $("#pdf-modal").classList.contains("open");
+  $("#app-shell").inert = drawerOpen || pdfOpen;
+  $("#drawer").inert = !drawerOpen || pdfOpen;
+  $("#pdf-modal").inert = !pdfOpen;
+}
+
+function trapDialogFocus(event, root) {
+  const items = Array.from(root.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), iframe, [tabindex]:not([tabindex="-1"])',
+  )).filter((element) => element.getClientRects().length > 0);
+  if (!items.length) {
+    event.preventDefault();
+    root.focus();
+    return;
+  }
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (!root.contains(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function openDrawer(title, kicker, body, options = {}) {
+  const drawer = $("#drawer");
+  const wasOpen = drawer.classList.contains("open");
+  if (!wasOpen && !options.preserveFocus) store.drawerReturnFocus = document.activeElement;
+  if (options.state) store.drawerState = options.state;
   $("#drawer-title").textContent = title;
   $("#drawer-kicker").textContent = kicker;
   $("#drawer-body").innerHTML = body;
-  $("#drawer").classList.add("open");
-  $("#drawer").classList.toggle("wide", options.wide === true);
-  $("#drawer").setAttribute("aria-hidden", "false");
+  drawer.classList.add("open");
+  drawer.classList.toggle("wide", options.wide === true);
+  drawer.setAttribute("aria-hidden", "false");
   $("#drawer-backdrop").classList.add("open");
+  updateBackgroundInert();
+  if (!wasOpen || !options.preserveFocus) {
+    $("#drawer-body").scrollTop = 0;
+    requestAnimationFrame(() => drawer.querySelector("[data-action='close-drawer']")?.focus());
+  }
   refreshIcons();
 }
 
 function closeDrawer() {
-  $("#drawer").classList.remove("open");
-  $("#drawer").classList.remove("wide");
-  $("#drawer").setAttribute("aria-hidden", "true");
+  const drawer = $("#drawer");
+  if (!drawer.classList.contains("open")) return;
+  drawer.classList.remove("open");
+  drawer.classList.remove("wide");
+  drawer.setAttribute("aria-hidden", "true");
   $("#drawer-backdrop").classList.remove("open");
+  store.drawerState = null;
+  updateBackgroundInert();
+  const returnFocus = store.drawerReturnFocus;
+  store.drawerReturnFocus = null;
+  if (returnFocus?.isConnected) requestAnimationFrame(() => returnFocus.focus());
 }
 
 function detailSection(title, content) {
@@ -499,41 +682,77 @@ function reviewCriteria(criteria = {}) {
 function runReviewBody(data) {
   const process = data.process;
   const execution = data.execution;
+  const protectedRun = execution.kind === "protected_rehearsal";
+  const unknownOutcome = execution.kind === "provider_outcome_unknown";
   const visibility = execution.tracePolicy || {};
-  const duration = data.run.durationMs === null ? "Not recorded" : `${(data.run.durationMs / 1000).toFixed(2)} seconds`;
+  const duration = durationLabel(data.run.durationMs);
   const suppliedEvidence = process.suppliedEvidence?.length
-    ? `<div class="evidence-list">${process.suppliedEvidence.map((item) => `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(humanStatus(item.sourceType))}</small></article>`).join("")}</div>`
+    ? `<div class="evidence-list">${process.suppliedEvidence.map((item) => {
+        const url = safeExternalUrl(item.url);
+        return `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(humanStatus(item.sourceType))}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
+      }).join("")}</div>`
     : "<p>No supplied evidence was recorded.</p>";
   const traceEvents = data.developer.traceEvents?.length
-    ? `<ol class="trace-list">${data.developer.traceEvents.map((event) => `<li><strong>${escapeHtml(event.title)}</strong><span>${escapeHtml(event.detail || humanStatus(event.type))}</span><small>${escapeHtml(shortDate(event.ts))}</small></li>`).join("")}</ol>`
+    ? `<ol class="trace-list">${data.developer.traceEvents.map((event) => `<li><strong>${escapeHtml(event.title)}</strong><span>${escapeHtml(event.detail || humanStatus(event.type))}</span><small>${escapeHtml(dateTime(event.ts))}</small></li>`).join("")}</ol>`
     : "<p>No local trace events were recorded.</p>";
   const handoffs = execution.runtimeHandoffs?.length
     ? execution.runtimeHandoffs.map((handoff) => `${humanStatus(handoff.from)} to ${humanStatus(handoff.to)}: ${handoff.summary || handoff.status}`)
     : [];
-  const providerVisibility = visibility.providerResponseStored && visibility.providerTraceContent
-    ? "OpenAI response storage and trace content were enabled for this approved non-personal fixture."
-    : "This run used privacy-first settings. OpenAI did not retain the response for retrieval and the trace omitted its input/output content, which explains the Platform error. The local record remains available here.";
-  const verdictControls = data.review?.operatorVerdict === "pending" ? `<div class="pilot-review-form compact-form">
-      <select id="drawer-pilot-usefulness-score" aria-label="Commercial usefulness score"><option value="5">5 - Excellent</option><option value="4">4 - Useful</option><option value="3" selected>3 - Adequate</option><option value="2">2 - Weak</option><option value="1">1 - Not useful</option></select>
-      <input id="drawer-pilot-review-note" type="text" placeholder="Short review note" aria-label="Pilot review note">
-      <div class="work-actions"><button class="primary-button" data-action="review-pilot" data-review-source="drawer" data-run-id="${escapeHtml(data.run.id)}" data-verdict="useful">${icon("check")}Useful</button><button class="secondary-button" data-action="review-pilot" data-review-source="drawer" data-run-id="${escapeHtml(data.run.id)}" data-verdict="changes_required">${icon("pencil-line")}Needs changes</button></div>
+  const providerVisibility = protectedRun
+    ? "No provider call was made. This record covers an internal rehearsal only."
+    : visibility.providerResponseStored && visibility.providerTraceContent
+      ? "Provider trace content was enabled for this approved non-personal run."
+      : "The provider trace policy did not make full input and output content available here. Jarvis retained the local structured output and execution events shown in this record.";
+  const verdictControls = data.review?.operatorVerdict === "pending" ? `<div class="run-review-form compact-form">
+      <select id="drawer-run-usefulness-score" aria-label="Commercial usefulness score"><option value="5">5 - Excellent</option><option value="4">4 - Useful</option><option value="3" selected>3 - Adequate</option><option value="2">2 - Weak</option><option value="1">1 - Not useful</option></select>
+      <input id="drawer-run-review-note" type="text" placeholder="Short review note" aria-label="Run review note">
+      <div class="work-actions"><button class="primary-button" data-action="review-agent-run" data-run-id="${escapeHtml(data.run.id)}" data-verdict="useful">${icon("check")}Useful</button><button class="secondary-button" data-action="review-agent-run" data-run-id="${escapeHtml(data.run.id)}" data-verdict="changes_required">${icon("pencil-line")}Needs changes</button></div>
     </div>` : `<p>${escapeHtml(data.review?.note || `Verdict: ${humanStatus(data.review?.operatorVerdict || "not recorded")}.`)}</p>`;
+  const actualTokens = execution.actualTokens?.total === null || execution.actualTokens?.total === undefined
+    ? "Not captured"
+    : `${tokenCount(execution.actualTokens.input)} in / ${tokenCount(execution.actualTokens.output)} out`;
+  const plannedTokens = execution.plannedTokens?.input === null && execution.plannedTokens?.output === null
+    ? "Not set"
+    : `${execution.plannedTokens?.input === null ? "No input cap" : `${tokenCount(execution.plannedTokens.input)} input`} / ${execution.plannedTokens?.output === null ? "No output cap" : `${tokenCount(execution.plannedTokens.output)} output`}`;
+  const providerCost = protectedRun
+    ? "No provider charge"
+    : execution.cost.actualCents === null || execution.cost.actualCents === undefined
+      ? "Not captured"
+      : `${money(execution.cost.actualCents, execution.cost.currency)} · ${humanStatus(execution.cost.status)}`;
+  const requestedTools = execution.requestedTools?.length
+    ? detailList(execution.requestedTools)
+    : "<p>No provider tools were requested.</p>";
+  const observedTools = execution.observedTools?.length
+    ? `<div class="evidence-list">${execution.observedTools.map((tool) => `<article><strong>${escapeHtml(tool.name)}</strong><p>${escapeHtml(tool.outputSummary || tool.inputSummary || "Tool activity was recorded.")}</p><small>${escapeHtml(humanStatus(tool.status))} · ${escapeHtml(humanStatus(tool.requestedMode))}</small></article>`).join("")}</div>`
+    : "<p>No tool invocation was observed.</p>";
+  const sources = execution.sources?.length
+    ? `<div class="evidence-list">${execution.sources.map((source) => {
+        const url = safeExternalUrl(source.url);
+        return `<article><strong>${escapeHtml(source.title)}</strong><p>${escapeHtml(source.relevance || source.publisher || "Source recorded by the research runtime.")}</p><small>${source.grounded ? "Grounded source" : "Not verified as grounded"}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
+      }).join("")}</div>`
+    : "<p>No research sources were observed for this run.</p>";
+  const providerIds = protectedRun ? "" : detailSection("Provider record", `<p>${escapeHtml(providerVisibility)}</p><div class="technical-ids"><span>Trace ID</span><code>${escapeHtml(execution.traceId || "Not captured")}</code><span>Response ID</span><code>${escapeHtml(execution.responseId || "Not captured")}</code></div>`);
+  const errorSection = data.run.error || execution.error
+    ? detailSection("What went wrong", `<div class="error-callout"><strong>${unknownOutcome ? "Provider outcome needs review" : "Run failed"}</strong><p>${escapeHtml(data.run.error || execution.error)}</p></div>`)
+    : "";
 
   return [
     `<div class="process-note"><strong>Readable process record</strong><p>${escapeHtml(process.explanation)}</p></div>`,
+    errorSection,
     detailSection("Assignment", `<div class="detail-grid"><div><span>Question</span><strong>${escapeHtml(process.question)}</strong></div><div><span>Buyer</span><strong>${escapeHtml(process.buyer)}</strong></div></div><p><strong>Hypothesis:</strong> ${escapeHtml(process.hypothesis)}</p>`),
     detailSection("Evidence reviewed", suppliedEvidence),
     detailSection("How the judgement was formed", `<h4>Evidence supporting action</h4>${detailList(process.supportingEvidence)}<h4>Evidence against or still missing</h4>${detailList(process.counterevidence)}<h4>Assumptions</h4>${detailList(process.assumptions)}`),
     detailSection("Recommendation", `<p>${escapeHtml(process.conclusion)}</p><div class="review-facts"><div><span>Price and channel hypothesis</span><strong>${escapeHtml(process.priceChannelHypothesis)}</strong></div><div><span>Smallest proposed test</span><strong>${escapeHtml(process.smallestTest)}</strong></div><div><span>Success measure</span><strong>${escapeHtml(process.metric)}</strong></div><div><span>Stop rule</span><strong>${escapeHtml(process.stopRule)}</strong></div></div><p><strong>Confidence:</strong> ${escapeHtml(humanStatus(process.confidence))}<br><strong>Next action:</strong> ${escapeHtml(process.nextAction)}</p><h4>Risks</h4>${detailList(process.risks)}`),
     detailSection("Quality checks", `${reviewCriteria(data.review?.criteria || {})}<p>Runtime evaluation: ${escapeHtml(String(data.quality?.score ?? "Not scored"))}${data.quality?.score !== undefined ? "/100" : ""}.</p>`),
-    detailSection("Execution facts", `<div class="review-facts"><div><span>Model</span><strong>${escapeHtml(execution.model)}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Tokens</span><strong>${execution.inputTokens.toLocaleString()} in / ${execution.outputTokens.toLocaleString()} out</strong></div><div><span>Reconciled cost</span><strong>${money(execution.cost.reconciledCents, execution.cost.currency)}</strong></div><div><span>SDK tools</span><strong>${execution.sdkTools.length ? escapeHtml(execution.sdkTools.join(", ")) : "None"}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div></div>${handoffs.length ? `<h4>Runtime handoff after completion</h4>${detailList(handoffs)}` : ""}`),
-    detailSection("Provider trace visibility", `<p>${escapeHtml(providerVisibility)}</p><div class="technical-ids"><span>Trace ID</span><code>${escapeHtml(execution.traceId || "Not recorded")}</code><span>Response ID</span><code>${escapeHtml(execution.responseId || "Not retained")}</code></div>`),
-    detailSection("Local developer trace", `${traceEvents}<div class="technical-ids"><span>Run ID</span><code>${escapeHtml(data.run.id)}</code><span>Model call</span><code>${escapeHtml(data.developer.modelCallId || "Not recorded")}</code><span>Fixture hash</span><code>${escapeHtml(data.developer.fixtureHash || "Not recorded")}</code></div>`),
+    detailSection("Execution facts", `<div class="review-facts"><div><span>Execution</span><strong>${escapeHtml(execution.label)}</strong></div><div><span>Status</span><strong>${escapeHtml(humanStatus(data.run.status))}</strong></div><div><span>Provider</span><strong>${escapeHtml(execution.provider || (protectedRun ? "No provider used" : execution.requestedProvider || "Not captured"))}</strong></div><div><span>Model</span><strong>${escapeHtml(execution.model || (protectedRun ? "No model called" : execution.requestedModel || "Not captured"))}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Actual tokens</span><strong>${escapeHtml(actualTokens)}</strong></div><div><span>Planned limits</span><strong>${escapeHtml(plannedTokens)}</strong></div><div><span>Provider cost</span><strong>${escapeHtml(providerCost)}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div></div><p>${escapeHtml(providerVisibility)}</p>${handoffs.length ? `<h4>Runtime handoff after completion</h4>${detailList(handoffs)}` : ""}`),
+    detailSection("Tools and sources", `<h4>Tools approved for the run</h4>${requestedTools}<h4>Tool activity Jarvis observed</h4>${observedTools}<h4>Research sources</h4>${sources}`),
+    providerIds,
+    detailSection("Local runtime timeline", `${traceEvents}<div class="technical-ids"><span>Run ID</span><code>${escapeHtml(data.run.id)}</code><span>Local model record</span><code>${escapeHtml(data.developer.modelCallId || "Not captured")}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || "Not captured")}</code></div>`),
     detailSection("Your verdict", verdictControls),
   ].join("");
 }
 
-async function showDetail(kind, id) {
+async function showDetail(kind, id, options = {}) {
   if (kind === "agent") {
     const data = await fetchJson(`/api/agents/${encodeURIComponent(id)}`);
     const agent = data.agent;
@@ -542,12 +761,17 @@ async function showDetail(kind, id) {
       detailSection("Last reviewed outcome", `<p>${escapeHtml(agent.lastOutcome)}</p>`),
       detailSection("Earned capability", `<p>Best proven skill: ${agent.autonomy.passes} of ${agent.autonomy.required} consecutive successful reviewed runs. Current level: ${escapeHtml(humanStatus(agent.autonomy.status))}.</p>`),
       detailSection("Technical detail", `<p>Model class: ${escapeHtml(agent.technical.modelClass)}<br>Runtime mode: ${escapeHtml(agent.technical.mode)}<br>Last run: ${escapeHtml(agent.technical.lastRunId || "None")}</p>${agent.technical.lastRunId ? `<button class="secondary-button" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(agent.technical.lastRunId)}">${icon("scan-search")}Review latest run</button>` : ""}`),
-    ].join(""));
+    ].join(""), { state: { kind, id }, preserveFocus: options.preserveFocus });
     return;
   }
   if (kind === "agent-run") {
     const data = await fetchJson(`/api/agent-runs/${encodeURIComponent(id)}`);
-    openDrawer(data.run.taskTitle, `${data.run.workerName} run review`, runReviewBody(data), { wide: true });
+    if (options.preserveFocus && (store.drawerState?.kind !== kind || store.drawerState?.id !== id)) return;
+    openDrawer(data.run.taskTitle, `${data.run.workerName} · ${data.run.executionLabel}`, runReviewBody(data), {
+      wide: true,
+      state: { kind, id },
+      preserveFocus: options.preserveFocus,
+    });
     return;
   }
   if (kind === "test") {
@@ -559,7 +783,7 @@ async function showDetail(kind, id) {
       detailSection("Measurement", `<p><strong>Expected:</strong> ${escapeHtml(item.expected_metric || "Not defined")}<br><strong>Target:</strong> ${escapeHtml(item.target_value)} ${escapeHtml(item.target_unit || "")}</p>`),
       detailSection("Recorded evidence", data.evidence.length ? `<ul>${data.evidence.map((evidence) => `<li>${escapeHtml(evidence.title)}</li>`).join("")}</ul>` : "<p>No verified evidence has been attached yet.</p>"),
       detailSection("Results", data.results.length ? `<p>${data.results.length} measured result record${data.results.length === 1 ? "" : "s"}.</p>` : "<p>No real-world result has been recorded.</p>"),
-    ].join(""));
+    ].join(""), { state: { kind, id }, preserveFocus: options.preserveFocus });
     return;
   }
   if (kind === "decision") {
@@ -567,27 +791,35 @@ async function showDetail(kind, id) {
     openDrawer(item.title, "Decision", [
       detailSection("Recommendation", `<p>${escapeHtml(item.recommendation)}</p>`),
       detailSection("Expected result", `<p>${escapeHtml(item.expectedUpside)}</p>`),
-      detailSection("Boundaries", `<p>Maximum approved cost: ${money(item.maxCostCents)}.<br>Risk: ${escapeHtml(humanStatus(item.risk))}.<br>This decision applies only to the exact work shown here.${item.tracePolicy?.providerTraceContent ? " OpenAI trace input and output will be retained for this approved non-personal fixture." : ""}</p>`),
+      detailSection("Boundaries", `<p>Maximum approved cost: ${money(item.maxCostCents)}.<br>Risk: ${escapeHtml(humanStatus(item.risk))}.<br>This decision applies only to the exact work shown here.${item.tracePolicy?.providerTraceContent ? " Provider trace input and output will be available for this approved non-personal run." : ""}</p>`),
       detailSection("Your decision", approvalButtons(item)),
-    ].join(""));
+    ].join(""), { state: { kind, id }, preserveFocus: options.preserveFocus });
     return;
   }
   const source = kind === "review" ? store.data.decisions?.reviews : store.data.cockpit?.importantWork;
   const item = source?.find((entry) => entry.id === id);
-  openDrawer(item?.title || "Details", kind === "review" ? "Review" : "Important work", detailSection("Summary", `<p>${escapeHtml(item?.summary || item?.recommendation || "No additional detail is available.")}</p>`));
+  openDrawer(item?.title || "Details", kind === "review" ? "Review" : "Important work", detailSection("Summary", `<p>${escapeHtml(item?.summary || item?.recommendation || "No additional detail is available.")}</p>`), { state: { kind, id }, preserveFocus: options.preserveFocus });
 }
 
 function openPdf(id, title) {
+  store.pdfReturnFocus = document.activeElement;
   $("#pdf-title").textContent = title || "PDF preview";
   $("#pdf-frame").src = `/api/deliverables/${encodeURIComponent(id)}/file`;
   $("#pdf-modal").classList.add("open");
   $("#pdf-modal").setAttribute("aria-hidden", "false");
+  updateBackgroundInert();
+  requestAnimationFrame(() => $("#pdf-modal [data-action='close-pdf']")?.focus());
 }
 
 function closePdf() {
+  if (!$("#pdf-modal").classList.contains("open")) return;
   $("#pdf-modal").classList.remove("open");
   $("#pdf-modal").setAttribute("aria-hidden", "true");
   $("#pdf-frame").src = "about:blank";
+  updateBackgroundInert();
+  const returnFocus = store.pdfReturnFocus;
+  store.pdfReturnFocus = null;
+  if (returnFocus?.isConnected) requestAnimationFrame(() => returnFocus.focus());
 }
 
 async function handleAction(button) {
@@ -601,6 +833,19 @@ async function handleAction(button) {
   }
   if (action === "decision-tab") { store.decisionTab = button.dataset.tab; return renderDecisions(); }
   if (action === "test-tab") { store.testTab = button.dataset.tab; return renderTests(); }
+  if (action === "ai-team-tab") {
+    store.aiTeamTab = button.dataset.tab;
+    renderAiTeam();
+    refreshIcons();
+    syncLiveRunPolling();
+    return;
+  }
+  if (action === "run-filter") {
+    store.runFilter = button.dataset.filter;
+    renderAiTeam();
+    refreshIcons();
+    return;
+  }
   if (action === "system-tab") { store.systemTab = button.dataset.tab; return renderSystem(); }
   if (action === "toggle-output-history") { store.showArchivedOutputs = !store.showArchivedOutputs; return renderSystem(); }
   if (action === "open-drawer") return showDetail(button.dataset.kind, button.dataset.id);
@@ -660,21 +905,15 @@ async function handleAction(button) {
       : payload.result?.message || `Work item: ${humanStatus(payload.result?.status || "complete")}.`);
     return loadView(store.view, { silent: true });
   }
-  if (action === "prepare-pilot") {
-    await postJson(`/api/agent-pilot/fixtures/${encodeURIComponent(button.dataset.fixtureId)}/prepare`, { estimatedCostCents: 100 });
-    toast("Controlled proof prepared for your approval. No model call has run.");
-    return loadView("ai-team", { silent: true });
-  }
-  if (action === "review-pilot") {
-    const fromDrawer = button.dataset.reviewSource === "drawer";
-    const usefulnessScore = Number($(fromDrawer ? "#drawer-pilot-usefulness-score" : "#pilot-usefulness-score")?.value || 3);
-    const note = $(fromDrawer ? "#drawer-pilot-review-note" : "#pilot-review-note")?.value.trim() || "";
+  if (action === "review-agent-run") {
+    const usefulnessScore = Number($("#drawer-run-usefulness-score")?.value || 3);
+    const note = $("#drawer-run-review-note")?.value.trim() || "";
     await postJson(`/api/agent-pilot/runs/${encodeURIComponent(button.dataset.runId)}/review`, {
       verdict: button.dataset.verdict,
       usefulnessScore,
       note,
     });
-    if (fromDrawer) closeDrawer();
+    closeDrawer();
     toast(button.dataset.verdict === "useful" ? "Usefulness verdict recorded." : "Changes requested and the success streak reset.");
     return loadView("ai-team", { silent: true });
   }
@@ -697,10 +936,19 @@ function connectSocket() {
   const socket = new WebSocket(`${protocol}://${window.location.host}`);
   socket.addEventListener("open", () => setConnection(true));
   socket.addEventListener("message", (event) => {
-    const payload = JSON.parse(event.data);
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
     if (payload.type !== "invalidate") return;
     clearTimeout(store.reloadTimer);
-    store.reloadTimer = setTimeout(() => loadView(store.view, { silent: true }).catch((error) => toast(error.message)), 120);
+    store.reloadTimer = setTimeout(async () => {
+      try {
+        const openRunId = store.drawerState?.kind === "agent-run" ? store.drawerState.id : null;
+        await loadView(store.view, { silent: true });
+        if (openRunId) await showDetail("agent-run", openRunId, { preserveFocus: true });
+      } catch (error) {
+        toast(error.message);
+      }
+    }, 120);
   });
   socket.addEventListener("close", () => {
     setConnection(false);
@@ -729,22 +977,51 @@ function bindEvents() {
     }
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { closeDrawer(); closePdf(); }
+    const pdfOpen = $("#pdf-modal").classList.contains("open");
+    const drawerOpen = $("#drawer").classList.contains("open");
+    if (event.key === "Escape") {
+      if (pdfOpen) closePdf();
+      else if (drawerOpen) closeDrawer();
+      return;
+    }
+    if (event.key === "Tab" && pdfOpen) trapDialogFocus(event, $("#pdf-modal"));
+    else if (event.key === "Tab" && drawerOpen) trapDialogFocus(event, $("#drawer"));
   });
+}
+
+function establishSession() {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const bootstrapToken = hash.get("bootstrap");
+  if (!bootstrapToken) return fetchJson("/api/session");
+  const sessionRequest = fetchJson("/api/session", {
+    method: "POST",
+    headers: { "x-jarvis-bootstrap": bootstrapToken },
+  });
+  window.history.replaceState(window.history.state, document.title, `${window.location.pathname}${window.location.search}`);
+  return sessionRequest;
 }
 
 async function boot() {
   $("#today-label").textContent = new Intl.DateTimeFormat("en-AU", { weekday: "short", day: "numeric", month: "short" }).format(new Date());
   bindEvents();
   refreshIcons();
+  updateBackgroundInert();
   try {
-    const session = await fetchJson("/api/session");
+    const session = await establishSession();
     store.csrfToken = session.csrfToken;
     await loadVentures();
     await loadView("cockpit");
     connectSocket();
   } catch (error) {
-    setConnection(false, "Offline");
+    setConnection(false, error.status === 401 ? "Start Jarvis" : "Offline");
+    if (error.status === 401) {
+      $("#view").innerHTML = emptyState(
+        "Start Jarvis to open this dashboard",
+        "This window does not have an operator session. Close it, run the Jarvis launcher, and use the secure dashboard window it opens.",
+        "shield-alert",
+      );
+      refreshIcons();
+    }
     toast(error.message);
   }
 }

@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
@@ -35,6 +36,7 @@ const {
 const { createCommandPlan } = require("../src/runtime/planner");
 const { claimNextTask, completeTaskClaim } = require("../src/runtime/task-claims");
 const { runOnce } = require("../src/runtime/orchestrator");
+const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { recoverSetupBlockedTasks } = require("../src/runtime/spend-gate");
 const { createApp } = require("../src/server");
 const { getCockpitState, getSystemState } = require("../src/runtime/cockpit-state");
@@ -73,6 +75,23 @@ test("production seed starts with truthful empty operating records", () => {
   } finally {
     db.close();
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime health ignores optional connections and reports genuine core blockers", () => {
+  const runtime = runtimeDb("core-connection-health");
+  try {
+    run(runtime.db, "UPDATE integrations SET health = 'ok' WHERE id IN ('ai_workers', 'live_research', 'digital_products')");
+    run(runtime.db, "UPDATE integrations SET health = 'not_configured' WHERE id = 'email'");
+    assert.equal(collectFindings(runtime.db).some((finding) => finding.category === "integrations"), false);
+
+    run(runtime.db, "UPDATE integrations SET health = 'not_configured' WHERE id = 'ai_workers'");
+    const blocked = collectFindings(runtime.db).find((finding) => finding.category === "integrations");
+    assert.equal(blocked.entityId, "ai_workers");
+    assert.equal(blocked.title, "1 core connection needs setup");
+    assert.match(blocked.detail, /AI work/);
+  } finally {
+    closeRuntime(runtime);
   }
 });
 
@@ -246,7 +265,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -283,7 +302,7 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 10);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 11);
   } finally {
     closeRuntime(runtime);
   }
@@ -757,50 +776,52 @@ test("aggregate provider usage reconciliation updates exact runtime records atom
 
 test("approved setup-blocked work becomes resumable when its credential requirement appears", async () => {
   const runtime = runtimeDb("setup-recovery");
-  const previousKey = process.env.JARVIS_TEST_PROVIDER_KEY;
-  delete process.env.JARVIS_TEST_PROVIDER_KEY;
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
+  const previousDisabledAdapter = process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  const previousDisabledSdk = process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+  delete process.env.OPENAI_API_KEY;
+  process.env.JARVIS_ENABLE_LIVE_MODELS = "1";
+  delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
   try {
     const planned = createCommandPlan(runtime.db, {
       text: "Evaluate a cash checklist digital product",
       source: "test",
       createFiles: false,
     });
-    const task = get(runtime.db, "SELECT * FROM tasks WHERE workflow_id = ? AND kind = 'market_research'", [planned.workflow.id]);
-    const payload = JSON.parse(task.payload);
-    payload.liveSpendRequest = {
-      requested: true,
-      type: "model",
-      provider: "test-provider",
-      model: "test-model",
-      estimatedCostCents: 50,
-      reason: "Exercise setup recovery without making a provider call.",
-      commercialPurpose: "Keep approved work resumable after setup.",
-      requiresProviderEnv: "JARVIS_TEST_PROVIDER_KEY",
-      tools: [],
-      effects: [],
-    };
-    run(runtime.db, "UPDATE tasks SET payload = ? WHERE id = ?", [toJson(payload), task.id]);
-
-    const waiting = await runOnce(runtime.db, { workflowId: planned.workflow.id });
-    decideApproval(runtime.db, waiting.approval.id, "approved", "setup recovery proof", {
-      expectedScopeHash: waiting.approval.scope_hash,
+    run(runtime.db, "UPDATE tasks SET status = 'cancelled' WHERE workflow_id = ?", [planned.workflow.id]);
+    const requested = requestLiveAiWorker(runtime.db, planned.workflow.id, {
+      worker: "demand_validator",
+      model: "gpt-5.6-terra",
+      estimatedCostCents: 100,
+      maxOutputTokens: 600,
     });
-    const blocked = await runOnce(runtime.db, { workflowId: planned.workflow.id });
+    decideApproval(runtime.db, requested.approval.id, "approved", "setup recovery proof", {
+      expectedScopeHash: requested.approval.scope_hash,
+    });
+    const blocked = await runOnce(runtime.db, { taskId: requested.task.id });
     assert.equal(blocked.status, "blocked");
-    assert.equal(get(runtime.db, "SELECT status FROM tasks WHERE id = ?", [task.id]).status, "blocked");
-    const blockedTask = get(runtime.db, "SELECT setup_block_reason, result FROM tasks WHERE id = ?", [task.id]);
+    assert.equal(get(runtime.db, "SELECT status FROM tasks WHERE id = ?", [requested.task.id]).status, "blocked");
+    const blockedTask = get(runtime.db, "SELECT setup_block_reason, result FROM tasks WHERE id = ?", [requested.task.id]);
     assert.match(blockedTask.setup_block_reason, /incomplete/i);
-    assert.match(blockedTask.result, /JARVIS_TEST_PROVIDER_KEY/);
+    assert.match(blockedTask.result, /OPENAI_API_KEY/);
 
-    process.env.JARVIS_TEST_PROVIDER_KEY = "configured-for-test";
+    process.env.OPENAI_API_KEY = "configured-for-test";
     const recovered = recoverSetupBlockedTasks(runtime.db);
-    assert.deepEqual(recovered.recovered, [task.id]);
-    const resumed = get(runtime.db, "SELECT status, setup_block_reason FROM tasks WHERE id = ?", [task.id]);
+    assert.deepEqual(recovered.recovered, [requested.task.id]);
+    const resumed = get(runtime.db, "SELECT status, setup_block_reason FROM tasks WHERE id = ?", [requested.task.id]);
     assert.equal(resumed.status, "queued");
     assert.equal(resumed.setup_block_reason, null);
   } finally {
-    if (previousKey === undefined) delete process.env.JARVIS_TEST_PROVIDER_KEY;
-    else process.env.JARVIS_TEST_PROVIDER_KEY = previousKey;
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+    if (previousLiveModels === undefined) delete process.env.JARVIS_ENABLE_LIVE_MODELS;
+    else process.env.JARVIS_ENABLE_LIVE_MODELS = previousLiveModels;
+    if (previousDisabledAdapter === undefined) delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+    else process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER = previousDisabledAdapter;
+    if (previousDisabledSdk === undefined) delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+    else process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK = previousDisabledSdk;
     closeRuntime(runtime);
   }
 });
@@ -972,8 +993,16 @@ test("Gumroad imports are idempotent and retain no raw buyer identity", () => {
   ].join("\n");
   try {
     const options = { hashKey: "test-only-privacy-hash-key-32-bytes" };
-    const first = importGumroadCsv(runtime.db, { ventureId: "venture-digital-products", csvText: csv, currency: "USD" }, options);
-    const second = importGumroadCsv(runtime.db, { ventureId: "venture-digital-products", csvText: csv, currency: "USD" }, options);
+    const importPayload = {
+      ventureId: "venture-digital-products",
+      csvText: csv,
+      currency: "USD",
+      audConversionRate: 1.5,
+      audConversionEvidence: "Test bank conversion reference",
+      audConversionAt: "2026-07-14T10:00:00.000Z",
+    };
+    const first = importGumroadCsv(runtime.db, importPayload, options);
+    const second = importGumroadCsv(runtime.db, importPayload, options);
     assert.equal(first.inserted, 1);
     assert.equal(second.inserted, 0);
     assert.equal(second.updated, 1);
@@ -986,7 +1015,7 @@ test("Gumroad imports are idempotent and retain no raw buyer identity", () => {
     const publicState = getGumroadSalesState(runtime.db);
     assert.equal(Object.hasOwn(publicState.sales[0], "buyer_hash"), false);
     assert.equal(publicState.economics.independentBuyers, 1);
-    assert.equal(publicState.economics.cashContributionCents, 1030);
+    assert.equal(publicState.economics.cashContributionCents, 1545);
     assert.equal(publicState.economics.successThresholdMet, false);
   } finally {
     closeRuntime(runtime);
@@ -1079,7 +1108,12 @@ test("commercial tests only become running after a confirmed real-world start", 
 
 test("local HTTP mutations and WebSocket updates require the same signed operator session", async () => {
   const runtime = runtimeDb("local-security");
-  const app = createApp({ db: runtime.db, security: true, sessionSecret: Buffer.alloc(32, 7) });
+  const app = createApp({
+    db: runtime.db,
+    security: true,
+    sessionSecret: Buffer.alloc(32, 7),
+    bootstrapSecret: "test-bootstrap-secret",
+  });
   await new Promise((resolve, reject) => {
     app.server.once("error", reject);
     app.server.listen(0, "127.0.0.1", resolve);
@@ -1088,9 +1122,41 @@ test("local HTTP mutations and WebSocket updates require the same signed operato
   const origin = `http://127.0.0.1:${port}`;
   const websocketUrl = `ws://127.0.0.1:${port}`;
   try {
-    const sessionResponse = await fetch(`${origin}/api/session`);
+    assert.equal(app.server.requestTimeout, 15_000);
+    assert.equal(app.server.headersTimeout, 10_000);
+    assert.equal(app.server.keepAliveTimeout, 5_000);
+    assert.equal(app.server.maxHeadersCount, 100);
+
+    const unauthenticatedRead = await fetch(`${origin}/api/cockpit`);
+    assert.equal(unauthenticatedRead.status, 401);
+
+    const rejectedHostStatus = await new Promise((resolve, reject) => {
+      const request = http.request({
+        host: "127.0.0.1",
+        port,
+        path: "/api/health",
+        headers: { Host: "untrusted.example" },
+      }, (response) => {
+        response.resume();
+        response.once("end", () => resolve(response.statusCode));
+      });
+      request.once("error", reject);
+      request.end();
+    });
+    assert.equal(rejectedHostStatus, 403);
+
+    const sessionResponse = await fetch(`${origin}/api/session`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+        "x-jarvis-bootstrap": "test-bootstrap-secret",
+      },
+      body: "{}",
+    });
     const session = await sessionResponse.json();
     const cookie = sessionResponse.headers.get("set-cookie").split(";", 1)[0];
+    assert.equal(sessionResponse.status, 201);
 
     const focusedReads = {
       "/api/ventures": "ventures",
@@ -1107,12 +1173,49 @@ test("local HTTP mutations and WebSocket updates require the same signed operato
       assert.equal(Object.hasOwn(payload, key), true, `${endpoint} should expose ${key}`);
     }
 
+    const unrestrictedState = await fetch(`${origin}/api/state`, { headers: { cookie } });
+    assert.equal(unrestrictedState.status, 410);
+
+    const siblingRoot = path.join(__dirname, "..", `publicity-security-${Date.now()}`);
+    fs.mkdirSync(siblingRoot, { recursive: true });
+    fs.writeFileSync(path.join(siblingRoot, "outside.txt"), "must not be served");
+    try {
+      const traversalStatus = await new Promise((resolve, reject) => {
+        const request = http.request({
+          host: "127.0.0.1",
+          port,
+          path: `/%2e%2e%2f${encodeURIComponent(path.basename(siblingRoot))}%2foutside.txt`,
+          headers: { Cookie: cookie },
+        }, (response) => {
+          response.resume();
+          response.once("end", () => resolve(response.statusCode));
+        });
+        request.once("error", reject);
+        request.end();
+      });
+      assert.equal([403, 404].includes(traversalStatus), true);
+    } finally {
+      fs.rmSync(siblingRoot, { recursive: true, force: true });
+    }
+
+    const outsidePreviewPath = path.join(__dirname, "..", "tmp", `outside-preview-${Date.now()}.pdf`);
+    fs.mkdirSync(path.dirname(outsidePreviewPath), { recursive: true });
+    fs.writeFileSync(outsidePreviewPath, "%PDF-1.4\n%%EOF\n");
+    const deliverable = get(runtime.db, "SELECT id FROM deliverables LIMIT 1");
+    run(runtime.db, "UPDATE deliverables SET format = 'pdf', file_path = ? WHERE id = ?", [outsidePreviewPath, deliverable.id]);
+    try {
+      const outsidePreview = await fetch(`${origin}/api/deliverables/${encodeURIComponent(deliverable.id)}/file`, { headers: { cookie } });
+      assert.equal(outsidePreview.status, 403);
+    } finally {
+      fs.rmSync(outsidePreviewPath, { force: true });
+    }
+
     const rejected = await fetch(`${origin}/api/monitor/run`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
     });
-    assert.equal(rejected.status, 403);
+    assert.equal(rejected.status, 401);
 
     const accepted = await fetch(`${origin}/api/monitor/run`, {
       method: "POST",
@@ -1125,6 +1228,30 @@ test("local HTTP mutations and WebSocket updates require the same signed operato
       body: "{}",
     });
     assert.equal(accepted.status, 200);
+
+    const malformedJson = await fetch(`${origin}/api/monitor/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+        cookie,
+        "x-jarvis-csrf": session.csrfToken,
+      },
+      body: "{",
+    });
+    assert.equal(malformedJson.status, 400);
+
+    const oversizedJson = await fetch(`${origin}/api/monitor/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+        cookie,
+        "x-jarvis-csrf": session.csrfToken,
+      },
+      body: JSON.stringify({ padding: "x".repeat(1_000_000) }),
+    });
+    assert.equal(oversizedJson.status, 413);
 
     const websocketRejection = await new Promise((resolve, reject) => {
       const socket = new WebSocket(websocketUrl, { headers: { Origin: origin } });

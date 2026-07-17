@@ -228,9 +228,17 @@ function getResearchRun(db, researchRunId) {
   return row ? { ...row, metadata: fromJson(row.metadata) } : null;
 }
 
-function sourceCountForResearchRun(db, researchRunId) {
-  const row = get(db, "SELECT COUNT(*) AS count FROM research_sources WHERE run_id = ?", [researchRunId]);
-  return Number(row?.count || 0);
+function groundedSourceCountForResearchRun(db, researchRunId) {
+  const sources = all(db, "SELECT url, metadata FROM research_sources WHERE run_id = ?", [researchRunId]);
+  const parsed = sources.map((source) => ({ ...source, metadata: fromJson(source.metadata, {}) }));
+  const hasExplicitProvenance = parsed.some((source) => source.metadata?.sourceType);
+  if (!hasExplicitProvenance) {
+    // Compatibility for pre-provenance rows that were already recorded as a
+    // completed provider run. New adapter rows always carry an explicit type.
+    return parsed.filter((source) => /^https?:\/\//i.test(source.url || "")).length;
+  }
+  const trusted = new Set(["url_citation", "web_search_action_source"]);
+  return parsed.filter((source) => trusted.has(source.metadata?.sourceType) && /^https?:\/\//i.test(source.url || "")).length;
 }
 
 function findBriefForResearchRun(db, researchRunId) {
@@ -264,7 +272,7 @@ function researchBridgeInput(db, researchRun, options = {}) {
   const metadata = researchRun.metadata || {};
   const parsed = metadata.parsed || {};
   const workflowMetadata = context.workflow?.metadata || {};
-  const sourceCount = sourceCountForResearchRun(db, researchRun.id);
+  const sourceCount = groundedSourceCountForResearchRun(db, researchRun.id);
   const subject = asText(metadata.subject || workflowMetadata.subject, context.title);
   const channel = asText(metadata.channel || workflowMetadata.channel, context.channel);
   const verdict = asText(parsed.verdict, "research_inconclusive");
@@ -538,12 +546,12 @@ function createResearchToExperimentPlan(db, input = {}) {
 function createResearchToExperimentPlanFromResearch(db, researchRunId, options = {}) {
   const researchRun = getResearchRun(db, researchRunId);
   if (!researchRun) throw new Error(`Research run not found: ${researchRunId}`);
-  const allowedStatuses = new Set(["completed_live", "completed_live_needs_source_review"]);
-  if (researchRun.mode !== "live" || !allowedStatuses.has(researchRun.status)) {
+  const groundedSourceCount = groundedSourceCountForResearchRun(db, researchRun.id);
+  if (researchRun.mode !== "live" || researchRun.status !== "completed_live" || groundedSourceCount < 3) {
     return {
       researchRun,
       skipped: true,
-      reason: "Only completed live research creates commercial test candidates.",
+      reason: "Commercial test candidates require completed live research with at least three provider-grounded sources.",
       alreadyCreated: false,
       brief: null,
       candidates: [],
@@ -576,7 +584,7 @@ function createResearchToExperimentPlanFromResearch(db, researchRunId, options =
       taskId: researchRun.task_id || null,
       briefId: plan.brief.id,
       recommendedCandidateId: plan.recommended?.id || null,
-      sourceCount: sourceCountForResearchRun(db, researchRun.id),
+      sourceCount: groundedSourceCount,
       createdBy: options.createdBy || "research-agent",
     },
   });

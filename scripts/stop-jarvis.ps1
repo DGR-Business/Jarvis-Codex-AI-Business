@@ -6,41 +6,53 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$pidPath = Join-Path $root "tmp\jarvis-server.pid"
-$expectedDbPath = [IO.Path]::GetFullPath((Join-Path $root "data\runtime.sqlite"))
+$runtimePath = Join-Path $root "tmp\jarvis-server-$Port.json"
 $healthUrl = "http://127.0.0.1:$Port/api/health"
 
-try {
-  $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2
-} catch {
-  $health = $null
+function Unprotect-LocalValue([string]$Value) {
+  $secure = ConvertTo-SecureString $Value
+  $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+  try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
+  finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
 }
 
-if (-not (Test-Path -LiteralPath $pidPath)) {
+if (-not (Test-Path -LiteralPath $runtimePath)) {
+  try { $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2 } catch { $health = $null }
   if ($health -and $health.ok -eq $true) {
-    throw "Jarvis is running, but it was started another way. Close that terminal or ask Jarvis to stop it safely."
+    throw "Jarvis is running on port $Port, but this launcher does not own it. It was not stopped."
   }
   Write-Host "Jarvis is already stopped."
   exit 0
 }
 
-$serverPid = [int](Get-Content -LiteralPath $pidPath -Raw).Trim()
+$metadata = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json
+$serverPid = [int]$metadata.pid
 $process = Get-Process -Id $serverPid -ErrorAction SilentlyContinue
-if ($process) {
-  if ($process.ProcessName -ne "node") {
-    throw "The saved Jarvis process ID now belongs to another program, so it was not stopped."
-  }
-  if (-not $health -or $health.ok -ne $true -or [IO.Path]::GetFullPath([string]$health.dbPath) -ne $expectedDbPath) {
-    throw "The saved process is not serving this Jarvis workspace, so it was not stopped."
-  }
-  Stop-Process -Id $serverPid
-  for ($attempt = 0; $attempt -lt 20; $attempt += 1) {
-    Start-Sleep -Milliseconds 250
-    if (-not (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) { break }
-  }
-  if (Get-Process -Id $serverPid -ErrorAction SilentlyContinue) {
-    Stop-Process -Id $serverPid -Force
-  }
+if (-not $process) {
+  Remove-Item -LiteralPath $runtimePath -Force
+  Write-Host "Jarvis was already stopped; its stale ownership file was removed."
+  exit 0
 }
-Remove-Item -LiteralPath $pidPath -Force
-Write-Host "Jarvis has stopped."
+
+try { $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2 } catch { $health = $null }
+if (-not $health -or [string]$health.instanceId -ne [string]$metadata.instanceId) {
+  throw "The saved process is not the Jarvis instance owned by this launcher, so it was not stopped."
+}
+
+$controlToken = Unprotect-LocalValue ([string]$metadata.controlProtected)
+try {
+  Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/runtime/shutdown" -Method Post -ContentType "application/json" -Headers @{ "x-jarvis-control" = $controlToken } -Body "{}" -TimeoutSec 4 | Out-Null
+} catch {
+  throw "Jarvis did not accept a graceful stop request. The process was left running for safety."
+}
+
+for ($attempt = 0; $attempt -lt 40; $attempt += 1) {
+  Start-Sleep -Milliseconds 250
+  if (-not (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) { break }
+}
+if (Get-Process -Id $serverPid -ErrorAction SilentlyContinue) {
+  throw "Jarvis did not finish its graceful shutdown. The process was left running for review."
+}
+
+Remove-Item -LiteralPath $runtimePath -Force
+Write-Host "Jarvis has stopped cleanly."

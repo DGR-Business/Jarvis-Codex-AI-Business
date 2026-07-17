@@ -68,7 +68,35 @@ function rowStatus(row, grossCents, refundedCents) {
   return "paid";
 }
 
-function normalizeSale(row, options, key) {
+function audConversion(input = {}, importedAt = now()) {
+  const sourceCurrency = String(input.currency || "USD").trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(sourceCurrency)) throw new Error("Gumroad currency must be a three-letter currency code.");
+  if (sourceCurrency === "AUD") {
+    return {
+      sourceCurrency,
+      rate: 1,
+      evidence: "Native AUD Gumroad export",
+      convertedAt: input.audConversionAt || importedAt,
+    };
+  }
+  const rate = Number(input.audConversionRate);
+  const evidence = String(input.audConversionEvidence || "").trim();
+  if (!Number.isFinite(rate) || rate <= 0) {
+    throw new Error(`A positive AUD conversion rate is required for ${sourceCurrency} Gumroad sales.`);
+  }
+  if (!evidence) {
+    throw new Error(`AUD conversion evidence is required for ${sourceCurrency} Gumroad sales.`);
+  }
+  const convertedAt = input.audConversionAt || importedAt;
+  if (!Number.isFinite(Date.parse(convertedAt))) throw new Error("AUD conversion time must be a valid date.");
+  return { sourceCurrency, rate, evidence, convertedAt: new Date(convertedAt).toISOString() };
+}
+
+function toAudCents(sourceCents, rate) {
+  return Math.round(Number(sourceCents || 0) * rate);
+}
+
+function normalizeSale(row, conversion, key) {
   const purchaseId = field(row, ["Purchase ID", "Purchase Id", "purchase_id"]);
   const productName = field(row, ["Item Name", "Product", "Product Name"]);
   if (!purchaseId || !productName) throw new Error("Every Gumroad sale needs a Purchase ID and Item Name.");
@@ -83,11 +111,15 @@ function normalizeSale(row, options, key) {
     purchaseId,
     productName,
     soldAt: saleTimestamp(row),
-    currency: String(options.currency || "USD").toUpperCase(),
+    currency: conversion.sourceCurrency,
     grossCents,
     feeCents,
     netCents: exportedNet,
     refundedCents,
+    audGrossCents: toAudCents(grossCents, conversion.rate),
+    audFeeCents: toAudCents(feeCents, conversion.rate),
+    audNetCents: toAudCents(exportedNet, conversion.rate),
+    audRefundedCents: toAudCents(refundedCents, conversion.rate),
     referrer: safeReferrer(field(row, ["Referrer"])),
     buyerHash: buyerHash(row, key),
     status,
@@ -97,6 +129,7 @@ function normalizeSale(row, options, key) {
       disputed: flag(field(row, ["Disputed?"])),
       feeAndNetFromPlatformExport: true,
       rawPersonalFieldsRetained: false,
+      audNormalized: true,
     },
   };
 }
@@ -128,10 +161,14 @@ function importGumroadCsv(db, input, options = {}) {
   let updated = 0;
   let anonymous = 0;
   const ts = now();
+  const conversion = audConversion(input, ts);
+  const normalizedEvidenceHash = crypto.createHash("sha256")
+    .update(`${sourceHash}:${conversion.sourceCurrency}:${conversion.rate}:${conversion.evidence}:${conversion.convertedAt}`)
+    .digest("hex");
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const record of records) {
-      const sale = normalizeSale(record, input, key);
+      const sale = normalizeSale(record, conversion, key);
       const existing = get(
         db,
         "SELECT id FROM platform_sales WHERE platform = ? AND platform_purchase_id = ?",
@@ -143,8 +180,10 @@ function importGumroadCsv(db, input, options = {}) {
         `INSERT INTO platform_sales
          (id, venture_id, platform, platform_purchase_id, product_name, sold_at, currency,
           gross_cents, platform_fee_cents, net_cents, refunded_cents, referrer, buyer_hash,
-          status, metadata, imported_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          status, metadata, imported_at, aud_gross_cents, aud_platform_fee_cents,
+          aud_net_cents, aud_refunded_cents, aud_conversion_rate, aud_conversion_evidence,
+          aud_conversion_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(platform, platform_purchase_id) DO UPDATE SET
            venture_id = excluded.venture_id,
            product_name = excluded.product_name,
@@ -158,7 +197,14 @@ function importGumroadCsv(db, input, options = {}) {
            buyer_hash = excluded.buyer_hash,
            status = excluded.status,
            metadata = excluded.metadata,
-           imported_at = excluded.imported_at`,
+           imported_at = excluded.imported_at,
+           aud_gross_cents = excluded.aud_gross_cents,
+           aud_platform_fee_cents = excluded.aud_platform_fee_cents,
+           aud_net_cents = excluded.aud_net_cents,
+           aud_refunded_cents = excluded.aud_refunded_cents,
+           aud_conversion_rate = excluded.aud_conversion_rate,
+           aud_conversion_evidence = excluded.aud_conversion_evidence,
+           aud_conversion_at = excluded.aud_conversion_at`,
         [
           id,
           ventureId,
@@ -174,8 +220,15 @@ function importGumroadCsv(db, input, options = {}) {
           sale.referrer,
           sale.buyerHash,
           sale.status,
-          toJson({ ...sale.metadata, sourceHash }),
+          toJson({ ...sale.metadata, sourceHash, normalizedEvidenceHash }),
           ts,
+          sale.audGrossCents,
+          sale.audFeeCents,
+          sale.audNetCents,
+          sale.audRefundedCents,
+          conversion.rate,
+          conversion.evidence,
+          conversion.convertedAt,
         ],
       );
       if (existing) updated += 1;
@@ -187,7 +240,7 @@ function importGumroadCsv(db, input, options = {}) {
     db.exec("ROLLBACK");
     throw error;
   }
-  const evidenceId = `evidence_gumroad_${sourceHash.slice(0, 20)}`;
+  const evidenceId = `evidence_gumroad_${normalizedEvidenceHash.slice(0, 20)}`;
   if (!get(db, "SELECT id FROM commercial_evidence WHERE id = ?", [evidenceId])) {
     recordEvidence(db, {
       id: evidenceId,
@@ -195,9 +248,19 @@ function importGumroadCsv(db, input, options = {}) {
       sourceType: "platform_csv",
       sourceId: sourceHash,
       title: "Gumroad sales export",
-      summary: `${records.length} platform sale record${records.length === 1 ? "" : "s"} imported; ${anonymous} lacked an email identifier and do not count as independently verified buyers.`,
+      summary: `${records.length} platform sale record${records.length === 1 ? "" : "s"} imported and normalized from ${conversion.sourceCurrency} to AUD; ${anonymous} lacked an email identifier and do not count as independently verified buyers.`,
       verified: true,
-      metadata: { platform: PLATFORM, sourceHash, rows: records.length, rawCsvRetained: false },
+      metadata: {
+        platform: PLATFORM,
+        sourceHash,
+        normalizedEvidenceHash,
+        rows: records.length,
+        sourceCurrency: conversion.sourceCurrency,
+        audConversionRate: conversion.rate,
+        audConversionEvidence: conversion.evidence,
+        audConversionAt: conversion.convertedAt,
+        rawCsvRetained: false,
+      },
     });
   }
   insertEvent(db, {
@@ -206,7 +269,16 @@ function importGumroadCsv(db, input, options = {}) {
     entityType: "venture",
     entityId: ventureId,
     message: `Gumroad results imported: ${inserted} new and ${updated} updated sale records.`,
-    metadata: { sourceHash, inserted, updated, anonymous, rawPersonalFieldsRetained: false },
+    metadata: {
+      sourceHash,
+      normalizedEvidenceHash,
+      inserted,
+      updated,
+      anonymous,
+      sourceCurrency: conversion.sourceCurrency,
+      audConversionRate: conversion.rate,
+      rawPersonalFieldsRetained: false,
+    },
   });
   return {
     sourceHash,
@@ -214,6 +286,8 @@ function importGumroadCsv(db, input, options = {}) {
     inserted,
     updated,
     anonymousBuyerRecords: anonymous,
+    sourceCurrency: conversion.sourceCurrency,
+    audConversionRate: conversion.rate,
     economics: ventureEconomics(db, ventureId),
   };
 }
@@ -222,7 +296,9 @@ function getGumroadSalesState(db, ventureId = "venture-digital-products") {
   const sales = all(
     db,
     `SELECT id, product_name, sold_at, currency, gross_cents, platform_fee_cents,
-            net_cents, refunded_cents, referrer, status, metadata, imported_at
+            net_cents, refunded_cents, aud_gross_cents, aud_platform_fee_cents,
+            aud_net_cents, aud_refunded_cents, aud_conversion_rate,
+            aud_conversion_evidence, aud_conversion_at, referrer, status, metadata, imported_at
      FROM platform_sales WHERE venture_id = ? AND platform = ? ORDER BY sold_at DESC`,
     [ventureId, PLATFORM],
   ).map((row) => ({ ...row, metadata: fromJson(row.metadata, {}) }));
@@ -230,6 +306,7 @@ function getGumroadSalesState(db, ventureId = "venture-digital-products") {
 }
 
 module.exports = {
+  audConversion,
   getGumroadSalesState,
   importGumroadCsv,
   moneyCents,

@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 
 const COOKIE_NAME = "jarvis_session";
+const DEFAULT_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 function parseCookies(header = "") {
   return Object.fromEntries(
@@ -24,6 +25,13 @@ function sameText(left, right) {
 function createLocalSecurity(options = {}) {
   const enabled = options.enabled !== false;
   const secret = options.secret || crypto.randomBytes(32);
+  const bootstrapSecret = String(
+    options.bootstrapSecret
+      || process.env.JARVIS_OPERATOR_BOOTSTRAP
+      || crypto.randomBytes(32).toString("base64url"),
+  );
+  const sessionTtlMs = Math.max(60_000, Number(options.sessionTtlMs || DEFAULT_SESSION_TTL_MS));
+  const sessions = new Map();
 
   function signature(sessionId) {
     return crypto.createHmac("sha256", secret).update(`session:${sessionId}`).digest("base64url");
@@ -43,24 +51,8 @@ function createLocalSecurity(options = {}) {
     return sessionId;
   }
 
-  function sessionForRequest(req) {
-    return decodeSession(parseCookies(req.headers.cookie)[COOKIE_NAME]);
-  }
-
-  function attachSession(req, res) {
-    if (!enabled) return { id: "security-disabled", csrfToken: "security-disabled" };
-    let sessionId = sessionForRequest(req);
-    if (!sessionId) {
-      sessionId = crypto.randomBytes(24).toString("base64url");
-      res.setHeader(
-        "set-cookie",
-        `${COOKIE_NAME}=${encodeURIComponent(encodeSession(sessionId))}; Path=/; HttpOnly; SameSite=Strict`,
-      );
-    }
-    return { id: sessionId, csrfToken: csrfToken(sessionId) };
-  }
-
   function requestOrigin(req) {
+    if (!enabled) return "http://127.0.0.1";
     const host = String(req.headers.host || "").toLowerCase();
     if (!host) throw new Error("Missing Host header.");
     let parsed;
@@ -75,11 +67,52 @@ function createLocalSecurity(options = {}) {
     return `http://${host}`;
   }
 
+  function assertRequestHost(req) {
+    requestOrigin(req);
+    return true;
+  }
+
+  function sessionForRequest(req) {
+    if (!enabled) return { id: "security-disabled", csrfToken: "security-disabled", expiresAt: null };
+    const sessionId = decodeSession(parseCookies(req.headers.cookie)[COOKIE_NAME]);
+    if (!sessionId) return null;
+    const record = sessions.get(sessionId);
+    if (!record || record.expiresAt <= Date.now()) {
+      sessions.delete(sessionId);
+      return null;
+    }
+    record.lastSeenAt = Date.now();
+    return { id: sessionId, csrfToken: csrfToken(sessionId), expiresAt: new Date(record.expiresAt).toISOString() };
+  }
+
   function assertOrigin(req) {
+    if (!enabled) return true;
     const expected = requestOrigin(req);
     const origin = String(req.headers.origin || "").toLowerCase();
     if (!origin || origin !== expected) throw new Error("Request origin does not match this Jarvis session.");
     return expected;
+  }
+
+  function createSession(req, res) {
+    if (!enabled) return sessionForRequest(req);
+    assertOrigin(req);
+    if (!sameText(req.headers["x-jarvis-bootstrap"], bootstrapSecret)) {
+      throw new Error("Start Jarvis with the local launcher to authorise this browser.");
+    }
+    const sessionId = crypto.randomBytes(24).toString("base64url");
+    const expiresAt = Date.now() + sessionTtlMs;
+    sessions.set(sessionId, { createdAt: Date.now(), lastSeenAt: Date.now(), expiresAt });
+    res.setHeader(
+      "set-cookie",
+      `${COOKIE_NAME}=${encodeURIComponent(encodeSession(sessionId))}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(sessionTtlMs / 1000)}`,
+    );
+    return { id: sessionId, csrfToken: csrfToken(sessionId), expiresAt: new Date(expiresAt).toISOString() };
+  }
+
+  function requireSession(req) {
+    const session = sessionForRequest(req);
+    if (!session) throw new Error("A valid Jarvis operator session is required.");
+    return session;
   }
 
   function assertMutation(req, session) {
@@ -95,17 +128,28 @@ function createLocalSecurity(options = {}) {
 
   function assertWebSocket(req) {
     if (!enabled) return true;
+    assertRequestHost(req);
     assertOrigin(req);
-    if (!sessionForRequest(req)) throw new Error("A valid Jarvis session is required for live updates.");
+    requireSession(req);
     return true;
+  }
+
+  function revokeSession(req) {
+    const sessionId = decodeSession(parseCookies(req.headers.cookie)[COOKIE_NAME]);
+    if (sessionId) sessions.delete(sessionId);
   }
 
   return {
     enabled,
-    attachSession,
+    bootstrapSecret,
     assertMutation,
+    assertOrigin,
+    assertRequestHost,
     assertWebSocket,
+    createSession,
     csrfToken,
+    requireSession,
+    revokeSession,
     sessionForRequest,
   };
 }

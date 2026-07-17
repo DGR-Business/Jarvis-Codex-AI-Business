@@ -13,10 +13,13 @@
     "proof": "node scripts/run-dry-pipeline.js",
     "backup": "node scripts/backup-runtime.js",
     "restore": "node scripts/restore-runtime.js",
-    "test": "node scripts/run-tests.js"
+    "doctor": "node scripts/doctor.js",
+    "test": "node scripts/run-tests.js",
+    "test:ops": "node scripts/run-tests.js test/ops-recovery.test.js",
+    "test:recovery": "node scripts/run-tests.js test/ops-recovery.test.js"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=24 <25"
   },
   "keywords": [],
   "author": "",

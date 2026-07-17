@@ -2,6 +2,7 @@ const CONFIG = require("../config");
 const crypto = require("node:crypto");
 const { refreshIntegrationHealth } = require("../adapters/registry");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
+const { monthlyBudgetExposure, monthlyCapCents } = require("./cost-ledger");
 
 function minutesAgo(minutes) {
   return new Date(Date.now() - minutes * 60 * 1000).toISOString();
@@ -26,24 +27,6 @@ function monitorStatus(severity) {
 function parseMetadata(row) {
   if (!row) return row;
   return { ...row, metadata: fromJson(row.metadata) };
-}
-
-function monthlyCostCents(db) {
-  const prefix = new Date().toISOString().slice(0, 7);
-  const row = get(
-    db,
-    `SELECT COALESCE(SUM(amount_cents), 0) AS total
-     FROM costs
-     WHERE occurred_at LIKE ?`,
-    [`${prefix}%`],
-  );
-  return Number(row?.total || 0);
-}
-
-function approvalRequestedEstimateCents(db) {
-  return all(db, "SELECT metadata FROM costs WHERE status = 'approval_requested'")
-    .map((row) => fromJson(row.metadata))
-    .reduce((sum, metadata) => sum + Number(metadata.estimatedCostCents || 0), 0);
 }
 
 function addFinding(findings, finding) {
@@ -170,9 +153,9 @@ function collectFindings(db, options = {}) {
     });
   }
 
-  const budgetCents = CONFIG.monthlyBudgetCents;
-  const spendCents = monthlyCostCents(db);
-  const requestedEstimateCents = approvalRequestedEstimateCents(db);
+  const budgetCents = monthlyCapCents(db);
+  const budgetExposure = monthlyBudgetExposure(db);
+  const spendCents = budgetExposure.totalCents;
   if (spendCents > budgetCents) {
     addFinding(findings, {
       severity: "error",
@@ -181,30 +164,29 @@ function collectFindings(db, options = {}) {
       entityId: "monthly",
       title: "Monthly budget exceeded",
       detail: `${spendCents} cents spent against ${budgetCents} cents budget.`,
-      metadata: { spendCents, budgetCents, currency: CONFIG.currency },
-    });
-  } else if (spendCents + requestedEstimateCents > budgetCents) {
-    addFinding(findings, {
-      severity: "warn",
-      category: "budget",
-      entityType: "budget",
-      entityId: "monthly",
-      title: "Requested spend would exceed monthly budget",
-      detail: "Approved/pending estimated spend is above the remaining monthly allowance.",
-      metadata: { spendCents, requestedEstimateCents, budgetCents, currency: CONFIG.currency },
+      metadata: {
+        spendCents,
+        realizedCents: budgetExposure.realizedCents,
+        unresolvedCents: budgetExposure.unresolvedCents,
+        budgetCents,
+        currency: CONFIG.currency,
+      },
     });
   }
 
-  const requiredIntegrations = all(db, "SELECT id, name, status, health FROM integrations WHERE id IN ('openai', 'email', 'digital_products') ORDER BY id");
-  const notReady = requiredIntegrations.filter((integration) => !["ok", "dry_run_only"].includes(integration.health));
+  const coreConnections = all(
+    db,
+    "SELECT id, name, status, health FROM integrations WHERE id IN ('ai_workers', 'live_research', 'digital_products') ORDER BY id",
+  );
+  const notReady = coreConnections.filter((integration) => !["ok", "dry_run_only"].includes(integration.health));
   if (notReady.length > 0) {
     addFinding(findings, {
       severity: "info",
       category: "integrations",
       entityType: "integration",
       entityId: notReady[0].id,
-      title: `${notReady.length} required integration${notReady.length === 1 ? "" : "s"} not live-ready`,
-      detail: "This is acceptable in dry-run mode, but blocks live research, live model calls, or email sending.",
+      title: `${notReady.length} core connection${notReady.length === 1 ? " needs" : "s need"} setup`,
+      detail: "AI work, live research, or digital-product preparation is unavailable until the listed connection is ready.",
       metadata: { integrations: notReady },
     });
   }

@@ -1,8 +1,11 @@
+const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { addAgentTrace } = require("./ai-team");
 const { getAgentToolPolicyState } = require("./agent-tools");
+const { canonicalJson, scopeHash } = require("./approval-scope");
 
 const TOOL_GATE_SCHEMA = "jarvis_agent_tool_gate_v1";
+const TOOL_APPROVAL_SCOPE_SCHEMA = "jarvis_exact_agent_tool_approval_v2";
 
 class AgentToolApprovalRequiredError extends Error {
   constructor(result, input = {}) {
@@ -57,7 +60,63 @@ function summarizeInput(input = {}) {
 }
 
 function approvalIsApproved(approval) {
-  return approval && approval.status === "approved";
+  return Boolean(
+    approval
+      && approval.status === "approved"
+      && (!approval.expires_at || Date.parse(approval.expires_at) > Date.now()),
+  );
+}
+
+function canonicalToolArguments(input = {}) {
+  const candidate = input.toolArguments
+    ?? input.arguments
+    ?? input.metadata?.sdkInterruptionArguments
+    ?? {};
+  if (typeof candidate !== "string") return candidate || {};
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return { raw: candidate };
+  }
+}
+
+function canonicalEffects(input = {}) {
+  const effects = input.effects ?? input.metadata?.effects ?? [];
+  return [...new Set((Array.isArray(effects) ? effects : [effects]).filter(Boolean).map(String))].sort();
+}
+
+function invocationScope(input = {}) {
+  const task = input.task || {};
+  const args = canonicalToolArguments(input);
+  const effects = canonicalEffects(input);
+  return {
+    schema: TOOL_APPROVAL_SCOPE_SCHEMA,
+    invocationId: input.invocationId || input.id || null,
+    taskId: task.id || input.taskId || null,
+    workflowId: task.workflow_id || input.workflowId || null,
+    runId: input.runId || null,
+    workerId: input.agentId || input.agent_id || null,
+    toolId: input.toolId || input.tool_id || null,
+    toolArguments: args,
+    toolArgumentsHash: scopeHash(args),
+    effects,
+    callId: input.callId || input.metadata?.sdkInterruptionCallId || null,
+    resumeStateHash: input.resumeStateHash || input.metadata?.sdkRunStateHash || null,
+  };
+}
+
+function withSavepoint(db, prefix, operation) {
+  const name = `${prefix}_${randomId().replace(/[^a-zA-Z0-9]/g, "")}`;
+  db.exec(`SAVEPOINT ${name}`);
+  try {
+    const value = operation();
+    db.exec(`RELEASE SAVEPOINT ${name}`);
+    return value;
+  } catch (error) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${name}`);
+    db.exec(`RELEASE SAVEPOINT ${name}`);
+    throw error;
+  }
 }
 
 function getApproval(db, approvalId) {
@@ -96,15 +155,51 @@ function ensureRequestedToolPlaceholder(db, toolId) {
   );
 }
 
-function createToolApproval(db, { agentId, agentName, runId, tool, assignment, task, invocationId, inputSummary, metadata }) {
+function createToolApproval(db, {
+  agentId,
+  agentName,
+  runId,
+  tool,
+  assignment,
+  task,
+  invocationId,
+  inputSummary,
+  toolArguments,
+  effects,
+  callId,
+  resumeStateHash,
+  metadata,
+}) {
   const approvalId = `appr_tool_${randomId()}`;
   const ts = now();
+  const expiresAt = new Date(Date.now() + CONFIG.approvalTokenTtlHours * 60 * 60 * 1000).toISOString();
   const scope = tool.approval_scope || assignment?.approval_scope || "agent_tool_use";
   const title = `${agentName || agentId} needs approval to use ${tool.name}`;
+  const exactScope = invocationScope({
+    invocationId,
+    agentId,
+    runId,
+    task,
+    toolId: tool.id,
+    toolArguments,
+    effects,
+    callId,
+    resumeStateHash,
+  });
+  const exactScopeHash = scopeHash(exactScope);
   const payload = {
     schema: TOOL_GATE_SCHEMA,
+    scopeSchema: TOOL_APPROVAL_SCOPE_SCHEMA,
     reason: `${tool.name} can affect live systems, spend, publishing, account state, or external evidence. Review before live use.`,
     worker: { id: agentId, name: agentName || agentId },
+    tools: [tool.id],
+    toolArguments: { [tool.id]: exactScope.toolArguments },
+    effects: exactScope.effects,
+    parameters: {
+      invocationId,
+      callId: exactScope.callId,
+      runId: runId || null,
+    },
     tool: {
       id: tool.id,
       name: tool.name,
@@ -120,6 +215,8 @@ function createToolApproval(db, { agentId, agentName, runId, tool, assignment, t
     taskId: task?.id || null,
     workflowId: task?.workflow_id || null,
     inputSummary,
+    exactScope,
+    exactScopeHash,
     resume: {
       kind: "agent_tool_invocation",
       approve: "Approve and queue this worker step to resume with the live tool check cleared.",
@@ -132,11 +229,14 @@ function createToolApproval(db, { agentId, agentName, runId, tool, assignment, t
   run(
     db,
     `INSERT INTO approvals
-      (id, workflow_id, scope, title, status, risk_level, requested_by, requested_at, payload)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, workflow_id, venture_id, task_id, scope, title, status, risk_level, requested_by,
+       requested_at, payload, scope_hash, expires_at, expected_effects)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       approvalId,
       task?.workflow_id || null,
+      task?.venture_id || null,
+      task?.id || null,
       scope,
       title,
       "pending",
@@ -144,6 +244,9 @@ function createToolApproval(db, { agentId, agentName, runId, tool, assignment, t
       agentId,
       ts,
       toJson(payload),
+      exactScopeHash,
+      expiresAt,
+      toJson(exactScope.effects),
     ],
   );
   insertEvent(db, {
@@ -168,6 +271,144 @@ function hydrateApproval(approvalOrId, db) {
     ...row,
     payload: typeof row.payload === "string" ? fromJson(row.payload, {}) : row.payload || {},
   };
+}
+
+function isExactToolApproval(approval) {
+  return approval?.payload?.schema === TOOL_GATE_SCHEMA
+    && approval.payload.scopeSchema === TOOL_APPROVAL_SCOPE_SCHEMA
+    && approval.payload.exactScope;
+}
+
+function validateAgentToolApprovalScope(db, approvalOrId, input = {}, expectedScopeHash = null) {
+  const approval = hydrateApproval(approvalOrId, db);
+  if (!approval || !isExactToolApproval(approval)) {
+    return { valid: false, reason: "This is not an exact worker-tool approval.", approval };
+  }
+  const payload = approval.payload;
+  const invocation = parseInvocation(get(db, "SELECT * FROM agent_tool_invocations WHERE id = ?", [payload.invocationId]));
+  if (!invocation) return { valid: false, reason: "The approved worker-tool call no longer exists.", approval };
+  const storedScope = payload.exactScope;
+  const storedHash = payload.exactScopeHash || scopeHash(storedScope);
+  if (approval.scope_hash !== storedHash || scopeHash(storedScope) !== storedHash) {
+    return { valid: false, reason: "The worker-tool approval scope changed after it was requested.", approval, invocation };
+  }
+  if (expectedScopeHash && expectedScopeHash !== storedHash) {
+    return { valid: false, reason: "The worker-tool approval card changed after it was opened.", approval, invocation };
+  }
+  if (approval.expires_at && Date.parse(approval.expires_at) <= Date.now()) {
+    return { valid: false, reason: "The worker-tool approval expired.", approval, invocation };
+  }
+
+  const supplied = invocationScope({
+    ...input,
+    invocationId: input.invocationId || storedScope.invocationId,
+    agentId: input.agentId || input.agent_id || storedScope.workerId,
+    runId: input.runId ?? storedScope.runId,
+    task: input.task || { id: input.taskId || storedScope.taskId, workflow_id: input.workflowId || storedScope.workflowId },
+    toolId: input.toolId || input.tool_id || storedScope.toolId,
+    toolArguments: input.toolArguments ?? input.arguments ?? storedScope.toolArguments,
+    effects: input.effects ?? storedScope.effects,
+    callId: input.callId ?? storedScope.callId,
+    resumeStateHash: input.resumeStateHash ?? storedScope.resumeStateHash,
+  });
+  if (canonicalJson(supplied) !== canonicalJson(storedScope)) {
+    return { valid: false, reason: "The requested worker-tool call does not match the exact approved call.", approval, invocation, supplied };
+  }
+  if (
+    invocation.id !== storedScope.invocationId
+    || invocation.task_id !== storedScope.taskId
+    || invocation.workflow_id !== storedScope.workflowId
+    || invocation.run_id !== storedScope.runId
+    || invocation.agent_id !== storedScope.workerId
+    || invocation.tool_id !== storedScope.toolId
+  ) {
+    return { valid: false, reason: "The stored worker-tool invocation no longer matches its approval.", approval, invocation };
+  }
+  if (approval.consumed_at) {
+    return { valid: false, reason: "The worker-tool approval has already been used.", approval, invocation };
+  }
+  return { valid: true, approval, invocation, scope: storedScope, scopeHash: storedHash };
+}
+
+function approvedTaskScope(approval, input) {
+  const task = input.task || {};
+  const request = task.payload?.liveSpendRequest || {};
+  const payload = approval?.payload || {};
+  const explicitTools = request.tools || payload.tools || payload.liveSpendRequest?.tools || [];
+  const approvedTools = Array.isArray(explicitTools) && explicitTools.length
+    ? explicitTools
+    : task.kind === "live_market_research"
+      ? ["research_adapter"]
+      : [];
+  const approvedArguments = request.toolArguments?.[input.toolId]
+    ?? request.toolArguments
+    ?? payload.toolArguments?.[input.toolId]
+    ?? payload.toolArguments
+    ?? {};
+  const worker = request.worker?.id || request.worker || request.requestedWorker || payload.worker?.id || payload.requestedWorker || task.agent;
+  const effects = request.effects || payload.effects || [];
+  return {
+    taskId: approval.task_id || payload.taskId || null,
+    workflowId: approval.workflow_id || payload.workflowId || null,
+    workerId: worker || null,
+    tools: Array.isArray(approvedTools) ? approvedTools.map(String) : [],
+    toolArguments: approvedArguments || {},
+    effects: canonicalEffects({ effects }),
+  };
+}
+
+function validateApprovedTaskToolUse(approval, input) {
+  if (!approvalIsApproved(approval) || isExactToolApproval(approval)) return { valid: false };
+  const approved = approvedTaskScope(approval, input);
+  const taskId = input.task?.id || input.taskId || null;
+  const workflowId = input.task?.workflow_id || input.workflowId || null;
+  const workerId = input.agentId || input.agent_id || null;
+  const args = canonicalToolArguments(input);
+  const effects = canonicalEffects(input);
+  const valid = approved.taskId === taskId
+    && approved.workflowId === workflowId
+    && approved.workerId === workerId
+    && approved.tools.includes(String(input.toolId || input.tool_id))
+    && canonicalJson(approved.toolArguments) === canonicalJson(args)
+    && canonicalJson(approved.effects) === canonicalJson(effects);
+  return { valid, approval, kind: "task_execution", approved };
+}
+
+function consumeAgentToolApproval(db, approvalOrId, input = {}) {
+  return withSavepoint(db, "consume_tool_approval", () => {
+    const validation = validateAgentToolApprovalScope(db, approvalOrId, input, input.expectedScopeHash || null);
+    if (!validation.valid) throw new Error(validation.reason);
+    if (validation.approval.status !== "approved") throw new Error("The worker-tool call has not been approved.");
+    const consumedAt = now();
+    const consumed = run(
+      db,
+      "UPDATE approvals SET consumed_at = ? WHERE id = ? AND status = 'approved' AND consumed_at IS NULL",
+      [consumedAt, validation.approval.id],
+    );
+    if (consumed.changes !== 1) throw new Error("The worker-tool approval could not be consumed exactly once.");
+    const metadata = {
+      ...validation.invocation.metadata,
+      exactApprovalUse: {
+        consumedAt,
+        approvalId: validation.approval.id,
+        scopeHash: validation.scopeHash,
+        callId: validation.scope.callId,
+        resumeStateHash: validation.scope.resumeStateHash,
+      },
+    };
+    run(
+      db,
+      `UPDATE agent_tool_invocations
+       SET status = 'allowed', decision = 'approved_live', metadata = ?, resolved_at = ?
+       WHERE id = ? AND approval_id = ?`,
+      [toJson(metadata), consumedAt, validation.invocation.id, validation.approval.id],
+    );
+    return {
+      ...validation,
+      invocation: parseInvocation(get(db, "SELECT * FROM agent_tool_invocations WHERE id = ?", [validation.invocation.id])),
+      consumedAt,
+    };
+  });
 }
 
 function recordInvocation(db, payload) {
@@ -249,6 +490,13 @@ function resolveAgentToolApproval(db, approvalOrId, decision, note = "", options
     return { handled: false };
   }
 
+  if (isExactToolApproval(approval)) {
+    const validation = validateAgentToolApprovalScope(db, approval, {}, options.expectedScopeHash || null);
+    if (!validation.valid) {
+      return { handled: false, reason: validation.reason, invocationId: payload.invocationId || null };
+    }
+  }
+
   const invocationId = payload.invocationId;
   const invocation = parseInvocation(get(db, "SELECT * FROM agent_tool_invocations WHERE id = ?", [invocationId]));
   if (!invocation) return { handled: false, reason: "missing_invocation", invocationId };
@@ -270,6 +518,7 @@ function resolveAgentToolApproval(db, approvalOrId, decision, note = "", options
       decidedAt: ts,
       approvalId: approval.id,
       resume: payload.resume || null,
+      scopeHash: approval.scope_hash || payload.exactScopeHash || null,
     },
   };
 
@@ -334,6 +583,15 @@ function requestAgentToolUse(db, input = {}) {
   const mode = requestedMode(input.mode || input.requestedMode);
   const inputSummary = summarizeInput(input);
   const approval = getApproval(db, input.ignoreTaskApproval ? input.approvalId : (input.approvalId || input.task?.approval_id));
+  const exactApprovalValidation = isExactToolApproval(approval)
+    ? validateAgentToolApprovalScope(db, approval, input, input.expectedScopeHash || null)
+    : null;
+  const taskApprovalValidation = validateApprovedTaskToolUse(approval, input);
+  const approvedUse = exactApprovalValidation?.valid
+    ? { valid: true, kind: "exact_invocation", approval, validation: exactApprovalValidation }
+    : taskApprovalValidation.valid
+      ? taskApprovalValidation
+      : { valid: false, approval, reason: exactApprovalValidation?.reason || "approval_scope_mismatch" };
   const agentPolicy = policy.byAgent[agentId] || {};
   const agentName = input.agentName || agentPolicy.agentName || agentId;
   const baseMetadata = {
@@ -341,7 +599,7 @@ function requestAgentToolUse(db, input = {}) {
     requestedBy: input.requestedBy || "agent-runner",
     toolKnown: Boolean(tool),
     assignmentKnown: Boolean(assignment),
-    approvedApprovalId: approvalIsApproved(approval) ? approval.id : null,
+    approvedApprovalId: approvedUse.valid ? approval.id : null,
     providerCapability: tool?.provider_capability || null,
     liveFlag: tool?.live_flag || null,
     ...(input.metadata || {}),
@@ -460,8 +718,33 @@ function requestAgentToolUse(db, input = {}) {
   }
 
   const protectedAllowed = mode === "protected" && tool.dry_run_available;
-  if (assignment.permission === "allowed" || protectedAllowed || approvalIsApproved(approval)) {
-    const decision = approvalIsApproved(approval)
+  if (assignment.permission === "allowed" || protectedAllowed || approvedUse.valid) {
+    if (approvedUse.kind === "exact_invocation") {
+      const consumed = consumeAgentToolApproval(db, approval, input);
+      const invocationId = consumed.invocation.id;
+      traceToolDecision(db, input.runId, "allowed", "Tool allowed", `${tool.name} passed its exact one-use approval for ${agentName}.`, {
+        invocationId,
+        toolId,
+        decision: "approved_live",
+        mode,
+        approvalId: approval.id,
+        scopeHash: consumed.scopeHash,
+      });
+      return {
+        id: invocationId,
+        status: "allowed",
+        decision: "approved_live",
+        allowed: true,
+        approvalRequired: false,
+        blocked: false,
+        tool,
+        assignment,
+        approvalId: approval.id,
+        consumedAt: consumed.consumedAt,
+      };
+    }
+
+    const decision = approvedUse.valid
       ? "approved_live"
       : protectedAllowed && assignment.permission === "requires_approval"
         ? "allowed_protected"
@@ -472,7 +755,7 @@ function requestAgentToolUse(db, input = {}) {
       task: input.task,
       toolId,
       assignmentId: assignment.id,
-      approvalId: approvalIsApproved(approval) ? approval.id : null,
+      approvalId: approvedUse.valid ? approval.id : null,
       mode,
       status: "allowed",
       decision,
@@ -492,11 +775,47 @@ function requestAgentToolUse(db, input = {}) {
       blocked: false,
       tool,
       assignment,
-      approvalId: approvalIsApproved(approval) ? approval.id : null,
+      approvalId: approvedUse.valid ? approval.id : null,
     };
   }
 
   if (assignment.permission === "requires_approval") {
+    if (approval && approval.status === "approved") {
+      const invocationId = recordInvocation(db, {
+        agentId,
+        runId: input.runId,
+        task: input.task,
+        toolId,
+        assignmentId: assignment.id,
+        approvalId: approval.id,
+        mode,
+        status: "blocked",
+        decision: "approval_scope_mismatch",
+        permission: assignment.permission,
+        riskLevel: tool.risk_level,
+        inputSummary,
+        outputSummary: `${tool.name} was blocked because the supplied approval does not match this exact call.`,
+        metadata: { ...baseMetadata, toolName: tool.name, approvalValidationReason: approvedUse.reason },
+      });
+      traceToolDecision(db, input.runId, "blocked", "Tool approval did not match", `${tool.name} was blocked because its approval was expired, consumed, or scoped to another call.`, {
+        invocationId,
+        toolId,
+        approvalId: approval.id,
+        reason: approvedUse.reason,
+      });
+      return {
+        id: invocationId,
+        status: "blocked",
+        decision: "approval_scope_mismatch",
+        allowed: false,
+        approvalRequired: false,
+        blocked: true,
+        reason: approvedUse.reason,
+        approvalId: approval.id,
+        tool,
+        assignment,
+      };
+    }
     const invocationId = `tool_call_${randomId()}`;
     const approvalId = createToolApproval(db, {
       agentId,
@@ -507,6 +826,10 @@ function requestAgentToolUse(db, input = {}) {
       task: input.task,
       invocationId,
       inputSummary,
+      toolArguments: canonicalToolArguments(input),
+      effects: canonicalEffects(input),
+      callId: input.callId || input.metadata?.sdkInterruptionCallId || null,
+      resumeStateHash: input.resumeStateHash || input.metadata?.sdkRunStateHash || null,
       metadata: baseMetadata,
     });
     recordInvocation(db, {
@@ -622,7 +945,9 @@ function getAgentToolGateState(db) {
 
 module.exports = {
   AgentToolApprovalRequiredError,
+  TOOL_APPROVAL_SCOPE_SCHEMA,
   TOOL_GATE_SCHEMA,
+  consumeAgentToolApproval,
   getAgentToolGateState,
   isAgentToolApprovalRequiredError,
   listAgentToolInvocations,
@@ -630,4 +955,5 @@ module.exports = {
   requestAgentToolUse,
   requireAgentToolUse,
   resolveAgentToolApproval,
+  validateAgentToolApprovalScope,
 };

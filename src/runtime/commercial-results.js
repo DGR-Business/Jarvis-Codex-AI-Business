@@ -30,7 +30,7 @@ function pct(numerator, denominator) {
 function moneyLabel(cents) {
   const value = Number(cents) || 0;
   const sign = value < 0 ? "-" : "";
-  return `${sign}$${(Math.abs(value) / 100).toFixed(2)}`;
+  return `${sign}A$${(Math.abs(value) / 100).toFixed(2)}`;
 }
 
 function parseExperiment(row) {
@@ -61,6 +61,9 @@ function workflowDefaults(db, workflowId) {
 function createCommercialExperiment(db, input = {}) {
   const defaults = workflowDefaults(db, input.workflowId || input.workflow_id);
   const ts = now();
+  const ventureId = input.ventureId || input.venture_id || defaults.ventureId
+    || get(db, "SELECT id FROM ventures WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1")?.id;
+  if (!ventureId) throw new Error("A commercial test needs an active venture.");
   const id = input.id || `exp_${safeSlug(input.name || defaults.name)}_${randomId().slice(0, 8)}`;
   const status = input.status || "candidate";
   if (status === "running" && input.realStart !== true) {
@@ -79,7 +82,7 @@ function createCommercialExperiment(db, input = {}) {
     [
       id,
       defaults.workflow?.id || null,
-      defaults.ventureId,
+      ventureId,
       asText(input.name, defaults.name),
       status,
       hypothesis,
@@ -136,6 +139,8 @@ function findOrCreateExperiment(db, input = {}) {
 }
 
 function resultPayload(input = {}) {
+  const currency = String(input.currency || "AUD").toUpperCase();
+  if (currency !== "AUD") throw new Error("Commercial results must be normalized to AUD before they are recorded.");
   return {
     views: asInt(input.views),
     clicks: asInt(input.clicks),
@@ -144,9 +149,47 @@ function resultPayload(input = {}) {
     refunds: asInt(input.refunds),
     revenueCents: asMoney(input.revenueCents ?? input.revenue_cents),
     spendCents: asMoney(input.spendCents ?? input.spend_cents),
+    platformFeeCents: asMoney(input.platformFeeCents ?? input.platform_fee_cents),
+    productCostCents: asMoney(input.productCostCents ?? input.product_cost_cents),
+    toolCostCents: asMoney(input.toolCostCents ?? input.tool_cost_cents),
     timeSpentMinutes: asInt(input.timeSpentMinutes ?? input.time_spent_minutes),
     notes: asText(input.notes),
+    currency,
   };
+}
+
+function verificationState(db, input = {}) {
+  const source = asText(input.source, "operator").toLowerCase();
+  if (source === "test") {
+    return { verified: true, at: now(), evidenceId: null, method: "test_fixture" };
+  }
+  if (source === "execution_pack" && input.metadata?.executionPackId) {
+    const pack = get(
+      db,
+      "SELECT id FROM commercial_execution_packs WHERE id = ?",
+      [input.metadata.executionPackId],
+    );
+    if (!pack) throw new Error("The operator result refers to an execution pack that does not exist.");
+    return { verified: true, at: now(), evidenceId: null, method: "operator_execution_pack_record" };
+  }
+  if (input.verified !== true && input.status !== "verified") {
+    return { verified: false, at: null, evidenceId: null, method: "pending" };
+  }
+  const evidenceId = input.verificationEvidenceId || input.verification_evidence_id || null;
+  if (evidenceId) {
+    const evidence = get(
+      db,
+      "SELECT id FROM commercial_evidence WHERE id = ? AND verified_at IS NOT NULL AND is_demo = 0",
+      [evidenceId],
+    );
+    if (!evidence) throw new Error("Verification evidence must exist, be verified and contain real business evidence.");
+    return { verified: true, at: now(), evidenceId, method: "verified_evidence" };
+  }
+  const note = asText(input.verificationNote || input.verification_note);
+  if (note.length < 8) {
+    throw new Error("Verified operator results need a verification note or verified evidence record.");
+  }
+  return { verified: true, at: now(), evidenceId: null, method: "operator_attestation", note };
 }
 
 function insertFinanceRows(db, experiment, result, values) {
@@ -154,14 +197,14 @@ function insertFinanceRows(db, experiment, result, values) {
   if (values.revenueCents > 0) {
     run(
       db,
-      `INSERT OR REPLACE INTO revenue
+      `INSERT INTO revenue
        (id, venture_id, source, status, amount_cents, currency, occurred_at, metadata)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         `rev_${result.id}`,
         experiment.venture_id || null,
         "commercial_result",
-        "recorded",
+        "verified",
         values.revenueCents,
         "AUD",
         ts,
@@ -169,22 +212,35 @@ function insertFinanceRows(db, experiment, result, values) {
       ],
     );
   }
-  if (values.spendCents > 0) {
+  const cashCostCents = values.spendCents + values.platformFeeCents + values.productCostCents + values.toolCostCents;
+  if (cashCostCents > 0) {
     run(
       db,
-      `INSERT OR REPLACE INTO costs
-       (id, workflow_id, category, source, status, amount_cents, currency, occurred_at, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO costs
+       (id, workflow_id, category, source, status, amount_cents, currency, occurred_at,
+        metadata, venture_id, run_id, task_id, model_call_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         `cost_${result.id}`,
         experiment.workflow_id || null,
         "commercial_test",
         "commercial_result",
         "recorded",
-        values.spendCents,
+        cashCostCents,
         "AUD",
         ts,
-        toJson({ resultId: result.id, experimentId: experiment.id }),
+        toJson({
+          resultId: result.id,
+          experimentId: experiment.id,
+          externalSpendCents: values.spendCents,
+          platformFeeCents: values.platformFeeCents,
+          productCostCents: values.productCostCents,
+          toolCostCents: values.toolCostCents,
+        }),
+        experiment.venture_id || null,
+        null,
+        null,
+        null,
       ],
     );
   }
@@ -282,87 +338,139 @@ function recordFeedbackAnalysisWorker(db, experiment, feedback, learning) {
 }
 
 function recordCommercialResult(db, input = {}) {
-  const experiment = findOrCreateExperiment(db, input);
-  const ts = input.occurredAt || input.occurred_at || now();
-  const values = resultPayload(input);
-  const id = input.id || `result_${safeSlug(experiment.name)}_${randomId().slice(0, 8)}`;
-  run(
-    db,
-    `INSERT INTO commercial_results
-     (id, experiment_id, workflow_id, source, status, views, clicks, leads, sales, refunds,
-      revenue_cents, spend_cents, time_spent_minutes, notes, occurred_at, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      experiment.id,
-      experiment.workflow_id || null,
-      asText(input.source, "operator"),
-      input.status || "recorded",
-      values.views,
-      values.clicks,
-      values.leads,
-      values.sales,
-      values.refunds,
-      values.revenueCents,
-      values.spendCents,
-      values.timeSpentMinutes,
-      values.notes,
-      ts,
-      toJson(input.metadata || {}),
-      now(),
-    ],
-  );
-  const result = parseRows(all(db, "SELECT * FROM commercial_results WHERE id = ?", [id]))[0];
-  insertFinanceRows(db, experiment, result, values);
-  const learning = recordLearningCycle(db, experiment.id);
-  insertEvent(db, {
-    actor: "commercial-engine",
-    type: "commercial_result.recorded",
-    entityType: "commercial_result",
-    entityId: id,
-    message: `Commercial result recorded for ${experiment.name}: ${learning.verdict}.`,
-    metadata: { experimentId: experiment.id, workflowId: experiment.workflow_id, learningId: learning.id },
-  });
-  const aiTeamRun = recordResultAnalysisWorker(db, experiment, result, learning);
-  return { experiment: getCommercialExperiment(db, experiment.id), result, learning, aiTeamRun };
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const experiment = findOrCreateExperiment(db, input);
+    const ts = input.occurredAt || input.occurred_at || now();
+    const values = resultPayload(input);
+    const verification = verificationState(db, input);
+    const id = input.id || `result_${safeSlug(experiment.name)}_${randomId().slice(0, 8)}`;
+    run(
+      db,
+      `INSERT INTO commercial_results
+       (id, experiment_id, workflow_id, source, status, views, clicks, leads, sales, refunds,
+        revenue_cents, spend_cents, time_spent_minutes, notes, occurred_at, metadata, created_at,
+        venture_id, platform_fee_cents, product_cost_cents, tool_cost_cents, verified, currency,
+        verified_at, verification_evidence_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        experiment.id,
+        experiment.workflow_id || null,
+        asText(input.source, "operator"),
+        verification.verified ? "verified" : "pending_verification",
+        values.views,
+        values.clicks,
+        values.leads,
+        values.sales,
+        values.refunds,
+        values.revenueCents,
+        values.spendCents,
+        values.timeSpentMinutes,
+        values.notes,
+        ts,
+        toJson({ ...(input.metadata || {}), verificationMethod: verification.method, verificationNote: verification.note || null }),
+        now(),
+        experiment.venture_id,
+        values.platformFeeCents,
+        values.productCostCents,
+        values.toolCostCents,
+        verification.verified ? 1 : 0,
+        values.currency,
+        verification.at,
+        verification.evidenceId,
+      ],
+    );
+    const result = parseRows(all(db, "SELECT * FROM commercial_results WHERE id = ?", [id]))[0];
+    let learning = null;
+    let aiTeamRun = null;
+    if (verification.verified) {
+      insertFinanceRows(db, experiment, result, values);
+      learning = recordLearningCycle(db, experiment.id);
+      aiTeamRun = recordResultAnalysisWorker(db, experiment, result, learning);
+    }
+    insertEvent(db, {
+      actor: "commercial-engine",
+      type: verification.verified ? "commercial_result.verified" : "commercial_result.awaiting_verification",
+      entityType: "commercial_result",
+      entityId: id,
+      message: verification.verified
+        ? `Verified commercial result recorded for ${experiment.name}: ${learning.verdict}.`
+        : `Commercial result saved for ${experiment.name} and is waiting for verification.`,
+      metadata: {
+        experimentId: experiment.id,
+        workflowId: experiment.workflow_id,
+        learningId: learning?.id || null,
+        affectsCommercialTruth: verification.verified,
+      },
+    });
+    db.exec("COMMIT");
+    return { experiment: getCommercialExperiment(db, experiment.id), result, learning, aiTeamRun, verified: verification.verified };
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function recordCommercialFeedback(db, input = {}) {
-  const experiment = findOrCreateExperiment(db, input);
-  const id = input.id || `feedback_${safeSlug(experiment.name)}_${randomId().slice(0, 8)}`;
-  run(
-    db,
-    `INSERT INTO commercial_feedback
-     (id, experiment_id, workflow_id, source, sentiment, rating, summary, objection, request,
-      occurred_at, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      experiment.id,
-      experiment.workflow_id || null,
-      asText(input.source, "operator"),
-      asText(input.sentiment, "neutral"),
-      input.rating === undefined || input.rating === null || input.rating === "" ? null : asInt(input.rating),
-      asText(input.summary),
-      asText(input.objection),
-      asText(input.request),
-      input.occurredAt || input.occurred_at || now(),
-      toJson(input.metadata || {}),
-      now(),
-    ],
-  );
-  const feedback = parseRows(all(db, "SELECT * FROM commercial_feedback WHERE id = ?", [id]))[0];
-  const learning = recordLearningCycle(db, experiment.id);
-  insertEvent(db, {
-    actor: "commercial-engine",
-    type: "commercial_feedback.recorded",
-    entityType: "commercial_feedback",
-    entityId: id,
-    message: `Customer signal recorded for ${experiment.name}: ${feedback.sentiment}.`,
-    metadata: { experimentId: experiment.id, workflowId: experiment.workflow_id, learningId: learning.id },
-  });
-  const aiTeamRun = recordFeedbackAnalysisWorker(db, experiment, feedback, learning);
-  return { experiment: getCommercialExperiment(db, experiment.id), feedback, learning, aiTeamRun };
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const experiment = findOrCreateExperiment(db, input);
+    const verification = verificationState(db, input);
+    const id = input.id || `feedback_${safeSlug(experiment.name)}_${randomId().slice(0, 8)}`;
+    run(
+      db,
+      `INSERT INTO commercial_feedback
+       (id, experiment_id, workflow_id, source, sentiment, rating, summary, objection, request,
+        occurred_at, metadata, created_at, venture_id, verified, verified_at, verification_evidence_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        experiment.id,
+        experiment.workflow_id || null,
+        asText(input.source, "operator"),
+        asText(input.sentiment, "neutral"),
+        input.rating === undefined || input.rating === null || input.rating === "" ? null : asInt(input.rating),
+        asText(input.summary),
+        asText(input.objection),
+        asText(input.request),
+        input.occurredAt || input.occurred_at || now(),
+        toJson({ ...(input.metadata || {}), verificationMethod: verification.method, verificationNote: verification.note || null }),
+        now(),
+        experiment.venture_id,
+        verification.verified ? 1 : 0,
+        verification.at,
+        verification.evidenceId,
+      ],
+    );
+    const feedback = parseRows(all(db, "SELECT * FROM commercial_feedback WHERE id = ?", [id]))[0];
+    let learning = null;
+    let aiTeamRun = null;
+    if (verification.verified) {
+      learning = recordLearningCycle(db, experiment.id);
+      aiTeamRun = recordFeedbackAnalysisWorker(db, experiment, feedback, learning);
+    }
+    insertEvent(db, {
+      actor: "commercial-engine",
+      type: verification.verified ? "commercial_feedback.verified" : "commercial_feedback.awaiting_verification",
+      entityType: "commercial_feedback",
+      entityId: id,
+      message: verification.verified
+        ? `Verified customer signal recorded for ${experiment.name}: ${feedback.sentiment}.`
+        : `Customer signal saved for ${experiment.name} and is waiting for verification.`,
+      metadata: {
+        experimentId: experiment.id,
+        workflowId: experiment.workflow_id,
+        learningId: learning?.id || null,
+        affectsCommercialTruth: verification.verified,
+      },
+    });
+    db.exec("COMMIT");
+    return { experiment: getCommercialExperiment(db, experiment.id), feedback, learning, aiTeamRun, verified: verification.verified };
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function summarizeCommercialEvidence(db, filters = {}) {
@@ -376,10 +484,11 @@ function summarizeCommercialEvidence(db, filters = {}) {
     where.push("experiment_id = ?");
     params.push(filters.experimentId);
   }
-  const suffix = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const results = parseRows(all(db, `SELECT * FROM commercial_results ${suffix} ORDER BY occurred_at DESC`, params));
-  const feedback = parseRows(all(db, `SELECT * FROM commercial_feedback ${suffix} ORDER BY occurred_at DESC`, params));
-  const learningCycles = parseRows(all(db, `SELECT * FROM commercial_learning_cycles ${suffix} ORDER BY created_at DESC`, params));
+  const scope = where.length ? ` AND ${where.join(" AND ")}` : "";
+  const learningScope = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const results = parseRows(all(db, `SELECT * FROM commercial_results WHERE verified = 1${scope} ORDER BY occurred_at DESC`, params));
+  const feedback = parseRows(all(db, `SELECT * FROM commercial_feedback WHERE verified = 1${scope} ORDER BY occurred_at DESC`, params));
+  const learningCycles = parseRows(all(db, `SELECT * FROM commercial_learning_cycles ${learningScope} ORDER BY created_at DESC`, params));
   return summarizeRows({ results, feedback, learningCycles });
 }
 

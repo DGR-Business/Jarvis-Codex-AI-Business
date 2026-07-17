@@ -10,16 +10,22 @@ function activeVenture(db) {
     || get(db, "SELECT * FROM ventures WHERE id = 'venture-digital-products'");
 }
 
+function putSettingIfMissing(db, key, value) {
+  if (!get(db, "SELECT key FROM settings WHERE key = ?", [key])) {
+    putSetting(db, key, value);
+  }
+}
+
 function ensureActiveVentureCase(db) {
   const ts = now();
-  putSetting(db, "operator.workload", {
+  putSettingIfMissing(db, "operator.workload", {
     targetMinutesPerWeek: 480,
     intensiveWeekMaximumMinutes: 960,
     intensiveWeekRequiresApproval: true,
     timeValueCentsPerHour: 5000,
     longTermMode: "weekly digest plus important exceptions",
   });
-  putSetting(db, "commercial.pilot", {
+  putSettingIfMissing(db, "commercial.pilot", {
     businessModel: "digital_product",
     platform: "gumroad_direct",
     oneActiveVenture: true,
@@ -35,40 +41,21 @@ function ensureActiveVentureCase(db) {
     paidTestRequiresOperatorApproval: true,
     deferPaidMediaToolsUntilSales: 3,
   });
-  putSetting(db, "budget", {
+  putSettingIfMissing(db, "budget", {
     monthlyBudgetCents: CONFIG.monthlyBudgetCents,
     currency: CONFIG.currency,
     spendRequiresApproval: true,
-    notes: "Pre-revenue cap: A$100/month. Each AI pilot and market test also has its own explicit cap.",
+    notes: "Pre-revenue cap: A$100/month. Each live AI run and market test also has its own explicit cap.",
   });
   run(
     db,
     `INSERT INTO ventures
      (id, name, stage, status, summary, metadata, created_at, updated_at,
       lifecycle_stage, is_active, business_model)
-     VALUES ('venture-digital-products', 'Digital Products', 1, 'validating', ?, ?, ?, ?, 'validating', 1, 'digital_product')
-     ON CONFLICT(id) DO UPDATE SET
-       status = CASE
-         WHEN ventures.lifecycle_stage IN ('candidate', 'validating', 'selling', 'fulfilling', 'scaling', 'paused')
-           THEN ventures.lifecycle_stage
-         ELSE 'validating'
-       END,
-       summary = CASE
-         WHEN ventures.summary LIKE '%dry-run%' OR ventures.summary LIKE '%proof%'
-           THEN excluded.summary
-         ELSE ventures.summary
-       END,
-       metadata = json_patch(
-         CASE WHEN json_valid(ventures.metadata) THEN ventures.metadata ELSE '{}' END,
-         excluded.metadata
-       ),
-       lifecycle_stage = CASE
-         WHEN ventures.lifecycle_stage IN ('candidate', 'validating', 'selling', 'fulfilling', 'scaling', 'paused')
-           THEN ventures.lifecycle_stage
-         ELSE 'validating'
-       END,
-       is_active = CASE WHEN NOT EXISTS (SELECT 1 FROM ventures active WHERE active.is_active = 1) THEN 1 ELSE ventures.is_active END,
-       business_model = COALESCE(ventures.business_model, 'digital_product')`,
+     VALUES ('venture-digital-products', 'Digital Products', 1, 'validating', ?, ?, ?, ?, 'validating',
+       CASE WHEN EXISTS (SELECT 1 FROM ventures WHERE is_active = 1) THEN 0 ELSE 1 END,
+       'digital_product')
+     ON CONFLICT(id) DO NOTHING`,
     [
       "The sole active venture until one digital-product offer proves three independent buyers and positive cash contribution.",
       toJson({
@@ -198,11 +185,11 @@ function recordEvidence(db, input) {
 function ventureEconomics(db, ventureId) {
   const sales = get(
     db,
-    `SELECT COALESCE(SUM(gross_cents), 0) AS gross,
-            COALESCE(SUM(platform_fee_cents), 0) AS fees,
-            COALESCE(SUM(refunded_cents), 0) AS refunds,
-            MIN(currency) AS sales_currency,
-            COUNT(DISTINCT currency) AS currency_count,
+    `SELECT COALESCE(SUM(aud_gross_cents), 0) AS gross,
+            COALESCE(SUM(aud_platform_fee_cents), 0) AS fees,
+            COALESCE(SUM(aud_refunded_cents), 0) AS refunds,
+            COUNT(CASE WHEN aud_gross_cents IS NULL THEN 1 END) AS unconverted_count,
+            GROUP_CONCAT(DISTINCT currency) AS source_currencies,
             COUNT(DISTINCT CASE
               WHEN status = 'paid' AND buyer_hash IS NOT NULL AND refunded_cents < gross_cents
               THEN buyer_hash END) AS buyers
@@ -218,13 +205,20 @@ function ventureEconomics(db, ventureId) {
      FROM commercial_results WHERE venture_id = ? AND verified = 1`,
     [ventureId],
   );
+  const providerCosts = get(
+    db,
+    `SELECT COALESCE(SUM(amount_cents), 0) AS provider_costs
+     FROM costs
+     WHERE venture_id = ? AND status = 'reconciled' AND currency = 'AUD'
+       AND source <> 'commercial_result'`,
+    [ventureId],
+  );
   const workload = fromJson(get(db, "SELECT value FROM settings WHERE key = 'operator.workload'")?.value, {});
   const operatingCostsCents = Number(resultCosts?.spend || 0)
     + Number(resultCosts?.product || 0)
-    + Number(resultCosts?.tools || 0);
-  const salesCurrency = sales?.sales_currency || CONFIG.currency;
-  const currencyMismatch = Number(sales?.currency_count || 0) > 1
-    || (salesCurrency !== CONFIG.currency && operatingCostsCents > 0);
+    + Number(resultCosts?.tools || 0)
+    + Number(providerCosts?.provider_costs || 0);
+  const currencyMismatch = Number(sales?.unconverted_count || 0) > 0;
   const platformContributionCents = Number(sales?.gross || 0)
     - Number(sales?.fees || 0)
     - Number(sales?.refunds || 0);
@@ -237,9 +231,12 @@ function ventureEconomics(db, ventureId) {
     externalSpendCents: Number(resultCosts?.spend || 0),
     productCostsCents: Number(resultCosts?.product || 0),
     toolCostsCents: Number(resultCosts?.tools || 0),
+    providerCostsCents: Number(providerCosts?.provider_costs || 0),
     cashContributionCents,
-    salesCurrency,
-    platformContributionCents,
+    salesCurrency: "AUD",
+    sourceCurrencies: String(sales?.source_currencies || "").split(",").filter(Boolean),
+    unconvertedSalesCount: Number(sales?.unconverted_count || 0),
+    platformContributionCents: currencyMismatch ? null : platformContributionCents,
     currencyMismatch,
     operatorMinutes: Number(resultCosts?.minutes || 0),
     operatorTimeValueCents: timeValueCents,
@@ -251,8 +248,8 @@ function ventureEconomics(db, ventureId) {
 }
 
 function commercialFoundationState(db) {
-  const venture = activeVenture(db);
   const ventureCase = ensureActiveVentureCase(db);
+  const venture = activeVenture(db);
   const evidence = all(
     db,
     "SELECT * FROM commercial_evidence WHERE venture_id = ? AND is_demo = 0 ORDER BY captured_at DESC LIMIT 20",

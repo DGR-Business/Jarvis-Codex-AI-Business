@@ -4,6 +4,8 @@ const { randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 
+const LATEST_SCHEMA_VERSION = 11;
+
 function now() {
   return new Date().toISOString();
 }
@@ -42,10 +44,33 @@ function all(db, sql, params = []) {
 function openDatabase(dbPath = CONFIG.dbPath) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
-  migrate(db);
-  return db;
+  try {
+    migrate(db);
+    verifyDatabase(db);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+function verifyDatabase(db) {
+  const quickCheck = get(db, "PRAGMA quick_check");
+  if (!quickCheck || Object.values(quickCheck)[0] !== "ok") {
+    throw new Error(`SQLite quick check failed: ${JSON.stringify(quickCheck || {})}`);
+  }
+  const foreignKeyFailures = all(db, "PRAGMA foreign_key_check");
+  if (foreignKeyFailures.length) {
+    throw new Error(`SQLite foreign-key check failed with ${foreignKeyFailures.length} violation(s).`);
+  }
+  const current = Number(get(db, "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")?.version || 0);
+  if (current !== LATEST_SCHEMA_VERSION) {
+    throw new Error(`Runtime schema ${current} does not match supported schema ${LATEST_SCHEMA_VERSION}.`);
+  }
+  return { quickCheck: "ok", foreignKeyFailures: 0, schemaVersion: current };
 }
 
 function migrationApplied(db, version) {
@@ -883,6 +908,141 @@ function applyAccountingLedgerMigration(db) {
   }
 }
 
+function applyCommercialDataTruthMigration(db) {
+  if (migrationApplied(db, 11)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    addColumn(db, "costs", "run_id TEXT");
+    addColumn(db, "costs", "task_id TEXT");
+    addColumn(db, "costs", "model_call_id TEXT");
+    addColumn(db, "commercial_results", "currency TEXT NOT NULL DEFAULT 'AUD' CHECK(currency = 'AUD')");
+    addColumn(db, "commercial_results", "verified_at TEXT");
+    addColumn(db, "commercial_results", "verification_evidence_id TEXT");
+    addColumn(db, "commercial_feedback", "venture_id TEXT");
+    addColumn(db, "commercial_feedback", "verified INTEGER NOT NULL DEFAULT 0");
+    addColumn(db, "commercial_feedback", "verified_at TEXT");
+    addColumn(db, "commercial_feedback", "verification_evidence_id TEXT");
+    addColumn(db, "platform_sales", "aud_gross_cents INTEGER");
+    addColumn(db, "platform_sales", "aud_platform_fee_cents INTEGER");
+    addColumn(db, "platform_sales", "aud_net_cents INTEGER");
+    addColumn(db, "platform_sales", "aud_refunded_cents INTEGER");
+    addColumn(db, "platform_sales", "aud_conversion_rate REAL");
+    addColumn(db, "platform_sales", "aud_conversion_evidence TEXT");
+    addColumn(db, "platform_sales", "aud_conversion_at TEXT");
+    addColumn(db, "accounting_entries", "effect_sign INTEGER NOT NULL DEFAULT 1 CHECK(effect_sign IN (-1, 1))");
+    addColumn(db, "accounting_entries", "supersedes_entry_id TEXT");
+    addColumn(db, "accounting_entries", "reverses_entry_id TEXT");
+    addColumn(db, "accounting_entries", "revision_reason TEXT");
+
+    run(
+      db,
+      `UPDATE platform_sales
+       SET aud_gross_cents = gross_cents,
+           aud_platform_fee_cents = platform_fee_cents,
+           aud_net_cents = net_cents,
+           aud_refunded_cents = refunded_cents,
+           aud_conversion_rate = 1,
+           aud_conversion_evidence = 'Native AUD platform export',
+           aud_conversion_at = imported_at
+       WHERE currency = 'AUD' AND aud_gross_cents IS NULL`,
+    );
+    run(
+      db,
+      `UPDATE commercial_feedback
+       SET venture_id = COALESCE(
+         (SELECT venture_id FROM commercial_experiments WHERE commercial_experiments.id = commercial_feedback.experiment_id),
+         (SELECT venture_id FROM workflows WHERE workflows.id = commercial_feedback.workflow_id),
+         (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1)
+       )
+       WHERE venture_id IS NULL`,
+    );
+    run(
+      db,
+      `UPDATE costs
+       SET model_call_id = COALESCE(
+         CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.modelCallId') END,
+         (SELECT model_calls.id
+          FROM model_calls
+          WHERE model_calls.workflow_id = costs.workflow_id
+            AND (model_calls.reconciled_cost_cents = costs.amount_cents
+              OR model_calls.actual_cost_cents = costs.amount_cents)
+          ORDER BY model_calls.created_at DESC
+          LIMIT 1)
+       )
+       WHERE model_call_id IS NULL`,
+    );
+    run(
+      db,
+      `UPDATE costs
+       SET task_id = COALESCE(
+         (SELECT task_id FROM model_calls WHERE model_calls.id = costs.model_call_id),
+         (SELECT task_id FROM budget_reservations
+          WHERE budget_reservations.workflow_id = costs.workflow_id
+          ORDER BY reserved_at DESC LIMIT 1)
+       )
+       WHERE task_id IS NULL`,
+    );
+    run(
+      db,
+      `UPDATE costs
+       SET run_id = (SELECT agent_runs.id FROM agent_runs
+                     WHERE agent_runs.model_call_id = costs.model_call_id
+                        OR (agent_runs.task_id = costs.task_id AND costs.model_call_id IS NULL)
+                     ORDER BY agent_runs.started_at DESC LIMIT 1)
+       WHERE run_id IS NULL`,
+    );
+
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ventures_one_active
+        ON ventures(is_active) WHERE is_active = 1;
+      CREATE INDEX IF NOT EXISTS idx_costs_run ON costs(run_id);
+      CREATE INDEX IF NOT EXISTS idx_costs_task ON costs(task_id);
+      CREATE INDEX IF NOT EXISTS idx_costs_model_call ON costs(model_call_id);
+      CREATE INDEX IF NOT EXISTS idx_commercial_results_verified
+        ON commercial_results(venture_id, verified, occurred_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_commercial_feedback_verified
+        ON commercial_feedback(venture_id, verified, occurred_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_platform_sales_aud
+        ON platform_sales(venture_id, aud_conversion_at, sold_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_accounting_supersedes
+        ON accounting_entries(supersedes_entry_id) WHERE supersedes_entry_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_accounting_reverses
+        ON accounting_entries(reverses_entry_id) WHERE reverses_entry_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS runtime_resets (
+        reset_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        source_database_sha256 TEXT NOT NULL,
+        backup_reference TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        manifest TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        applied_at TEXT
+      );
+
+      CREATE TRIGGER IF NOT EXISTS trg_accounting_reconciled_immutable_update
+      BEFORE UPDATE ON accounting_entries
+      FOR EACH ROW WHEN OLD.status = 'reconciled'
+      BEGIN
+        SELECT RAISE(ABORT, 'Reconciled accounting entries are immutable; record a reversal or revision.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_accounting_reconciled_immutable_delete
+      BEFORE DELETE ON accounting_entries
+      FOR EACH ROW WHEN OLD.status = 'reconciled'
+      BEGIN
+        SELECT RAISE(ABORT, 'Reconciled accounting entries are immutable; record a reversal or revision.');
+      END;
+    `);
+
+    recordMigration(db, 11, "commercial-data-truth-and-first-use-reset");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -891,8 +1051,14 @@ function migrate(db) {
       applied_at TEXT NOT NULL
     );
   `);
+  const currentVersion = Number(get(db, "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")?.version || 0);
+  if (currentVersion > LATEST_SCHEMA_VERSION) {
+    throw new Error(`Runtime schema ${currentVersion} is newer than supported schema ${LATEST_SCHEMA_VERSION}.`);
+  }
   if (!migrationApplied(db, 1)) {
-    db.exec(`
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(`
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -1665,7 +1831,12 @@ function migrate(db) {
        SET current_step = 'ready for dry-run agent execution'
        WHERE status = 'planned' AND current_step = 'waiting for agent runner implementation'`,
     );
-    recordMigration(db, 1, "initial-runtime-schema");
+      recordMigration(db, 1, "initial-runtime-schema");
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   }
   applyFoundationMigration(db);
   applyPilotEvidenceMigration(db);
@@ -1676,6 +1847,7 @@ function migrate(db) {
   applyLegacyNotificationCleanupMigration(db);
   applyHistoricalWorkArchiveMigration(db);
   applyAccountingLedgerMigration(db);
+  applyCommercialDataTruthMigration(db);
 }
 
 function putSetting(db, key, value) {
@@ -1710,9 +1882,10 @@ function seedDatabase(db, options = {}) {
   const existing = get(db, "SELECT value FROM settings WHERE key = ?", ["runtime.initialized"]);
   if (existing) return false;
 
+  db.exec("BEGIN IMMEDIATE");
+  try {
   const ts = now();
   const includeDemoProof = options.includeDemoProof === true;
-  putSetting(db, "runtime.initialized", { at: ts, version: 2 });
   putSetting(db, "operator.preferences", {
     noCodeTouch: true,
     dashboardFirst: true,
@@ -1722,14 +1895,17 @@ function seedDatabase(db, options = {}) {
   putSetting(db, "autonomy", {
     stage: CONFIG.autonomyStage,
     promotionApprovalRate: CONFIG.targetFirstPassApprovalRate,
-    promotionMinimumApprovals: CONFIG.approvalPromotionMinimum,
+    capabilityPromotionMinimumRuns: 5,
+    promotionMinimumApprovals: 5,
+    exactCapabilityOnly: true,
+    globalAgentPromotionDisabled: true,
     liveExternalActionsRequireApproval: true,
   });
   putSetting(db, "budget", {
     monthlyBudgetCents: CONFIG.monthlyBudgetCents,
     currency: CONFIG.currency,
     spendRequiresApproval: true,
-    notes: "Pre-revenue cap: A$100/month. Each AI pilot and market test also has its own explicit cap.",
+    notes: "Pre-revenue cap: A$100/month. Each live AI run and market test also has its own explicit cap.",
   });
   putSetting(db, "operator.workload", {
     targetMinutesPerWeek: 480,
@@ -1951,10 +2127,17 @@ function seedDatabase(db, options = {}) {
       : "Jarvis-Codex runtime initialized with one digital-product venture, integrations, and cost controls.",
   });
 
+  putSetting(db, "runtime.initialized", { at: ts, version: LATEST_SCHEMA_VERSION });
+  db.exec("COMMIT");
   return true;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 module.exports = {
+  LATEST_SCHEMA_VERSION,
   all,
   fromJson,
   get,
@@ -1966,4 +2149,5 @@ module.exports = {
   run,
   seedDatabase,
   toJson,
+  verifyDatabase,
 };

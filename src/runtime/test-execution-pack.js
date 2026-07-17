@@ -341,6 +341,12 @@ function findHandoffForRun(db, runId) {
 
 function mergeOutcomePacketMetadata(db, table, id, packet) {
   if (!id) return;
+  const allowedTables = new Set([
+    "commercial_feedback",
+    "commercial_learning_cycles",
+    "commercial_results",
+  ]);
+  if (!allowedTables.has(table)) throw new Error(`Unsupported outcome metadata table: ${table}`);
   const row = get(db, `SELECT metadata FROM ${table} WHERE id = ?`, [id]);
   if (!row) return;
   const metadata = fromJson(row.metadata, {});

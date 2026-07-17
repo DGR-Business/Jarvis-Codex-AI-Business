@@ -182,28 +182,22 @@ Recheck these official Gumroad references immediately before launch:
 
 ## Current Delivery State
 
-- Phase 1: complete. Cleanup, permanent backup-key storage, fresh encrypted source/
-  database/artifact backups, authenticated restore, current-output recovery,
-  clean install, 81-test, healthy-start, PDF-preview, and desktop browser proof
-  are complete. The baseline is history-free so legacy private metadata cannot
-  be pushed. The private GitHub `main` branch contains the clean baseline, and
-  a fresh checkout from that remote passed install, all tests, healthy startup,
-  truthful empty-state, and real-browser verification on 2026-07-16.
-- Phase 2: implemented through migration 10 and covered by automated tests.
-- Phase 3: implemented for one active digital-product venture.
-- Phase 4: implemented and real-browser verified at 1440x900, 1280x720,
-  1024x768, and a stable 390x844 mobile fallback.
-- Phase 5: the first oversized-contract attempt is preserved as a known
-  technical failure. One separately approved corrected attempt then completed
-  successfully with valid structured output, no tools, no handoffs and no
-  external effects. Runtime eval scored 100 and all deterministic pilot checks
-  passed. OpenAI usage confirms A$0.05 aggregate cost across the two calls. All
-  86 tests pass, a complete encrypted post-pilot checkpoint has passed
-  authenticated database/source/artifact restore, and live mode is off.
-  A focused local run-review surface is available because the historical
-  privacy-first provider trace cannot retrieve its Response detail. Daniel's
-  usefulness verdict remains the gate before this capability earns the first
-  success in its five-run sequence.
-- Phase 6: Gumroad import, privacy handling, launch gate, limits, and metrics are
-  ready; opportunity selection, product creation, account action, publishing,
-  and buyer test remain unperformed.
+- Phase 1: implemented. Encrypted source, database, and artifact recovery,
+  private Git, ignored operator records, historical archive, clean install, and
+  one-click Windows startup are part of the release gate.
+- Phase 2: implemented through schema migration 11, including isolated tests,
+  deterministic outputs, atomic claims, exact approvals, truthful cost states,
+  unknown-outcome handling, local session security, and resumable setup work.
+- Phase 3: implemented for one active digital-product venture, four work-package
+  types, evidence provenance, AUD accounting, risk-tiered capability autonomy,
+  and all 11 visible workers.
+- Phase 4: implemented as the five-section cockpit with focused APIs, on-demand
+  drawers, PDF preview, ordinary-language controls, and truthful Live Runs.
+- Phase 5: the historical no-tool Agents SDK acceptance work and its A$0.05
+  provider cost are preserved through encrypted recovery. The active runtime is
+  reset to zero capability streak so real commercial work earns autonomy from a
+  clean starting point. OpenAI credentials are Windows-user encrypted, while
+  every paid run still needs an exact approval.
+- Phase 6: Gumroad import, privacy handling, launch limits, and economics are
+  ready. Opportunity selection, product creation, account action, publication,
+  and the buyer test remain deliberately unperformed.

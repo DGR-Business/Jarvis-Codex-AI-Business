@@ -1,17 +1,17 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { URL } = require("node:url");
 const { WebSocketServer } = require("ws");
 const CONFIG = require("./config");
-const { decideApproval, decideApprovalByToken } = require("./runtime/approvals");
+const { decideApproval } = require("./runtime/approvals");
 const { refreshIntegrationHealth } = require("./adapters/registry");
 const { getDashboardState } = require("./runtime/state");
 const { all, get, insertEvent, now, openDatabase, run, seedDatabase, toJson } = require("./db");
 const { createCommandPlan } = require("./runtime/planner");
 const { runOnce, runUntilBlocked } = require("./runtime/orchestrator");
 const { generateApprovalPack } = require("./runtime/approval-pack");
-const { processApprovalReply } = require("./runtime/approval-replies");
 const { runMonitorCycle } = require("./runtime/monitor");
 const { createLiveAiWorkerSmokeTest, requestLiveAiWorker } = require("./runtime/live-ai-workers");
 const { createLiveResearchSmokeTest, requestLiveResearch } = require("./runtime/live-research");
@@ -37,14 +37,13 @@ const { getAgentModelReadinessState, queueAgentModelComparisonPacket, storedComp
 const { recordAiPilotReviewDecision } = require("./runtime/ai-pilot-review");
 const { createLocalSecurity } = require("./runtime/local-security");
 const { recoverSetupBlockedTasks } = require("./runtime/spend-gate");
-const { generateWeeklyDigest, getLatestDigest } = require("./runtime/executive-digest");
+const { ensureWeeklyDigest, generateWeeklyDigest, getLatestDigest } = require("./runtime/executive-digest");
 const { ensureActiveVentureCase } = require("./runtime/venture-case");
 const { ensureCapabilityAutonomy } = require("./runtime/capability-autonomy");
 const { getGumroadSalesState, importGumroadCsv } = require("./runtime/gumroad-import");
 const { reconcileProviderUsageBatch } = require("./runtime/cost-ledger");
 const {
   createPilotFixture,
-  ensureDemandValidatorPilotFixture,
   getPilotState,
   prepareDemandValidatorPilot,
   prepareDemandValidatorPilotRetry,
@@ -53,6 +52,7 @@ const {
 const {
   getAgentDetail,
   getAgentRunDetail,
+  getAgentRunsState,
   getAiTeamState,
   getBusinessTestsState,
   getCockpitState,
@@ -80,6 +80,14 @@ const CONTENT_TYPES = {
   ".svg": "image/svg+xml",
 };
 
+const MAX_REQUEST_BODY_BYTES = 1_000_000;
+
+function clientRequestError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
 function jsonResponse(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(statusCode, {
@@ -95,15 +103,29 @@ function notFound(res) {
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let body = "";
+    const declaredLength = Number(req.headers["content-length"] || 0);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BODY_BYTES) {
+      reject(clientRequestError("Request body too large", 413));
+      return;
+    }
+
+    const chunks = [];
+    let bytes = 0;
+    let settled = false;
     req.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 1_000_000) {
-        reject(new Error("Request body too large"));
-        req.destroy();
+      if (settled) return;
+      bytes += chunk.length;
+      if (bytes > MAX_REQUEST_BODY_BYTES) {
+        settled = true;
+        reject(clientRequestError("Request body too large", 413));
+        return;
       }
+      chunks.push(chunk);
     });
     req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      const body = Buffer.concat(chunks).toString("utf8");
       if (!body) {
         resolve({});
         return;
@@ -111,10 +133,14 @@ function readBody(req) {
       try {
         resolve(JSON.parse(body));
       } catch {
-        reject(new Error("Invalid JSON body"));
+        reject(clientRequestError("Invalid JSON body", 400));
       }
     });
-    req.on("error", reject);
+    req.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
   });
 }
 
@@ -133,8 +159,9 @@ function serveStatic(req, res) {
   const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
   const decoded = decodeURIComponent(pathname);
   const safePath = path.normalize(decoded).replace(/^([/\\])+/, "");
-  const filePath = path.join(PUBLIC_DIR, safePath);
-  if (!filePath.startsWith(PUBLIC_DIR)) {
+  const filePath = path.resolve(PUBLIC_DIR, safePath);
+  const relative = path.relative(PUBLIC_DIR, filePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
     res.writeHead(403);
     res.end("Forbidden");
     return;
@@ -156,7 +183,7 @@ function resolveWorkspaceFile(filePath) {
   const root = path.resolve(CONFIG.rootDir);
   const candidate = path.isAbsolute(filePath) ? filePath : path.join(root, filePath);
   const resolved = path.resolve(candidate);
-  const allowedRoots = [root, path.resolve(CONFIG.artifactRoot)];
+  const allowedRoots = [path.resolve(CONFIG.artifactRoot), path.resolve(CONFIG.rootDir, "output", "pdf")];
   return allowedRoots.some((allowedRoot) => {
     const relative = path.relative(allowedRoot, resolved);
     return !relative.startsWith("..") && !path.isAbsolute(relative);
@@ -203,8 +230,7 @@ function ensureRuntimeFoundation(db) {
   ensureWorkflowScorecards(db);
   ensureActiveVentureCase(db);
   ensureCapabilityAutonomy(db);
-  ensureDemandValidatorPilotFixture(db);
-  generateWeeklyDigest(db);
+  ensureWeeklyDigest(db);
 }
 
 function createRuntime(options = {}) {
@@ -242,15 +268,31 @@ function routeMatch(pathname, pattern) {
 
 function createApp(options = {}) {
   const db = options.db || createRuntime(options);
-  ensureRuntimeFoundation(db);
-  const security = createLocalSecurity({ enabled: options.security !== false, secret: options.sessionSecret });
+  if (options.db) ensureRuntimeFoundation(db);
+  const instanceId = String(options.instanceId || process.env.JARVIS_RUNTIME_INSTANCE_ID || crypto.randomUUID());
+  const workspaceId = crypto.createHash("sha256").update(path.resolve(CONFIG.rootDir)).digest("hex").slice(0, 20);
+  const controlToken = String(options.controlToken || process.env.JARVIS_CONTROL_TOKEN || crypto.randomBytes(32).toString("base64url"));
+  const security = createLocalSecurity({
+    enabled: options.security !== false,
+    secret: options.sessionSecret,
+    bootstrapSecret: options.bootstrapSecret,
+    sessionTtlMs: options.sessionTtlMs,
+  });
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
-    const session = security.attachSession(req, res);
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("referrer-policy", "no-referrer");
-    res.setHeader("content-security-policy", "default-src 'self'; frame-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*");
+    res.setHeader("x-frame-options", "DENY");
+    res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()");
+    res.setHeader("content-security-policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; frame-src 'self'; form-action 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*");
     try {
+      try {
+        security.assertRequestHost(req);
+      } catch (error) {
+        jsonResponse(res, 403, { error: error.message });
+        return;
+      }
+
       if (req.method === "OPTIONS") {
         jsonResponse(res, 403, { error: "Cross-origin API access is not enabled." });
         return;
@@ -265,8 +307,80 @@ function createApp(options = {}) {
         if (server.broadcastState) server.broadcastState();
       };
 
+      if (req.method === "POST" && url.pathname === "/api/session") {
+        try {
+          const session = security.createSession(req, res);
+          jsonResponse(res, 201, { ok: true, csrfToken: session.csrfToken, expiresAt: session.expiresAt });
+        } catch (error) {
+          jsonResponse(res, 401, { error: error.message });
+        }
+        return;
+      }
+
+      let session = null;
       if (req.method === "GET" && url.pathname === "/api/session") {
-        jsonResponse(res, 200, { ok: true, csrfToken: session.csrfToken });
+        try {
+          session = security.requireSession(req);
+          jsonResponse(res, 200, { ok: true, csrfToken: session.csrfToken, expiresAt: session.expiresAt });
+        } catch (error) {
+          jsonResponse(res, 401, { error: error.message });
+        }
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/health") {
+        const authenticated = Boolean(security.sessionForRequest(req));
+        const liveResearch = getLiveResearchReadiness(db);
+        const liveAiWorkers = getLiveAiWorkerReadiness(db);
+        const providerProof = get(
+          db,
+          `SELECT
+             SUM(CASE WHEN mode = 'live' AND status = 'completed' AND provider_request_id IS NOT NULL THEN 1 ELSE 0 END) AS completed_calls,
+             SUM(CASE WHEN mode = 'live' AND status = 'failed' THEN 1 ELSE 0 END) AS failed_calls
+           FROM model_calls`,
+        ) || {};
+        const payload = {
+          ok: true,
+          instanceId,
+          workspaceId,
+          time: now(),
+          externalActionsMode: CONFIG.dryRun ? "locked" : "enabled",
+          paidAiArmed: Boolean(process.env.OPENAI_API_KEY)
+            && (process.env.JARVIS_ENABLE_LIVE_MODELS === "1" || process.env.JARVIS_ENABLE_LIVE_RESEARCH === "1"),
+          providerProof: {
+            completedCalls: Number(providerProof.completed_calls || 0),
+            failedCalls: Number(providerProof.failed_calls || 0),
+            verifiedByPriorCall: Number(providerProof.completed_calls || 0) > 0,
+          },
+        };
+        if (authenticated || !security.enabled) {
+          payload.dbPath = options.dbPath || CONFIG.dbPath;
+          payload.liveResearch = liveResearch;
+          payload.liveAiWorkers = liveAiWorkers;
+        }
+        jsonResponse(res, 200, payload);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/runtime/shutdown") {
+        const providedControlToken = String(req.headers["x-jarvis-control"] || "");
+        if (
+          !controlToken
+          || providedControlToken.length !== controlToken.length
+          || !crypto.timingSafeEqual(Buffer.from(providedControlToken), Buffer.from(controlToken))
+        ) {
+          jsonResponse(res, 403, { error: "Runtime control token rejected." });
+          return;
+        }
+        jsonResponse(res, 202, { ok: true, instanceId });
+        setImmediate(() => server.shutdown?.());
+        return;
+      }
+
+      try {
+        session = security.requireSession(req);
+      } catch (error) {
+        jsonResponse(res, 401, { error: error.message });
         return;
       }
 
@@ -274,18 +388,6 @@ function createApp(options = {}) {
         security.assertMutation(req, session);
       } catch (error) {
         jsonResponse(res, 403, { error: error.message });
-        return;
-      }
-
-      if (req.method === "GET" && url.pathname === "/api/health") {
-        jsonResponse(res, 200, {
-          ok: true,
-          mode: CONFIG.dryRun ? "dry-run" : "live-enabled",
-          dbPath: options.dbPath || CONFIG.dbPath,
-          time: now(),
-          liveResearch: getLiveResearchReadiness(db),
-          liveAiWorkers: getLiveAiWorkerReadiness(db),
-        });
         return;
       }
 
@@ -345,6 +447,23 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/api/agent-runs") {
+        const allowedExecution = new Set(["all", "live", "model_backed", "provider_outcome_unknown", "protected_rehearsal"]);
+        const allowedState = new Set(["all", "active", "history"]);
+        const execution = url.searchParams.get("execution") || "all";
+        const state = url.searchParams.get("state") || "all";
+        const status = url.searchParams.get("status") || "all";
+        const worker = url.searchParams.get("worker") || "all";
+        jsonResponse(res, 200, getAgentRunsState(db, {
+          execution: allowedExecution.has(execution) ? execution : "all",
+          state: allowedState.has(state) ? state : "all",
+          status: /^[a-z_]{1,40}$/i.test(status) ? status : "all",
+          worker: /^[a-z0-9_-]{1,80}$/i.test(worker) ? worker : "all",
+          limit: url.searchParams.get("limit") || 50,
+        }));
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/api/system") {
         jsonResponse(res, 200, getSystemState(db));
         return;
@@ -398,7 +517,7 @@ function createApp(options = {}) {
       }
 
       if (req.method === "GET" && url.pathname === "/api/state") {
-        jsonResponse(res, 200, getDashboardState(db));
+        jsonResponse(res, 410, { error: "The unrestricted runtime feed has been retired. Use the focused cockpit sections." });
         return;
       }
 
@@ -500,7 +619,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = queueAgentModelComparisonPacket(db, modelComparisonPacket.id, body || {});
         broadcastState();
-        jsonResponse(res, 202, { result, state: getDashboardState(db) });
+        jsonResponse(res, 202, { result });
         return;
       }
 
@@ -514,7 +633,7 @@ function createApp(options = {}) {
           body || {},
         );
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result });
         return;
       }
 
@@ -524,7 +643,7 @@ function createApp(options = {}) {
         const maxSteps = body.maxSteps || queued.tasks.length + 2;
         const loop = body.autoRun === false ? null : await runUntilBlocked(db, { workflowId: queued.workflow.id, maxSteps });
         broadcastState();
-        jsonResponse(res, 201, { result: { ...queued, loop }, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result: { ...queued, loop } });
         return;
       }
 
@@ -534,7 +653,7 @@ function createApp(options = {}) {
         const queued = queueAgentPlaybookRehearsal(db, agentPlaybookRehearsal.id, body || {});
         const runResult = body.autoRun === false ? null : await runOnce(db, { workflowId: queued.workflow.id });
         broadcastState();
-        jsonResponse(res, 201, { result: { ...queued, run: runResult }, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result: { ...queued, run: runResult } });
         return;
       }
 
@@ -544,7 +663,7 @@ function createApp(options = {}) {
         const maxSteps = body.maxSteps || queued.tasks.length + 2;
         const loop = body.autoRun === false ? null : await runUntilBlocked(db, { workflowId: queued.workflow.id, maxSteps });
         broadcastState();
-        jsonResponse(res, 201, { result: { ...queued, loop }, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result: { ...queued, loop } });
         return;
       }
       const agentLiveComparison = routeMatch(url.pathname, "/api/agent-workbench/:id/live-comparison");
@@ -552,7 +671,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = requestAgentWorkbenchLiveComparison(db, agentLiveComparison.id, body || {});
         broadcastState();
-        jsonResponse(res, 202, { result, state: getDashboardState(db) });
+        jsonResponse(res, 202, { result });
         return;
       }
       const agentProofRun = routeMatch(url.pathname, "/api/agent-workbench/:id/proof-run");
@@ -561,7 +680,7 @@ function createApp(options = {}) {
         const queued = queueAgentWorkbenchProof(db, agentProofRun.id, body || {});
         const runResult = body.autoRun === false ? null : await runOnce(db, { workflowId: queued.workflow.id });
         broadcastState();
-        jsonResponse(res, 201, { result: { ...queued, run: runResult }, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result: { ...queued, run: runResult } });
         return;
       }
 
@@ -585,7 +704,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = runMonitorCycle(db, body || {});
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result });
         return;
       }
 
@@ -596,14 +715,6 @@ function createApp(options = {}) {
           runs: state.schedulerRuns,
           metrics: state.metrics.scheduler,
         });
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/api/scheduler/run-due") {
-        const body = await readBody(req);
-        const result = await runDueSchedulerJobs(db, { limit: body.limit });
-        broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
         return;
       }
 
@@ -624,7 +735,7 @@ function createApp(options = {}) {
           maxSteps: body.maxSteps,
         });
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result });
         return;
       }
 
@@ -638,7 +749,7 @@ function createApp(options = {}) {
         }
         const job = setSchedulerJobStatus(db, schedulerJobAction.id, status);
         broadcastState();
-        jsonResponse(res, 200, { job, state: getDashboardState(db) });
+        jsonResponse(res, 200, { job });
         return;
       }
 
@@ -669,14 +780,14 @@ function createApp(options = {}) {
           loop = await runUntilBlocked(db, { workflowId: result.workflow.id, maxSteps: body.maxSteps });
         }
         broadcastState();
-        jsonResponse(res, 201, { result, loop, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result, loop });
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/runtime/tick") {
         const result = await runOnce(db);
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result });
         return;
       }
 
@@ -689,7 +800,7 @@ function createApp(options = {}) {
         }
         const result = await runOnce(db, { taskId: taskRun.id, workflowId: task.workflow_id, claimant: "dashboard_exact_task" });
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result });
         return;
       }
 
@@ -697,7 +808,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = await runUntilBlocked(db, { maxSteps: body.maxSteps });
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result });
         return;
       }
 
@@ -705,7 +816,7 @@ function createApp(options = {}) {
       if (req.method === "POST" && workflowRun) {
         const result = await runOnce(db, { workflowId: workflowRun.id });
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result });
         return;
       }
 
@@ -714,7 +825,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = await runUntilBlocked(db, { workflowId: workflowRunUntilBlocked.id, maxSteps: body.maxSteps });
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result });
         return;
       }
 
@@ -722,7 +833,7 @@ function createApp(options = {}) {
       if (req.method === "POST" && approvalPack) {
         const result = generateApprovalPack(db, approvalPack.id);
         broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result });
         return;
       }
 
@@ -731,7 +842,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = requestLiveResearch(db, liveResearchRequest.id, body || {});
         broadcastState();
-        jsonResponse(res, 202, { result, state: getDashboardState(db) });
+        jsonResponse(res, 202, { result });
         return;
       }
 
@@ -739,7 +850,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = createLiveResearchSmokeTest(db, body || {});
         broadcastState();
-        jsonResponse(res, 202, { result, state: getDashboardState(db) });
+        jsonResponse(res, 202, { result });
         return;
       }
 
@@ -748,7 +859,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = requestLiveAiWorker(db, liveAiWorkerRequest.id, body || {});
         broadcastState();
-        jsonResponse(res, 202, { result, state: getDashboardState(db) });
+        jsonResponse(res, 202, { result });
         return;
       }
 
@@ -756,7 +867,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = createLiveAiWorkerSmokeTest(db, body || {});
         broadcastState();
-        jsonResponse(res, 202, { result, state: getDashboardState(db) });
+        jsonResponse(res, 202, { result });
         return;
       }
 
@@ -765,7 +876,7 @@ function createApp(options = {}) {
         const result = createCommercialExperiment(db, body || {});
         if (result.workflow_id) upsertWorkflowScorecard(db, result.workflow_id, { commercialExperimentId: result.id });
         broadcastState();
-        jsonResponse(res, 201, { result, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result });
         return;
       }
 
@@ -773,7 +884,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = createResearchToExperimentPlan(db, body || {});
         broadcastState();
-        jsonResponse(res, 201, { result, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result });
         return;
       }
 
@@ -783,7 +894,7 @@ function createApp(options = {}) {
         const result = promoteCandidateToExperiment(db, promoteTestCandidate.id, body || {});
         if (result.experiment?.workflow_id) upsertWorkflowScorecard(db, result.experiment.workflow_id, { commercialExperimentId: result.experiment.id });
         broadcastState();
-        jsonResponse(res, 201, { result, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result });
         return;
       }
 
@@ -792,7 +903,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = createRevisionPlanFromLearning(db, learningRevisionPlan.id, body || {});
         broadcastState();
-        jsonResponse(res, 201, { result, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result });
         return;
       }
 
@@ -800,7 +911,7 @@ function createApp(options = {}) {
         const body = await readBody(req);
         const result = generateExecutionPack(db, body || {});
         broadcastState();
-        jsonResponse(res, 201, { result, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result });
         return;
       }
 
@@ -812,7 +923,7 @@ function createApp(options = {}) {
         let scorecard = null;
         if (workflowId) scorecard = upsertWorkflowScorecard(db, workflowId, { commercialExecutionPackId: result.pack.id });
         broadcastState();
-        jsonResponse(res, 201, { result: { ...result, scorecard }, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result: { ...result, scorecard } });
         return;
       }
 
@@ -822,7 +933,7 @@ function createApp(options = {}) {
         let scorecard = null;
         if (result.experiment.workflow_id) scorecard = upsertWorkflowScorecard(db, result.experiment.workflow_id, { commercialResultId: result.result.id });
         broadcastState();
-        jsonResponse(res, 201, { result: { ...result, scorecard }, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result: { ...result, scorecard } });
         return;
       }
 
@@ -832,35 +943,15 @@ function createApp(options = {}) {
         let scorecard = null;
         if (result.experiment.workflow_id) scorecard = upsertWorkflowScorecard(db, result.experiment.workflow_id, { commercialFeedbackId: result.feedback.id });
         broadcastState();
-        jsonResponse(res, 201, { result: { ...result, scorecard }, state: getDashboardState(db) });
+        jsonResponse(res, 201, { result: { ...result, scorecard } });
         return;
       }
 
       const approvalAction = routeMatch(url.pathname, "/api/approval-actions/:token");
-      if (approvalAction && req.method === "GET") {
-        const action = get(db, "SELECT * FROM approval_action_tokens WHERE token = ?", [approvalAction.token]);
-        if (!action) {
-          jsonResponse(res, 404, { error: "Approval action token not found." });
-          return;
-        }
-        const approval = get(db, "SELECT id, title, status, risk_level FROM approvals WHERE id = ?", [action.approval_id]);
-        jsonResponse(res, 200, {
-          action: {
-            id: action.id,
-            approvalId: action.approval_id,
-            decision: action.decision,
-            status: action.status,
-            expiresAt: action.expires_at,
-          },
-          approval,
+      if (approvalAction && ["GET", "POST"].includes(req.method)) {
+        jsonResponse(res, 410, {
+          error: "Email action links are disabled until a signed provider webhook is connected. Use Decisions in Jarvis.",
         });
-        return;
-      }
-      if (approvalAction && req.method === "POST") {
-        const body = await readBody(req);
-        const result = decideApprovalByToken(db, approvalAction.token, body.note || "Approval action link used.");
-        broadcastState();
-        jsonResponse(res, 200, { result, state: getDashboardState(db) });
         return;
       }
 
@@ -886,7 +977,7 @@ function createApp(options = {}) {
           ? await runOnce(db, { taskId: result.approvedTaskIds[0], claimant: "dashboard_approval" })
           : null;
         broadcastState();
-        jsonResponse(res, 200, { result, execution, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result, execution });
         return;
       }
 
@@ -910,15 +1001,14 @@ function createApp(options = {}) {
           ? await runOnce(db, { taskId: result.followupTask.id, claimant: "dashboard_handoff_approval" })
           : null;
         broadcastState();
-        jsonResponse(res, 200, { result, execution, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result, execution });
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/inbound/approval-reply") {
-        const body = await readBody(req);
-        const result = processApprovalReply(db, body);
-        broadcastState();
-        jsonResponse(res, result.status === "processed" ? 200 : 202, { result, state: getDashboardState(db) });
+        jsonResponse(res, 410, {
+          error: "Inbound email decisions are disabled until sender authenticity and signed webhook delivery are available.",
+        });
         return;
       }
 
@@ -938,7 +1028,7 @@ function createApp(options = {}) {
           message: `Operator resolved message ${messageResolve.id}.`,
         });
         broadcastState();
-        jsonResponse(res, 200, { ok: true, state: getDashboardState(db) });
+        jsonResponse(res, 200, { ok: true });
         return;
       }
 
@@ -954,53 +1044,39 @@ function createApp(options = {}) {
           metadata: { result, recovery },
         });
         broadcastState();
-        jsonResponse(res, 200, { result: { integrations: result, recovery }, state: getDashboardState(db) });
+        jsonResponse(res, 200, { result: { integrations: result, recovery } });
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/live-action-request") {
-        const body = await readBody(req);
-        insertEvent(db, {
-          level: "warn",
-          actor: "operator",
-          type: "live_action.requested",
-          entityType: "live_action",
-          entityId: "pending",
-          message: "Live external action request recorded. It remains locked until a live adapter and approval workflow are implemented.",
-          metadata: body,
-        });
-        run(
-          db,
-          `INSERT INTO messages (id, severity, status, subject, body, created_at, metadata)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [
-            `msg_live_${Date.now()}`,
-            "urgent",
-            "open",
-            "Live action requested",
-            "Codex must implement and test a live adapter before this can run outside dry-run mode.",
-            now(),
-            toJson(body),
-          ],
-        );
-        broadcastState();
-        jsonResponse(res, 202, { ok: true, state: getDashboardState(db) });
+        jsonResponse(res, 410, { error: "Generic live actions are not supported. Start the exact approved business action instead." });
         return;
       }
 
       notFound(res);
     } catch (error) {
+      if ([400, 413].includes(Number(error.statusCode))) {
+        jsonResponse(res, Number(error.statusCode), { error: error.message });
+        return;
+      }
+      const requestId = crypto.randomUUID();
       insertEvent(db, {
         level: "error",
         actor: "server",
         type: "server.error",
         entityType: "request",
-        entityId: url.pathname,
+        entityId: requestId,
         message: error.message,
+        metadata: { path: url.pathname },
       });
-      jsonResponse(res, 500, { error: error.message });
+      jsonResponse(res, 500, { error: "Jarvis could not complete that request. Check System activity for the recorded error.", requestId });
     }
   });
+
+  server.requestTimeout = 15_000;
+  server.headersTimeout = 10_000;
+  server.keepAliveTimeout = 5_000;
+  server.maxHeadersCount = 100;
 
   const wss = new WebSocketServer({ noServer: true });
   wss.on("error", (error) => {
@@ -1036,7 +1112,25 @@ function createApp(options = {}) {
     }
   });
 
-  return { server, db, wss, security };
+  let shuttingDown = false;
+  server.shutdown = () => {
+    if (shuttingDown) return Promise.resolve();
+    shuttingDown = true;
+    server.schedulerLoop?.stop?.();
+    for (const client of wss.clients) client.terminate();
+    return new Promise((resolve) => {
+      const finish = () => {
+        if (!options.db) db.close();
+        resolve();
+      };
+      wss.close(() => {
+        if (server.listening) server.close(finish);
+        else finish();
+      });
+    });
+  };
+
+  return { server, db, wss, security, instanceId, workspaceId };
 }
 
 function startServer(options = {}) {
@@ -1053,6 +1147,7 @@ function startServer(options = {}) {
       if (options.schedulerEnabled ?? CONFIG.schedulerEnabled) {
         schedulerLoop = startSchedulerLoop(app.db, options.scheduler || {});
       }
+      app.server.schedulerLoop = schedulerLoop;
       console.log(`Jarvis-Codex Control running at ${url}`);
       if (schedulerLoop) console.log(`Jarvis-Codex scheduler polling every ${schedulerLoop.pollMs}ms`);
       resolve({ ...app, url, schedulerLoop });
@@ -1061,7 +1156,11 @@ function startServer(options = {}) {
 }
 
 if (require.main === module) {
-  startServer().catch((error) => {
+  const bootstrapSecret = process.env.JARVIS_OPERATOR_BOOTSTRAP || crypto.randomBytes(32).toString("base64url");
+  process.env.JARVIS_OPERATOR_BOOTSTRAP = bootstrapSecret;
+  startServer({ bootstrapSecret }).then(({ url }) => {
+    console.log(`Open ${url}/#bootstrap=${bootstrapSecret}`);
+  }).catch((error) => {
     console.error(error);
     process.exitCode = 1;
   });

@@ -1,5 +1,7 @@
 const CONFIG = require("../config");
 const { all, fromJson, get } = require("../db");
+const { monthlyBudgetExposure } = require("./cost-ledger");
+const { modelPricing } = require("./model-pricing");
 
 function parseRows(rows, fields = ["metadata", "payload", "result"]) {
   return rows.map((row) => {
@@ -9,18 +11,6 @@ function parseRows(rows, fields = ["metadata", "payload", "result"]) {
     }
     return copy;
   });
-}
-
-function centsThisMonth(db) {
-  const prefix = new Date().toISOString().slice(0, 7);
-  const row = get(
-    db,
-    `SELECT COALESCE(SUM(amount_cents), 0) AS total
-     FROM costs
-     WHERE occurred_at LIKE ?`,
-    [`${prefix}%`],
-  );
-  return Number(row?.total || 0);
 }
 
 function setting(db, key, fallback = {}) {
@@ -43,10 +33,10 @@ function getLiveResearchReadiness(db) {
   const integrations = parseRows(all(db, "SELECT * FROM integrations ORDER BY name ASC"));
   const approvals = parseRows(all(db, "SELECT * FROM approvals ORDER BY requested_at DESC"), ["payload"]);
   const tasks = parseRows(all(db, "SELECT * FROM tasks ORDER BY updated_at DESC"));
-  const costs = parseRows(all(db, "SELECT * FROM costs ORDER BY occurred_at DESC LIMIT 120"));
   const budget = setting(db, "budget", { monthlyBudgetCents: CONFIG.monthlyBudgetCents, currency: CONFIG.currency });
-  const monthlySpendCents = centsThisMonth(db);
-  const remainingBudgetCents = Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents) - monthlySpendCents;
+  const budgetExposure = monthlyBudgetExposure(db);
+  const monthlySpendCents = budgetExposure.totalCents;
+  const remainingBudgetCents = Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents) - budgetExposure.totalCents;
   const openaiIntegration = integrations.find((integration) => integration.id === "openai");
   const liveResearchIntegration = integrations.find((integration) => integration.id === "live_research");
   const liveResearchTasks = tasks.filter((task) => task.kind === "live_market_research");
@@ -61,13 +51,15 @@ function getLiveResearchReadiness(db) {
   const credentialsConfigured = Boolean(process.env.OPENAI_API_KEY) && openaiIntegration?.health === "ok";
   const liveFlagEnabled = process.env.JARVIS_ENABLE_LIVE_RESEARCH === "1";
   const adapterReady = process.env.JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER !== "1";
+  const pricingReady = Boolean(modelPricing(CONFIG.liveResearchModel));
   const budgetReady = remainingBudgetCents >= Number(CONFIG.liveResearchDefaultBudgetCents || 0);
-  const ready = credentialsConfigured && liveFlagEnabled && adapterReady && budgetReady;
+  const ready = credentialsConfigured && liveFlagEnabled && adapterReady && pricingReady && budgetReady;
 
   const blockers = [];
   if (!credentialsConfigured) blockers.push("OpenAI API key is not configured for this runtime process.");
   if (!liveFlagEnabled) blockers.push("JARVIS_ENABLE_LIVE_RESEARCH is not enabled.");
   if (!adapterReady) blockers.push("Live research adapter is disabled by JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER.");
+  if (!pricingReady) blockers.push("The selected research model has no registered AUD safety pricing.");
   if (!budgetReady) blockers.push("Monthly budget remaining is below the default live research cap.");
 
   return {
@@ -77,10 +69,14 @@ function getLiveResearchReadiness(db) {
     defaultBudgetCents: Number(CONFIG.liveResearchDefaultBudgetCents || 0),
     monthlyBudgetCents: Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents),
     monthlySpendCents,
+    monthlyRealizedCents: budgetExposure.realizedCents,
+    monthlyUnresolvedCents: budgetExposure.unresolvedCents,
+    budgetExposure,
     remainingBudgetCents,
     credentialsConfigured,
     liveFlagEnabled,
     adapterReady,
+    pricingReady,
     budgetReady,
     ready,
     status: ready ? "ready" : "blocked",
@@ -117,6 +113,13 @@ function getLiveResearchReadiness(db) {
         adapterReady,
         adapterReady ? "OpenAI web-search adapter is available." : "Adapter is disabled by environment flag.",
         "Unset JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER.",
+      ),
+      checklistItem(
+        "pricing",
+        "AUD safety pricing",
+        pricingReady,
+        pricingReady ? "The selected research model has a registered worst-case AUD pricing rule." : "The selected research model is not priced and cannot be approved.",
+        "Choose a registered model or add verified official pricing before preparing paid research.",
       ),
       checklistItem(
         "budget",

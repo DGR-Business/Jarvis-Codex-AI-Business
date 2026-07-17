@@ -46,11 +46,11 @@ function stableSafetyIdentifier(task) {
   return `jarvis_${crypto.createHash("sha256").update(String(task.venture_id || task.workflow_id || "local-operator")).digest("hex").slice(0, 32)}`;
 }
 
-function getApprovedSdkResumeState(db, task) {
+function getApprovedSdkResumeSelection(db, task) {
   if (!task.id || !task.approval_id) return null;
   const candidates = all(
     db,
-    `SELECT invocations.id, invocations.approval_id, invocations.metadata,
+    `SELECT invocations.id, invocations.approval_id, invocations.tool_id, invocations.metadata,
             approvals.status AS approval_status, approvals.payload AS approval_payload,
             approvals.expires_at
      FROM agent_tool_invocations AS invocations
@@ -71,9 +71,22 @@ function getApprovedSdkResumeState(db, task) {
     if (approvalPayload.metadata?.sdkRunStateHash !== stateHash) continue;
     const actualHash = crypto.createHash("sha256").update(serializedState).digest("hex");
     if (actualHash !== stateHash) continue;
-    return serializedState;
+    return {
+      serializedState,
+      callId: approvalPayload.exactScope?.callId || approvalPayload.metadata?.sdkInterruptionCallId || metadata.sdkInterruptionCallId || null,
+      toolId: approvalPayload.exactScope?.toolId || candidate.tool_id || null,
+      toolArguments: approvalPayload.exactScope?.toolArguments || {},
+      effects: approvalPayload.exactScope?.effects || [],
+      invocationId: candidate.id,
+      approvalId: candidate.approval_id,
+      stateHash,
+    };
   }
   return null;
+}
+
+function getApprovedSdkResumeState(db, task) {
+  return getApprovedSdkResumeSelection(db, task)?.serializedState || null;
 }
 
 function sdkPricingEstimate(model, usage, approvedCapCents, toolActivity) {
@@ -286,6 +299,22 @@ function sdkOutputText(finalOutput) {
   return "";
 }
 
+function sdkInterruptionCallId(interruption) {
+  const raw = typeof interruption?.toJSON === "function" ? interruption.toJSON() : interruption;
+  return raw?.id || raw?.callId || raw?.rawItem?.call_id || raw?.rawItem?.id || null;
+}
+
+function approveSelectedSdkInterruption(state, callId) {
+  if (!callId) throw new Error("A specific SDK interruption call ID is required to resume an approved tool call.");
+  const interruptions = state.getInterruptions();
+  const matching = interruptions.filter((interruption) => sdkInterruptionCallId(interruption) === callId);
+  if (matching.length !== 1) {
+    throw new Error(`Expected exactly one approved SDK interruption for call ${callId}; found ${matching.length}.`);
+  }
+  state.approve(matching[0]);
+  return matching[0];
+}
+
 function approvedTracePolicy(task) {
   const policy = task.payload?.liveSpendRequest?.tracePolicy || {};
   return {
@@ -309,6 +338,9 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
       return { result, traceId };
     } catch (error) {
       error.agentSdkTraceId = traceId;
+      if (error.providerCallOccurred === undefined) error.providerCallOccurred = true;
+      if (error.outcomeUnknown === undefined) error.outcomeUnknown = true;
+      if (!error.providerDispatchStatus) error.providerDispatchStatus = "outcome_unknown";
       throw error;
     }
   }
@@ -338,10 +370,18 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
   const runner = options.runner || getDefaultSdkRunner(Runner);
   let sdkInput = options.modelInput || requestBody.input[1].content;
   if (options.resumeState) {
-    const state = await RunState.fromString(agent, options.resumeState);
-    if (typeof state.clearTrace === "function") state.clearTrace();
-    for (const interruption of state.getInterruptions()) state.approve(interruption);
-    sdkInput = state;
+    try {
+      const state = await RunState.fromString(agent, options.resumeState);
+      if (typeof state.clearTrace === "function") state.clearTrace();
+      approveSelectedSdkInterruption(state, options.resumeInterruptionCallId);
+      sdkInput = state;
+    } catch (error) {
+      error.agentSdkTraceId = traceId;
+      error.providerCallOccurred = false;
+      error.outcomeUnknown = false;
+      error.providerDispatchStatus = "not_dispatched";
+      throw error;
+    }
   }
   const signal = options.signal || (typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(capabilityPlan.deadlineMs) : undefined);
   try {
@@ -372,6 +412,9 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     return { result, traceId };
   } catch (error) {
     error.agentSdkTraceId = traceId;
+    if (error.providerCallOccurred === undefined) error.providerCallOccurred = true;
+    if (error.outcomeUnknown === undefined) error.outcomeUnknown = true;
+    if (!error.providerDispatchStatus) error.providerDispatchStatus = "outcome_unknown";
     throw error;
   }
 }
@@ -390,7 +433,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const capabilityPlan = buildAgentsSdkCapabilityPlan(task, agentDefinition);
   const modelInput = buildAgentsSdkModelInput(db, task, requestBody.input[1].content, capabilityPlan);
   const inputAssets = modelInput.assets;
-  const resumeState = getApprovedSdkResumeState(db, task);
+  const resumeSelection = getApprovedSdkResumeSelection(db, task);
+  const resumeState = resumeSelection?.serializedState || null;
   const toolInvocations = capabilityPlan.specs.map((spec) => ({
     spec,
     gate: requestAgentToolUse(db, {
@@ -402,10 +446,29 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       mode: "live",
       approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
       reason: `Use the exact approved ${spec.sdkName} capability inside this capped Agents SDK run.`,
+      toolArguments: resumeSelection?.toolId === spec.toolId
+        ? resumeSelection.toolArguments
+        : task.payload?.liveSpendRequest?.toolArguments?.[spec.toolId] || task.payload?.liveSpendRequest?.toolArguments || {},
+      effects: resumeSelection?.toolId === spec.toolId
+        ? resumeSelection.effects
+        : task.payload?.liveSpendRequest?.effects || [],
+      callId: resumeSelection?.toolId === spec.toolId ? resumeSelection.callId : null,
+      resumeStateHash: resumeSelection?.toolId === spec.toolId ? resumeSelection.stateHash : null,
     }),
   }));
   const blockedTool = toolInvocations.find((item) => !item.gate.allowed);
-  if (blockedTool) throw new Error(`${blockedTool.spec.toolId} did not pass the Jarvis worker tool gate.`);
+  if (blockedTool) {
+    throw new Error(`${blockedTool.spec.toolId} did not pass the Jarvis worker tool gate: ${blockedTool.gate.reason || blockedTool.gate.decision || "blocked"}.`);
+  }
+  const dispatchCall = recordLiveWorkerModelCall(db, task, null, approvedCapCents, requestBody.model, "dispatching", {
+    reservedCostCents: approvedCapCents,
+    provider: AGENTS_SDK_PROVIDER,
+    sdkRunner: true,
+    dispatchIntent: { status: "dispatched", recordedAt: now(), deadlineMs: capabilityPlan.deadlineMs },
+    tracePolicy,
+    capabilityPlan,
+    inputAssets,
+  });
   let result;
   let traceId = null;
   try {
@@ -413,24 +476,40 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       ...options,
       capabilityPlan,
       resumeState,
+      resumeInterruptionCallId: resumeSelection?.callId || null,
       modelInput: modelInput.input,
       inputAssets,
     });
     result = sdkRun.result;
     traceId = sdkRun.traceId;
   } catch (error) {
-    error.outcomeUnknown = true;
+    if (error.outcomeUnknown === undefined) error.outcomeUnknown = error.providerCallOccurred !== false;
+    if (error.providerCallOccurred === undefined) error.providerCallOccurred = error.outcomeUnknown === true;
+    if (!error.providerDispatchStatus) error.providerDispatchStatus = error.outcomeUnknown ? "outcome_unknown" : "not_dispatched";
     traceId = error.agentSdkTraceId || null;
     recordLiveWorkerFailureCost(db, task, error);
     const failedCall = recordLiveWorkerModelCall(db, task, null, approvedCapCents, requestBody.model, "failed", {
+      modelCallId: dispatchCall.id,
       provider: AGENTS_SDK_PROVIDER,
       sdkRunner: true,
       agentSdkTraceId: traceId,
       error: error.message,
-      outcomeUnknown: true,
+      outcomeUnknown: error.outcomeUnknown === true,
+      errorKind: error.outcomeUnknown === true ? "provider_outcome_unknown" : "failed_before_provider_dispatch",
+      providerDispatchStatus: error.providerDispatchStatus,
       tracePolicy,
       inputAssets,
     });
+    error.modelCallId = failedCall.id;
+    error.providerReceipt = {
+      modelCallId: failedCall.id,
+      providerRequestId: null,
+      provider: AGENTS_SDK_PROVIDER,
+      status: error.providerDispatchStatus,
+      traceId,
+      deadlineMs: capabilityPlan.deadlineMs,
+    };
+    error.incurredEstimateCents = 0;
     insertEvent(db, {
       level: "error",
       actor: "agent-runtime",
@@ -444,7 +523,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         modelCallId: failedCall.id,
         provider: AGENTS_SDK_PROVIDER,
         agentSdkTraceId: traceId,
-        outcomeUnknown: true,
+        outcomeUnknown: error.outcomeUnknown === true,
+        providerDispatchStatus: error.providerDispatchStatus,
       },
     });
     throw error;
@@ -455,6 +535,43 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const usage = sdkUsage(result);
   const pricingEstimate = sdkPricingEstimate(requestBody.model, usage, approvedCapCents, toolActivity);
   const estimateCents = pricingEstimate.amountCents;
+  const providerCall = recordLiveWorkerModelCall(db, task, { id: responseId, usage, output: [] }, estimateCents, requestBody.model, "provider_completed", {
+    modelCallId: dispatchCall.id,
+    provider: AGENTS_SDK_PROVIDER,
+    sdkRunner: true,
+    agentSdkTraceId: traceId,
+    rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
+    reservedCostCents: approvedCapCents,
+    pricingEstimate,
+    tracePolicy,
+    capabilityPlan,
+    toolActivity,
+    inputAssets,
+    providerReceiptRecordedAt: now(),
+  });
+  recordLiveWorkerCost(db, task, estimateCents, { id: responseId }, {
+    provider: AGENTS_SDK_PROVIDER,
+    model: requestBody.model,
+    modelCallId: providerCall.id,
+    sdkRunner: true,
+    agentSdkTraceId: traceId,
+    approvedCapCents,
+    pricingEstimate,
+    tracePolicy,
+    capabilityPlan,
+    toolActivity,
+    inputAssets,
+  });
+  const providerReceipt = {
+    modelCallId: providerCall.id,
+    providerRequestId: responseId,
+    provider: AGENTS_SDK_PROVIDER,
+    status: "completed",
+    traceId,
+    incurredEstimateCents: estimateCents,
+    deadlineMs: capabilityPlan.deadlineMs,
+  };
+  try {
   const interruptions = sdkInterruptionDetails(result);
   if (interruptions.length) {
     const interruption = interruptions[0];
@@ -467,6 +584,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       throw error;
     }
     const pausedCall = recordLiveWorkerModelCall(db, task, { id: responseId, usage, output: [] }, estimateCents, requestBody.model, "waiting_approval", {
+      modelCallId: providerCall.id,
       provider: AGENTS_SDK_PROVIDER,
       sdkRunner: true,
       agentSdkTraceId: traceId,
@@ -480,19 +598,6 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       inputAssets,
       outcomeUnknown: false,
     });
-    recordLiveWorkerCost(db, task, estimateCents, { id: responseId }, {
-      provider: AGENTS_SDK_PROVIDER,
-      model: requestBody.model,
-      modelCallId: pausedCall.id,
-      sdkRunner: true,
-      agentSdkTraceId: traceId,
-      approvedCapCents,
-      pricingEstimate,
-      tracePolicy,
-      capabilityPlan,
-      inputAssets,
-      pausedForToolApproval: true,
-    });
     const sdkRunStateHash = crypto.createHash("sha256").update(interruption.serializedRunState).digest("hex");
     const gate = requestAgentToolUse(db, {
       agentId: agentDefinition.id,
@@ -504,6 +609,10 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       ignoreTaskApproval: true,
       reason: `Approve or reject the exact paused ${interruption.toolName || toolId} call before the same Agents SDK run resumes.`,
       inputSummary: `${interruption.toolName || toolId} call ${interruption.callId || "without an id"}: ${String(interruption.arguments || "No arguments captured.").slice(0, 500)}`,
+      toolArguments: interruption.arguments || {},
+      effects: [],
+      callId: interruption.callId || null,
+      resumeStateHash: sdkRunStateHash,
       metadata: {
         sdkRunState: interruption.serializedRunState,
         sdkRunStateHash,
@@ -569,6 +678,11 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   }
 
   const rawText = sdkOutputText(result.finalOutput);
+  if (!result.finalOutput || typeof result.finalOutput !== "object" || Array.isArray(result.finalOutput)) {
+    const error = new Error("The Agents SDK worker returned output that did not match the required structured format.");
+    error.errorKind = "malformed_structured_output";
+    throw error;
+  }
   const roleOutput = normalizeWorkerOutput(
     agentDefinition.id,
     typeof result.finalOutput === "object" ? result.finalOutput : null,
@@ -582,6 +696,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     output: [],
   };
   const modelCall = recordLiveWorkerModelCall(db, task, responseLike, estimateCents, requestBody.model, "completed", {
+    modelCallId: providerCall.id,
     provider: AGENTS_SDK_PROVIDER,
     sdkRunner: true,
     agentSdkTraceId: traceId,
@@ -598,21 +713,6 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     reason: capabilityPlan.requestedTools.length
       ? "Live AI worker used only the exact approved SDK capability; no publishing, contact, account action, legal decision, or money movement was exposed."
       : "Live AI worker used the OpenAI Agents SDK runner after approval; no external tools or side effects were exposed.",
-  });
-  recordLiveWorkerCost(db, task, estimateCents, { id: responseId }, {
-    provider: AGENTS_SDK_PROVIDER,
-    model: requestBody.model,
-    modelCallId: modelCall.id,
-    sdkRunner: true,
-    agentSdkTraceId: traceId,
-    rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
-    approvedCapCents,
-    pricingEstimate,
-    tracePolicy,
-    capabilityPlan,
-    toolActivity,
-    inputAssets,
-    generatedAssets,
   });
 
   insertEvent(db, {
@@ -650,6 +750,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     costStatus: "incurred_estimate",
     exactBillingPending: true,
     modelCall,
+    providerReceipt,
     output: {
       heading: output.heading,
       summary: output.summary,
@@ -706,6 +807,44 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       toolInvocations: toolInvocations.map((item) => ({ id: item.gate.id, toolId: item.spec.toolId, sdkName: item.spec.sdkName })),
     },
   };
+  } catch (error) {
+    error.providerCallOccurred = true;
+    error.incurredEstimateCents = Number(error.incurredEstimateCents || estimateCents);
+    error.providerRequestId = error.providerRequestId || responseId;
+    error.modelCallId = error.modelCallId || providerCall.id;
+    error.agentSdkTraceId = error.agentSdkTraceId || traceId;
+    error.providerReceipt = error.providerReceipt || providerReceipt;
+    if (!error.agentToolApprovalRequired) {
+      error.outcomeUnknown = false;
+      error.needsAttention = true;
+      error.providerDispatchStatus = "completed";
+      error.errorKind = error.errorKind || "local_processing_after_provider_success";
+      recordLiveWorkerModelCall(db, task, { id: responseId, usage, output: [] }, estimateCents, requestBody.model, "needs_attention", {
+        modelCallId: providerCall.id,
+        provider: AGENTS_SDK_PROVIDER,
+        sdkRunner: true,
+        agentSdkTraceId: traceId,
+        error: error.message,
+        errorKind: error.errorKind,
+        providerReceipt,
+        pricingEstimate,
+        tracePolicy,
+        capabilityPlan,
+        toolActivity,
+        inputAssets,
+      });
+      insertEvent(db, {
+        level: "error",
+        actor: "agent-runtime",
+        type: "live_ai_worker.local_processing_needs_attention",
+        entityType: "task",
+        entityId: task.id,
+        message: "The provider call completed, but Jarvis could not finish local processing. The receipt and incurred estimate were retained.",
+        metadata: { ...providerReceipt, error: error.message },
+      });
+    }
+    throw error;
+  }
 }
 
 async function runAgentRuntimeTask(db, task, agentDefinition, policy, options = {}) {
@@ -735,8 +874,10 @@ function __setAgentRuntimeSdkRunnerForTests(runner) {
 module.exports = {
   AGENTS_SDK_PROVIDER,
   __setAgentRuntimeSdkRunnerForTests,
+  approveSelectedSdkInterruption,
   demandValidatorPilotOutputSchema,
   getApprovedSdkResumeState,
+  getApprovedSdkResumeSelection,
   getAgentRuntimeReadiness,
   isAgentRuntimeSdkAvailable,
   runAgentRuntimeTask,

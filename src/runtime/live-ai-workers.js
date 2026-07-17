@@ -1,6 +1,9 @@
 const CONFIG = require("../config");
 const { fromJson, get, insertEvent, now, run, toJson } = require("../db");
 const { AI_TEAM_DEFINITIONS } = require("./ai-team");
+const { buildWorkerModelPacket } = require("./agent-model-contracts");
+const { createExecutionDescriptor, scopeHash } = require("./approval-scope");
+const { worstCaseExecutionCostAud } = require("./model-pricing");
 const { createCommandPlan } = require("./planner");
 const { ensureSpendApproval } = require("./spend-gate");
 
@@ -55,6 +58,17 @@ function requestedToolControls(options = {}) {
     maxToolCalls: Number(options.maxToolCalls ?? (hasSearch ? 3 : hasImageGeneration ? 1 : 0)),
     deadlineMs: Number(options.deadlineMs || (hasImageGeneration ? 180000 : hasSearch ? 120000 : 60000)),
   };
+}
+
+function stableWorkerPacketHash(packet) {
+  const copy = JSON.parse(JSON.stringify(packet || {}));
+  delete copy.packetHash;
+  delete copy.date;
+  if (copy.workflow) {
+    delete copy.workflow.status;
+    delete copy.workflow.currentStep;
+  }
+  return scopeHash(copy);
 }
 
 function latestCommand(db, workflowId) {
@@ -124,6 +138,16 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const expectedMetric = options.expectedMetric || "Compare live output quality, trace coverage, cost, and usefulness against protected worker proof.";
   const tracePolicy = normalizeTracePolicy(options);
   const toolControls = requestedToolControls(options);
+  const maxOutputTokens = Number(options.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 1200);
+  const effects = Array.isArray(options.effects) ? options.effects : [];
+  const provider = options.provider || CONFIG.liveModelProvider;
+  const model = options.model || CONFIG.liveModel;
+  const maxInputTokens = toolControls.tools.length
+    ? Number(options.maxInputTokens || CONFIG.liveModelToolMaxInputTokens)
+    : options.maxInputTokens;
+  if (toolControls.tools.length && maxInputTokens > CONFIG.liveModelToolMaxInputTokens) {
+    throw new Error("Live execution is blocked because the requested input ceiling exceeds the approved hosted-tool limit.");
+  }
   const payload = {
     subject,
     channel,
@@ -152,8 +176,8 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       requested: true,
       approvalId,
       type: "live_ai_worker",
-      provider: options.provider || CONFIG.liveModelProvider,
-      model: options.model || CONFIG.liveModel,
+      provider,
+      model,
       scope: "live_ai_worker_spend",
       title: options.approvalTitle || `Approve live ${workerDefinition.name} test for ${subject}`,
       estimatedCostCents: amountCents,
@@ -170,9 +194,10 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       maxTurns: toolControls.maxTurns,
       maxToolCalls: toolControls.maxToolCalls,
       deadlineMs: toolControls.deadlineMs,
-      maxOutputTokens: Number(options.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 1200),
+      maxInputTokens: maxInputTokens || null,
+      maxOutputTokens,
       maxCostCents: amountCents,
-      effects: Array.isArray(options.effects) ? options.effects : [],
+      effects,
       tracePolicy,
       requiresProviderEnv: "OPENAI_API_KEY",
       requiresLiveFlag: toolControls.flags,
@@ -186,10 +211,76 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       },
     },
   };
+  const descriptorTask = {
+    id: taskId,
+    workflow_id: workflowId,
+    venture_id: workflow.venture_id,
+    title,
+    kind: "live_ai_worker_execution",
+    agent: workerDefinition.id,
+    cost_budget_cents: amountCents,
+    payload,
+    result: {},
+  };
+  const materializedPacket = buildWorkerModelPacket(db, descriptorTask, workerDefinition);
+  const workerDefinitionHash = scopeHash({
+    id: workerDefinition.id,
+    name: workerDefinition.name,
+    role: workerDefinition.role,
+    instructions: workerDefinition.instructions,
+    outputContract: workerDefinition.outputContract,
+    approvalPolicy: workerDefinition.approval_policy,
+  });
+  const worstCaseCost = worstCaseExecutionCostAud({
+    model,
+    materializedInput: materializedPacket,
+    inputOverheadTokens: 2200,
+    maxInputTokens,
+    maxOutputTokens,
+    maxTurns: toolControls.maxTurns,
+    tools: toolControls.tools,
+    maxToolCalls: toolControls.maxToolCalls,
+    audPerUsd: options.audPerUsd,
+  });
+  if (worstCaseCost.amountCents > amountCents) {
+    throw new Error(`Live execution is blocked because its priced worst-case cost is ${worstCaseCost.amountCents} AUD cents, above the ${amountCents}-cent cap.`);
+  }
+  payload.liveSpendRequest.maxInputTokens = worstCaseCost.maxInputTokensPerTurn;
+  payload.liveSpendRequest.pricedWorstCaseCostCents = worstCaseCost.amountCents;
+  payload.liveSpendRequest.executionDescriptor = createExecutionDescriptor({
+    kind: "live_ai_worker",
+    provider,
+    model,
+    workerId: workerDefinition.id,
+    workerDefinitionHash,
+    materializedInputHash: scopeHash(materializedPacket),
+    sourceStateHash: stableWorkerPacketHash(materializedPacket),
+    materializedInput: materializedPacket,
+    tools: toolControls.tools,
+    toolArguments: options.toolArguments || {},
+    parameters: options.parameters || {},
+    limits: {
+      maxInputTokens: worstCaseCost.maxInputTokensPerTurn,
+      maxOutputTokens,
+      maxTurns: toolControls.maxTurns,
+      maxToolCalls: toolControls.maxToolCalls,
+      deadlineMs: toolControls.deadlineMs,
+    },
+    tracePolicy,
+    preflightRequirements: {
+      providerEnv: ["OPENAI_API_KEY"],
+      liveFlags: toolControls.flags,
+      runtimeCapabilities: ["openai_agents_sdk_runner"],
+    },
+    externalEffects: effects,
+    maxCostCents: amountCents,
+    worstCaseCost,
+  });
   const result = {
     note: `${workerDefinition.name} live worker requested. Execution is blocked until spend approval and provider readiness pass.`,
     approvalId,
     estimatedCostCents: amountCents,
+    pricedWorstCaseCostCents: worstCaseCost.amountCents,
     provider: payload.liveSpendRequest.provider,
     model: payload.liveSpendRequest.model,
     requestedWorker: {

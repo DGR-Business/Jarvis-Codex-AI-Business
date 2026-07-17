@@ -4,7 +4,11 @@ const { createProductDraft } = require("../adapters/gelato");
 const { queueApprovalEscalation, sendEscalation } = require("../adapters/notifications");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { runAgentTask } = require("./agent-runner");
-const { isAgentToolApprovalRequiredError } = require("./agent-tool-gate");
+const {
+  TOOL_APPROVAL_SCOPE_SCHEMA,
+  isAgentToolApprovalRequiredError,
+  validateAgentToolApprovalScope,
+} = require("./agent-tool-gate");
 const { recordAgentWorkbenchTeamSummary } = require("./agent-workbench");
 const { generateApprovalPack } = require("./approval-pack");
 const { ensureSpendApproval } = require("./spend-gate");
@@ -153,6 +157,8 @@ function remainingWorkflowTasks(db, workflowId) {
 }
 
 function updateWorkflowAfterCompletion(db, task, result, done) {
+  const current = get(db, "SELECT status FROM workflows WHERE id = ?", [task.workflow_id]);
+  if (["cancelled", "failed", "needs_changes", "needs_attention"].includes(current?.status)) return;
   if (task.kind === "publish_gelato_dry_run") {
     run(
       db,
@@ -261,8 +267,23 @@ async function runOnce(db, options = {}) {
     return { status: "idle", message: "No queued tasks." };
   }
   const task = claim.task;
-
-  const spendGate = ensureSpendApproval(db, task);
+  let spendGate = null;
+  let approvalId = null;
+  let approval = null;
+  let reservation = null;
+  try {
+  const taskApproval = task.approval_id ? get(db, "SELECT * FROM approvals WHERE id = ?", [task.approval_id]) : null;
+  const taskApprovalPayload = fromJson(taskApproval?.payload, {});
+  if (taskApprovalPayload.scopeSchema === TOOL_APPROVAL_SCOPE_SCHEMA && taskApprovalPayload.metadata?.parentApprovalId) {
+    const parentGate = ensureSpendApproval(
+      db,
+      { ...task, approval_id: taskApprovalPayload.metadata.parentApprovalId },
+      { allowConsumedContinuation: true, requireConsumedApproval: true },
+    );
+    spendGate = { ...parentGate, approval: taskApproval, exactToolResume: true };
+  } else {
+    spendGate = ensureSpendApproval(db, task);
+  }
   if (spendGate.required && !spendGate.approved) {
     releaseTaskClaim(db, claim, "blocked", {
       outcomeStatus: "not_started",
@@ -272,15 +293,19 @@ async function runOnce(db, options = {}) {
     return { status: "blocked", task, approval: spendGate.approval, spendGate };
   }
 
-  const approvalId = spendGate.approval?.id || task.approval_id || null;
-  let approval = approvalId ? get(db, "SELECT * FROM approvals WHERE id = ?", [approvalId]) : null;
+  approvalId = spendGate.approval?.id || task.approval_id || null;
+  approval = approvalId ? get(db, "SELECT * FROM approvals WHERE id = ?", [approvalId]) : null;
   if (approvalId) {
     if (!approval || approval.status !== "approved") {
       await markBlocked(db, task, approval || { id: task.approval_id, status: "missing", title: "Missing approval" });
       releaseTaskClaim(db, claim, "blocked", { outcomeStatus: "not_started", metadata: { noProviderCall: true } });
       return { status: "blocked", task, approval };
     }
-    const validation = validateApprovalScope(db, approvalId, { ...task, approval_id: approvalId });
+    const approvalPayload = fromJson(approval.payload, {});
+    const exactToolApproval = approvalPayload.scopeSchema === TOOL_APPROVAL_SCOPE_SCHEMA;
+    const validation = exactToolApproval
+      ? validateAgentToolApprovalScope(db, { ...approval, payload: approvalPayload }, {})
+      : validateApprovalScope(db, approvalId, { ...task, approval_id: approvalId });
     if (!validation.valid) {
       const blockedAt = now();
       run(db, "UPDATE approvals SET status = 'superseded', decision_note = ? WHERE id = ?", [validation.reason, approvalId]);
@@ -296,11 +321,15 @@ async function runOnce(db, options = {}) {
     approval = validation.approval;
   }
 
-  let reservation = null;
   if (spendGate.required) {
     reservation = reserveBudget(db, task, approval, spendGate.estimatedCostCents);
   }
-  if (approvalId) consumeApproval(db, approvalId, { ...task, approval_id: approvalId });
+  const approvedPayload = approval?.payload && typeof approval.payload === "object"
+    ? approval.payload
+    : fromJson(approval?.payload, {});
+  if (approvalId && approvedPayload.scopeSchema !== TOOL_APPROVAL_SCOPE_SCHEMA) {
+    consumeApproval(db, approvalId, { ...task, approval_id: approvalId });
+  }
 
   insertEvent(db, {
     actor: task.agent,
@@ -310,11 +339,19 @@ async function runOnce(db, options = {}) {
     message: `${task.agent} started ${task.title}.`,
   });
 
-  try {
     const result = await executeTask(db, task);
     const done = now();
-    const incurredEstimateCents = Number(result.incurredEstimateCents ?? result.actualCents ?? result.modelCall?.incurredEstimateCents ?? 0);
-    const reconciledCostCents = result.costStatus === "reconciled" ? Number(result.reconciledCostCents || 0) : 0;
+    const incurredEstimateCents = Number(
+      result.incurredEstimateCents
+        ?? result.cost?.estimatedCents
+        ?? result.modelPolicy?.estimatedCostCents
+        ?? result.actualCents
+        ?? result.modelCall?.incurredEstimateCents
+        ?? 0,
+    );
+    const reconciledCostCents = (result.costStatus === "reconciled" || result.cost?.status === "reconciled")
+      ? Number(result.reconciledCostCents || result.cost?.reconciledCents || 0)
+      : 0;
     if (reservation) {
       resolveReservation(db, task.id, incurredEstimateCents > 0 ? "incurred_estimate" : "released", {
         amountCents: incurredEstimateCents,
@@ -384,14 +421,23 @@ async function runOnce(db, options = {}) {
     }
 
     const outcomeUnknown = error.outcomeUnknown === true;
+    const providerReceipt = error.providerReceipt || null;
+    const providerCallOccurred = error.providerCallOccurred === true || Boolean(providerReceipt);
+    const incurredEstimateCents = Math.max(0, Number(error.incurredEstimateCents || providerReceipt?.incurredEstimateCents || 0));
+    const providerResultNeedsReview = providerCallOccurred
+      && !outcomeUnknown
+      && (error.needsAttention === true || incurredEstimateCents > 0);
+    const needsAttention = outcomeUnknown || providerResultNeedsReview;
     const retries = task.retries + 1;
-    const retryable = !outcomeUnknown && !approvalId && retries <= task.max_retries;
-    const status = outcomeUnknown ? "needs_attention" : (retryable ? "queued" : "failed");
+    const retryable = !providerCallOccurred && !outcomeUnknown && !approvalId && retries <= task.max_retries;
+    const status = needsAttention ? "needs_attention" : (retryable ? "queued" : "failed");
     const failedAt = now();
     run(db, "UPDATE tasks SET retries = ? WHERE id = ?", [retries, task.id]);
     if (reservation) {
-      resolveReservation(db, task.id, outcomeUnknown ? "unknown" : "released", {
-        metadata: { error: error.message, outcomeUnknown },
+      const reservationStatus = incurredEstimateCents > 0 ? "incurred_estimate" : outcomeUnknown ? "unknown" : "released";
+      resolveReservation(db, task.id, reservationStatus, {
+        amountCents: incurredEstimateCents || undefined,
+        metadata: { error: error.message, outcomeUnknown, providerCallOccurred, providerReceipt },
       });
     }
     if (retryable) {
@@ -404,12 +450,13 @@ async function runOnce(db, options = {}) {
     } else {
       completeTaskClaim(db, claim, {
         status,
-        result: { error: error.message, outcomeUnknown },
+        result: { error: error.message, outcomeUnknown, providerCallOccurred, providerReceipt },
         completedAt: failedAt,
-        outcomeStatus: outcomeUnknown ? "unknown" : "failed_before_effect",
+        outcomeStatus: outcomeUnknown ? "unknown" : providerResultNeedsReview ? "known_provider_result_needs_review" : "failed_before_effect",
         error: error.message,
-        errorKind: outcomeUnknown ? "provider_outcome_unknown" : "non_retryable_error",
-        metadata: { outcomeUnknown, approvalConsumed: Boolean(approvalId) },
+        errorKind: error.errorKind || (outcomeUnknown ? "provider_outcome_unknown" : providerResultNeedsReview ? "local_processing_after_provider_success" : "non_retryable_error"),
+        providerRequestId: error.providerRequestId || providerReceipt?.providerRequestId || null,
+        metadata: { outcomeUnknown, providerCallOccurred, approvalConsumed: Boolean(approvalId), incurredEstimateCents, providerReceipt },
       });
     }
 
@@ -419,11 +466,17 @@ async function runOnce(db, options = {}) {
         `UPDATE workflows SET status = 'agent_retrying', current_step = ?, updated_at = ? WHERE id = ?`,
         [`retrying ${task.title} (attempt ${retries} of ${task.max_retries})`, failedAt, task.workflow_id],
       );
-    } else if (outcomeUnknown) {
+    } else if (needsAttention) {
       run(
         db,
         `UPDATE workflows SET status = 'needs_attention', current_step = ?, approval_required = 1, updated_at = ? WHERE id = ?`,
-        [`Provider outcome is unknown for ${task.title}; review before any retry`, failedAt, task.workflow_id],
+        [
+          outcomeUnknown
+            ? `Provider outcome is unknown for ${task.title}; review before any retry`
+            : `Provider completed ${task.title}, but the local result needs review`,
+          failedAt,
+          task.workflow_id,
+        ],
       );
       run(
         db,
@@ -435,10 +488,12 @@ async function runOnce(db, options = {}) {
           task.venture_id,
           "urgent",
           "open",
-          `Check provider outcome: ${task.title}`,
-          "The provider request may have been accepted. Jarvis will not retry until the outcome and cost are reconciled.",
+          outcomeUnknown ? `Check provider outcome: ${task.title}` : `Review completed provider work: ${task.title}`,
+          outcomeUnknown
+            ? "The provider request may have been accepted. Jarvis will not retry until the outcome and cost are reconciled."
+            : "The provider call completed and its receipt and cost were retained, but Jarvis could not safely accept the local result. Review it before any retry.",
           failedAt,
-          toJson({ workflowId: task.workflow_id, outcomeUnknown: true, approvalId }),
+          toJson({ workflowId: task.workflow_id, outcomeUnknown, providerCallOccurred, approvalId, providerReceipt, incurredEstimateCents }),
         ],
       );
     } else {
@@ -471,17 +526,19 @@ async function runOnce(db, options = {}) {
       );
     }
     insertEvent(db, {
-      level: retryable || outcomeUnknown ? "warn" : "error",
+      level: retryable || needsAttention ? "warn" : "error",
       actor: task.agent,
-      type: outcomeUnknown ? "task.outcome_unknown" : (retryable ? "task.retry" : "task.failed"),
+      type: outcomeUnknown ? "task.outcome_unknown" : providerResultNeedsReview ? "task.provider_result_needs_attention" : (retryable ? "task.retry" : "task.failed"),
       entityType: "task",
       entityId: task.id,
       message: outcomeUnknown
         ? `${task.title} needs review because the provider outcome is unknown.`
+        : providerResultNeedsReview
+          ? `${task.title} needs review because the provider completed but Jarvis could not safely accept the local result.`
         : `${task.title} ${retryable ? "will retry" : "failed"}: ${error.message}`,
-      metadata: { retries, maxRetries: task.max_retries, workflowId: task.workflow_id, outcomeUnknown },
+      metadata: { retries, maxRetries: task.max_retries, workflowId: task.workflow_id, outcomeUnknown, providerCallOccurred, providerReceipt, incurredEstimateCents },
     });
-    return { status, task, error: error.message, retries };
+    return { status, task, error: error.message, retries, providerReceipt };
   }
 }
 
@@ -501,6 +558,7 @@ function shouldStopAfterStep(db, workflowId, result) {
     "failed",
     "cancelled",
     "needs_changes",
+    "needs_attention",
   ].includes(workflow.status);
 }
 

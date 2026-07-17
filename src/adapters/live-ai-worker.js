@@ -8,6 +8,28 @@ const {
 } = require("../runtime/agent-model-contracts");
 
 const LIVE_AI_WORKER_PROVIDER = "openai-responses-live-worker";
+const DEFAULT_PROVIDER_DEADLINE_MS = 60_000;
+
+function approvedDeadlineMs(task, options = {}) {
+  const approved = Number(options.deadlineMs || task.payload?.liveSpendRequest?.deadlineMs || DEFAULT_PROVIDER_DEADLINE_MS);
+  return Math.min(10 * 60 * 1000, Math.max(5_000, Number.isFinite(approved) ? approved : DEFAULT_PROVIDER_DEADLINE_MS));
+}
+
+function requestSignal(deadlineMs, externalSignal) {
+  const timeout = typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(deadlineMs) : null;
+  if (externalSignal && timeout && typeof AbortSignal?.any === "function") return AbortSignal.any([externalSignal, timeout]);
+  return externalSignal || timeout || undefined;
+}
+
+function providerError(error, state, extras = {}) {
+  const wrapped = error instanceof Error ? error : new Error(String(error));
+  wrapped.providerDispatchStatus = state;
+  wrapped.providerCallOccurred = state !== "not_dispatched";
+  wrapped.outcomeUnknown = state === "outcome_unknown";
+  wrapped.definiteProviderRejection = state === "definite_rejection";
+  Object.assign(wrapped, extras);
+  return wrapped;
+}
 
 function safeId(value) {
   return String(value || "task")
@@ -297,23 +319,33 @@ async function readJsonResponse(response) {
 
 async function callOpenAIResponses(body, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
-  if (typeof fetchImpl !== "function") throw new Error("Fetch is not available for live AI worker execution.");
+  if (typeof fetchImpl !== "function") {
+    throw providerError(new Error("Fetch is not available for live AI worker execution."), "not_dispatched");
+  }
   const apiKey = options.apiKey || process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY is required for live AI worker execution.");
+  if (!apiKey) throw providerError(new Error("OPENAI_API_KEY is required for live AI worker execution."), "not_dispatched");
 
-  const response = await fetchImpl(options.responsesUrl || CONFIG.openaiResponsesUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal: options.signal,
-  });
+  let response;
+  try {
+    response = await fetchImpl(options.responsesUrl || CONFIG.openaiResponsesUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: requestSignal(Number(options.deadlineMs || DEFAULT_PROVIDER_DEADLINE_MS), options.signal),
+    });
+  } catch (error) {
+    throw providerError(error, "outcome_unknown", { providerRequestStarted: true });
+  }
   const json = await readJsonResponse(response);
   if (!response.ok) {
     const message = json.error?.message || json.message || json.raw || `HTTP ${response.status}`;
-    throw new Error(`OpenAI live worker request failed: ${message}`);
+    throw providerError(new Error(`OpenAI live worker request failed: ${message}`), "definite_rejection", {
+      httpStatus: response.status,
+      providerRequestStarted: true,
+    });
   }
   return json;
 }
@@ -321,14 +353,33 @@ async function callOpenAIResponses(body, options = {}) {
 function recordLiveWorkerModelCall(db, task, response, estimateCents, model, status = "completed", metadata = {}) {
   const usage = tokenUsage(response || {});
   const reservedCostCents = Math.max(0, Number(metadata.reservedCostCents ?? estimateCents));
-  const callId = `model_${randomId()}`;
+  const callId = metadata.modelCallId || `model_${randomId()}`;
+  const providerCompleted = ["completed", "provider_completed", "waiting_approval", "needs_attention"].includes(status);
+  const outcomeUnknown = metadata.outcomeUnknown === true;
+  const dispatching = status === "dispatching";
+  const costStatus = providerCompleted ? "incurred_estimate" : outcomeUnknown ? "unknown" : dispatching ? "reserved" : "released";
+  const outcomeStatus = providerCompleted ? "known" : outcomeUnknown ? "unknown" : dispatching ? "provider_dispatched" : "failed_before_effect";
+  const errorKind = metadata.errorKind
+    || (outcomeUnknown ? "provider_outcome_unknown" : status === "failed" ? "provider_rejected" : null);
   run(
     db,
     `INSERT INTO model_calls (id, workflow_id, task_id, venture_id, provider, model_class, selected_model, mode, status,
       input_tokens, output_tokens, estimated_cost_cents, actual_cost_cents, approval_required, metadata, created_at,
       provider_request_id, cost_status, reserved_cost_cents, incurred_estimate_cents, reconciled_cost_cents,
       outcome_status, error_kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       status = excluded.status,
+       input_tokens = excluded.input_tokens,
+       output_tokens = excluded.output_tokens,
+       estimated_cost_cents = excluded.estimated_cost_cents,
+       metadata = excluded.metadata,
+       provider_request_id = COALESCE(excluded.provider_request_id, model_calls.provider_request_id),
+       cost_status = excluded.cost_status,
+       reserved_cost_cents = excluded.reserved_cost_cents,
+       incurred_estimate_cents = excluded.incurred_estimate_cents,
+       outcome_status = excluded.outcome_status,
+       error_kind = excluded.error_kind`,
     [
       callId,
       task.workflow_id,
@@ -348,17 +399,18 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
         provider: LIVE_AI_WORKER_PROVIDER,
         responseId: response?.id || null,
         totalTokens: usage.totalTokens,
-        exactBillingPending: status === "completed",
+        exactBillingPending: providerCompleted,
         ...metadata,
+        modelCallId: undefined,
       }),
       now(),
       response?.id || null,
-      status === "completed" ? "incurred_estimate" : "unknown",
+      costStatus,
       reservedCostCents,
-      status === "completed" ? estimateCents : 0,
+      providerCompleted ? estimateCents : 0,
       0,
-      status === "completed" ? "known" : "unknown",
-      status === "completed" ? null : "provider_outcome_unknown",
+      outcomeStatus,
+      errorKind,
     ],
   );
 
@@ -373,35 +425,46 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
     estimatedOutputTokens: usage.outputTokens,
     estimatedCostCents: estimateCents,
     actualCostCents: 0,
-    incurredEstimateCents: status === "completed" ? estimateCents : 0,
-    costStatus: status === "completed" ? "incurred_estimate" : "unknown",
+    incurredEstimateCents: providerCompleted ? estimateCents : 0,
+    costStatus,
     currency: CONFIG.currency,
-    exactBillingPending: status === "completed",
+    exactBillingPending: providerCompleted,
   };
 }
 
 function recordLiveWorkerCost(db, task, estimateCents, response, metadata = {}) {
   const ts = now();
   const costId = costIdForTask(task);
+  const existing = get(db, "SELECT amount_cents, metadata FROM costs WHERE id = ?", [costId]);
+  const existingMetadata = fromJson(existing?.metadata, {});
+  const modelCallId = metadata.modelCallId || null;
+  const recordedModelCallIds = Array.isArray(existingMetadata.modelCallIds) ? existingMetadata.modelCallIds : [];
+  const alreadyRecorded = modelCallId && recordedModelCallIds.includes(modelCallId);
+  const amountCents = alreadyRecorded
+    ? Number(existing?.amount_cents || 0)
+    : Number(existing?.amount_cents || 0) + Math.max(0, Number(estimateCents || 0));
   const payload = toJson({
+    ...existingMetadata,
     ...metadata,
     approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
-    estimatedCostCents: estimateCents,
+    taskId: task.id,
+    estimatedCostCents: amountCents,
     exactBillingPending: true,
     noSpendOccurred: false,
     providerResponseId: response.id || null,
+    modelCallIds: modelCallId ? [...new Set([...recordedModelCallIds, modelCallId])] : recordedModelCallIds,
   });
   const updated = run(
     db,
     `UPDATE costs SET status = ?, amount_cents = ?, occurred_at = ?, metadata = ? WHERE id = ?`,
-    ["incurred_estimate", estimateCents, ts, payload, costId],
+    ["incurred_estimate", amountCents, ts, payload, costId],
   );
   if (updated.changes === 0) {
     run(
       db,
       `INSERT INTO costs (id, workflow_id, venture_id, category, source, status, amount_cents, currency, occurred_at, metadata)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [costId, task.workflow_id, task.venture_id || null, "live_ai_worker", LIVE_AI_WORKER_PROVIDER, "incurred_estimate", estimateCents, CONFIG.currency, ts, payload],
+      [costId, task.workflow_id, task.venture_id || null, "live_ai_worker", LIVE_AI_WORKER_PROVIDER, "incurred_estimate", amountCents, CONFIG.currency, ts, payload],
     );
   }
 }
@@ -410,7 +473,45 @@ function recordLiveWorkerFailureCost(db, task, error) {
   const ts = now();
   const costId = costIdForTask(task);
   const existing = get(db, "SELECT metadata FROM costs WHERE id = ?", [costId]);
-  if (!existing) return;
+  if (error.outcomeUnknown !== true) {
+    if (existing) {
+      run(
+        db,
+        "UPDATE costs SET status = 'released', amount_cents = 0, occurred_at = ?, metadata = ? WHERE id = ?",
+        [
+          ts,
+          toJson({
+            ...fromJson(existing.metadata, {}),
+            noSpendOccurred: true,
+            providerFailed: true,
+            outcomeUnknown: false,
+            providerDispatchStatus: error.providerDispatchStatus || "not_dispatched",
+            error: error.message,
+          }),
+          costId,
+        ],
+      );
+    }
+    return;
+  }
+  if (!existing) {
+    run(
+      db,
+      `INSERT INTO costs (id, workflow_id, venture_id, category, source, status, amount_cents, currency, occurred_at, metadata)
+       VALUES (?, ?, ?, 'live_ai_worker', ?, 'unknown', ?, ?, ?, ?)`,
+      [
+        costId,
+        task.workflow_id,
+        task.venture_id || null,
+        LIVE_AI_WORKER_PROVIDER,
+        approvedEstimateCents(task),
+        CONFIG.currency,
+        ts,
+        toJson({ taskId: task.id, noSpendOccurred: null, providerFailed: true, outcomeUnknown: true, error: error.message }),
+      ],
+    );
+    return;
+  }
   run(
     db,
     `UPDATE costs SET status = ?, amount_cents = ?, occurred_at = ?, metadata = ? WHERE id = ?`,
@@ -422,7 +523,8 @@ function recordLiveWorkerFailureCost(db, task, error) {
         ...fromJson(existing.metadata, {}),
         noSpendOccurred: null,
         providerFailed: true,
-        outcomeUnknown: true,
+        outcomeUnknown: error.outcomeUnknown === true,
+        providerDispatchStatus: error.providerDispatchStatus || null,
         error: error.message,
       }),
       costId,
@@ -494,16 +596,36 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
 
   const requestBody = buildOpenAIRequest(db, task, agentDefinition, policy);
   const estimateCents = liveWorkerCostEstimateCents(task);
+  const deadlineMs = approvedDeadlineMs(task, options);
+  const dispatchCall = recordLiveWorkerModelCall(db, task, null, estimateCents, requestBody.model, "dispatching", {
+    reservedCostCents: estimateCents,
+    dispatchIntent: { status: "dispatched", recordedAt: now(), deadlineMs },
+  });
   let response;
   try {
-    response = await callOpenAIResponses(requestBody, options);
+    response = await callOpenAIResponses(requestBody, { ...options, deadlineMs });
   } catch (error) {
-    error.outcomeUnknown = true;
+    if (!error.providerDispatchStatus) {
+      error = providerError(error, "outcome_unknown", { providerRequestStarted: true });
+    }
     recordLiveWorkerFailureCost(db, task, error);
     const failedCall = recordLiveWorkerModelCall(db, task, null, estimateCents, requestBody.model, "failed", {
+      modelCallId: dispatchCall.id,
       error: error.message,
-      outcomeUnknown: true,
+      outcomeUnknown: error.outcomeUnknown === true,
+      errorKind: error.outcomeUnknown === true ? "provider_outcome_unknown" : "provider_rejected",
+      providerDispatchStatus: error.providerDispatchStatus,
+      httpStatus: error.httpStatus || null,
     });
+    error.modelCallId = failedCall.id;
+    error.providerReceipt = {
+      modelCallId: failedCall.id,
+      providerRequestId: null,
+      provider: LIVE_AI_WORKER_PROVIDER,
+      status: error.providerDispatchStatus,
+      deadlineMs,
+    };
+    error.incurredEstimateCents = 0;
     insertEvent(db, {
       level: "error",
       actor: "ai-worker-adapter",
@@ -511,26 +633,78 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
       entityType: "task",
       entityId: task.id,
       message: `Live AI worker failed before usable output was captured: ${error.message}`,
-      metadata: { workflowId: task.workflow_id, taskId: task.id, modelCallId: failedCall.id, outcomeUnknown: true },
+      metadata: {
+        workflowId: task.workflow_id,
+        taskId: task.id,
+        modelCallId: failedCall.id,
+        outcomeUnknown: error.outcomeUnknown === true,
+        providerDispatchStatus: error.providerDispatchStatus,
+      },
     });
     throw error;
   }
 
   const { text, annotations } = outputTextAndAnnotations(response);
   const parsed = parseJsonOutput(text);
+  const providerCall = recordLiveWorkerModelCall(db, task, response, estimateCents, requestBody.model, "provider_completed", {
+    modelCallId: dispatchCall.id,
+    structuredOutput: Boolean(parsed),
+    annotationCount: annotations.length,
+    deadlineMs,
+    providerReceiptRecordedAt: now(),
+    reason: "The provider returned a response. Local schema validation and business processing follow this durable receipt.",
+  });
+  recordLiveWorkerCost(db, task, estimateCents, response, {
+    model: requestBody.model,
+    modelCallId: providerCall.id,
+    structuredOutput: Boolean(parsed),
+    annotationCount: annotations.length,
+  });
+  const providerReceipt = {
+    modelCallId: providerCall.id,
+    providerRequestId: response.id || null,
+    provider: LIVE_AI_WORKER_PROVIDER,
+    status: "completed",
+    incurredEstimateCents: estimateCents,
+    deadlineMs,
+  };
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    const modelCall = recordLiveWorkerModelCall(db, task, response, estimateCents, requestBody.model, "needs_attention", {
+      modelCallId: providerCall.id,
+      structuredOutput: false,
+      annotationCount: annotations.length,
+      errorKind: "malformed_structured_output",
+      providerReceipt,
+    });
+    const error = new Error("The live AI worker returned output that did not match the required structured format.");
+    error.outcomeUnknown = false;
+    error.providerCallOccurred = true;
+    error.needsAttention = true;
+    error.providerDispatchStatus = "completed";
+    error.incurredEstimateCents = estimateCents;
+    error.providerRequestId = response.id || null;
+    error.modelCallId = modelCall.id;
+    error.errorKind = "malformed_structured_output";
+    error.providerReceipt = providerReceipt;
+    insertEvent(db, {
+      level: "error",
+      actor: "ai-worker-adapter",
+      type: "live_ai_worker.output_needs_attention",
+      entityType: "task",
+      entityId: task.id,
+      message: "The provider call completed, but its output could not be accepted as a structured business result.",
+      metadata: providerReceipt,
+    });
+    throw error;
+  }
   const roleOutput = normalizeWorkerOutput(agentDefinition.id, parsed, agentDefinition.name);
   const output = normalizeOutput(roleOutput, text);
   output.roleOutput = roleOutput?.roleOutput || null;
   const modelCall = recordLiveWorkerModelCall(db, task, response, estimateCents, requestBody.model, "completed", {
+    modelCallId: providerCall.id,
     structuredOutput: Boolean(parsed),
     annotationCount: annotations.length,
     reason: "Live AI worker used the OpenAI Responses API after approval; no external tools or side effects were exposed.",
-  });
-  recordLiveWorkerCost(db, task, estimateCents, response, {
-    model: requestBody.model,
-    modelCallId: modelCall.id,
-    structuredOutput: Boolean(parsed),
-    annotationCount: annotations.length,
   });
 
   insertEvent(db, {
@@ -545,6 +719,7 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
       modelCallId: modelCall.id,
       estimatedCostCents: estimateCents,
       responseId: response.id || null,
+      providerReceipt,
     },
   });
 
@@ -560,6 +735,7 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
     costStatus: "incurred_estimate",
     exactBillingPending: true,
     modelCall,
+    providerReceipt,
     output: {
       heading: output.heading,
       summary: output.summary,
