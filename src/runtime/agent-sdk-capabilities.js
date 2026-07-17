@@ -334,14 +334,60 @@ function collectOutputItems(result) {
 function webSources(item) {
   const sources = item?.action?.sources || item?.sources || item?.providerData?.action?.sources || [];
   return Array.isArray(sources)
-    ? sources.slice(0, 20).map((source) => ({ title: source.title || null, url: source.url || null })).filter((source) => source.url)
+    ? sources.slice(0, 50).map((source) => ({
+      title: source.title || source.name || null,
+      url: source.url || null,
+      publisher: source.publisher || source.site_name || source.siteName || null,
+      publishedAt: source.published_at || source.publishedAt || null,
+      groundingType: "provider_search_source",
+    })).filter((source) => source.url)
     : [];
+}
+
+function webQueries(item) {
+  const action = item?.action || item?.providerData?.action || {};
+  const values = [
+    ...(Array.isArray(action.queries) ? action.queries : []),
+    ...(Array.isArray(item?.queries) ? item.queries : []),
+    action.query,
+    item?.query,
+  ];
+  return [...new Set(values.filter(Boolean).map((value) => String(value).trim()).filter(Boolean))];
+}
+
+function outputCitationSources(items) {
+  const sources = [];
+  const seen = new Set();
+  for (const item of items) {
+    const raw = item?.rawItem || item;
+    const content = Array.isArray(raw?.content) ? raw.content : [];
+    for (const part of content) {
+      for (const annotation of part?.annotations || []) {
+        const citation = annotation?.url_citation || annotation?.urlCitation || annotation;
+        const type = citation?.type || annotation?.type || "";
+        const url = citation?.url || null;
+        if (!url || (!String(type).includes("citation") && !/^https?:\/\//i.test(url))) continue;
+        if (seen.has(url)) continue;
+        seen.add(url);
+        sources.push({
+          title: citation.title || url,
+          url,
+          publisher: citation.publisher || null,
+          publishedAt: citation.published_at || citation.publishedAt || null,
+          groundingType: "output_url_citation",
+        });
+      }
+    }
+  }
+  return sources;
 }
 
 function extractAgentsSdkToolActivity(result) {
   const activity = [];
   const seen = new Set();
-  for (const item of collectOutputItems(result)) {
+  const outputItems = collectOutputItems(result);
+  const citationSources = outputCitationSources(outputItems);
+  for (const item of outputItems) {
     const raw = item?.rawItem || item;
     const type = raw?.type || raw?.providerData?.type || "";
     if (!String(type).includes("search") && !String(type).includes("image_generation") && !String(type).includes("code_interpreter")) continue;
@@ -351,11 +397,13 @@ function extractAgentsSdkToolActivity(result) {
     seen.add(key);
 
     if (String(type).includes("web_search")) {
+      const queries = webQueries(raw);
       activity.push({
         id,
         type: "web_search",
         status: raw.status || null,
-        query: raw.action?.query || raw.query || null,
+        query: queries[0] || null,
+        queries,
         sources: webSources(raw),
       });
       continue;
@@ -379,6 +427,25 @@ function extractAgentsSdkToolActivity(result) {
       status: raw.status || null,
       containerId: raw.container_id || raw.containerId || null,
     });
+  }
+  if (citationSources.length) {
+    const search = activity.find((item) => item.type === "web_search");
+    if (search) {
+      const byUrl = new Map((search.sources || []).map((source) => [source.url, source]));
+      for (const source of citationSources) {
+        if (!byUrl.has(source.url)) byUrl.set(source.url, source);
+      }
+      search.sources = [...byUrl.values()];
+    } else {
+      activity.push({
+        id: "web_search_citations",
+        type: "web_search",
+        status: "completed",
+        query: null,
+        queries: [],
+        sources: citationSources,
+      });
+    }
   }
   return activity;
 }

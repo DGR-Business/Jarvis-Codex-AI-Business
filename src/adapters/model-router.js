@@ -1,40 +1,35 @@
 const CONFIG = require("../config");
 const { now, randomId, run, toJson } = require("../db");
+const { MODEL_CLASS_TIERS, selectModelRoute } = require("../runtime/model-routing");
 
 const MODEL_CLASS_ROUTES = {
   "reasoning-medium": {
     provider: "openai",
-    selectedModel: "gpt-5-mini-or-equivalent",
     estimatedInputTokens: 1200,
     estimatedOutputTokens: 700,
   },
   "research-high": {
     provider: "openai",
-    selectedModel: "gpt-5-research-or-equivalent",
     estimatedInputTokens: 2400,
     estimatedOutputTokens: 1200,
   },
   "reasoning-high": {
     provider: "openai",
-    selectedModel: "gpt-5-or-equivalent",
     estimatedInputTokens: 1800,
     estimatedOutputTokens: 900,
   },
   "creative-vision": {
     provider: "openai",
-    selectedModel: "multimodal-design-model-pending",
     estimatedInputTokens: 1600,
     estimatedOutputTokens: 900,
   },
   "quality-review-high": {
     provider: "openai",
-    selectedModel: "gpt-5-or-equivalent",
     estimatedInputTokens: 2200,
     estimatedOutputTokens: 900,
   },
   "fast-general": {
     provider: "openai",
-    selectedModel: "fast-low-cost-model-pending",
     estimatedInputTokens: 800,
     estimatedOutputTokens: 400,
   },
@@ -52,7 +47,13 @@ function liveModelCallsEnabled(options = {}) {
 }
 
 function recordModelCall(db, task, policy, options = {}) {
-  const route = MODEL_CLASS_ROUTES[policy.modelClass] || MODEL_CLASS_ROUTES["fast-general"];
+  const baseRoute = MODEL_CLASS_ROUTES[policy.modelClass] || MODEL_CLASS_ROUTES["fast-general"];
+  const selected = selectModelRoute({
+    modelClass: policy.modelClass,
+    highConsequence: options.highConsequence === true,
+    qualityEscalation: options.qualityEscalation === true,
+  });
+  const route = { ...baseRoute, selectedModel: selected.model };
   const live = liveModelCallsEnabled(options);
   const callId = `model_${randomId()}`;
   const estimatedCostCents = estimateCostCents(policy, route);
@@ -85,6 +86,7 @@ function recordModelCall(db, task, policy, options = {}) {
         currency: CONFIG.currency,
         reason: "Dry-run model routing proof. No paid model call was made.",
         liveModelsEnabled: false,
+        modelRoute: selected,
       }),
       ts,
     ],
@@ -106,6 +108,7 @@ function recordModelCall(db, task, policy, options = {}) {
 }
 
 module.exports = {
+  MODEL_CLASS_TIERS,
   MODEL_CLASS_ROUTES,
   recordModelCall,
 };

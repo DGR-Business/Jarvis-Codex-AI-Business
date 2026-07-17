@@ -4,6 +4,7 @@ const { AI_TEAM_DEFINITIONS } = require("./ai-team");
 const { buildWorkerModelPacket } = require("./agent-model-contracts");
 const { createExecutionDescriptor, scopeHash } = require("./approval-scope");
 const { worstCaseExecutionCostAud } = require("./model-pricing");
+const { selectModelRoute } = require("./model-routing");
 const { createCommandPlan } = require("./planner");
 const { ensureSpendApproval } = require("./spend-gate");
 
@@ -141,7 +142,13 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const maxOutputTokens = Number(options.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 1200);
   const effects = Array.isArray(options.effects) ? options.effects : [];
   const provider = options.provider || CONFIG.liveModelProvider;
-  const model = options.model || CONFIG.liveModel;
+  const modelRoute = selectModelRoute({
+    model: options.model,
+    modelClass: workerDefinition.modelClass,
+    highConsequence: options.highConsequence === true,
+    qualityEscalation: options.qualityEscalation === true,
+  });
+  const model = modelRoute.model;
   const maxInputTokens = toolControls.tools.length
     ? Number(options.maxInputTokens || CONFIG.liveModelToolMaxInputTokens)
     : options.maxInputTokens;
@@ -178,6 +185,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       type: "live_ai_worker",
       provider,
       model,
+      modelRoute,
       scope: "live_ai_worker_spend",
       title: options.approvalTitle || `Approve live ${workerDefinition.name} test for ${subject}`,
       estimatedCostCents: amountCents,
@@ -190,7 +198,15 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       fixtureHash: options.fixtureHash || null,
       tools: toolControls.tools,
       toolArguments: options.toolArguments || {},
-      parameters: options.parameters || {},
+      parameters: {
+        ...(options.parameters || {}),
+        modelRoute: {
+          tier: modelRoute.tier,
+          policyVersion: modelRoute.policyVersion,
+          reason: modelRoute.reason,
+          automaticFallbackAllowed: false,
+        },
+      },
       maxTurns: toolControls.maxTurns,
       maxToolCalls: toolControls.maxToolCalls,
       deadlineMs: toolControls.deadlineMs,
@@ -258,7 +274,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     materializedInput: materializedPacket,
     tools: toolControls.tools,
     toolArguments: options.toolArguments || {},
-    parameters: options.parameters || {},
+    parameters: payload.liveSpendRequest.parameters,
     limits: {
       maxInputTokens: worstCaseCost.maxInputTokensPerTurn,
       maxOutputTokens,
@@ -283,6 +299,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     pricedWorstCaseCostCents: worstCaseCost.amountCents,
     provider: payload.liveSpendRequest.provider,
     model: payload.liveSpendRequest.model,
+    modelRoute,
     requestedWorker: {
       id: workerDefinition.id,
       name: workerDefinition.name,
@@ -344,6 +361,9 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       approvalId,
       estimatedCostCents: amountCents,
       provider: payload.liveSpendRequest.provider,
+      model: payload.liveSpendRequest.model,
+      modelTier: modelRoute.label,
+      modelRouteReason: modelRoute.reason,
       workerId: workerDefinition.id,
       workerName: workerDefinition.name,
     },
@@ -361,6 +381,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     estimatedCostCents: amountCents,
     provider: payload.liveSpendRequest.provider,
     model: payload.liveSpendRequest.model,
+    modelRoute,
     worker: {
       id: workerDefinition.id,
       name: workerDefinition.name,

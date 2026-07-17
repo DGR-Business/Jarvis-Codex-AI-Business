@@ -43,6 +43,10 @@ const { ensureCapabilityAutonomy } = require("./runtime/capability-autonomy");
 const { getGumroadSalesState, importGumroadCsv } = require("./runtime/gumroad-import");
 const { reconcileProviderUsageBatch } = require("./runtime/cost-ledger");
 const {
+  latestAgentRunReceipt,
+  verifyAgentRunReceiptChain,
+} = require("./runtime/agent-execution-evidence");
+const {
   createPilotFixture,
   getPilotState,
   prepareDemandValidatorPilot,
@@ -474,6 +478,11 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/api/system/audit/verify") {
+        jsonResponse(res, 200, verifyAgentRunReceiptChain(db));
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/system/spend/reconcile-provider-usage") {
         const body = await readBody(req);
         const result = reconcileProviderUsageBatch(db, body || {});
@@ -501,6 +510,14 @@ function createApp(options = {}) {
       const agentRunDetail = routeMatch(url.pathname, "/api/agent-runs/:id");
       if (req.method === "GET" && agentRunDetail) {
         const result = getAgentRunDetail(db, agentRunDetail.id);
+        if (!result) notFound(res);
+        else jsonResponse(res, 200, result);
+        return;
+      }
+
+      const agentRunReceipt = routeMatch(url.pathname, "/api/agent-runs/:id/receipt");
+      if (req.method === "GET" && agentRunReceipt) {
+        const result = latestAgentRunReceipt(db, agentRunReceipt.id);
         if (!result) notFound(res);
         else jsonResponse(res, 200, result);
         return;

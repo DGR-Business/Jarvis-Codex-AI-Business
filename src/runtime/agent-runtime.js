@@ -31,7 +31,9 @@ const {
   recordAgentToolObservation,
   requestAgentToolUse,
 } = require("./agent-tool-gate");
+const { persistAgentsSdkResearchEvidence } = require("./agent-execution-evidence");
 const { estimateModelUsageAud } = require("./model-pricing");
+const { markTaskAttemptProviderDispatched } = require("./task-claims");
 
 const AGENTS_SDK_PROVIDER = "openai-agents-sdk";
 
@@ -326,6 +328,68 @@ function approvedTracePolicy(task) {
   };
 }
 
+function lifecycleToolName(tool) {
+  return tool?.name || tool?.id || tool?.type || "approved tool";
+}
+
+function attachSdkLifecycleHooks(runner, task, callback) {
+  if (!runner?.on || typeof callback !== "function") return () => {};
+  const belongsToTask = (context) => !context?.context?.taskId || context.context.taskId === task.id;
+  const emit = (context, event) => {
+    if (!belongsToTask(context)) return;
+    try {
+      callback(event);
+    } catch {
+      // A dashboard trace failure must not turn a provider result into a paid retry.
+    }
+  };
+  const listeners = [
+    ["agent_start", (context, agent) => emit(context, {
+      type: "sdk_agent_started",
+      title: "OpenAI worker started",
+      detail: `${agent?.name || "The approved worker"} started processing the supplied business context.`,
+      metadata: { agentName: agent?.name || null },
+    })],
+    ["agent_end", (context, agent) => emit(context, {
+      type: "sdk_agent_finished",
+      title: "OpenAI worker finished",
+      detail: `${agent?.name || "The approved worker"} finished its model work; Jarvis is checking and storing the result.`,
+      metadata: { agentName: agent?.name || null },
+    })],
+    ["agent_handoff", (context, fromAgent, toAgent) => emit(context, {
+      type: "sdk_agent_handoff",
+      title: "Specialist handoff",
+      detail: `${fromAgent?.name || "A worker"} handed the task to ${toAgent?.name || "another approved worker"}.`,
+      metadata: { fromAgent: fromAgent?.name || null, toAgent: toAgent?.name || null },
+    })],
+    ["agent_tool_start", (context, agent, tool, details) => emit(context, {
+      type: "sdk_tool_started",
+      title: `${lifecycleToolName(tool)} started`,
+      detail: `${agent?.name || "The approved worker"} started an approved ${lifecycleToolName(tool)} action.`,
+      metadata: {
+        agentName: agent?.name || null,
+        toolName: lifecycleToolName(tool),
+        callId: details?.toolCall?.callId || details?.toolCall?.id || null,
+      },
+    })],
+    ["agent_tool_end", (context, agent, tool, result, details) => emit(context, {
+      type: "sdk_tool_finished",
+      title: `${lifecycleToolName(tool)} finished`,
+      detail: `${agent?.name || "The approved worker"} finished the approved ${lifecycleToolName(tool)} action.`,
+      metadata: {
+        agentName: agent?.name || null,
+        toolName: lifecycleToolName(tool),
+        callId: details?.toolCall?.callId || details?.toolCall?.id || null,
+        resultCharacters: typeof result === "string" ? result.length : null,
+      },
+    })],
+  ];
+  for (const [event, listener] of listeners) runner.on(event, listener);
+  return () => {
+    for (const [event, listener] of listeners) runner.off(event, listener);
+  };
+}
+
 async function runSdkAgent(requestBody, task, agentDefinition, policy, options = {}) {
   const sdk = loadAgentsSdk();
   const { Agent, Runner, RunState, generateTraceId, z } = sdk;
@@ -333,14 +397,19 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
   const tracePolicy = approvedTracePolicy(task);
   const capabilityPlan = options.capabilityPlan || buildAgentsSdkCapabilityPlan(task, agentDefinition);
   if (testSdkRunner) {
+    let dispatchStarted = false;
     try {
+      if (typeof options.beforeDispatch === "function") {
+        options.beforeDispatch({ traceId, capabilityPlan });
+      }
+      dispatchStarted = true;
       const result = await testSdkRunner({ requestBody, task, agentDefinition, policy, options, traceId, tracePolicy, capabilityPlan });
       return { result, traceId };
     } catch (error) {
       error.agentSdkTraceId = traceId;
-      if (error.providerCallOccurred === undefined) error.providerCallOccurred = true;
-      if (error.outcomeUnknown === undefined) error.outcomeUnknown = true;
-      if (!error.providerDispatchStatus) error.providerDispatchStatus = "outcome_unknown";
+      if (error.providerCallOccurred === undefined) error.providerCallOccurred = dispatchStarted;
+      if (error.outcomeUnknown === undefined) error.outcomeUnknown = dispatchStarted;
+      if (!error.providerDispatchStatus) error.providerDispatchStatus = dispatchStarted ? "outcome_unknown" : "not_dispatched";
       throw error;
     }
   }
@@ -362,6 +431,9 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
       store: tracePolicy.providerResponseStored,
       providerData: {
         max_tool_calls: capabilityPlan.maxToolCalls || undefined,
+        include: capabilityPlan.specs.some((spec) => spec.sdkName === "web_search")
+          ? ["web_search_call.action.sources"]
+          : undefined,
         safety_identifier: stableSafetyIdentifier(task),
         prompt_cache_key: `jarvis_${agentDefinition.id}_${requestBody.metadata.packet_schema}`,
       },
@@ -384,7 +456,13 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     }
   }
   const signal = options.signal || (typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(capabilityPlan.deadlineMs) : undefined);
+  const detachLifecycleHooks = attachSdkLifecycleHooks(runner, task, options.onLifecycleEvent);
+  let dispatchStarted = false;
   try {
+    if (typeof options.beforeDispatch === "function") {
+      options.beforeDispatch({ traceId, capabilityPlan });
+    }
+    dispatchStarted = true;
     const result = await runner.run(agent, sdkInput, {
       maxTurns: capabilityPlan.maxTurns,
       traceId,
@@ -412,10 +490,12 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     return { result, traceId };
   } catch (error) {
     error.agentSdkTraceId = traceId;
-    if (error.providerCallOccurred === undefined) error.providerCallOccurred = true;
-    if (error.outcomeUnknown === undefined) error.outcomeUnknown = true;
-    if (!error.providerDispatchStatus) error.providerDispatchStatus = "outcome_unknown";
+    if (error.providerCallOccurred === undefined) error.providerCallOccurred = dispatchStarted;
+    if (error.outcomeUnknown === undefined) error.outcomeUnknown = dispatchStarted;
+    if (!error.providerDispatchStatus) error.providerDispatchStatus = dispatchStarted ? "outcome_unknown" : "not_dispatched";
     throw error;
+  } finally {
+    detachLifecycleHooks();
   }
 }
 
@@ -460,15 +540,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   if (blockedTool) {
     throw new Error(`${blockedTool.spec.toolId} did not pass the Jarvis worker tool gate: ${blockedTool.gate.reason || blockedTool.gate.decision || "blocked"}.`);
   }
-  const dispatchCall = recordLiveWorkerModelCall(db, task, null, approvedCapCents, requestBody.model, "dispatching", {
-    reservedCostCents: approvedCapCents,
-    provider: AGENTS_SDK_PROVIDER,
-    sdkRunner: true,
-    dispatchIntent: { status: "dispatched", recordedAt: now(), deadlineMs: capabilityPlan.deadlineMs },
-    tracePolicy,
-    capabilityPlan,
-    inputAssets,
-  });
+  let dispatchCall = null;
   let result;
   let traceId = null;
   try {
@@ -479,19 +551,58 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       resumeInterruptionCallId: resumeSelection?.callId || null,
       modelInput: modelInput.input,
       inputAssets,
+      beforeDispatch: ({ traceId: assignedTraceId }) => {
+        dispatchCall = recordLiveWorkerModelCall(db, task, null, approvedCapCents, requestBody.model, "dispatching", {
+          reservedCostCents: approvedCapCents,
+          provider: AGENTS_SDK_PROVIDER,
+          sdkRunner: true,
+          agentRunId: options.agentRunId || null,
+          taskAttemptId: options.taskClaim?.attemptId || null,
+          dispatchIntent: { status: "dispatched", recordedAt: now(), deadlineMs: capabilityPlan.deadlineMs },
+          agentSdkTraceId: assignedTraceId,
+          tracePolicy,
+          capabilityPlan,
+          inputAssets,
+        });
+        if (options.taskClaim) {
+          markTaskAttemptProviderDispatched(db, options.taskClaim, {
+            modelCallId: dispatchCall.id,
+            provider: AGENTS_SDK_PROVIDER,
+            model: requestBody.model,
+            traceId: assignedTraceId,
+          });
+        }
+        if (typeof options.onLifecycleEvent === "function") {
+          options.onLifecycleEvent({
+            type: "provider_dispatch",
+            title: "Contacting OpenAI",
+            detail: `${agentDefinition.name} sent the approved, capped request to OpenAI.`,
+            metadata: {
+              modelCallId: dispatchCall.id,
+              provider: AGENTS_SDK_PROVIDER,
+              model: requestBody.model,
+              traceId: assignedTraceId,
+            },
+          });
+        }
+      },
     });
     result = sdkRun.result;
     traceId = sdkRun.traceId;
   } catch (error) {
-    if (error.outcomeUnknown === undefined) error.outcomeUnknown = error.providerCallOccurred !== false;
-    if (error.providerCallOccurred === undefined) error.providerCallOccurred = error.outcomeUnknown === true;
+    const dispatched = Boolean(dispatchCall);
+    if (error.outcomeUnknown === undefined) error.outcomeUnknown = dispatched && error.providerCallOccurred !== false;
+    if (error.providerCallOccurred === undefined) error.providerCallOccurred = dispatched;
     if (!error.providerDispatchStatus) error.providerDispatchStatus = error.outcomeUnknown ? "outcome_unknown" : "not_dispatched";
     traceId = error.agentSdkTraceId || null;
+    error.agentRunId = options.agentRunId || null;
     recordLiveWorkerFailureCost(db, task, error);
     const failedCall = recordLiveWorkerModelCall(db, task, null, approvedCapCents, requestBody.model, "failed", {
-      modelCallId: dispatchCall.id,
+      modelCallId: dispatchCall?.id,
       provider: AGENTS_SDK_PROVIDER,
       sdkRunner: true,
+      agentRunId: options.agentRunId || null,
+      taskAttemptId: options.taskClaim?.attemptId || null,
       agentSdkTraceId: traceId,
       error: error.message,
       outcomeUnknown: error.outcomeUnknown === true,
@@ -539,6 +650,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     modelCallId: dispatchCall.id,
     provider: AGENTS_SDK_PROVIDER,
     sdkRunner: true,
+    agentRunId: options.agentRunId || null,
+    taskAttemptId: options.taskClaim?.attemptId || null,
     agentSdkTraceId: traceId,
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
     reservedCostCents: approvedCapCents,
@@ -553,6 +666,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     provider: AGENTS_SDK_PROVIDER,
     model: requestBody.model,
     modelCallId: providerCall.id,
+    agentRunId: options.agentRunId || null,
+    taskAttemptId: options.taskClaim?.attemptId || null,
     sdkRunner: true,
     agentSdkTraceId: traceId,
     approvedCapCents,
@@ -571,6 +686,15 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     incurredEstimateCents: estimateCents,
     deadlineMs: capabilityPlan.deadlineMs,
   };
+  const sdkResearch = persistAgentsSdkResearchEvidence(db, {
+    task,
+    runId: options.agentRunId,
+    attemptId: options.taskClaim?.attemptId || null,
+    modelCallId: providerCall.id,
+    responseId,
+    traceId,
+    toolActivity,
+  });
   try {
   const interruptions = sdkInterruptionDetails(result);
   if (interruptions.length) {
@@ -595,6 +719,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       tracePolicy,
       capabilityPlan,
       toolActivity,
+      sdkResearch,
       inputAssets,
       outcomeUnknown: false,
     });
@@ -710,6 +835,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     toolActivity,
     inputAssets,
     generatedAssets,
+    sdkResearch,
     reason: capabilityPlan.requestedTools.length
       ? "Live AI worker used only the exact approved SDK capability; no publishing, contact, account action, legal decision, or money movement was exposed."
       : "Live AI worker used the OpenAI Agents SDK runner after approval; no external tools or side effects were exposed.",
@@ -733,6 +859,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       tracePolicy,
       capabilityPlan,
       toolActivity,
+      sdkResearch,
       inputAssets,
       generatedAssets,
     },
@@ -774,6 +901,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       businessDecision: output.businessDecision,
       roleOutput: output.roleOutput,
       toolActivity,
+      sdkResearch,
       inputAssets,
       generatedAssets,
       pilotRecommendation: {
@@ -802,6 +930,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       tracePolicy,
       capabilityPlan,
       toolActivity,
+      sdkResearch,
       inputAssets,
       generatedAssets,
       toolInvocations: toolInvocations.map((item) => ({ id: item.gate.id, toolId: item.spec.toolId, sdkName: item.spec.sdkName })),

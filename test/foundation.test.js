@@ -39,7 +39,7 @@ const { runOnce } = require("../src/runtime/orchestrator");
 const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { recoverSetupBlockedTasks } = require("../src/runtime/spend-gate");
 const { createApp } = require("../src/server");
-const { getCockpitState, getSystemState } = require("../src/runtime/cockpit-state");
+const { getCockpitState, getDecisionsState, getSystemState } = require("../src/runtime/cockpit-state");
 const { commercialFoundationState, recordEvidence, setExperimentState } = require("../src/runtime/venture-case");
 const { all, get, openDatabase, run, seedDatabase, toJson } = require("../src/db");
 
@@ -265,7 +265,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -302,7 +302,7 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 11);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 12);
   } finally {
     closeRuntime(runtime);
   }
@@ -516,7 +516,9 @@ test("approvals expire, invalidate on scope changes, and can be consumed only on
     assert.equal(scoped.scope.fixtureHash, fixture.fixture_hash);
     assert.deepEqual(scoped.scope.tools, []);
     assert.deepEqual(scoped.scope.toolArguments, {});
-    assert.deepEqual(scoped.scope.parameters, {});
+    assert.equal(scoped.scope.parameters.modelRoute.tier, "sol");
+    assert.equal(scoped.scope.parameters.modelRoute.policyVersion, "2026-07-17.1");
+    assert.equal(scoped.scope.parameters.modelRoute.automaticFallbackAllowed, false);
     assert.deepEqual(scoped.scope.effects, []);
     assert.equal(scoped.scope.tracePolicy.providerResponseStored, true);
     assert.equal(scoped.scope.tracePolicy.providerTraceContent, true);
@@ -525,6 +527,17 @@ test("approvals expire, invalidate on scope changes, and can be consumed only on
     assert.equal(scoped.scope.maxTurns, 1);
     assert.equal(scoped.scope.maxOutputTokens, 1200);
     assert.equal(scoped.scope.maxCostCents, 100);
+    const decision = getDecisionsState(runtime.db).approvals.find((item) => item.id === approvalId);
+    assert.equal(decision.modelRoute.tier, "sol");
+    assert.equal(decision.model, "gpt-5.6-sol");
+    assert.equal(decision.pricedWorstCaseCostCents > 0, true);
+    assert.equal(decision.pricedWorstCaseCostCents <= decision.maxCostCents, true);
+    assert.deepEqual(decision.tools, []);
+    assert.deepEqual(decision.effects, []);
+    assert.equal(decision.maxTurns, 1);
+    assert.equal(decision.maxOutputTokens, 1200);
+    assert.equal(decision.assignment.question, fixture.question);
+    assert.equal(decision.assignment.evidenceCount, fixture.sources.length);
 
     run(runtime.db, "UPDATE approvals SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?", [approvalId]);
     assert.match(validateApprovalScope(runtime.db, approvalId).reason, /expired/i);

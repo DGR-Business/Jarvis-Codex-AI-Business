@@ -20,6 +20,7 @@ const { createResearchToExperimentPlanFromResearch } = require("./research-to-ex
 const { upsertDeliverableSection } = require("./deliverables");
 const { recordPilotRunReview } = require("./agent-pilot");
 const { prepareDemandInterestResearch } = require("./demand-interest-test");
+const { renewTaskClaim } = require("./task-claims");
 
 const AGENT_POLICIES = {
   goal_planning: {
@@ -763,7 +764,28 @@ function resumeExactSdkAgentRun(db, task, agentDefinition) {
   return { id: runId, agentId: agentDefinition.id, startedAt: existing.started_at, resumed: true };
 }
 
-async function runAgentTask(db, task) {
+function startTaskClaimHeartbeat(db, claim, agentRunId) {
+  if (!claim) return () => {};
+  const intervalMs = Math.max(2_000, Math.min(30_000, Math.floor(Number(claim.leaseMs || 600_000) / 3)));
+  const timer = setInterval(() => {
+    try {
+      renewTaskClaim(db, claim);
+    } catch (error) {
+      addAgentTrace(
+        db,
+        agentRunId,
+        "claim_heartbeat_warning",
+        "Worker lease update delayed",
+        "Jarvis could not refresh the local worker lease. The provider call will not be retried automatically if its outcome is uncertain.",
+        { error: error.message },
+      );
+    }
+  }, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+async function runAgentTask(db, task, options = {}) {
   const workflow = hydrateWorkflow(get(db, "SELECT * FROM workflows WHERE id = ?", [task.workflow_id]));
   const command = commandForWorkflow(db, task.workflow_id);
   const basePolicy = policyForTask(task);
@@ -825,7 +847,24 @@ async function runAgentTask(db, task) {
     });
 
     if (isLiveAiWorkerTask) {
-      const liveWorker = await runAgentRuntimeTask(db, task, agentDefinition, policy, { agentRunId: agentRun.id });
+      const stopHeartbeat = startTaskClaimHeartbeat(db, options.taskClaim, agentRun.id);
+      let liveWorker;
+      try {
+        liveWorker = await runAgentRuntimeTask(db, task, agentDefinition, policy, {
+          agentRunId: agentRun.id,
+          taskClaim: options.taskClaim || null,
+          onLifecycleEvent: (event) => addAgentTrace(
+            db,
+            agentRun.id,
+            event.type,
+            event.title,
+            event.detail,
+            event.metadata || {},
+          ),
+        });
+      } finally {
+        stopHeartbeat();
+      }
       providerReceipt = liveWorker.providerReceipt || null;
       addAgentTrace(
         db,
@@ -869,6 +908,13 @@ async function runAgentTask(db, task) {
       const evalResult = evaluateAgentOutput(db, agentDefinition, agentRun, task, output, {
         requiresApproval: humanReviewRequired,
         deliverables: touchedDeliverables,
+        research: liveWorker.raw.sdkResearch
+          ? {
+            mode: "live",
+            status: liveWorker.raw.sdkResearch.status,
+            sources: liveWorker.raw.sdkResearch.sources,
+          }
+          : null,
       });
       finishAgentRun(db, agentRun.id, {
         status: "completed",
@@ -892,6 +938,7 @@ async function runAgentTask(db, task) {
           tracePolicy: liveWorker.raw.tracePolicy,
           capabilityPlan: liveWorker.raw.capabilityPlan,
           toolActivity: liveWorker.raw.toolActivity,
+          sdkResearch: liveWorker.raw.sdkResearch || null,
           businessDecision: workerDecisionMetadata(output),
           outputContract: output.outputContract,
           toolPolicy: {

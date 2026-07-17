@@ -16,6 +16,7 @@ const { upsertWorkflowScorecard } = require("./scorecard");
 const { consumeApproval, validateApprovalScope } = require("./approval-scope");
 const { reserveBudget, resolveReservation } = require("./cost-ledger");
 const { claimNextTask, completeTaskClaim, releaseTaskClaim } = require("./task-claims");
+const { finalizeAgentExecutionReceipt } = require("./agent-execution-evidence");
 
 function hydrateTask(task) {
   if (!task) return null;
@@ -96,7 +97,7 @@ async function markBlocked(db, task, approval, metadata = {}) {
   return sendEscalation({ subject: approval.title }, { channels: ["dashboard", "email"], dryRun: CONFIG.dryRun });
 }
 
-async function executeTask(db, task) {
+async function executeTask(db, task, options = {}) {
   const workflow = hydrateWorkflow(get(db, "SELECT * FROM workflows WHERE id = ?", [task.workflow_id]));
   if (!workflow) throw new Error(`Workflow missing for task ${task.id}`);
 
@@ -142,7 +143,7 @@ async function executeTask(db, task) {
     return result;
   }
 
-  return runAgentTask(db, task);
+  return runAgentTask(db, task, { taskClaim: options.taskClaim || null });
 }
 
 function remainingWorkflowTasks(db, workflowId) {
@@ -339,7 +340,7 @@ async function runOnce(db, options = {}) {
     message: `${task.agent} started ${task.title}.`,
   });
 
-    const result = await executeTask(db, task);
+    const result = await executeTask(db, task, { taskClaim: claim });
     const done = now();
     const incurredEstimateCents = Number(
       result.incurredEstimateCents
@@ -539,6 +540,27 @@ async function runOnce(db, options = {}) {
       metadata: { retries, maxRetries: task.max_retries, workflowId: task.workflow_id, outcomeUnknown, providerCallOccurred, providerReceipt, incurredEstimateCents },
     });
     return { status, task, error: error.message, retries, providerReceipt };
+  } finally {
+    const completedAttempt = get(
+      db,
+      "SELECT completed_at FROM task_attempts WHERE id = ?",
+      [claim.attemptId],
+    );
+    if (completedAttempt?.completed_at) {
+      try {
+        finalizeAgentExecutionReceipt(db, { attemptId: claim.attemptId });
+      } catch (receiptError) {
+        insertEvent(db, {
+          level: "error",
+          actor: "orchestrator",
+          type: "agent_receipt.missing",
+          entityType: "task_attempt",
+          entityId: claim.attemptId,
+          message: "Jarvis could not finalize the local execution receipt. The monitor will keep this visible for developer review.",
+          metadata: { taskId: task.id, error: receiptError.message },
+        });
+      }
+    }
   }
 }
 

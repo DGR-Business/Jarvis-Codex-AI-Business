@@ -1,8 +1,32 @@
 const MODEL_PRICING_USD_PER_MILLION = {
+  "gpt-5.6-luna": {
+    input: 1,
+    cachedInput: 0.1,
+    output: 6,
+    maxInputTokens: 922000,
+    maxOutputTokens: 128000,
+    longContextThresholdTokens: 272000,
+    longContextInputMultiplier: 2,
+    longContextOutputMultiplier: 1.5,
+    source: "https://developers.openai.com/api/docs/pricing",
+    checkedAt: "2026-07-17",
+  },
   "gpt-5.6-terra": {
     input: 2.5,
     cachedInput: 0.25,
     output: 15,
+    maxInputTokens: 922000,
+    maxOutputTokens: 128000,
+    longContextThresholdTokens: 272000,
+    longContextInputMultiplier: 2,
+    longContextOutputMultiplier: 1.5,
+    source: "https://developers.openai.com/api/docs/pricing",
+    checkedAt: "2026-07-17",
+  },
+  "gpt-5.6-sol": {
+    input: 5,
+    cachedInput: 0.5,
+    output: 30,
     maxInputTokens: 922000,
     maxOutputTokens: 128000,
     longContextThresholdTokens: 272000,
@@ -25,6 +49,10 @@ const MODEL_PRICING_USD_PER_MILLION = {
   },
 };
 
+const MODEL_PRICING_ALIASES = {
+  "gpt-5.6": "gpt-5.6-sol",
+};
+
 const TOOL_PRICING_USD_PER_THOUSAND_CALLS = {
   web_search: {
     usd: 10,
@@ -42,8 +70,9 @@ function positiveNumber(value) {
 
 function modelPricing(model) {
   const name = String(model || "").trim();
-  if (MODEL_PRICING_USD_PER_MILLION[name]) {
-    return { model: name, pricingModel: name, pricing: MODEL_PRICING_USD_PER_MILLION[name] };
+  const directPricingModel = MODEL_PRICING_ALIASES[name] || name;
+  if (MODEL_PRICING_USD_PER_MILLION[directPricingModel]) {
+    return { model: name, pricingModel: directPricingModel, pricing: MODEL_PRICING_USD_PER_MILLION[directPricingModel] };
   }
   for (const pricingModel of Object.keys(MODEL_PRICING_USD_PER_MILLION).sort((a, b) => b.length - a.length)) {
     if (new RegExp(`^${pricingModel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d{4}-\\d{2}-\\d{2}$`).test(name)) {
@@ -196,6 +225,7 @@ function estimateModelUsageAud(model, usage = {}, options = {}) {
 
 module.exports = {
   CONSERVATIVE_AUD_PER_USD,
+  MODEL_PRICING_ALIASES,
   MODEL_PRICING_USD_PER_MILLION,
   TOOL_PRICING_USD_PER_THOUSAND_CALLS,
   estimateModelUsageAud,

@@ -9,6 +9,7 @@ const { getLiveResearchReadiness } = require("./live-research-readiness");
 const { getLatestDigest } = require("./executive-digest");
 const { getAccountingSummary } = require("./accounting-ledger");
 const { monthlyBudgetExposure } = require("./cost-ledger");
+const { latestAgentRunReceipt, verifyAgentRunReceiptChain } = require("./agent-execution-evidence");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -48,13 +49,23 @@ function operatorDeliverable(deliverable) {
 function pendingApprovals(db) {
   return all(db, "SELECT * FROM approvals WHERE status = 'pending' ORDER BY CASE risk_level WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, requested_at")
     .map((row) => {
-      const scoped = ensureApprovalScope(db, row.id).approval;
-      return { ...scoped, payload: fromJson(scoped.payload), expectedEffects: fromJson(scoped.expected_effects, []) };
+      const scoped = ensureApprovalScope(db, row.id);
+      return {
+        ...scoped.approval,
+        payload: fromJson(scoped.approval.payload),
+        expectedEffects: fromJson(scoped.approval.expected_effects, []),
+        taskPayload: fromJson(scoped.task?.payload, {}),
+        executionScope: scoped.scope,
+      };
     });
 }
 
 function decisionCard(approval) {
   const payload = approval.payload || {};
+  const liveRequest = approval.taskPayload?.liveSpendRequest || {};
+  const modelRoute = liveRequest.modelRoute || null;
+  const fixture = approval.taskPayload?.pilotFixture || null;
+  const scope = approval.executionScope || {};
   return {
     id: approval.id,
     type: "decision",
@@ -67,9 +78,25 @@ function decisionCard(approval) {
     recommendation: payload.reason || payload.commercialPurpose || "Review the evidence and choose whether this exact action should continue.",
     expectedUpside: payload.expectedMetric || payload.expectedUpside || "The expected benefit has not been quantified yet.",
     maxCostCents: Number(payload.estimatedCostCents || payload.maxCostCents || 0),
+    pricedWorstCaseCostCents: Number(
+      liveRequest.pricedWorstCaseCostCents
+      || liveRequest.executionDescriptor?.worstCaseCost?.amountCents
+      || 0,
+    ),
     provider: payload.provider || null,
+    model: liveRequest.model || scope.model || payload.model || null,
+    modelRoute,
     worker: payload.worker?.name || payload.requestedWorker || null,
     effects: approval.expectedEffects,
+    tools: scope.tools || liveRequest.tools || [],
+    maxTurns: Number(scope.maxTurns || liveRequest.maxTurns || 0),
+    maxOutputTokens: Number(scope.maxOutputTokens || liveRequest.maxOutputTokens || 0),
+    assignment: fixture ? {
+      question: fixture.question || null,
+      buyer: fixture.buyer || null,
+      hypothesis: fixture.hypothesis || null,
+      evidenceCount: Array.isArray(fixture.sources) ? fixture.sources.length : 0,
+    } : null,
     tracePolicy: payload.tracePolicy || null,
     actions: ["approve", "changes", "reject"],
   };
@@ -335,12 +362,14 @@ function getCockpitState(db) {
   const test = currentTest(db, commercial.venture.id);
   const queue = get(db, "SELECT COUNT(*) AS count FROM tasks WHERE status IN ('planned','queued','running')");
   const failed = get(db, "SELECT COUNT(*) AS count FROM tasks WHERE status IN ('failed','needs_attention')");
+  const activeRuns = getAgentRunsState(db, { state: "active", limit: 10 }).runs;
   return {
     generatedAt: new Date().toISOString(),
     activeVenture: commercial.venture,
     ventureCase: commercial.ventureCase,
     importantWork: work,
     currentTest: test,
+    activeRuns,
     nextMoneyMove: commercial.ventureCase.next_money_move,
     economics: commercial.economics,
     spend: spendState(db),
@@ -523,17 +552,19 @@ function observedToolsForRun(db, runId) {
   ).map((row) => ({ ...row, metadata: fromJson(row.metadata, {}) }));
 }
 
-function executionKindForRun(runRecord, modelCall, task, cost) {
+function executionKindForRun(runRecord, modelCall, task, cost, receipt) {
   const runMode = String(runRecord.mode || "").toLowerCase();
   const callMode = String(modelCall?.mode || "").toLowerCase();
   const callStatus = String(modelCall?.status || "").toLowerCase();
   const costMetadata = cost?.metadata || {};
+  const receiptAttempt = receipt?.receipt?.attempt || {};
   const providerEvidence = Boolean(
-    callMode === "live"
-    || modelCall?.provider_request_id
+    modelCall?.provider_request_id
     || modelCall?.metadata?.responseId
     || modelCall?.metadata?.agentSdkTraceId
     || fromJson(runRecord.metadata, {}).agentSdkTraceId
+    || modelCall?.metadata?.dispatchIntent?.status === "dispatched"
+    || receiptAttempt.providerDispatchedAt
     || Number(runRecord.actual_cost_cents || 0) > 0
     || Number(cost?.amount_cents || 0) > 0
   );
@@ -555,7 +586,8 @@ function runExecutionContext(db, runRecord, taskRow = null) {
   );
   const modelCall = modelCallForRun(db, runRecord);
   const cost = exactCostForRun(db, runRecord, task, modelCall);
-  const kind = executionKindForRun(runRecord, modelCall, task, cost);
+  const receipt = latestAgentRunReceipt(db, runRecord.id);
+  const kind = executionKindForRun(runRecord, modelCall, task, cost, receipt);
   const protectedRehearsal = kind === "protected_rehearsal";
   const liveRequest = task?.payload?.liveSpendRequest || {};
   const modelMetadata = modelCall?.metadata || {};
@@ -641,9 +673,10 @@ function runExecutionContext(db, runRecord, taskRow = null) {
     kind,
     protectedRehearsal,
     providerAttempted: !protectedRehearsal && Boolean(
-      modelCall?.mode === "live"
-      || responseId
+      responseId
       || traceId
+      || modelMetadata.dispatchIntent?.status === "dispatched"
+      || receipt?.receipt?.attempt?.providerDispatchedAt
       || Number(runRecord.actual_cost_cents || 0) > 0
       || Number(cost?.amount_cents || 0) > 0
     ),
@@ -662,6 +695,7 @@ function runExecutionContext(db, runRecord, taskRow = null) {
     traces,
     tools,
     research,
+    receipt,
   };
 }
 
@@ -680,6 +714,18 @@ function agentRunSummary(db, row) {
   const error = context.task?.error || context.runMetadata.error || (
     ["failed", "needs_attention"].includes(row.status) ? row.output_summary : null
   );
+  const providerState = context.kind === "protected_rehearsal"
+    ? "not_used"
+    : context.kind === "provider_outcome_unknown"
+      ? "outcome_unknown"
+      : context.responseId
+        ? "response_received"
+        : context.providerAttempted
+          ? "contacting_provider"
+          : "not_contacted";
+  const attentionRequired = context.kind === "provider_outcome_unknown"
+    || ["needs_attention", "failed"].includes(row.status)
+    || ["needs_review", "incomplete"].includes(context.receipt?.status);
   return {
     id: row.id,
     executionKind: context.kind,
@@ -687,6 +733,9 @@ function agentRunSummary(db, row) {
     providerAttempted: context.providerAttempted,
     status: row.status,
     active,
+    activityState: active ? "working" : attentionRequired ? "needs_review" : "finished",
+    providerState,
+    attentionRequired,
     workerId: row.agent_id,
     workerName: row.worker_name || row.agent_id,
     taskId: row.task_id,
@@ -701,6 +750,9 @@ function agentRunSummary(db, row) {
     completedAt: row.completed_at,
     durationMs: elapsedMilliseconds(row.started_at, row.completed_at),
     currentStage: latestTrace ? { title: latestTrace.title, detail: latestTrace.detail, at: latestTrace.ts } : null,
+    plainStage: latestTrace?.title || (active ? "Preparing work" : humanTaskStatus(row.status)),
+    lastProgressAt: latestTrace?.ts || row.completed_at || row.started_at,
+    resultAvailable: Boolean(context.receipt?.receipt?.task?.result || context.task?.result?.output),
     actualTokens: context.actualTokens,
     plannedTokens: context.plannedTokens,
     cost: {
@@ -717,6 +769,21 @@ function agentRunSummary(db, row) {
     },
     groundedSourceCount: context.research.sources.filter((source) => source.grounded).length,
     reviewStatus: context.review?.operator_verdict || context.evaluation?.status || "not_reviewed",
+    receipt: context.receipt ? {
+      id: context.receipt.id,
+      status: context.receipt.status,
+      hash: context.receipt.receipt_hash,
+      missingFields: context.receipt.missing_fields,
+      warnings: context.receipt.warnings,
+      createdAt: context.receipt.created_at,
+    } : {
+      id: null,
+      status: active ? "recording" : "missing",
+      hash: null,
+      missingFields: active ? [] : ["execution receipt"],
+      warnings: [],
+      createdAt: null,
+    },
     traceId: context.traceId,
     responseId: context.responseId,
     updatedAt: row.completed_at || latestTrace?.ts || row.started_at,
@@ -760,7 +827,7 @@ function getAgentRunsState(db, filters = {}) {
       active: summaries.filter((item) => item.active).length,
       modelBacked: summaries.filter((item) => item.executionKind === "model_backed").length,
       protectedRehearsals: summaries.filter((item) => item.executionKind === "protected_rehearsal").length,
-      needsReview: summaries.filter((item) => item.executionKind === "provider_outcome_unknown" || item.reviewStatus === "pending").length,
+      needsReview: summaries.filter((item) => item.attentionRequired || item.reviewStatus === "pending").length,
       reconciledCostCents: summaries.reduce((total, item) => total + Number(item.cost.reconciledCents || 0), 0),
     },
     totalMatching: matches.length,
@@ -823,6 +890,93 @@ function activityState(db) {
   )).map((event) => ({ ...event, message: humanActivityMessage(event) }));
 }
 
+function agentSystemChecks(db) {
+  const receiptRows = all(
+    db,
+    `SELECT receipts.*, agents.name AS worker_name, tasks.title AS task_title
+     FROM agent_run_receipts AS receipts
+     LEFT JOIN agent_runs AS runs ON runs.id = receipts.run_id
+     LEFT JOIN agent_definitions AS agents ON agents.id = runs.agent_id
+     LEFT JOIN tasks ON tasks.id = receipts.task_id
+     WHERE NOT EXISTS (
+       SELECT 1 FROM agent_run_receipts AS later
+       WHERE later.attempt_id = receipts.attempt_id
+         AND later.sequence > receipts.sequence
+     )
+       AND receipts.status IN ('needs_review', 'incomplete')
+     ORDER BY receipts.created_at DESC
+     LIMIT 50`,
+  ).map((row) => ({
+    id: row.id,
+    kind: "agent_receipt",
+    severity: row.status === "incomplete" ? "error" : "warning",
+    status: row.status,
+    title: row.status === "incomplete"
+      ? `Execution record incomplete: ${row.task_title || "AI work"}`
+      : `Execution needs review: ${row.task_title || "AI work"}`,
+    detail: [
+      ...fromJson(row.missing_fields, []),
+      ...fromJson(row.warnings, []),
+    ].join(" ") || "Jarvis retained the run and flagged it for review.",
+    workerName: row.worker_name || null,
+    runId: row.run_id,
+    taskId: row.task_id,
+    createdAt: row.created_at,
+  }));
+  const missingRows = all(
+    db,
+    `SELECT runs.id AS run_id, runs.task_id, runs.completed_at, agents.name AS worker_name,
+            tasks.title AS task_title
+     FROM agent_runs AS runs
+     LEFT JOIN agent_definitions AS agents ON agents.id = runs.agent_id
+     LEFT JOIN tasks ON tasks.id = runs.task_id
+     WHERE runs.completed_at IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM agent_run_receipts WHERE run_id = runs.id)
+     ORDER BY runs.completed_at DESC
+     LIMIT 50`,
+  ).map((row) => ({
+    id: `missing_${row.run_id}`,
+    kind: "missing_agent_receipt",
+    severity: "error",
+    status: "incomplete",
+    title: `Execution record missing: ${row.task_title || "AI work"}`,
+    detail: "The worker finished without an immutable local receipt. Jarvis will keep this visible until the record is repaired.",
+    workerName: row.worker_name || null,
+    runId: row.run_id,
+    taskId: row.task_id,
+    createdAt: row.completed_at,
+  }));
+  const items = [...missingRows, ...receiptRows].sort((left, right) => (
+    String(right.createdAt || "").localeCompare(String(left.createdAt || ""))
+  ));
+  const verification = verifyAgentRunReceiptChain(db);
+  if (!verification.ok) {
+    items.unshift({
+      id: "receipt_chain_failure",
+      kind: "receipt_chain_failure",
+      severity: "error",
+      status: "incomplete",
+      title: "Execution receipt verification failed",
+      detail: `${verification.failures.length} stored receipt check${verification.failures.length === 1 ? "" : "s"} did not match. Do not rely on the affected record until Jarvis repairs it.`,
+      workerName: null,
+      runId: null,
+      taskId: null,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  return {
+    status: items.some((item) => item.severity === "error")
+      ? "needs_attention"
+      : items.length
+        ? "review_recommended"
+        : "operating_normally",
+    openCount: items.length,
+    verifiedReceiptCount: verification.checked,
+    receiptChainVerified: verification.ok,
+    items: items.slice(0, 50),
+  };
+}
+
 function getSystemState(db) {
   return {
     health: {
@@ -859,6 +1013,7 @@ function getSystemState(db) {
       "SELECT * FROM deliverables ORDER BY CASE status WHEN 'archived' THEN 1 ELSE 0 END, updated_at DESC LIMIT 50",
     )).map(operatorDeliverable),
     activity: activityState(db),
+    checks: agentSystemChecks(db),
     weeklyDigest: getLatestDigest(db),
   };
 }
@@ -923,7 +1078,8 @@ function getAgentRunDetail(db, id) {
   ));
   const approvalId = task?.payload?.liveSpendRequest?.approvalId || null;
   const approval = approvalId ? get(db, "SELECT id, status, scope_hash, requested_at, decided_at, consumed_at FROM approvals WHERE id = ?", [approvalId]) : null;
-  const output = task?.result?.output || {};
+  const receiptResult = context.receipt?.receipt?.task?.result || null;
+  const output = receiptResult?.output || task?.result?.output || {};
   const recommendation = output.pilotRecommendation || {
     evidence: output.evidence || [],
     counterevidence: output.counterevidence || [],
@@ -1047,6 +1203,7 @@ function getAgentRunDetail(db, id) {
       requestedProvider: context.liveRequest.provider || modelCall?.provider || null,
       model: context.protectedRehearsal ? null : (modelCall?.selected_model || context.liveRequest.model || null),
       requestedModel: context.liveRequest.model || modelCall?.selected_model || null,
+      modelRoute: context.liveRequest.modelRoute || null,
       responseId: context.responseId,
       traceId: context.traceId,
       inputTokens: context.actualTokens.input,
@@ -1098,6 +1255,16 @@ function getAgentRunDetail(db, id) {
       criteria: evaluation.criteria,
       findings: evaluation.findings,
       evaluationId: evaluation.id,
+    } : null,
+    receipt: context.receipt ? {
+      id: context.receipt.id,
+      status: context.receipt.status,
+      outcomeStatus: context.receipt.outcome_status,
+      hash: context.receipt.receipt_hash,
+      previousHash: context.receipt.previous_hash,
+      missingFields: context.receipt.missing_fields,
+      warnings: context.receipt.warnings,
+      createdAt: context.receipt.created_at,
     } : null,
     developer: {
       fixtureId,

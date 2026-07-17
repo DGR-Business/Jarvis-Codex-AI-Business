@@ -4,6 +4,19 @@
 project_doc_max_bytes = 65536
 project_doc_fallback_filenames = ["AGENTS.md"]
 
-# MCP/tooling should be added only when a workflow has a concrete need and a
-# safe dry-run or read-only mode. Recommended candidates are documented in
-# docs/plans/CODEX-RUNTIME-ARCHITECTURE-2026-07-04.md.
+# Codex collaboration is shallow and bounded for this project. This is an
+# engineering-thread ceiling, not the Jarvis business-worker roster, provider
+# concurrency, or permission to start live work.
+[features]
+multi_agent = true
+
+[agents]
+max_threads = 11
+max_depth = 1
+interrupt_message = true
+
+# Do not pin a project model here. Luna/Terra/Sol business-worker routing is an
+# implementation-gated Jarvis policy documented in the active operations plan.
+# MCP/tooling should be added only for a concrete workflow with a safe dry-run
+# or read-only mode. See:
+# docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md

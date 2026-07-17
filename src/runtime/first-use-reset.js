@@ -83,6 +83,8 @@ const EMPTY_OPERATIONAL_TABLES = Object.freeze([
   "revenue",
   "work_packages",
   "venture_scorecards",
+  "agent_run_receipts",
+  "agent_run_provenance",
   "agent_runs",
   "agent_trace_events",
   "agent_eval_results",

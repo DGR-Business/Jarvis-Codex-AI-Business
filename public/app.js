@@ -6,12 +6,13 @@ const store = {
   decisionTab: "approvals",
   testTab: "candidate",
   aiTeamTab: "team",
-  runFilter: "live",
+  runFilter: "all",
   systemTab: "health",
   showArchivedOutputs: false,
   reloadTimer: null,
   runPollTimer: null,
   runPollBusy: false,
+  runRequestActive: false,
   drawerState: null,
   drawerReturnFocus: null,
   pdfReturnFocus: null,
@@ -84,6 +85,11 @@ function humanStatus(value) {
     not_reviewed: "Not reviewed",
     passed: "Passed",
     useful: "Useful",
+    recording: "Recording evidence",
+    incomplete: "Record incomplete",
+    complete: "Evidence complete",
+    review_recommended: "Review recommended",
+    operating_normally: "Operating normally",
   };
   return labels[key] || key.replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
@@ -294,6 +300,7 @@ function renderCockpit() {
   $("#view").innerHTML = `<div class="view-stack">
     ${renderCommandBand(data)}
     ${renderImportantWork(data.importantWork)}
+    ${data.activeRuns?.length ? `<section class="active-run-strip">${sectionHeading("AI working now", "A genuine worker is running. Open the record to follow its plain-language progress.")}${data.activeRuns.map(renderAgentRunRow).join("")}</section>` : ""}
     <section>
       ${sectionHeading("Business position", "One venture, one active commercial path, measured by real buyer results.")}
       <div class="metric-grid">
@@ -417,7 +424,11 @@ function aiTeamTabs() {
 function filteredAgentRuns(state) {
   const runs = state?.runs || [];
   if (store.runFilter === "all") return runs;
-  if (store.runFilter === "live") return runs.filter((run) => run.executionKind !== "protected_rehearsal");
+  if (store.runFilter === "running") return runs.filter((run) => run.active);
+  if (store.runFilter === "review") return runs.filter((run) => run.attentionRequired);
+  if (store.runFilter === "completed") {
+    return runs.filter((run) => !run.active && !run.attentionRequired && run.executionKind !== "protected_rehearsal");
+  }
   return runs.filter((run) => run.executionKind === store.runFilter);
 }
 
@@ -435,7 +446,14 @@ function renderAgentRunRow(run) {
   return `<button class="run-row${selected ? " selected" : ""}" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(run.id)}" aria-current="${selected ? "true" : "false"}">
     <span class="run-kind-icon ${escapeHtml(run.executionKind)}">${icon(protectedRun ? "shield-check" : run.executionKind === "provider_outcome_unknown" ? "triangle-alert" : run.active ? "loader-circle" : "sparkles")}</span>
     <span class="run-main"><span class="run-title-line"><strong>${escapeHtml(run.taskTitle)}</strong>${badge(run.executionKind)}</span><small>${escapeHtml(run.workerName)} · ${escapeHtml(dateTime(run.startedAt))}</small>${run.currentStage && run.active ? `<em>${escapeHtml(run.currentStage.title)}</em>` : ""}</span>
-    <span class="run-facts"><span>${badge(run.status)}</span><small>${escapeHtml(actualTokens)}</small><small>${escapeHtml(cost)}</small></span>
+    <span class="run-facts"><span>${badge(run.status)} ${badge(
+      run.receipt?.status === "complete"
+        ? "Evidence complete"
+        : run.receipt?.status === "recording"
+          ? "Recording evidence"
+          : "Review record",
+      run.receipt?.status === "complete" ? "mint" : run.receipt?.status === "recording" ? "sky" : "amber",
+    )}</span><small>${escapeHtml(actualTokens)}</small><small>${escapeHtml(cost)}</small></span>
     ${icon("chevron-right")}
   </button>`;
 }
@@ -446,9 +464,9 @@ function renderLiveRuns(data) {
   const runs = filteredAgentRuns(state);
   const activeRuns = (state.runs || []).filter((run) => run.active && run.executionKind !== "protected_rehearsal");
   const filters = [
-    ["live", "OpenAI runs"],
-    ["model_backed", "Completed normally"],
-    ["provider_outcome_unknown", "Needs review"],
+    ["running", "Running"],
+    ["review", "Needs your review"],
+    ["completed", "Completed"],
     ["protected_rehearsal", "Internal rehearsals"],
     ["all", "All records"],
   ];
@@ -464,8 +482,8 @@ function renderLiveRuns(data) {
       ${sectionHeading("Run history", "See what genuinely used OpenAI, what stayed internal, and what requires reconciliation.")}
       <div class="run-filters" role="group" aria-label="Filter AI runs">${filters.map(([id, label]) => `<button class="${store.runFilter === id ? "active" : ""}" data-action="run-filter" data-filter="${id}">${escapeHtml(label)}</button>`).join("")}</div>
       <div class="run-list">${runs.length ? runs.map(renderAgentRunRow).join("") : emptyState(
-        store.runFilter === "live" ? "No live AI runs yet" : "No runs match this view",
-        store.runFilter === "live" ? "A genuine OpenAI worker run will appear here as soon as execution starts." : "Choose another run view to inspect the available records.",
+        store.runFilter === "running" ? "No AI work is running" : "No runs match this view",
+        store.runFilter === "running" ? "Genuine AI work will appear here while it is in progress." : "Choose another run view to inspect the available records.",
         "activity",
       )}</div>
     </section>
@@ -487,7 +505,7 @@ function renderAiTeam() {
 }
 
 function systemTabs() {
-  const tabs = [["health", "Health"], ["queue", "Queue"], ["spend", "Spend"], ["connections", "Connections"], ["outputs", "Outputs"], ["activity", "Activity"]];
+  const tabs = [["health", "Health"], ["checks", "Checks"], ["queue", "Queue"], ["spend", "Spend"], ["connections", "Connections"], ["outputs", "Outputs"], ["activity", "Activity"]];
   return `<div class="view-tabs">${tabs.map(([id, label]) => `<button class="${store.systemTab === id ? "active" : ""}" data-action="system-tab" data-tab="${id}">${label}</button>`).join("")}</div>`;
 }
 
@@ -504,6 +522,15 @@ function renderSystemPanel(data) {
       <article class="item-card"><header><h3>AI worker connection</h3>${badge(ai.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(ai.ready ? "OpenAI workers can run from this dashboard when their exact capped task is approved." : compact(ai.blockers?.join(" ") || "Credentials and live permission are not configured."))}</p></article>
       <article class="item-card"><header><h3>Live research</h3>${badge(research.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(research.ready ? "Read-only sourced research can run from this dashboard after its exact cost approval." : compact(research.blockers?.join(" ") || "The research connection is not configured."))}</p></article>
       <article class="item-card"><header><h3>External actions</h3>${badge("Your approval required", "mint")}</header><p>Publishing, customer contact, account changes and spend still require your explicit decision.</p></article>
+    </div>`;
+  }
+  if (store.systemTab === "checks") {
+    const checks = data.checks || { status: "operating_normally", openCount: 0, items: [] };
+    return `<div class="view-stack">
+      <section>${sectionHeading("System checks", "Jarvis verifies that genuine AI work left a complete local record and did not hide an uncertain outcome.")}
+        <div class="metric-grid"><div class="metric ${checks.openCount ? "amber" : "mint"}"><span>Current status</span><strong>${escapeHtml(humanStatus(checks.status))}</strong><small>${checks.openCount ? `${checks.openCount} item${checks.openCount === 1 ? "" : "s"} to review` : "No unresolved execution-record issues"}</small></div><div class="metric sky"><span>Receipts verified</span><strong>${Number(checks.verifiedReceiptCount || 0)}</strong><small>${checks.receiptChainVerified ? "Integrity checks passed" : "Integrity review required"}</small></div></div>
+      </section>
+      <section>${checks.items?.length ? `<div class="plain-list">${checks.items.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.detail)}</p>${item.workerName ? `<small>${escapeHtml(item.workerName)}</small>` : ""}</div>${item.runId ? `<button class="secondary-button" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(item.runId)}">${icon("file-search")}Review</button>` : badge(item.status)}</article>`).join("")}</div>` : emptyState("All execution records are complete", "Jarvis found no missing receipts, uncertain provider outcomes or broken evidence links.", "shield-check")}</section>
     </div>`;
   }
   if (store.systemTab === "queue") {
@@ -556,9 +583,18 @@ function renderView() {
 }
 
 async function refreshLiveRuns() {
-  if (store.runPollBusy || store.view !== "ai-team" || store.aiTeamTab !== "runs") return;
+  if (store.runPollBusy) return;
   store.runPollBusy = true;
   try {
+    if (store.view === "cockpit") {
+      store.data.cockpit = await fetchJson("/api/cockpit");
+      if (store.view === "cockpit") {
+        renderCockpit();
+        refreshIcons();
+      }
+      return;
+    }
+    if (store.view !== "ai-team" || store.aiTeamTab !== "runs") return;
     const liveRuns = await fetchJson("/api/agent-runs?limit=100");
     store.data["ai-team"] = { ...(store.data["ai-team"] || {}), liveRuns };
     if (store.view !== "ai-team" || store.aiTeamTab !== "runs") return;
@@ -574,7 +610,10 @@ async function refreshLiveRuns() {
 }
 
 function syncLiveRunPolling() {
-  const shouldPoll = store.view === "ai-team" && store.aiTeamTab === "runs";
+  const cockpitHasActiveRun = store.view === "cockpit" && Boolean(store.data.cockpit?.activeRuns?.length);
+  const shouldPoll = store.runRequestActive
+    || cockpitHasActiveRun
+    || (store.view === "ai-team" && store.aiTeamTab === "runs");
   if (!shouldPoll && store.runPollTimer) {
     clearInterval(store.runPollTimer);
     store.runPollTimer = null;
@@ -583,6 +622,17 @@ function syncLiveRunPolling() {
     store.runPollTimer = setInterval(() => refreshLiveRuns().catch((error) => {
       if (error.status !== 401) setConnection(false, "Reconnecting");
     }), 2500);
+  }
+}
+
+async function withRunPolling(operation) {
+  store.runRequestActive = true;
+  syncLiveRunPolling();
+  try {
+    return await operation();
+  } finally {
+    store.runRequestActive = false;
+    syncLiveRunPolling();
   }
 }
 
@@ -682,6 +732,7 @@ function reviewCriteria(criteria = {}) {
 function runReviewBody(data) {
   const process = data.process;
   const execution = data.execution;
+  const receipt = data.receipt;
   const protectedRun = execution.kind === "protected_rehearsal";
   const unknownOutcome = execution.kind === "provider_outcome_unknown";
   const visibility = execution.tracePolicy || {};
@@ -735,19 +786,26 @@ function runReviewBody(data) {
   const errorSection = data.run.error || execution.error
     ? detailSection("What went wrong", `<div class="error-callout"><strong>${unknownOutcome ? "Provider outcome needs review" : "Run failed"}</strong><p>${escapeHtml(data.run.error || execution.error)}</p></div>`)
     : "";
+  const receiptSection = receipt
+    ? detailSection("Local execution record", `<div class="review-check"><span>${receipt.status === "complete" ? "Inputs, result, provider evidence, cost state and quality check were captured." : "Jarvis found an issue in the stored execution evidence."}</span>${badge(
+      receipt.status === "complete" ? "Evidence complete" : receipt.status === "paused" ? "Paused safely" : "Review needed",
+      receipt.status === "complete" ? "mint" : receipt.status === "paused" ? "sky" : "amber",
+    )}</div>${receipt.missingFields?.length ? `<h4>Missing record details</h4>${detailList(receipt.missingFields)}` : ""}${receipt.warnings?.length ? `<h4>Review notes</h4>${detailList(receipt.warnings)}` : ""}`)
+    : detailSection("Local execution record", `<div class="error-callout"><strong>${data.run.status === "running" ? "Evidence is being recorded" : "Execution record not finalized"}</strong><p>${data.run.status === "running" ? "Jarvis will seal the local receipt when this run finishes." : "The system monitor will keep this visible until the record is complete."}</p></div>`);
 
   return [
     `<div class="process-note"><strong>Readable process record</strong><p>${escapeHtml(process.explanation)}</p></div>`,
     errorSection,
+    receiptSection,
     detailSection("Assignment", `<div class="detail-grid"><div><span>Question</span><strong>${escapeHtml(process.question)}</strong></div><div><span>Buyer</span><strong>${escapeHtml(process.buyer)}</strong></div></div><p><strong>Hypothesis:</strong> ${escapeHtml(process.hypothesis)}</p>`),
     detailSection("Evidence reviewed", suppliedEvidence),
     detailSection("How the judgement was formed", `<h4>Evidence supporting action</h4>${detailList(process.supportingEvidence)}<h4>Evidence against or still missing</h4>${detailList(process.counterevidence)}<h4>Assumptions</h4>${detailList(process.assumptions)}`),
     detailSection("Recommendation", `<p>${escapeHtml(process.conclusion)}</p><div class="review-facts"><div><span>Price and channel hypothesis</span><strong>${escapeHtml(process.priceChannelHypothesis)}</strong></div><div><span>Smallest proposed test</span><strong>${escapeHtml(process.smallestTest)}</strong></div><div><span>Success measure</span><strong>${escapeHtml(process.metric)}</strong></div><div><span>Stop rule</span><strong>${escapeHtml(process.stopRule)}</strong></div></div><p><strong>Confidence:</strong> ${escapeHtml(humanStatus(process.confidence))}<br><strong>Next action:</strong> ${escapeHtml(process.nextAction)}</p><h4>Risks</h4>${detailList(process.risks)}`),
     detailSection("Quality checks", `${reviewCriteria(data.review?.criteria || {})}<p>Runtime evaluation: ${escapeHtml(String(data.quality?.score ?? "Not scored"))}${data.quality?.score !== undefined ? "/100" : ""}.</p>`),
-    detailSection("Execution facts", `<div class="review-facts"><div><span>Execution</span><strong>${escapeHtml(execution.label)}</strong></div><div><span>Status</span><strong>${escapeHtml(humanStatus(data.run.status))}</strong></div><div><span>Provider</span><strong>${escapeHtml(execution.provider || (protectedRun ? "No provider used" : execution.requestedProvider || "Not captured"))}</strong></div><div><span>Model</span><strong>${escapeHtml(execution.model || (protectedRun ? "No model called" : execution.requestedModel || "Not captured"))}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Actual tokens</span><strong>${escapeHtml(actualTokens)}</strong></div><div><span>Planned limits</span><strong>${escapeHtml(plannedTokens)}</strong></div><div><span>Provider cost</span><strong>${escapeHtml(providerCost)}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div></div><p>${escapeHtml(providerVisibility)}</p>${handoffs.length ? `<h4>Runtime handoff after completion</h4>${detailList(handoffs)}` : ""}`),
+    detailSection("Execution facts", `<div class="review-facts"><div><span>Execution</span><strong>${escapeHtml(execution.label)}</strong></div><div><span>Status</span><strong>${escapeHtml(humanStatus(data.run.status))}</strong></div><div><span>Provider</span><strong>${escapeHtml(execution.provider || (protectedRun ? "No provider used" : execution.requestedProvider || "Not captured"))}</strong></div><div><span>Model</span><strong>${escapeHtml(execution.modelRoute?.label || execution.model || (protectedRun ? "No model called" : execution.requestedModel || "Not captured"))}</strong></div><div><span>Why this model</span><strong>${escapeHtml(execution.modelRoute?.reason || (protectedRun ? "Internal rehearsal" : "Not captured"))}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Actual tokens</span><strong>${escapeHtml(actualTokens)}</strong></div><div><span>Planned limits</span><strong>${escapeHtml(plannedTokens)}</strong></div><div><span>Provider cost</span><strong>${escapeHtml(providerCost)}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div></div><p>${escapeHtml(providerVisibility)}</p>${handoffs.length ? `<h4>Runtime handoff after completion</h4>${detailList(handoffs)}` : ""}`),
     detailSection("Tools and sources", `<h4>Tools approved for the run</h4>${requestedTools}<h4>Tool activity Jarvis observed</h4>${observedTools}<h4>Research sources</h4>${sources}`),
     providerIds,
-    detailSection("Local runtime timeline", `${traceEvents}<div class="technical-ids"><span>Run ID</span><code>${escapeHtml(data.run.id)}</code><span>Local model record</span><code>${escapeHtml(data.developer.modelCallId || "Not captured")}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || "Not captured")}</code></div>`),
+    detailSection("Local runtime timeline", `${traceEvents}<div class="technical-ids"><span>Run ID</span><code>${escapeHtml(data.run.id)}</code><span>Local model record</span><code>${escapeHtml(data.developer.modelCallId || "Not captured")}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || "Not captured")}</code><span>Receipt fingerprint</span><code>${escapeHtml(receipt?.hash || (data.run.status === "running" ? "Recording" : "Not captured"))}</code></div>`),
     detailSection("Your verdict", verdictControls),
   ].join("");
 }
@@ -788,10 +846,22 @@ async function showDetail(kind, id, options = {}) {
   }
   if (kind === "decision") {
     const item = await fetchJson(`/api/decisions/${encodeURIComponent(id)}`);
+    const assignment = item.assignment
+      ? detailSection("Assignment", `<p><strong>Question:</strong> ${escapeHtml(item.assignment.question || "Not stated")}<br><strong>Buyer:</strong> ${escapeHtml(item.assignment.buyer || "Not stated")}<br><strong>Hypothesis:</strong> ${escapeHtml(item.assignment.hypothesis || "Not stated")}<br><strong>Supplied evidence:</strong> ${escapeHtml(String(item.assignment.evidenceCount || 0))} item${Number(item.assignment.evidenceCount || 0) === 1 ? "" : "s"}</p>`)
+      : "";
+    const route = item.modelRoute;
+    const execution = item.model || item.tools?.length || item.maxTurns
+      ? detailSection("Execution", `<div class="review-facts"><div><span>Worker</span><strong>${escapeHtml(item.worker || "Not stated")}</strong></div><div><span>Model</span><strong>${escapeHtml(route?.label || item.model || "Not stated")}</strong></div><div><span>Why this model</span><strong>${escapeHtml(route?.reason || "Selected before approval for this exact task.")}</strong></div><div><span>Provider tools</span><strong>${item.tools?.length ? escapeHtml(item.tools.join(", ")) : "None"}</strong></div><div><span>Turns</span><strong>${escapeHtml(String(item.maxTurns || "Not stated"))}</strong></div><div><span>Output limit</span><strong>${item.maxOutputTokens ? `${escapeHtml(String(item.maxOutputTokens))} tokens` : "Not stated"}</strong></div></div>`)
+      : "";
+    const pricedBound = item.pricedWorstCaseCostCents
+      ? `<br>Current priced upper-bound estimate: ${money(item.pricedWorstCaseCostCents)}. Actual provider usage is reconciled after the run.`
+      : "";
     openDrawer(item.title, "Decision", [
       detailSection("Recommendation", `<p>${escapeHtml(item.recommendation)}</p>`),
       detailSection("Expected result", `<p>${escapeHtml(item.expectedUpside)}</p>`),
-      detailSection("Boundaries", `<p>Maximum approved cost: ${money(item.maxCostCents)}.<br>Risk: ${escapeHtml(humanStatus(item.risk))}.<br>This decision applies only to the exact work shown here.${item.tracePolicy?.providerTraceContent ? " Provider trace input and output will be available for this approved non-personal run." : ""}</p>`),
+      assignment,
+      execution,
+      detailSection("Boundaries", `<p>Hard maximum cost: ${money(item.maxCostCents)}.${pricedBound}<br>Risk: ${escapeHtml(humanStatus(item.risk))}.<br>External actions: ${item.effects?.length ? escapeHtml(item.effects.join(", ")) : "None"}.<br>This decision applies only to the exact work shown here. The model cannot switch automatically after approval.${item.tracePolicy?.providerTraceContent ? " Provider trace input and output will be available for this approved non-personal run." : ""}</p>`),
       detailSection("Your decision", approvalButtons(item)),
     ].join(""), { state: { kind, id }, preserveFocus: options.preserveFocus });
     return;
@@ -852,10 +922,10 @@ async function handleAction(button) {
   if (action === "open-pdf") return openPdf(button.dataset.id, button.dataset.title);
   if (action === "approval") {
     const decisionLabels = { approve: "approved", changes: "changes requested", reject: "declined" };
-    const payload = await postJson(`/api/approvals/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`, {
+    const payload = await withRunPolling(() => postJson(`/api/approvals/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`, {
       scopeHash: button.dataset.scopeHash,
       note: `Dashboard decision: ${decisionLabels[button.dataset.decision]}.`,
-    });
+    }));
     closeDrawer();
     const execution = payload.execution;
     toast(execution?.status === "completed"
@@ -867,9 +937,9 @@ async function handleAction(button) {
   }
   if (action === "handoff-decision") {
     const decisionLabels = { approve: "approved", changes: "changes requested", reject: "declined" };
-    const payload = await postJson(`/api/agent-handoffs/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`, {
+    const payload = await withRunPolling(() => postJson(`/api/agent-handoffs/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`, {
       note: `Dashboard decision: ${decisionLabels[button.dataset.decision]}.`,
-    });
+    }));
     closeDrawer();
     toast(payload.execution?.status === "completed"
       ? "Approved. The Chief of Staff completed the next internal step."
@@ -879,12 +949,12 @@ async function handleAction(button) {
   if (action === "submit-command") {
     const text = $("#command-text")?.value.trim();
     if (!text) throw new Error("Enter a business instruction first.");
-    await postJson("/api/commands", {
+    await withRunPolling(() => postJson("/api/commands", {
       text,
       venture_id: button.dataset.ventureId,
       mode: store.commandMode,
       autoRun: store.commandMode === "run_protected",
-    });
+    }));
     toast(store.commandMode === "run_protected" ? "Internal work prepared and started." : "Work plan prepared.");
     return loadView("cockpit", { silent: true });
   }
@@ -894,12 +964,12 @@ async function handleAction(button) {
     return loadView("system", { silent: true });
   }
   if (action === "run-next") {
-    const result = await postJson("/api/runtime/tick", {});
+    const result = await withRunPolling(() => postJson("/api/runtime/tick", {}));
     toast(result.result?.message || `Internal work: ${humanStatus(result.result?.status || "complete")}.`);
     return loadView("system", { silent: true });
   }
   if (action === "run-task") {
-    const payload = await postJson(`/api/tasks/${encodeURIComponent(button.dataset.id)}/run`, {});
+    const payload = await withRunPolling(() => postJson(`/api/tasks/${encodeURIComponent(button.dataset.id)}/run`, {}));
     toast(payload.result?.status === "completed"
       ? "That work item completed."
       : payload.result?.message || `Work item: ${humanStatus(payload.result?.status || "complete")}.`);

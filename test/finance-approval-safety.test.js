@@ -19,6 +19,7 @@ const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { getLiveAiWorkerReadiness } = require("../src/runtime/live-ai-worker-readiness");
 const { requestLiveResearch } = require("../src/runtime/live-research");
 const { worstCaseExecutionCostAud } = require("../src/runtime/model-pricing");
+const { selectModelRoute } = require("../src/runtime/model-routing");
 const { collectFindings } = require("../src/runtime/monitor");
 const { createCommandPlan } = require("../src/runtime/planner");
 const { getSpendApprovalState } = require("../src/runtime/spend-gate");
@@ -195,6 +196,24 @@ test("worst-case pricing rejects unknown models and prices bounded tools", () =>
   assert.ok(webSearch.amountCents > 200);
 });
 
+test("model routing selects Luna, Terra, and Sol before approval without automatic fallback", () => {
+  const luna = selectModelRoute({ modelClass: "fast-general" });
+  const terra = selectModelRoute({ modelClass: "reasoning-medium" });
+  const sol = selectModelRoute({ modelClass: "research-high" });
+  const escalated = selectModelRoute({ modelClass: "reasoning-medium", qualityEscalation: true });
+
+  assert.equal(luna.model, "gpt-5.6-luna");
+  assert.equal(luna.tier, "luna");
+  assert.equal(terra.model, "gpt-5.6-terra");
+  assert.equal(terra.tier, "terra");
+  assert.equal(sol.model, "gpt-5.6-sol");
+  assert.equal(sol.tier, "sol");
+  assert.equal(escalated.model, "gpt-5.6-sol");
+  assert.equal(escalated.tier, "sol");
+  assert.equal(escalated.automaticFallbackAllowed, false);
+  assert.equal(escalated.selectedBeforeApproval, true);
+});
+
 test("worker approval persists one descriptor and invalidates changed business input without read writes", () => {
   const runtime = runtimeDb("worker-descriptor");
   const previousRate = process.env.JARVIS_API_CREDIT_AUD_PER_USD;
@@ -230,6 +249,9 @@ test("worker approval persists one descriptor and invalidates changed business i
     assert.equal(descriptor.kind, "live_ai_worker");
     assert.equal(descriptor.provider, "openai-agents-sdk");
     assert.equal(descriptor.model, "gpt-5.6-terra");
+    assert.equal(payload.liveSpendRequest.modelRoute.tier, "terra");
+    assert.equal(descriptor.parameters.modelRoute.tier, "terra");
+    assert.equal(descriptor.parameters.modelRoute.automaticFallbackAllowed, false);
     assert.ok(descriptor.materializedInputHash);
     assert.ok(descriptor.worstCaseCost.amountCents <= 100);
     const { descriptorHash: ignoredHash, ...tamperedBody } = descriptor;

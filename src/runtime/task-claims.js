@@ -32,6 +32,8 @@ function attemptMayHaveReachedProvider(attempt) {
   const metadata = fromJson(attempt.metadata, {});
   return Boolean(
     attempt.provider_request_id
+      || attempt.provider_dispatched_at
+      || attempt.provider_dispatch_model_call_id
       || ["provider_dispatched", "unknown", "known"].includes(attempt.outcome_status)
       || metadata.providerCallOccurred === true
       || metadata.dispatchIntent?.status === "dispatched"
@@ -211,9 +213,62 @@ function renewTaskClaim(db, claim, options = {}) {
   });
 }
 
+function markTaskAttemptProviderDispatched(db, claim, options = {}) {
+  const dispatchedAt = options.dispatchedAt || now();
+  return withSavepoint(db, "mark_provider_dispatch", () => {
+    const attempt = get(
+      db,
+      "SELECT metadata FROM task_attempts WHERE id = ? AND claim_token = ?",
+      [claim.attemptId, claim.claimToken],
+    );
+    if (!attempt) throw new Error(`Task attempt was lost before provider dispatch: ${claim.attemptId}`);
+    const metadata = {
+      ...fromJson(attempt.metadata, {}),
+      providerCallOccurred: true,
+      dispatchIntent: {
+        status: "dispatched",
+        recordedAt: dispatchedAt,
+        modelCallId: options.modelCallId || null,
+        provider: options.provider || null,
+        model: options.model || null,
+        traceId: options.traceId || null,
+      },
+    };
+    const taskUpdate = run(
+      db,
+      `UPDATE tasks
+       SET outcome_status = 'provider_dispatched', claimed_at = ?, updated_at = ?
+       WHERE id = ? AND claim_token = ? AND status = 'running'`,
+      [dispatchedAt, dispatchedAt, claim.task.id, claim.claimToken],
+    );
+    if (taskUpdate.changes !== 1) throw new Error(`Task claim was lost before provider dispatch: ${claim.task.id}`);
+    const attemptUpdate = run(
+      db,
+      `UPDATE task_attempts
+       SET outcome_status = 'provider_dispatched', provider_dispatched_at = ?,
+           provider_dispatch_model_call_id = ?, metadata = ?
+       WHERE id = ? AND claim_token = ? AND status = 'running'`,
+      [
+        dispatchedAt,
+        options.modelCallId || null,
+        toJson(metadata),
+        claim.attemptId,
+        claim.claimToken,
+      ],
+    );
+    if (attemptUpdate.changes !== 1) throw new Error(`Task attempt was lost before provider dispatch: ${claim.attemptId}`);
+    return { dispatchedAt, modelCallId: options.modelCallId || null };
+  });
+}
+
 function releaseTaskClaim(db, claim, status, options = {}) {
   return withSavepoint(db, "release_task_claim", () => {
     const resolvedAt = now();
+    const currentAttempt = get(
+      db,
+      "SELECT metadata FROM task_attempts WHERE id = ? AND claim_token = ?",
+      [claim.attemptId, claim.claimToken],
+    );
     const result = run(
       db,
       `UPDATE tasks
@@ -236,7 +291,7 @@ function releaseTaskClaim(db, claim, status, options = {}) {
         options.errorKind || null,
         options.error || null,
         resolvedAt,
-        toJson(options.metadata),
+        toJson({ ...fromJson(currentAttempt?.metadata, {}), ...(options.metadata || {}) }),
         claim.attemptId,
         claim.claimToken,
       ],
@@ -249,6 +304,11 @@ function releaseTaskClaim(db, claim, status, options = {}) {
 function completeTaskClaim(db, claim, options = {}) {
   return withSavepoint(db, "complete_task_claim", () => {
     const completedAt = options.completedAt || now();
+    const currentAttempt = get(
+      db,
+      "SELECT metadata FROM task_attempts WHERE id = ? AND claim_token = ?",
+      [claim.attemptId, claim.claimToken],
+    );
     const result = run(
       db,
       `UPDATE tasks
@@ -280,7 +340,7 @@ function completeTaskClaim(db, claim, options = {}) {
         options.errorKind || null,
         options.error || null,
         completedAt,
-        toJson(options.metadata),
+        toJson({ ...fromJson(currentAttempt?.metadata, {}), ...(options.metadata || {}) }),
         claim.attemptId,
         claim.claimToken,
       ],
@@ -295,6 +355,7 @@ module.exports = {
   RUNNABLE_WORKFLOW_STATUSES,
   claimNextTask,
   completeTaskClaim,
+  markTaskAttemptProviderDispatched,
   recoverStaleTaskClaims,
   releaseTaskClaim,
   renewTaskClaim,

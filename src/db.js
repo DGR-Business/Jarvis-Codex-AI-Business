@@ -4,7 +4,7 @@ const { randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 
-const LATEST_SCHEMA_VERSION = 11;
+const LATEST_SCHEMA_VERSION = 12;
 
 function now() {
   return new Date().toISOString();
@@ -1043,6 +1043,108 @@ function applyCommercialDataTruthMigration(db) {
   }
 }
 
+function applyAgentOperationsEvidenceMigration(db) {
+  if (migrationApplied(db, 12)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    addColumn(db, "task_attempts", "provider_dispatched_at TEXT");
+    addColumn(db, "task_attempts", "provider_dispatch_model_call_id TEXT");
+    addColumn(db, "agent_eval_results", "evaluator_version TEXT NOT NULL DEFAULT 'local-structural-v1'");
+    addColumn(db, "agent_eval_results", "subject_hash TEXT");
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_run_receipts (
+        id TEXT PRIMARY KEY,
+        attempt_id TEXT NOT NULL,
+        run_id TEXT,
+        task_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        outcome_status TEXT NOT NULL,
+        snapshot_hash TEXT NOT NULL,
+        previous_hash TEXT,
+        receipt_hash TEXT NOT NULL UNIQUE,
+        missing_fields TEXT NOT NULL DEFAULT '[]',
+        warnings TEXT NOT NULL DEFAULT '[]',
+        receipt TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(attempt_id, snapshot_hash),
+        UNIQUE(attempt_id, sequence),
+        FOREIGN KEY (attempt_id) REFERENCES task_attempts(id),
+        FOREIGN KEY (run_id) REFERENCES agent_runs(id),
+        FOREIGN KEY (task_id) REFERENCES tasks(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_run_provenance (
+        id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL UNIQUE,
+        run_id TEXT NOT NULL,
+        attempt_id TEXT,
+        task_id TEXT NOT NULL,
+        model_call_id TEXT,
+        tool_invocation_id TEXT,
+        research_run_id TEXT,
+        research_source_id TEXT,
+        kind TEXT NOT NULL,
+        provider_external_id TEXT,
+        title TEXT,
+        url TEXT,
+        grounding_type TEXT NOT NULL,
+        input_hash TEXT,
+        output_hash TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES agent_runs(id),
+        FOREIGN KEY (attempt_id) REFERENCES task_attempts(id),
+        FOREIGN KEY (task_id) REFERENCES tasks(id),
+        FOREIGN KEY (model_call_id) REFERENCES model_calls(id),
+        FOREIGN KEY (tool_invocation_id) REFERENCES agent_tool_invocations(id),
+        FOREIGN KEY (research_run_id) REFERENCES research_runs(id),
+        FOREIGN KEY (research_source_id) REFERENCES research_sources(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_agent_run_receipts_run
+        ON agent_run_receipts(run_id, sequence DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_run_receipts_status
+        ON agent_run_receipts(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_run_provenance_run
+        ON agent_run_provenance(run_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_run_provenance_source
+        ON agent_run_provenance(research_source_id);
+
+      CREATE TRIGGER IF NOT EXISTS trg_agent_run_receipts_immutable_update
+      BEFORE UPDATE ON agent_run_receipts
+      BEGIN
+        SELECT RAISE(ABORT, 'Agent run receipts are immutable; append a new receipt.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_agent_run_receipts_immutable_delete
+      BEFORE DELETE ON agent_run_receipts
+      BEGIN
+        SELECT RAISE(ABORT, 'Agent run receipts are immutable; append a new receipt.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_agent_run_provenance_immutable_update
+      BEFORE UPDATE ON agent_run_provenance
+      BEGIN
+        SELECT RAISE(ABORT, 'Agent run provenance is immutable.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_agent_run_provenance_immutable_delete
+      BEFORE DELETE ON agent_run_provenance
+      BEGIN
+        SELECT RAISE(ABORT, 'Agent run provenance is immutable.');
+      END;
+    `);
+
+    recordMigration(db, 12, "agent-operations-evidence-and-receipts");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1848,6 +1950,7 @@ function migrate(db) {
   applyHistoricalWorkArchiveMigration(db);
   applyAccountingLedgerMigration(db);
   applyCommercialDataTruthMigration(db);
+  applyAgentOperationsEvidenceMigration(db);
 }
 
 function putSetting(db, key, value) {

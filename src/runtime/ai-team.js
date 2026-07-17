@@ -1,4 +1,5 @@
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
+const { sha256 } = require("./agent-execution-evidence");
 
 const OFFICIAL_AGENT_GUIDANCE = {
   basis: "OpenAI agent guidance: define narrow specialists, keep local runtime context separate from model context, use manager-controlled orchestration where useful, pause for human review on sensitive actions, inspect traces, and evaluate workflows.",
@@ -591,6 +592,17 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
     findings.push("Dry-run research confidence should stay clearly qualified.");
     score -= 10;
   }
+  if (definition.id === "demand_validator" && context.research?.mode === "live") {
+    const groundedSources = (context.research.sources || []).filter((source) => /^https?:\/\//i.test(source?.url || ""));
+    if (groundedSources.length === 0) {
+      findings.push("Live demand research returned no provider-grounded source URLs.");
+      score -= 35;
+    }
+    if (context.research.status && context.research.status !== "completed_live") {
+      findings.push("Live demand research did not complete with grounded evidence.");
+      score -= 20;
+    }
+  }
 
   const requiredBusinessDecisionFields = [
     "schema",
@@ -671,8 +683,9 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
   run(
     db,
     `INSERT INTO agent_eval_results
-      (id, run_id, agent_id, task_id, status, score, criteria, findings, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, run_id, agent_id, task_id, status, score, criteria, findings, metadata,
+       evaluator_version, subject_hash, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       evalId,
       runRecord.id,
@@ -691,6 +704,8 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
         missingBusinessDecisionFields,
         missingContractFields,
       }),
+      "local-structural-v2",
+      sha256(output || {}),
       now(),
     ],
   );

@@ -32,6 +32,8 @@ The first proof is deliberately narrow:
 
 The detailed execution directive is
 `docs/plans/FOUNDATION-TO-FIRST-REVENUE-EXECUTION-PLAN-2026-07-14.md`.
+The active worker-operations contract is
+`docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md`.
 
 ## Operating Model
 
@@ -69,9 +71,14 @@ lower-level provider path where direct calls or read-only research are simpler.
 Neither provider layer may bypass Jarvis approvals, limits, persistence, or
 evaluation.
 
+Autonomous Agent Operations Foundation Phase 1 adds a common assignment,
+receipt, audit, monitoring, and review contract around those provider paths. It
+does not replace Jarvis state with model memory or make a visible worker live by
+default.
+
 ## AI Team
 
-All 11 workers remain visible, grouped for clarity:
+The Phase 1 business roster is fixed at 11 workers, grouped for clarity:
 
 - Command: Chief of Staff.
 - Evidence: Demand Validator and Opportunity Scout.
@@ -80,12 +87,21 @@ All 11 workers remain visible, grouped for clarity:
 - Control and Learning: Customer Voice Agent, Finance and Unit Economics Agent,
   Growth Analyst, and Quality Reviewer.
 
+The fixed roster is not eleven simultaneous provider processes. Workers cannot
+create workers, change the roster, inherit another worker's approval, or widen
+their own tools. Dynamic agents require a later decision and release gate.
+
 The active commercial worker is the Demand Validator. Its job is to determine
 whether evidence justifies a small market test, identify counterevidence and
 assumptions, and recommend the smallest useful next step. It does not invent a
-finished product or publish anything. Validated findings flow through the Chief
-of Staff to the offer, product, design, distribution, finance, and learning
-workers only when the venture stage requires them.
+finished product or publish anything. It must first work from supplied evidence.
+Read-only live web research is a separate capability with a fresh, single-use
+A$2 approval, a three-search limit, and a 120-second deadline. Validated findings
+flow through the Chief of Staff only when the venture stage requires them.
+
+Product Builder and Quality Reviewer remain supervised in Phase 1. Product
+Builder cannot publish or approve its own output; Quality Reviewer can inspect
+only exact approved inputs and cannot generate, alter, publish, or approve them.
 
 ## Operator Experience
 
@@ -113,6 +129,15 @@ it never claims or exposes private chain-of-thought.
 - Approvals are single-use, expire, and become invalid after scope changes.
 - Provider timeouts and ambiguous dispatches become unknown outcomes for review,
   never automatic retries.
+- Every worker attempt must leave a local receipt and linked audit events. Live
+  attempts also retain the available provider IDs, tools, sources, usage, cost
+  state, outcome, and review state without claiming private chain-of-thought.
+- Luna, Terra, and Sol are implemented per-assignment routes. Luna handles
+  narrow low-ambiguity work, Terra is the normal business worker, and Sol
+  handles deep research, consequential judgement, and quality escalation.
+  The exact model and reason are selected before approval, recorded in the
+  descriptor and receipt, and cannot silently fall back after approval. Model
+  choice never grants authority.
 - Internal analysis or drafting can be promoted only after five consecutive
   successful reviewed runs for that exact capability and Daniel's approval.
 - Read-only paid research has its own five-run sequence and fixed caps.
@@ -122,6 +147,10 @@ it never claims or exposes private chain-of-thought.
   money movement remain hard stops.
 - No publishing, customer contact, account action, legal decision, or money
   movement is authorised by a general dashboard instruction.
+- Remote/mobile operation and runtime-created workers remain deferred.
+- Provider-side storage for business or personal data and ongoing sensitive
+  worker operations remain blocked until Daniel approves a retention and privacy
+  schedule.
 
 ## Financial Truth
 
@@ -141,16 +170,23 @@ it never claims or exposes private chain-of-thought.
 ### Now
 
 - Maintain the recoverable, clean first-use baseline.
+- Operate against the fixed 11-worker Phase 1 contract. Its bounded assignment,
+  receipt, audit, monitoring, and model-routing foundation passed on
+  2026-07-17.
 - Use the cockpit to prepare one Evidence Brief that ranks three plausible
   digital-product opportunities.
-- Run the Demand Validator only against an explicit evidence packet or an
-  separately approved A$2 read-only research scope.
+- Run the prepared Demand Validator supplied-evidence decision first. It is
+  waiting for Daniel's exact approval and remains no-tool, one-turn, and capped.
+- Only after that result is accepted, offer Daniel one separately approved,
+  capped live-web proof; do not treat the supplied-evidence approval as reusable.
+- Record Daniel's retention and privacy decision before ongoing live research or
+  sensitive data use widens.
 - Present one concise opportunity-selection decision to Daniel.
 
 ### Next
 
 - Turn the selected opportunity into the smallest useful product and Publish
-  Pack.
+  Pack through supervised Product Builder and Quality Reviewer work.
 - Daniel completes any required private Gumroad account and KYC action and
   approves initial publication.
 - Run no more than three organic posts across two evidence-selected channels.
@@ -164,11 +200,15 @@ it never claims or exposes private chain-of-thought.
   commercial bottleneck requires it.
 - Add a second venture only after repeatable first-venture results.
 - Expand fulfilment and customer operations after demand is proven.
+- Consider remote/mobile operation or dynamic workers only through separate
+  architecture, security, privacy, and release decisions.
 
 ## Release Gates
 
-Status: satisfied for the first-use foundation on 2026-07-17. Future changes
-that affect these boundaries must repeat proportionate proof.
+Status: satisfied for the clean first-use foundation on 2026-07-17. This is not
+the Autonomous Agent Operations Phase 1 release; its separate gates remain
+active. Future changes that affect either boundary must repeat proportionate
+proof.
 
 Foundation is releasable only when:
 
@@ -187,6 +227,11 @@ Foundation is releasable only when:
 
 - `docs/Jarvis-Codex Build Log.md`: current decisions, proof, and next work.
 - `docs/operating-procedures.md`: operating and recovery procedures.
+- `docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md`: active worker
+  operations scope, gates, receipt contract, and implementation boundary.
+- `docs/decisions/0006-autonomous-agent-operations-foundation.md`: accepted
+  fixed-team and supervised-operations decision.
+- `docs/architecture/README.md`: index of current architecture records.
 - `docs/commercial/GUMROAD-LAUNCH-GATE.md`: launch requirements.
 - `docs/reviews/PRE-FIRST-USE-ENGINEERING-AND-SECURITY-REVIEW-2026-07-17.md`:
   current engineering review.

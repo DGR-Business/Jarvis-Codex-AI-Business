@@ -32,6 +32,7 @@ commercial move.
 | 2026-07-17 | Reset the active cockpit to a production-ready clean slate. | Pilot evidence remains recoverable but must not compete with real business work. |
 | 2026-07-17 | Keep provider reasoning review structured and truthful. | Live Runs records evidence, conclusions, tools, sources, traces, cost, and evals without claiming private chain-of-thought. |
 | 2026-07-17 | Store the standalone OpenAI credential with Windows-user-bound encryption. | Explorer startup must work without storing a plaintext key or weakening per-run approvals. |
+| 2026-07-17 | Use a fixed, supervised 11-worker Autonomous Agent Operations Phase 1. | Bounded assignments, receipts, monitoring, and staged capability proof must precede wider autonomy. |
 
 ## 2026-07-17 Foundation Hardening
 
@@ -55,6 +56,102 @@ Implemented:
 - a compact Live Runs surface for genuine provider activity and protected
   rehearsals, without chain-of-thought claims;
 - a conservative archive for superseded plans and pilot reviews.
+
+## 2026-07-17 Autonomous Agent Operations Foundation
+
+Documentation decision:
+
+- Phase 1 keeps the current 11-worker business roster fixed. Runtime-created
+  workers and recursive delegation are deferred.
+- Demand Validator must complete an active supplied-evidence proof before Daniel
+  can separately approve one A$2, three-search, 120-second live-web proof.
+- Product Builder and Quality Reviewer remain supervised and cannot publish or
+  approve their own work.
+- Every attempt must meet the receipt, linked audit, cost-state, outcome, and
+  monitoring contract in the active Phase 1 plan.
+- At this documentation-only checkpoint, Luna, Terra, and Sol were routing
+  intent only. The implementation proof below records the later completed
+  router and supersedes that temporary status.
+- Remote/mobile operation and dynamic agents remain deferred.
+- Daniel still needs to decide retention periods, provider-side storage,
+  deletion, backups, and personal-data handling before sensitive operations
+  widen.
+
+Existing runtime evidence supports parts of the contract: all 11 worker
+definitions and structured outputs exist; exact approvals, provider receipts,
+cost states, events, and a scheduler-backed monitor exist; and the guarded web,
+image, and visual-review definitions stay off in protected operation. The active
+supplied-evidence run, live-web proof, supervised Product Builder/Quality
+Reviewer proof, complete model router, foundation-specific monitor proof, and
+retention decision remain pending.
+
+No runtime code or tests were changed by this documentation decision.
+Documentation checks found all 11 roster entries, resolved 34 repository-path
+references, and passed `git diff --check`. The current Codex manual confirms the
+project settings used in `.codex/config.toml`; the packaged Codex CLI could not
+be executed from this PowerShell environment, so a CLI parse result was not
+counted.
+
+### Implementation proof
+
+The documentation-only status above was superseded later on 2026-07-17:
+
+- schema migration 12 added append-only `agent_run_receipts` and
+  `agent_run_provenance`, receipt-chain verification, provider-dispatch
+  timestamps, and evaluation version/input hashes;
+- live provider research sources now persist with provider provenance, while
+  local lifecycle events describe readable stages without exposing or claiming
+  private chain-of-thought;
+- provider dispatch is recorded immediately before the SDK call and stale
+  recovery cannot retry a dispatched attempt automatically;
+- model costs link to their exact run, task, attempt, and model call;
+- the monitor detects stale runs, missing or incomplete receipts, review-needed
+  outcomes, and receipt-chain failures;
+- Live Runs, Command Center, and System Checks now show active execution,
+  receipt state, ordinary-language progress, and audit integrity;
+- Luna (`gpt-5.6-luna`), Terra (`gpt-5.6-terra`), and Sol
+  (`gpt-5.6-sol`) routing is implemented with current official pricing checked
+  on 2026-07-17. The selected route and reason are approval-bound, visible to
+  the operator, stored in the receipt, and cannot silently fall back.
+
+Verification:
+
+- fresh encrypted source, database, and artifact backups were created and
+  restored into `C:\tmp\jarvis-restore-20260717-151101`; authenticated hashes
+  matched, SQLite checks passed, and there were zero foreign-key violations;
+- the live runtime migrated from schema 11 to schema 12 with `quick_check=ok`;
+- Jarvis doctor passed every check, with only the expected occupied-port warning
+  while the owned runtime was running;
+- all 123 tests passed;
+- real-browser checks passed at 1440x900, 1280x720, and 1024x768 with no Jarvis
+  console error or horizontal overflow. One Chrome-extension warning was
+  observed and excluded because its URL and message were unrelated to Jarvis;
+- System Checks reported a valid empty receipt chain before the first active
+  live run.
+
+Three older 2026-07-14 backup files could not be authenticated with the current
+backup passphrase. They were left untouched. The new 2026-07-17 rollback set is
+independently verified and usable.
+
+### Prepared Demand Validator proof
+
+The first active supplied-evidence proof is prepared and waiting for Daniel's
+exact approval:
+
+- question: whether a concise weekly cash-control checklist for solo service
+  businesses should advance to a small interest test;
+- supplied evidence: two controlled fixture items, with no claim that they are
+  live market proof;
+- worker/model: Demand Validator using Sol because this is a research judgement;
+- limits: one turn, 1,200 output tokens, no tools, no handoffs, no external
+  effects;
+- cost: A$0.10 current priced upper bound inside an A$1 hard maximum;
+- review: deterministic checks first, then Daniel's separate commercial
+  usefulness verdict.
+
+The dashboard decision drawer shows the assignment, model reason, limits, costs,
+trace policy, and external-action boundary in ordinary language. No paid model
+call has occurred.
 
 ## Accounting Preserved At Reset
 
@@ -105,6 +202,9 @@ review.
 
 ## Next Best Work
 
-Use the clean Command Center to prepare one Evidence Brief and one capped Demand
-Validator opportunity-ranking decision. Do not create a Gumroad account, publish,
-spend, or contact buyers until Daniel reviews the resulting recommendation.
+Daniel reviews and approves, changes, or declines the prepared supplied-evidence
+Demand Validator run. After an approved run, Jarvis must inspect the immutable
+receipt, provider identifiers, tokens, cost state, deterministic evaluation, and
+structured result before Daniel records usefulness. Only an accepted result may
+lead to the separate A$2 read-only live-web decision. Do not create a Gumroad
+account, publish, spend beyond the exact approval, or contact buyers.

@@ -3009,6 +3009,8 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     const handoff = state.aiTeam.handoffs.find((item) => item.from_run_id === liveRun.id);
     const modelCall = state.modelCalls.find((call) => call.id === completed.result.modelPolicy.callId);
     const cost = state.costs.find((item) => item.id === `cost_spend_${liveTask.id}`);
+    const receipt = get(db, "SELECT * FROM agent_run_receipts WHERE run_id = ? ORDER BY sequence DESC LIMIT 1", [liveRun.id]);
+    const attempt = get(db, "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC LIMIT 1", [liveTask.id]);
 
     assert.equal(liveTask.status, "completed");
     assert.equal(liveTask.agent, "demand_validator");
@@ -3024,6 +3026,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.deepEqual(liveRun.metadata.toolPolicy.approvalRequired, ["research_adapter"]);
     assert.equal(liveEval.status, "passed");
     assert.ok(traces.some((trace) => trace.type === "model_call_completed"));
+    assert.ok(traces.some((trace) => trace.type === "provider_dispatch"));
     assert.ok(traces.some((trace) => trace.type === "contract_checked"));
     assert.ok(traces.some((trace) => trace.type === "eval_completed"));
     assert.ok(traces.some((trace) => trace.type === "handoff_recorded"));
@@ -3043,6 +3046,13 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(cost.status, "incurred_estimate");
     assert.equal(cost.amount_cents, completed.result.cost.estimatedCents);
     assert.equal(cost.metadata.exactBillingPending, true);
+    assert.equal(cost.run_id, liveRun.id);
+    assert.equal(cost.task_id, liveTask.id);
+    assert.equal(cost.model_call_id, modelCall.id);
+    assert.ok(attempt.provider_dispatched_at);
+    assert.equal(attempt.provider_dispatch_model_call_id, modelCall.id);
+    assert.equal(receipt.status, "complete");
+    assert.equal(receipt.run_id, liveRun.id);
     assert.equal(state.runtime.liveAiWorkers.ready, true);
     assert.equal(state.runtime.liveAiWorkers.completedLiveRuns, 1);
     assert.equal(state.aiTeam.toolPolicy.byAgent.demand_validator.status, "approval_gated");

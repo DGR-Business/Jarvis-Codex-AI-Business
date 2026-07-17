@@ -438,6 +438,7 @@ function recordLiveWorkerCost(db, task, estimateCents, response, metadata = {}) 
   const existing = get(db, "SELECT amount_cents, metadata FROM costs WHERE id = ?", [costId]);
   const existingMetadata = fromJson(existing?.metadata, {});
   const modelCallId = metadata.modelCallId || null;
+  const agentRunId = metadata.agentRunId || null;
   const recordedModelCallIds = Array.isArray(existingMetadata.modelCallIds) ? existingMetadata.modelCallIds : [];
   const alreadyRecorded = modelCallId && recordedModelCallIds.includes(modelCallId);
   const amountCents = alreadyRecorded
@@ -456,15 +457,35 @@ function recordLiveWorkerCost(db, task, estimateCents, response, metadata = {}) 
   });
   const updated = run(
     db,
-    `UPDATE costs SET status = ?, amount_cents = ?, occurred_at = ?, metadata = ? WHERE id = ?`,
-    ["incurred_estimate", amountCents, ts, payload, costId],
+    `UPDATE costs
+     SET status = ?, amount_cents = ?, occurred_at = ?, metadata = ?,
+         run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
+         model_call_id = COALESCE(?, model_call_id)
+     WHERE id = ?`,
+    ["incurred_estimate", amountCents, ts, payload, agentRunId, task.id, modelCallId, costId],
   );
   if (updated.changes === 0) {
     run(
       db,
-      `INSERT INTO costs (id, workflow_id, venture_id, category, source, status, amount_cents, currency, occurred_at, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [costId, task.workflow_id, task.venture_id || null, "live_ai_worker", LIVE_AI_WORKER_PROVIDER, "incurred_estimate", amountCents, CONFIG.currency, ts, payload],
+      `INSERT INTO costs
+       (id, workflow_id, venture_id, run_id, task_id, model_call_id, category, source, status,
+        amount_cents, currency, occurred_at, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        costId,
+        task.workflow_id,
+        task.venture_id || null,
+        agentRunId,
+        task.id,
+        modelCallId,
+        "live_ai_worker",
+        LIVE_AI_WORKER_PROVIDER,
+        "incurred_estimate",
+        amountCents,
+        CONFIG.currency,
+        ts,
+        payload,
+      ],
     );
   }
 }
@@ -473,11 +494,21 @@ function recordLiveWorkerFailureCost(db, task, error) {
   const ts = now();
   const costId = costIdForTask(task);
   const existing = get(db, "SELECT metadata FROM costs WHERE id = ?", [costId]);
+  const agentRunId = error.agentRunId || get(
+    db,
+    "SELECT id FROM agent_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
+    [task.id],
+  )?.id || null;
+  const modelCallId = error.modelCallId || null;
   if (error.outcomeUnknown !== true) {
     if (existing) {
       run(
         db,
-        "UPDATE costs SET status = 'released', amount_cents = 0, occurred_at = ?, metadata = ? WHERE id = ?",
+        `UPDATE costs
+         SET status = 'released', amount_cents = 0, occurred_at = ?, metadata = ?,
+             run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
+             model_call_id = COALESCE(?, model_call_id)
+         WHERE id = ?`,
         [
           ts,
           toJson({
@@ -488,6 +519,9 @@ function recordLiveWorkerFailureCost(db, task, error) {
             providerDispatchStatus: error.providerDispatchStatus || "not_dispatched",
             error: error.message,
           }),
+          agentRunId,
+          task.id,
+          modelCallId,
           costId,
         ],
       );
@@ -497,12 +531,17 @@ function recordLiveWorkerFailureCost(db, task, error) {
   if (!existing) {
     run(
       db,
-      `INSERT INTO costs (id, workflow_id, venture_id, category, source, status, amount_cents, currency, occurred_at, metadata)
-       VALUES (?, ?, ?, 'live_ai_worker', ?, 'unknown', ?, ?, ?, ?)`,
+      `INSERT INTO costs
+       (id, workflow_id, venture_id, run_id, task_id, model_call_id, category, source, status,
+        amount_cents, currency, occurred_at, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, 'live_ai_worker', ?, 'unknown', ?, ?, ?, ?)`,
       [
         costId,
         task.workflow_id,
         task.venture_id || null,
+        agentRunId,
+        task.id,
+        modelCallId,
         LIVE_AI_WORKER_PROVIDER,
         approvedEstimateCents(task),
         CONFIG.currency,
@@ -514,7 +553,11 @@ function recordLiveWorkerFailureCost(db, task, error) {
   }
   run(
     db,
-    `UPDATE costs SET status = ?, amount_cents = ?, occurred_at = ?, metadata = ? WHERE id = ?`,
+    `UPDATE costs
+     SET status = ?, amount_cents = ?, occurred_at = ?, metadata = ?,
+         run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
+         model_call_id = COALESCE(?, model_call_id)
+     WHERE id = ?`,
     [
       "unknown",
       approvedEstimateCents(task),
@@ -527,6 +570,9 @@ function recordLiveWorkerFailureCost(db, task, error) {
         providerDispatchStatus: error.providerDispatchStatus || null,
         error: error.message,
       }),
+      agentRunId,
+      task.id,
+      modelCallId,
       costId,
     ],
   );

@@ -3,6 +3,10 @@ const crypto = require("node:crypto");
 const { refreshIntegrationHealth } = require("../adapters/registry");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { monthlyBudgetExposure, monthlyCapCents } = require("./cost-ledger");
+const {
+  auditTerminalAgentAttempts,
+  verifyAgentRunReceiptChain,
+} = require("./agent-execution-evidence");
 
 function minutesAgo(minutes) {
   return new Date(Date.now() - minutes * 60 * 1000).toISOString();
@@ -150,6 +154,93 @@ function collectFindings(db, options = {}) {
       title: "Workflow run may be stuck",
       detail: `Safe-loop run started at ${workflowRun.started_at} and has not completed.`,
       metadata: { workflowId: workflowRun.workflow_id, staleRunCutoff },
+    });
+  }
+
+  const staleAgentRuns = all(
+    db,
+    `SELECT runs.id, runs.agent_id, runs.task_id, runs.started_at, tasks.title
+     FROM agent_runs AS runs
+     LEFT JOIN tasks ON tasks.id = runs.task_id
+     WHERE runs.status = 'running' AND runs.started_at < ?
+     ORDER BY runs.started_at ASC`,
+    [staleRunCutoff],
+  );
+  for (const agentRun of staleAgentRuns) {
+    addFinding(findings, {
+      severity: "error",
+      category: "agent_runs",
+      entityType: "agent_run",
+      entityId: agentRun.id,
+      title: `AI work may be stuck: ${agentRun.title || agentRun.agent_id}`,
+      detail: "The worker has not recorded progress within the expected window. Jarvis will not assume the provider call is safe to repeat.",
+      metadata: { taskId: agentRun.task_id, startedAt: agentRun.started_at, staleRunCutoff },
+    });
+  }
+
+  const incompleteReceipts = all(
+    db,
+    `SELECT receipts.id, receipts.run_id, receipts.task_id, receipts.status,
+            receipts.missing_fields, receipts.warnings, tasks.title
+     FROM agent_run_receipts AS receipts
+     LEFT JOIN tasks ON tasks.id = receipts.task_id
+     WHERE NOT EXISTS (
+       SELECT 1 FROM agent_run_receipts AS later
+       WHERE later.attempt_id = receipts.attempt_id
+         AND later.sequence > receipts.sequence
+     )
+       AND receipts.status IN ('needs_review', 'incomplete')
+     ORDER BY receipts.created_at DESC
+     LIMIT 50`,
+  );
+  for (const receipt of incompleteReceipts) {
+    const missingFields = fromJson(receipt.missing_fields, []);
+    const warnings = fromJson(receipt.warnings, []);
+    addFinding(findings, {
+      severity: receipt.status === "incomplete" ? "error" : "warn",
+      category: "agent_receipts",
+      entityType: "agent_run",
+      entityId: receipt.run_id,
+      title: receipt.status === "incomplete"
+        ? `Execution record incomplete: ${receipt.title || receipt.task_id}`
+        : `Execution needs review: ${receipt.title || receipt.task_id}`,
+      detail: [...missingFields, ...warnings].join(" ") || "The immutable execution receipt needs developer or operator review.",
+      metadata: { receiptId: receipt.id, taskId: receipt.task_id, missingFields, warnings },
+    });
+  }
+
+  const missingReceipts = all(
+    db,
+    `SELECT runs.id, runs.task_id, runs.completed_at, tasks.title
+     FROM agent_runs AS runs
+     LEFT JOIN tasks ON tasks.id = runs.task_id
+     WHERE runs.completed_at IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM agent_run_receipts WHERE run_id = runs.id)
+     ORDER BY runs.completed_at DESC
+     LIMIT 50`,
+  );
+  for (const agentRun of missingReceipts) {
+    addFinding(findings, {
+      severity: "error",
+      category: "agent_receipts",
+      entityType: "agent_run",
+      entityId: agentRun.id,
+      title: `Execution record missing: ${agentRun.title || agentRun.task_id}`,
+      detail: "The AI worker finished without an immutable local receipt. This run must be audited before its result is trusted.",
+      metadata: { taskId: agentRun.task_id, completedAt: agentRun.completed_at },
+    });
+  }
+
+  const receiptVerification = verifyAgentRunReceiptChain(db);
+  if (!receiptVerification.ok) {
+    addFinding(findings, {
+      severity: "error",
+      category: "agent_receipts",
+      entityType: "runtime",
+      entityId: "receipt_chain",
+      title: "Execution receipt verification failed",
+      detail: `${receiptVerification.failures.length} receipt integrity check${receiptVerification.failures.length === 1 ? "" : "s"} failed.`,
+      metadata: receiptVerification,
     });
   }
 
@@ -304,6 +395,7 @@ function runMonitorCycle(db, options = {}) {
   );
 
   const integrationResult = refreshIntegrationHealth(db);
+  const receiptAudit = auditTerminalAgentAttempts(db);
   const findings = collectFindings(db, options);
   const severity = summarizeSeverity(findings);
   const status = monitorStatus(severity);
@@ -325,7 +417,7 @@ function runMonitorCycle(db, options = {}) {
       severity,
       findings.length,
       completedAt,
-      toJson({ integrationResult, categoryCounts, options }),
+      toJson({ integrationResult, receiptAuditCount: receiptAudit.length, categoryCounts, options }),
       runId,
     ],
   );
@@ -337,7 +429,7 @@ function runMonitorCycle(db, options = {}) {
     entityType: "monitor_run",
     entityId: runId,
     message: `Runtime monitor completed with status ${status} and ${findings.length} finding${findings.length === 1 ? "" : "s"}.`,
-    metadata: { severity, status, findingCount: findings.length, categoryCounts },
+    metadata: { severity, status, findingCount: findings.length, receiptAuditCount: receiptAudit.length, categoryCounts },
   });
 
   return {
