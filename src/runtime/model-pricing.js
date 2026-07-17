@@ -61,6 +61,18 @@ const TOOL_PRICING_USD_PER_THOUSAND_CALLS = {
   },
 };
 
+const IMAGE_GENERATION_USD_PER_OUTPUT = {
+  "1024x1024": { low: 0.006, medium: 0.053, high: 0.211 },
+  "1024x1536": { low: 0.005, medium: 0.041, high: 0.165 },
+  "1536x1024": { low: 0.005, medium: 0.041, high: 0.165 },
+};
+
+const IMAGE_GENERATION_PRICING = {
+  model: "gpt-image-2",
+  source: "https://developers.openai.com/api/docs/guides/image-generation#cost-and-latency",
+  checkedAt: "2026-07-17",
+};
+
 const CONSERVATIVE_AUD_PER_USD = 2;
 
 function positiveNumber(value) {
@@ -92,10 +104,14 @@ function normalizedTools(tools) {
     research_adapter: "web_search",
     live_web_with_approval: "web_search",
     web_search: "web_search",
+    image_generation_spend: "image_generation",
+    image_generation: "image_generation",
+    visual_asset_review: "",
   };
   return [...new Set((Array.isArray(tools) ? tools : []).map((tool) => {
     const id = typeof tool === "string" ? tool : tool?.id || tool?.type || tool?.toolId;
-    return aliases[String(id || "").trim()] || String(id || "").trim();
+    const key = String(id || "").trim();
+    return Object.hasOwn(aliases, key) ? aliases[key] : key;
   }).filter(Boolean))];
 }
 
@@ -106,13 +122,34 @@ function requestedTools(tools) {
   }).filter(Boolean))];
 }
 
+function imageGenerationPrice(input = {}) {
+  const toolArguments = input.toolArguments || {};
+  const requested = toolArguments.image_generation_spend
+    || toolArguments.image_generation
+    || toolArguments;
+  const size = String(requested.size || "1024x1024");
+  const quality = String(requested.quality || "low");
+  const usd = IMAGE_GENERATION_USD_PER_OUTPUT[size]?.[quality];
+  if (!Number.isFinite(usd)) {
+    throw new Error(`Live execution is blocked because GPT Image pricing is not registered for ${size} at ${quality} quality.`);
+  }
+  return {
+    usd,
+    size,
+    quality,
+    ...IMAGE_GENERATION_PRICING,
+  };
+}
+
 function worstCaseExecutionCostAud(input = {}) {
   const priced = modelPricing(input.model);
   if (!priced) throw new Error(`Live execution is blocked because model pricing is not registered: ${input.model || "not selected"}.`);
 
   const approvedTools = requestedTools(input.tools);
   const tools = normalizedTools(approvedTools);
-  const unknownTools = tools.filter((tool) => !TOOL_PRICING_USD_PER_THOUSAND_CALLS[tool]);
+  const unknownTools = tools.filter((tool) => (
+    !TOOL_PRICING_USD_PER_THOUSAND_CALLS[tool] && tool !== "image_generation"
+  ));
   if (unknownTools.length) {
     throw new Error(`Live execution is blocked because worst-case tool pricing is not registered: ${unknownTools.join(", ")}.`);
   }
@@ -149,9 +186,11 @@ function worstCaseExecutionCostAud(input = {}) {
   const inputRate = priced.pricing.input * (longContext ? Number(priced.pricing.longContextInputMultiplier || 1) : 1);
   const outputRate = priced.pricing.output * (longContext ? Number(priced.pricing.longContextOutputMultiplier || 1) : 1);
   const tokenUsd = (totalInputTokens * inputRate + totalOutputTokens * outputRate) / 1_000_000;
-  const toolUsd = tools.reduce((sum, tool) => (
-    sum + (maxToolCalls * TOOL_PRICING_USD_PER_THOUSAND_CALLS[tool].usd / 1000)
-  ), 0);
+  const imagePrice = tools.includes("image_generation") ? imageGenerationPrice(input) : null;
+  const toolUsd = tools.reduce((sum, tool) => {
+    if (tool === "image_generation") return sum + (maxToolCalls * imagePrice.usd);
+    return sum + (maxToolCalls * TOOL_PRICING_USD_PER_THOUSAND_CALLS[tool].usd / 1000);
+  }, 0);
   const usdAmount = tokenUsd + toolUsd;
   const audAmount = usdAmount * audPerUsd;
 
@@ -181,6 +220,7 @@ function worstCaseExecutionCostAud(input = {}) {
     longContext,
     pricingUsdPerMillion: priced.pricing,
     toolPricingUsdPerThousandCalls: Object.fromEntries(tools.map((tool) => [tool, TOOL_PRICING_USD_PER_THOUSAND_CALLS[tool]])),
+    imageGenerationPricing: imagePrice,
   };
 }
 
@@ -225,6 +265,8 @@ function estimateModelUsageAud(model, usage = {}, options = {}) {
 
 module.exports = {
   CONSERVATIVE_AUD_PER_USD,
+  IMAGE_GENERATION_PRICING,
+  IMAGE_GENERATION_USD_PER_OUTPUT,
   MODEL_PRICING_ALIASES,
   MODEL_PRICING_USD_PER_MILLION,
   TOOL_PRICING_USD_PER_THOUSAND_CALLS,

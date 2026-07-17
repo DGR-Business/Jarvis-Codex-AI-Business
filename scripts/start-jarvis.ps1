@@ -47,6 +47,7 @@ $runtimeNames = @(
   "OPENAI_RESPONSES_URL",
   "JARVIS_ENABLE_LIVE_MODELS",
   "JARVIS_ENABLE_LIVE_RESEARCH",
+  "JARVIS_ENABLE_IMAGE_GENERATION",
   "JARVIS_LIVE_MODEL",
   "JARVIS_LUNA_MODEL",
   "JARVIS_TERRA_MODEL",
@@ -91,6 +92,12 @@ if (Test-Path -LiteralPath $credentialPath) {
     }
     if (-not $runtimeEnvironment.ContainsKey("JARVIS_ENABLE_LIVE_RESEARCH") -and $credentialProfile.enableLiveResearch -eq $true) {
       $runtimeEnvironment["JARVIS_ENABLE_LIVE_RESEARCH"] = "1"
+    }
+    if (-not $runtimeEnvironment.ContainsKey("JARVIS_ENABLE_IMAGE_GENERATION") -and (
+      $credentialProfile.enableImageGeneration -eq $true -or
+      ($null -eq $credentialProfile.enableImageGeneration -and $credentialProfile.enableLiveModels -eq $true)
+    )) {
+      $runtimeEnvironment["JARVIS_ENABLE_IMAGE_GENERATION"] = "1"
     }
   } catch {
     throw "Jarvis could not unlock its local OpenAI credential profile. Re-run Connect OpenAI for this Windows account."
@@ -190,7 +197,6 @@ if (-not $health) {
   $startInfo.EnvironmentVariables["NODE_ENV"] = "production"
   $startInfo.EnvironmentVariables["PORT"] = [string]$Port
   $startInfo.EnvironmentVariables["JARVIS_LIVE_MODE"] = "0"
-  $startInfo.EnvironmentVariables["JARVIS_ENABLE_IMAGE_GENERATION"] = "0"
   $startInfo.EnvironmentVariables["JARVIS_OPERATOR_BOOTSTRAP"] = $bootstrapToken
   $startInfo.EnvironmentVariables["JARVIS_CONTROL_TOKEN"] = $controlToken
   $startInfo.EnvironmentVariables["JARVIS_RUNTIME_INSTANCE_ID"] = $instanceId

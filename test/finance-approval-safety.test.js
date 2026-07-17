@@ -194,6 +194,24 @@ test("worst-case pricing rejects unknown models and prices bounded tools", () =>
   });
   assert.equal(webSearch.maxInputTokensPerTurn, 922000);
   assert.ok(webSearch.amountCents > 200);
+
+  const imageGeneration = worstCaseExecutionCostAud({
+    model: "gpt-5.6-terra",
+    materializedInput: { assignment: "Create one bounded product visual." },
+    maxInputTokens: 32000,
+    maxOutputTokens: 1000,
+    maxTurns: 2,
+    tools: ["image_generation_spend"],
+    toolArguments: {
+      image_generation_spend: { quality: "high", size: "1024x1024", outputFormat: "png" },
+    },
+    maxToolCalls: 1,
+    audPerUsd: 2,
+  });
+  assert.equal(imageGeneration.imageGenerationPricing.model, "gpt-image-2");
+  assert.equal(imageGeneration.imageGenerationPricing.quality, "high");
+  assert.equal(imageGeneration.imageGenerationPricing.usd, 0.211);
+  assert.ok(imageGeneration.amountCents <= 100);
 });
 
 test("model routing selects Luna, Terra, and Sol before approval without automatic fallback", () => {

@@ -238,6 +238,14 @@ function getRecentTasks(db, workflowId) {
 function buildWorkerPrompt(task, agentDefinition, policy) {
   const requested = task.payload || {};
   const hardStops = agentDefinition.approval_policy?.mustPauseFor || [];
+  const chiefInstruction = agentDefinition.id === "chief_of_staff"
+    ? requested.chiefOrchestration?.enabled === true
+      ? "You may nominate exactly one existing specialist from the allowed fixed team. Use specialistNeeded=true only when that worker has a clear bounded objective and expected output. Choose protected or supervised_live; do not invent, spawn, rename, or delete workers, and do not grant tools, approval, spend, or external authority."
+      : "This is not a specialist-assignment run. Set specialistNeeded=false and leave the specialist text fields empty with an empty specialistContextClasses list."
+    : null;
+  const qualityInstruction = agentDefinition.id === "quality_reviewer"
+    ? "Review only qualityReviewTargets. They contain the exact output frozen for this approval. If that list is empty, do not pass the work. Use claimSafety='safe' only when the supplied material supports its material claims."
+    : null;
   const outputInstruction = requested.pilotFixture
     ? "For this controlled Demand Validator pilot, return only the concise supplied-evidence recommendation fields requested by the output schema. Use no more than two short items in each list and one short paragraph per text field. Do not repeat the same judgement in a generic businessDecision object."
     : `Return the shared recommendation fields plus the exact ${agentDefinition.name} role fields inside work. Do not add a generic businessDecision object or fields that are not in the supplied schema.`;
@@ -254,8 +262,10 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
     "Your job is to compress the available runtime evidence into a practical operator decision.",
     "Use ordinary business language. If evidence is weak, say so and recommend the smallest useful next action.",
     "For a controlled pilot, reason only over suppliedEvidenceFixture. State counterevidence and assumptions explicitly. Never infer live demand from a test fixture.",
+    chiefInstruction,
+    qualityInstruction,
     outputInstruction,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function buildOpenAIRequest(db, task, agentDefinition, policy) {

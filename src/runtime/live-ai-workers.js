@@ -1,7 +1,9 @@
 const CONFIG = require("../config");
 const { fromJson, get, insertEvent, now, run, toJson } = require("../db");
-const { AI_TEAM_DEFINITIONS } = require("./ai-team");
+const { buildAgentContextSnapshot, persistAgentContextSnapshot } = require("./agent-context");
+const { AI_TEAM_DEFINITIONS, ensureAiTeam } = require("./ai-team");
 const { buildWorkerModelPacket } = require("./agent-model-contracts");
+const { buildAgentsSdkCapabilityPlan, buildVisualAssetApprovalBinding } = require("./agent-sdk-capabilities");
 const { createExecutionDescriptor, scopeHash } = require("./approval-scope");
 const { worstCaseExecutionCostAud } = require("./model-pricing");
 const { selectModelRoute } = require("./model-routing");
@@ -43,6 +45,22 @@ function normalizeTracePolicy(options = {}) {
     dataClass: String(requested.dataClass || "business_internal"),
     purpose: String(requested.purpose || "Keep a local operator and developer review record for this run."),
   };
+}
+
+function cleanWorkBrief(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const string = (input, max) => String(input || "").replace(/\s+/g, " ").trim().slice(0, max);
+  const list = (input, maxItems = 6) => (
+    Array.isArray(input) ? input.filter(Boolean).map((item) => string(item, 500)).filter(Boolean).slice(0, maxItems) : []
+  );
+  const brief = {
+    objective: string(value.objective, 800),
+    deliverable: string(value.deliverable, 800),
+    assetPrompt: string(value.assetPrompt, 2400),
+    constraints: list(value.constraints),
+    acceptanceCriteria: list(value.acceptanceCriteria),
+  };
+  return Object.values(brief).some((item) => Array.isArray(item) ? item.length : item) ? brief : null;
 }
 
 function requestedToolControls(options = {}) {
@@ -120,6 +138,7 @@ function approvalIdForRequest(db, taskId, workflowId, requestedAt) {
 function requestLiveAiWorker(db, workflowId, options = {}) {
   const workflow = hydrateWorkflow(get(db, "SELECT * FROM workflows WHERE id = ?", [workflowId]));
   if (!workflow) throw new Error(`Workflow not found: ${workflowId}`);
+  ensureAiTeam(db);
 
   const command = latestCommand(db, workflowId);
   const sourceTask = sourceWorkerTask(db, workflowId);
@@ -134,11 +153,41 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const approvalId = approvalIdForRequest(db, taskId, workflowId, ts);
   const title = options.taskTitle || `Live ${workerDefinition.name} test for ${subject}`;
   const reason = options.reason || "A live OpenAI-backed worker should only run after the dry-run path is reviewable, the cost cap is accepted, and provider readiness passes.";
+  const expectedOutput = options.expectedOutput || "A concise operator decision summary with evidence, next money move, risk, cost, and review controls.";
   const protectedEvidence = Array.isArray(options.protectedEvidence) ? options.protectedEvidence.filter(Boolean).slice(0, 8) : [];
   const comparisonSource = options.comparisonSource || null;
   const expectedMetric = options.expectedMetric || "Compare live output quality, trace coverage, cost, and usefulness against protected worker proof.";
-  const tracePolicy = normalizeTracePolicy(options);
+  const contextSnapshot = options.fixtureInput || options.disableVentureContext === true
+    ? null
+    : buildAgentContextSnapshot(db, {
+      ventureId: workflow.venture_id,
+      workflowId,
+      taskId,
+      agentId: workerDefinition.id,
+      purpose: options.contextPurpose || expectedOutput,
+      recordClasses: options.contextClasses,
+      includePersonalData: options.includePersonalData === true,
+    });
+  const tracePolicy = normalizeTracePolicy(
+    contextSnapshot?.includePersonalData
+      ? {
+        ...options,
+        tracePolicy: {
+          ...(options.tracePolicy || {}),
+          providerResponseStored: false,
+          providerTraceContent: false,
+        },
+      }
+      : options,
+  );
   const toolControls = requestedToolControls(options);
+  const toolArguments = JSON.parse(JSON.stringify(options.toolArguments || {}));
+  const workBrief = cleanWorkBrief(options.workBrief);
+  const qualityReviewedWorker = ["product_builder", "copy_conversion_agent", "distribution_operator"].includes(workerDefinition.id);
+  const requestParameters = {
+    ...(options.parameters || {}),
+    ...(qualityReviewedWorker ? { requiredReviewer: "quality_reviewer" } : {}),
+  };
   const maxOutputTokens = Number(options.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 1200);
   const effects = Array.isArray(options.effects) ? options.effects : [];
   const provider = options.provider || CONFIG.liveModelProvider;
@@ -171,7 +220,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     requestedWorkerName: workerDefinition.name,
     requestedWorkerRole: workerDefinition.role,
     requestedWorkerModelClass: workerDefinition.modelClass,
-    expectedOutput: options.expectedOutput || "A concise operator decision summary with evidence, next money move, risk, cost, and review controls.",
+    expectedOutput,
     comparisonSource,
     pilotFixture: options.fixtureInput ? {
       ...options.fixtureInput,
@@ -179,6 +228,9 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     } : null,
     protectedEvidence,
     expectedMetric,
+    contextSnapshot,
+    workBrief,
+    ...(options.chiefOrchestration ? { chiefOrchestration: options.chiefOrchestration } : {}),
     liveSpendRequest: {
       requested: true,
       approvalId,
@@ -197,9 +249,19 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       expectedMetric,
       fixtureHash: options.fixtureHash || null,
       tools: toolControls.tools,
-      toolArguments: options.toolArguments || {},
+      toolArguments,
       parameters: {
-        ...(options.parameters || {}),
+        ...requestParameters,
+        ...(contextSnapshot ? {
+          contextSnapshot: {
+            id: contextSnapshot.id,
+            hash: contextSnapshot.snapshotHash,
+            policyVersion: contextSnapshot.policyVersion,
+            accessProfile: contextSnapshot.accessProfile,
+            recordClasses: contextSnapshot.recordClasses,
+            recordCount: contextSnapshot.recordCount,
+          },
+        } : {}),
         modelRoute: {
           tier: modelRoute.tier,
           policyVersion: modelRoute.policyVersion,
@@ -238,6 +300,15 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     payload,
     result: {},
   };
+  if (toolControls.tools.includes("visual_asset_review")) {
+    const capabilityPlan = buildAgentsSdkCapabilityPlan(descriptorTask, workerDefinition);
+    const approvedAssetBinding = buildVisualAssetApprovalBinding(db, descriptorTask, capabilityPlan);
+    payload.liveSpendRequest.parameters.approvedAssetBinding = approvedAssetBinding;
+    payload.liveSpendRequest.toolArguments.visual_asset_review = {
+      ...(payload.liveSpendRequest.toolArguments.visual_asset_review || {}),
+      approvedAssetBinding,
+    };
+  }
   const materializedPacket = buildWorkerModelPacket(db, descriptorTask, workerDefinition);
   const workerDefinitionHash = scopeHash({
     id: workerDefinition.id,
@@ -255,6 +326,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     maxOutputTokens,
     maxTurns: toolControls.maxTurns,
     tools: toolControls.tools,
+    toolArguments: payload.liveSpendRequest.toolArguments,
     maxToolCalls: toolControls.maxToolCalls,
     audPerUsd: options.audPerUsd,
   });
@@ -273,7 +345,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     sourceStateHash: stableWorkerPacketHash(materializedPacket),
     materializedInput: materializedPacket,
     tools: toolControls.tools,
-    toolArguments: options.toolArguments || {},
+    toolArguments: payload.liveSpendRequest.toolArguments,
     parameters: payload.liveSpendRequest.parameters,
     limits: {
       maxInputTokens: worstCaseCost.maxInputTokensPerTurn,
@@ -310,6 +382,13 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     comparisonSource,
     protectedEvidence,
     expectedMetric,
+    contextSnapshot: contextSnapshot ? {
+      id: contextSnapshot.id,
+      hash: contextSnapshot.snapshotHash,
+      accessProfile: contextSnapshot.accessProfile,
+      recordClasses: contextSnapshot.recordClasses,
+      recordCount: contextSnapshot.recordCount,
+    } : null,
   };
 
   const existing = hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]));
@@ -347,6 +426,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       [title, workerDefinition.id, amountCents, toJson(payload), toJson(result), ts, taskId],
     );
   }
+  if (contextSnapshot) persistAgentContextSnapshot(db, contextSnapshot);
 
   insertEvent(db, {
     level: "warn",
@@ -366,6 +446,10 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       modelRouteReason: modelRoute.reason,
       workerId: workerDefinition.id,
       workerName: workerDefinition.name,
+      contextSnapshotId: contextSnapshot?.id || null,
+      contextSnapshotHash: contextSnapshot?.snapshotHash || null,
+      contextRecordClasses: contextSnapshot?.recordClasses || [],
+      contextRecordCount: contextSnapshot?.recordCount || 0,
     },
   });
 

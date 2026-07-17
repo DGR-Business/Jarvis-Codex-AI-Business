@@ -65,6 +65,7 @@ function decisionCard(approval) {
   const liveRequest = approval.taskPayload?.liveSpendRequest || {};
   const modelRoute = liveRequest.modelRoute || null;
   const fixture = approval.taskPayload?.pilotFixture || null;
+  const contextSnapshot = approval.taskPayload?.contextSnapshot || null;
   const scope = approval.executionScope || {};
   return {
     id: approval.id,
@@ -96,6 +97,13 @@ function decisionCard(approval) {
       buyer: fixture.buyer || null,
       hypothesis: fixture.hypothesis || null,
       evidenceCount: Array.isArray(fixture.sources) ? fixture.sources.length : 0,
+    } : null,
+    businessContext: contextSnapshot ? {
+      purpose: contextSnapshot.purpose,
+      accessProfile: contextSnapshot.accessProfile,
+      recordClasses: contextSnapshot.recordClasses || [],
+      recordCount: Number(contextSnapshot.recordCount || 0),
+      snapshotHash: contextSnapshot.snapshotHash,
     } : null,
     tracePolicy: payload.tracePolicy || null,
     actions: ["approve", "changes", "reject"],
@@ -1148,6 +1156,28 @@ function getAgentRunDetail(db, id) {
   const runError = task?.error || runMetadata.error || (
     ["failed", "needs_attention"].includes(runRecord.status) ? runRecord.output_summary : null
   );
+  const contextSnapshot = task?.payload?.contextSnapshot || null;
+  const businessContext = contextSnapshot ? {
+    id: contextSnapshot.id,
+    hash: contextSnapshot.snapshotHash,
+    policyVersion: contextSnapshot.policyVersion,
+    accessProfile: contextSnapshot.accessProfile,
+    purpose: contextSnapshot.purpose,
+    recordClasses: contextSnapshot.recordClasses || [],
+    recordCount: Number(contextSnapshot.recordCount || 0),
+    dataPolicy: contextSnapshot.dataPolicy || {},
+    sections: Object.entries(contextSnapshot.sections || {}).map(([name, section]) => ({
+      name,
+      recordCount: Array.isArray(section.records) ? section.records.length : 0,
+      withheldLocalOnly: Number(section.withheldLocalOnly || 0),
+      truncated: section.truncated === true,
+      records: (section.records || []).map((item) => ({
+        title: item.title,
+        summary: item.summary,
+        source: item.ref?.table || null,
+      })),
+    })),
+  } : null;
 
   return {
     schema: "jarvis_agent_run_review_v1",
@@ -1173,6 +1203,7 @@ function getAgentRunDetail(db, id) {
       buyer: fixture?.buyer || output.businessDecision?.buyer || "No buyer was recorded.",
       hypothesis: fixture?.hypothesis || output.businessDecision?.continuousImprovement?.hypothesis || "No hypothesis was recorded.",
       suppliedEvidence,
+      businessContext,
       supportingEvidence: recommendation.evidence || [],
       counterevidence: recommendation.counterevidence || [],
       assumptions: recommendation.assumptions || [],
@@ -1237,6 +1268,13 @@ function getAgentRunDetail(db, id) {
         ...tracePolicy,
         legacyPolicyInferred: !context.protectedRehearsal && approvedTracePolicy === null,
       },
+      businessContext: businessContext ? {
+        id: businessContext.id,
+        hash: businessContext.hash,
+        accessProfile: businessContext.accessProfile,
+        recordClasses: businessContext.recordClasses,
+        recordCount: businessContext.recordCount,
+      } : null,
       cost: {
         status: context.costStatus,
         actualCents: context.actualCostCents,
@@ -1269,6 +1307,7 @@ function getAgentRunDetail(db, id) {
     developer: {
       fixtureId,
       fixtureHash: fixture?.fixture_hash || task?.payload?.liveSpendRequest?.fixtureHash || null,
+      contextSnapshotHash: businessContext?.hash || null,
       approval,
       modelCallId: modelCall?.id || null,
       researchRunId: context.research.run?.id || null,

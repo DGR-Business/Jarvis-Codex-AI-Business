@@ -14,6 +14,7 @@ const { runOnce, runUntilBlocked } = require("./runtime/orchestrator");
 const { generateApprovalPack } = require("./runtime/approval-pack");
 const { runMonitorCycle } = require("./runtime/monitor");
 const { createLiveAiWorkerSmokeTest, requestLiveAiWorker } = require("./runtime/live-ai-workers");
+const { prepareProductBuilderAsset } = require("./runtime/product-builder-workspace");
 const { createLiveResearchSmokeTest, requestLiveResearch } = require("./runtime/live-research");
 const { decideAgentHandoff, ensureAiTeam } = require("./runtime/ai-team");
 const { ensureWorkflowScorecards, upsertWorkflowScorecard } = require("./runtime/scorecard");
@@ -81,6 +82,10 @@ const CONTENT_TYPES = {
   ".json": "application/json; charset=utf-8",
   ".pdf": "application/pdf",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
   ".svg": "image/svg+xml",
 };
 
@@ -200,8 +205,12 @@ function serveDeliverableFile(db, res, id) {
     notFound(res);
     return;
   }
-  if (String(deliverable.format || "").toLowerCase() !== "pdf") {
-    jsonResponse(res, 415, { error: "Preview is available for PDF review outputs only." });
+  const format = String(deliverable.format || "").toLowerCase();
+  const previewableFormat = format === "pdf"
+    || format === "application/pdf"
+    || format.startsWith("image/");
+  if (!previewableFormat) {
+    jsonResponse(res, 415, { error: "Preview is available for PDF and image review outputs only." });
     return;
   }
   const filePath = resolveWorkspaceFile(deliverable.file_path);
@@ -214,9 +223,14 @@ function serveDeliverableFile(db, res, id) {
     return;
   }
   const stats = fs.statSync(filePath);
+  const extension = path.extname(filePath).toLowerCase();
+  if (!new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif"]).has(extension)) {
+    jsonResponse(res, 415, { error: "This review output format cannot be previewed safely." });
+    return;
+  }
   const filename = path.basename(filePath).replace(/["\r\n]/g, "");
   res.writeHead(200, {
-    "content-type": CONTENT_TYPES[path.extname(filePath)] || "application/octet-stream",
+    "content-type": CONTENT_TYPES[extension] || "application/octet-stream",
     "content-length": stats.size,
     "content-disposition": `inline; filename="${filename}"`,
     "cache-control": "no-store",
@@ -875,6 +889,15 @@ function createApp(options = {}) {
       if (req.method === "POST" && liveAiWorkerRequest) {
         const body = await readBody(req);
         const result = requestLiveAiWorker(db, liveAiWorkerRequest.id, body || {});
+        broadcastState();
+        jsonResponse(res, 202, { result });
+        return;
+      }
+
+      const productBuilderAsset = routeMatch(url.pathname, "/api/workflows/:id/product-builder/prepare-asset");
+      if (req.method === "POST" && productBuilderAsset) {
+        const body = await readBody(req);
+        const result = prepareProductBuilderAsset(db, productBuilderAsset.id, body || {});
         broadcastState();
         jsonResponse(res, 202, { result });
         return;

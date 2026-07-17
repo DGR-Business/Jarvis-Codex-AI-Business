@@ -188,6 +188,20 @@ Product Builder may:
 Product Builder may not publish, upload, contact a buyer, change an account, or
 approve its own output.
 
+Implementation checkpoint on 2026-07-17:
+
+- one exact Product Builder image specification is approval-bound to prompt,
+  size, quality, format, model, tool, limits, trace policy, A$1 cap, and no
+  external effects;
+- `gpt-image-2` output pricing is included in worst-case AUD approval pricing;
+- exactly one returned PNG, JPEG, or WebP is signature-checked, hash-versioned,
+  written atomically under managed artifacts, and held for review;
+- the image and a readable work result are both frozen for the exact Quality
+  Reviewer task;
+- PDF and image review outputs open safely inside the dashboard;
+- the standalone launcher loads the image capability from the same protected
+  OpenAI profile, while every actual generation remains separately approved.
+
 Quality Reviewer may:
 
 - inspect only the exact local deliverable or asset identifiers approved for
@@ -293,8 +307,9 @@ worker's authority.
 
 The scheduler-backed monitor now checks terminal attempts for receipts,
 incomplete or review-required receipt state, stale live runs, unknown outcomes,
-and receipt-chain integrity. Focused tests and the live System Checks view
-passed on 2026-07-17.
+receipt-chain integrity, missing or invalid task-scoped context, incomplete
+Quality Reviewer chains, and orphaned or stopped Chief assignments. Focused
+tests and the live System Checks view passed on 2026-07-17.
 
 ## Retention And Privacy Decision
 
@@ -332,10 +347,10 @@ This is a required operator decision, not a detail for a worker to infer.
 | Gate | Evidence required | Status on 2026-07-17 |
 | --- | --- | --- |
 | 0. Operating contract | Active plan, accepted decision record, current pointers, and fixed roster. | Passed on 2026-07-17. |
-| 1. Bounded worker operations | Persisted work packets, handoffs, exact approvals, attempt states, receipts, audit links, and focused monitoring tests. | Passed on 2026-07-17: schema 12, immutable receipt/provenance chains, provider-dispatch safety, model routing, focused monitor checks, 123 tests, doctor, backup restore, and real-browser proof. |
+| 1. Bounded worker operations | Persisted work packets, handoffs, exact approvals, attempt states, receipts, audit links, and focused monitoring tests. | Passed on 2026-07-17: schemas 12-14, immutable receipts, task-scoped context, exact Chief assignment lifecycle, frozen Quality Reviewer inputs, provider-dispatch safety, model routing, focused monitor checks, 136 tests, doctor, backup restore, and real-browser proof. |
 | 2. Demand Validator supplied evidence | One active no-tool run within cap, complete receipt, technical pass, and Daniel usefulness verdict. | Exact run prepared on 2026-07-17 and waiting for Daniel's approval. It uses Sol, one turn, 1,200 output tokens, no tools/effects, an A$0.10 priced upper bound, and an A$1 hard cap. No provider call has occurred. |
 | 3. Demand Validator live web | Separate approved A$2/three-search/120-second run with grounded sources, receipt, cost review, and no external side effect. | Tool bridge and controls are present; live search-enabled SDK proof is not recorded as complete. |
-| 4. Supervised build and review | Product Builder produces one bounded local product/asset result and Quality Reviewer inspects exact approved inputs, both with receipts and Daniel review. | Contracts and guarded tool definitions exist; active live proof is pending. |
+| 4. Supervised build and review | Product Builder produces one bounded local product/asset result and Quality Reviewer inspects exact approved inputs, both with receipts and Daniel review. | Runtime foundation passed locally with a mocked SDK runner: exact image approval, one validated local asset, readable work result, atomic/replay-safe quality records, safe dashboard preview, and no publishing. The separately approved paid Product Builder and Quality Reviewer proof is still pending. |
 | 5. Retention and privacy | Daniel approves the data classes, storage locations, durations, deletion rules, and provider-storage policy. | Decision required. |
 | 6. Phase 1 release | Complete tests, health check, monitor cycle, one safe queued proof, event-timeline update, recovery check, and ordinary-language operator review. | Pending. |
 

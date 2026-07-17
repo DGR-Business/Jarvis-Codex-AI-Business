@@ -4095,7 +4095,52 @@ test("HTTP API runs a protected AI Team proof drill from the Workbench", async (
   }
 });
 
-test("HTTP API serves registered PDF review outputs for dashboard preview", async () => {
+test("HTTP API prepares a guarded Product Builder asset without calling a model", async () => {
+  const db = seededDb("server-product-builder-asset");
+  const app = createApp({ db, dbPath: tempDbPath("server-product-builder-asset-unused"), security: false });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  const port = app.server.address().port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const response = await fetch(
+      `${baseUrl}/api/workflows/wf-digital-product-pilot-proof/product-builder/prepare-asset`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          subject: "Weekly Cash-Control Checklist",
+          purpose: "Create a clear cover visual for the smallest useful digital product.",
+          prompt: "A clean square cover visual for a weekly freelancer cash-control checklist, simple ledger grid, no people, logos, or promises of financial outcomes.",
+          acceptanceCriteria: [
+            "The subject is immediately clear.",
+            "No personal identity or unsupported financial claim appears.",
+          ],
+          constraints: ["Faceless and voiceless", "Do not publish"],
+          quality: "low",
+          size: "1024x1024",
+          outputFormat: "png",
+        }),
+      },
+    );
+    const payload = await response.json();
+    const modelCalls = all(db, "SELECT * FROM model_calls");
+
+    assert.equal(response.status, 202);
+    assert.equal(payload.result.status, "blocked");
+    assert.equal(payload.result.worker.id, "product_builder");
+    assert.equal(payload.result.task.payload.liveSpendRequest.parameters.requiredReviewer, "quality_reviewer");
+    assert.deepEqual(payload.result.task.payload.liveSpendRequest.effects, []);
+    assert.equal(payload.result.approval.status, "pending");
+    assert.equal(modelCalls.length, 0);
+  } finally {
+    await new Promise((resolve) => app.wss.close(resolve));
+    await new Promise((resolve) => app.server.close(resolve));
+    db.close();
+  }
+});
+
+test("HTTP API serves registered PDF and image review outputs for dashboard preview", async () => {
   const previousPackDir = process.env.JARVIS_APPROVAL_PACK_DIR;
   const packDir = path.join(
     CONFIG.artifactRoot,
@@ -4121,9 +4166,30 @@ test("HTTP API serves registered PDF review outputs for dashboard preview", asyn
     const bytes = await preview.arrayBuffer();
     assert.ok(bytes.byteLength > 1000);
 
-    const nonPdf = get(db, "SELECT id FROM deliverables WHERE format <> 'pdf' ORDER BY created_at LIMIT 1");
-    const nonPdfPreview = await fetch(`${baseUrl}/api/deliverables/${encodeURIComponent(nonPdf.id)}/file`);
-    assert.equal(nonPdfPreview.status, 415);
+    const imagePath = path.join(packDir, "preview-image.png");
+    fs.mkdirSync(packDir, { recursive: true });
+    fs.writeFileSync(
+      imagePath,
+      Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nT0AAAAASUVORK5CYII=", "base64"),
+    );
+    const ts = new Date().toISOString();
+    run(
+      db,
+      `INSERT INTO deliverables
+       (id, workflow_id, title, human_name, audience, format, status, file_path, summary, metadata, created_at, updated_at)
+       VALUES ('deliv_preview_image', 'wf-digital-product-pilot-proof', 'Preview image', 'Preview Image',
+         'operator', 'image/png', 'ready_for_review', ?, 'Safe image preview proof.', '{}', ?, ?)`,
+      [imagePath, ts, ts],
+    );
+    const imagePreview = await fetch(`${baseUrl}/api/deliverables/deliv_preview_image/file`);
+    assert.equal(imagePreview.status, 200);
+    assert.match(imagePreview.headers.get("content-type"), /image\/png/);
+    assert.match(imagePreview.headers.get("content-disposition"), /inline/);
+    assert.ok((await imagePreview.arrayBuffer()).byteLength > 32);
+
+    const nonPreviewable = get(db, "SELECT id FROM deliverables WHERE format NOT IN ('pdf', 'image/png') ORDER BY created_at LIMIT 1");
+    const nonPreviewableResponse = await fetch(`${baseUrl}/api/deliverables/${encodeURIComponent(nonPreviewable.id)}/file`);
+    assert.equal(nonPreviewableResponse.status, 415);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));

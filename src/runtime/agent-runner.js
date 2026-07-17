@@ -21,6 +21,12 @@ const { upsertDeliverableSection } = require("./deliverables");
 const { recordPilotRunReview } = require("./agent-pilot");
 const { prepareDemandInterestResearch } = require("./demand-interest-test");
 const { renewTaskClaim } = require("./task-claims");
+const {
+  prepareChiefSpecialistAssignment,
+  updateChiefAssignmentLifecycle,
+  updateReviewedChiefAssignment,
+} = require("./chief-orchestration");
+const { prepareRequiredQualityReview, recordCompletedQualityReview } = require("./quality-review");
 
 const AGENT_POLICIES = {
   goal_planning: {
@@ -659,6 +665,59 @@ function updateDeliverables(db, task, output) {
   return targeted.map((deliverable) => deliverable.id);
 }
 
+function stableTaskId(value) {
+  return String(value || "task").replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 90);
+}
+
+function registerReviewableLiveOutput(db, task, agentDefinition, output) {
+  const requiredReviewer = task.payload?.liveSpendRequest?.parameters?.requiredReviewer || null;
+  if (
+    task.kind !== "live_ai_worker_execution"
+    || task.agent === "quality_reviewer"
+    || requiredReviewer !== "quality_reviewer"
+  ) {
+    return [];
+  }
+  const deliverableId = `deliv_live_output_${stableTaskId(task.id)}`;
+  const ts = now();
+  const humanName = `${agentDefinition.name} Work Result`;
+  run(
+    db,
+    `INSERT INTO deliverables
+     (id, workflow_id, command_id, task_id, venture_id, title, human_name, audience,
+      format, status, summary, metadata, artifact_key, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'Specialist Work Result', ?, 'operator',
+      'text/markdown', 'drafting', ?, ?, ?, 1, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       human_name = excluded.human_name,
+       status = 'drafting',
+       summary = excluded.summary,
+       metadata = excluded.metadata,
+       updated_at = excluded.updated_at`,
+    [
+      deliverableId,
+      task.workflow_id,
+      task.payload?.commandId || null,
+      task.id,
+      task.venture_id,
+      humanName,
+      output.summary,
+      toJson({
+        workerId: agentDefinition.id,
+        workerName: agentDefinition.name,
+        sourceTaskId: task.id,
+        requiredReviewer: "quality_reviewer",
+        materialize: true,
+      }),
+      `live-worker-${stableTaskId(task.id)}`,
+      ts,
+      ts,
+    ],
+  );
+  upsertDeliverableSection(db, deliverableId, task, output, 0);
+  return [deliverableId];
+}
+
 function enforceBudget(task, policy) {
   const taskBudget = Number(task.cost_budget_cents) || policy.maxCostCents;
   if (policy.maxCostCents > taskBudget) {
@@ -815,9 +874,18 @@ async function runAgentTask(db, task, options = {}) {
   let spendApproval = null;
   let researchBridge = null;
   let providerReceipt = null;
+  let chiefAssignment = null;
+  let chiefAssignmentLifecycle = null;
+  let qualityGate = null;
   const toolChecks = [];
 
   try {
+    chiefAssignmentLifecycle = updateChiefAssignmentLifecycle(db, task, {
+      status: "specialist_work_running",
+      note: `${agentDefinition.name} started the exact bounded assignment.`,
+      childTaskStatus: "running",
+      resolved: false,
+    });
     addAgentTrace(db, agentRun.id, "policy_selected", "Worker policy selected", `${agentDefinition.name} uses ${policy.modelClass} with a ${policy.maxCostCents}c cap.`, {
       allowedTools: policy.allowedTools,
       blockedTools: policy.blockedTools,
@@ -900,6 +968,9 @@ async function runAgentTask(db, task, options = {}) {
         reason: "Update local review outputs with the live worker result.",
       })));
       touchedDeliverables = updateDeliverables(db, task, output);
+      touchedDeliverables.push(...registerReviewableLiveOutput(db, task, agentDefinition, output));
+      touchedDeliverables.push(...(liveWorker.raw.generatedAssets || []).map((asset) => asset.id).filter(Boolean));
+      touchedDeliverables = [...new Set(touchedDeliverables)];
       addAgentTrace(db, agentRun.id, "deliverables_updated", "Review outputs updated", `${touchedDeliverables.length} deliverable${touchedDeliverables.length === 1 ? "" : "s"} updated by ${agentDefinition.name}.`, {
         deliverables: touchedDeliverables,
         outputHeading: output.heading,
@@ -916,6 +987,12 @@ async function runAgentTask(db, task, options = {}) {
           }
           : null,
       });
+      const requiredReviewer = task.payload?.liveSpendRequest?.parameters?.requiredReviewer || null;
+      const automaticHandoffTo = agentDefinition.id === "chief_of_staff"
+        || agentDefinition.id === "quality_reviewer"
+        || requiredReviewer === "quality_reviewer"
+        ? null
+        : "chief_of_staff";
       finishAgentRun(db, agentRun.id, {
         status: "completed",
         outputSummary: output.summary,
@@ -923,7 +1000,7 @@ async function runAgentTask(db, task, options = {}) {
         estimatedCostCents: effectiveModelCall.estimatedCostCents,
         actualCostCents: effectiveModelCall.actualCostCents,
         approvalRequired: true,
-        handoffTo: "chief_of_staff",
+        handoffTo: automaticHandoffTo,
         evalStatus: evalResult.status,
         metadata: {
           taskKind: task.kind,
@@ -951,6 +1028,112 @@ async function runAgentTask(db, task, options = {}) {
           toolGate: toolChecks.filter(Boolean),
         },
       });
+      const persistedRun = get(db, "SELECT * FROM agent_runs WHERE id = ?", [agentRun.id]);
+      if (agentDefinition.id === "chief_of_staff" && task.payload?.chiefOrchestration?.enabled === true) {
+        try {
+          chiefAssignment = prepareChiefSpecialistAssignment(db, {
+            task,
+            run: persistedRun,
+            output,
+          });
+          addAgentTrace(
+            db,
+            agentRun.id,
+            "chief_assignment_checked",
+            chiefAssignment.assignment ? "Specialist assignment prepared" : "No specialist assignment needed",
+            chiefAssignment.assignment
+              ? `${chiefAssignment.assignment.workerName} received one bounded next assignment.`
+              : "Chief of Staff did not open another worker assignment.",
+            chiefAssignment,
+          );
+        } catch (error) {
+          chiefAssignment = { status: "needs_review", error: error.message };
+          addAgentTrace(
+            db,
+            agentRun.id,
+            "chief_assignment_rejected",
+            "Specialist assignment needs review",
+            error.message,
+            { safeFailure: true, noProviderRetry: true },
+          );
+          insertEvent(db, {
+            level: "warn",
+            actor: "chief_of_staff",
+            type: "chief.specialist_assignment_rejected",
+            entityType: "agent_run",
+            entityId: agentRun.id,
+            message: `Chief of Staff's proposed specialist assignment was not queued: ${error.message}`,
+            metadata: { taskId: task.id, workflowId: task.workflow_id, noProviderRetry: true },
+          });
+        }
+      }
+      try {
+        qualityGate = agentDefinition.id === "quality_reviewer"
+          ? recordCompletedQualityReview(db, { task, run: persistedRun, output })
+          : prepareRequiredQualityReview(db, {
+            task,
+            run: persistedRun,
+            output,
+            deliverableIds: touchedDeliverables,
+          });
+        if (!["not_required", "not_quality_review", "not_deliverable_review"].includes(qualityGate.status)) {
+          addAgentTrace(
+            db,
+            agentRun.id,
+            "quality_gate_updated",
+            qualityGate.status === "passed" ? "Quality review passed" : "Quality review gate updated",
+            qualityGate.status === "waiting_for_approval"
+              ? "The exact output is frozen and a separate Quality Reviewer approval is ready."
+              : qualityGate.status === "passed"
+                ? "The exact reviewed output is ready for Daniel."
+                : qualityGate.reason || "The quality review requires attention.",
+            qualityGate,
+          );
+        }
+      } catch (error) {
+        qualityGate = { status: "needs_attention", error: error.message };
+        addAgentTrace(
+          db,
+          agentRun.id,
+          "quality_gate_needs_attention",
+          "Quality review gate needs attention",
+          error.message,
+          { safeFailure: true, noProviderRetry: true },
+        );
+        insertEvent(db, {
+          level: "warn",
+          actor: "jarvis",
+          type: "quality.review_gate_needs_attention",
+          entityType: "agent_run",
+          entityId: agentRun.id,
+          message: `The provider result was retained, but Jarvis could not complete the local quality gate: ${error.message}`,
+          metadata: { taskId: task.id, workflowId: task.workflow_id, noProviderRetry: true },
+          });
+      }
+      if (agentDefinition.id === "quality_reviewer") {
+        chiefAssignmentLifecycle = updateReviewedChiefAssignment(db, task, qualityGate);
+      } else if (qualityGate?.status === "waiting_for_approval") {
+        chiefAssignmentLifecycle = updateChiefAssignmentLifecycle(db, task, {
+          status: "specialist_quality_review_pending",
+          note: "The specialist finished and its exact output is waiting for the separate Quality Reviewer check.",
+          childTaskStatus: "completed",
+          resolved: false,
+        });
+      } else if (qualityGate?.status === "needs_attention") {
+        chiefAssignmentLifecycle = updateChiefAssignmentLifecycle(db, task, {
+          status: "specialist_quality_review_pending",
+          note: "The specialist finished, but Jarvis needs to repair or review the local quality-check handoff.",
+          childTaskStatus: "completed",
+          resolved: false,
+        });
+      } else {
+        chiefAssignmentLifecycle = updateChiefAssignmentLifecycle(db, task, {
+          status: "specialist_work_completed",
+          note: `${agentDefinition.name} completed the exact bounded assignment.`,
+          childTaskStatus: "completed",
+          resolved: true,
+        });
+      }
       const pilotReview = recordPilotRunReview(db, {
         runId: agentRun.id,
         task,
@@ -969,7 +1152,9 @@ async function runAgentTask(db, task, options = {}) {
           evalId: evalResult.id,
           evalStatus: evalResult.status,
           evalScore: evalResult.score,
-          handoffTo: "chief_of_staff",
+          handoffTo: chiefAssignment?.assignment?.workerId
+            || qualityGate?.task?.agent
+            || automaticHandoffTo,
         },
         modelPolicy: {
           callId: effectiveModelCall.id,
@@ -1008,6 +1193,9 @@ async function runAgentTask(db, task, options = {}) {
         deliverables: touchedDeliverables,
         humanReviewRequired,
         pilotReview,
+        chiefAssignment,
+        chiefAssignmentLifecycle,
+        qualityGate,
       };
     }
 
@@ -1152,6 +1340,12 @@ async function runAgentTask(db, task, options = {}) {
         toolGate: toolChecks.filter(Boolean),
       },
     });
+    chiefAssignmentLifecycle = updateChiefAssignmentLifecycle(db, task, {
+      status: "specialist_work_completed",
+      note: `${agentDefinition.name} completed the protected internal assignment.`,
+      childTaskStatus: "completed",
+      resolved: true,
+    });
 
     return {
       mode: research?.mode === "live" ? "live-research-agent" : "dry-run-agent",
@@ -1203,6 +1397,7 @@ async function runAgentTask(db, task, options = {}) {
       researchBridge: summarizeResearchBridge(researchBridge),
       deliverables: touchedDeliverables,
       humanReviewRequired,
+      chiefAssignmentLifecycle,
     };
   } catch (error) {
     if (isAgentToolApprovalRequiredError(error)) {
@@ -1274,6 +1469,12 @@ async function runAgentTask(db, task, options = {}) {
       taskKind: task.kind,
       workflowId: task.workflow_id,
       providerReceipt: error.providerReceipt || null,
+    });
+    updateChiefAssignmentLifecycle(db, task, {
+      status: "specialist_work_failed",
+      note: `${agentDefinition.name} could not complete the bounded assignment: ${error.message}`,
+      childTaskStatus: "failed",
+      resolved: true,
     });
     throw error;
   }

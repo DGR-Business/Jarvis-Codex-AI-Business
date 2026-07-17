@@ -247,7 +247,7 @@ function currentWorkerPacketHash(db, task, descriptor) {
   return scopeHash(stablePacket);
 }
 
-function validateRequestEnvelope(spend, descriptor) {
+function executionRequestEnvelopes(spend, descriptor) {
   const envelope = {
     kind: spend.type,
     provider: spend.provider,
@@ -285,7 +285,11 @@ function validateRequestEnvelope(spend, descriptor) {
       deadlineMs: Number(descriptor.limits?.deadlineMs),
     },
     tracePolicy: descriptor.tracePolicy,
-    preflightRequirements: descriptor.preflightRequirements,
+    preflightRequirements: {
+      providerEnv: asCanonicalList(descriptor.preflightRequirements?.providerEnv),
+      liveFlags: asCanonicalList(descriptor.preflightRequirements?.liveFlags),
+      runtimeCapabilities: asCanonicalList(descriptor.preflightRequirements?.runtimeCapabilities),
+    },
     externalEffects: descriptor.externalEffects || [],
     maxCostCents: Number(descriptor.maxCostCents),
     pricedWorstCaseCostCents: Number(descriptor.worstCaseCost?.amountCents),
@@ -299,8 +303,18 @@ function validateRequestEnvelope(spend, descriptor) {
     envelope.parameters = spend.parameters;
     approved.parameters = descriptor.parameters || {};
   }
+  return { envelope, approved };
+}
+
+function validateRequestEnvelope(spend, descriptor) {
+  const { envelope, approved } = executionRequestEnvelopes(spend, descriptor);
   if (scopeHash(envelope) !== scopeHash(approved)) {
-    return { valid: false, reason: "The task scope changed after approval was requested." };
+    return {
+      valid: false,
+      reason: "The task scope changed after approval was requested.",
+      envelopeHash: scopeHash(envelope),
+      approvedHash: scopeHash(approved),
+    };
   }
   return { valid: true };
 }
@@ -379,6 +393,7 @@ module.exports = {
   canonicalJson,
   consumeApproval,
   createExecutionDescriptor,
+  executionRequestEnvelopes,
   ensureApprovalScope,
   persistApprovalScope,
   scopeHash,

@@ -102,43 +102,82 @@ function sdkPricingEstimate(model, usage, approvedCapCents, toolActivity) {
   };
 }
 
+function detectedImageMediaType(bytes) {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    bytes.length >= 12
+    && bytes.subarray(0, 4).toString("ascii") === "RIFF"
+    && bytes.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
 function persistGeneratedAssets(db, task, capabilityPlan, result) {
   const generated = extractGeneratedImages(result);
-  if (!generated.length) return [];
   const imageSpec = capabilityPlan.specs.find((spec) => spec.sdkName === "image_generation");
+  if (!imageSpec) return [];
+  if (generated.length !== 1) {
+    throw new Error(`The approved Product Builder action required exactly one image, but OpenAI returned ${generated.length}.`);
+  }
   const format = imageSpec?.options?.outputFormat || "png";
   const extension = ["png", "jpeg", "webp"].includes(format) ? format : "png";
   const outputDir = path.join(CONFIG.artifactRoot, "workflows", safeId(task.workflow_id), "generated-assets");
   fs.mkdirSync(outputDir, { recursive: true });
   const ts = now();
   return generated.map((image, index) => {
+    const mediaType = detectedImageMediaType(image.bytes);
+    const expectedMediaType = `image/${extension === "jpeg" ? "jpeg" : extension}`;
+    if (!mediaType || mediaType !== expectedMediaType) {
+      throw new Error(`OpenAI returned an asset that did not match the approved ${expectedMediaType} format.`);
+    }
     const deliverableId = `deliv_generated_${safeId(task.id)}_${index + 1}`;
-    const outputPath = path.join(outputDir, `${deliverableId}.${extension}`);
-    fs.writeFileSync(outputPath, image.bytes);
+    const outputPath = path.join(outputDir, `${deliverableId}_${image.hash.slice(0, 12)}.${extension}`);
+    if (fs.existsSync(outputPath)) {
+      const storedHash = crypto.createHash("sha256").update(fs.readFileSync(outputPath)).digest("hex");
+      if (storedHash !== image.hash) throw new Error("The generated asset path already contains different bytes.");
+    } else {
+      const temporaryPath = `${outputPath}.${process.pid}.${randomId().slice(0, 8)}.tmp`;
+      fs.writeFileSync(temporaryPath, image.bytes, { flag: "wx" });
+      fs.renameSync(temporaryPath, outputPath);
+    }
     const relativePath = path.relative(CONFIG.rootDir, outputPath).replace(/\\/g, "/");
     const humanName = `${task.payload?.subject || task.title || "Product"} Visual Asset ${index + 1}`;
     run(
       db,
       `INSERT INTO deliverables
-       (id, workflow_id, command_id, task_id, title, human_name, audience, format, status, file_path, summary, metadata, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (id, workflow_id, command_id, task_id, venture_id, title, human_name, audience,
+        format, status, file_path, summary, metadata, content_hash, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          human_name = excluded.human_name,
          status = excluded.status,
          file_path = excluded.file_path,
          summary = excluded.summary,
          metadata = excluded.metadata,
+         content_hash = excluded.content_hash,
+         version = CASE
+           WHEN deliverables.content_hash IS NOT excluded.content_hash THEN deliverables.version + 1
+           ELSE deliverables.version
+         END,
          updated_at = excluded.updated_at`,
       [
         deliverableId,
         task.workflow_id,
         task.payload?.commandId || null,
         task.id,
+        task.venture_id,
         "Generated Product Asset",
         humanName,
         "operator",
-        `image/${extension === "jpeg" ? "jpeg" : extension}`,
-        "ready_for_review",
+        mediaType,
+        "draft",
         relativePath,
         "Capped AI-generated visual asset. Review brand fit, text accuracy, IP/platform risk, and product usefulness before any publishing.",
         toJson({
@@ -151,11 +190,20 @@ function persistGeneratedAssets(db, task, capabilityPlan, result) {
           bytes: image.bytes.length,
           approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
         }),
+        image.hash,
         ts,
         ts,
       ],
     );
-    return { id: deliverableId, humanName, filePath: relativePath, bytes: image.bytes.length, sha256: image.hash };
+    return {
+      id: deliverableId,
+      humanName,
+      filePath: relativePath,
+      format: mediaType,
+      status: "draft",
+      bytes: image.bytes.length,
+      sha256: image.hash,
+    };
   });
 }
 

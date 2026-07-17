@@ -4,7 +4,7 @@ const { randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 
-const LATEST_SCHEMA_VERSION = 12;
+const LATEST_SCHEMA_VERSION = 14;
 
 function now() {
   return new Date().toISOString();
@@ -1145,6 +1145,153 @@ function applyAgentOperationsEvidenceMigration(db) {
   }
 }
 
+function applyAgentContextMigration(db) {
+  if (migrationApplied(db, 13)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS venture_records (
+        id TEXT PRIMARY KEY,
+        venture_id TEXT NOT NULL,
+        record_class TEXT NOT NULL,
+        record_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '{}',
+        sensitivity TEXT NOT NULL DEFAULT 'business_internal',
+        provider_policy TEXT NOT NULL DEFAULT 'summary_only',
+        source_kind TEXT NOT NULL DEFAULT 'operator_record',
+        source_reference TEXT,
+        content_hash TEXT NOT NULL,
+        effective_at TEXT,
+        expires_at TEXT,
+        supersedes_record_id TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (venture_id) REFERENCES ventures(id),
+        FOREIGN KEY (supersedes_record_id) REFERENCES venture_records(id),
+        CHECK (record_class IN ('venture', 'evidence', 'finance', 'production', 'customer', 'legal', 'operations', 'learning')),
+        CHECK (sensitivity IN ('public', 'business_internal', 'confidential', 'personal', 'restricted')),
+        CHECK (provider_policy IN ('full', 'summary_only', 'local_only'))
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_context_snapshots (
+        id TEXT PRIMARY KEY,
+        venture_id TEXT NOT NULL,
+        workflow_id TEXT,
+        task_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        policy_version TEXT NOT NULL,
+        access_profile TEXT NOT NULL,
+        record_classes TEXT NOT NULL,
+        record_count INTEGER NOT NULL DEFAULT 0,
+        snapshot_hash TEXT NOT NULL UNIQUE,
+        snapshot TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (venture_id) REFERENCES ventures(id),
+        FOREIGN KEY (workflow_id) REFERENCES workflows(id),
+        FOREIGN KEY (task_id) REFERENCES tasks(id),
+        FOREIGN KEY (agent_id) REFERENCES agent_definitions(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_venture_records_context
+        ON venture_records(venture_id, record_class, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_context_task
+        ON agent_context_snapshots(task_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_context_agent
+        ON agent_context_snapshots(agent_id, created_at DESC);
+
+      CREATE TRIGGER IF NOT EXISTS trg_venture_records_immutable_update
+      BEFORE UPDATE ON venture_records
+      BEGIN
+        SELECT RAISE(ABORT, 'Venture records are immutable; add a superseding record.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_venture_records_immutable_delete
+      BEFORE DELETE ON venture_records
+      BEGIN
+        SELECT RAISE(ABORT, 'Venture records are immutable; add a superseding record.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_agent_context_snapshots_immutable_update
+      BEFORE UPDATE ON agent_context_snapshots
+      BEGIN
+        SELECT RAISE(ABORT, 'Agent context snapshots are immutable; prepare a new assignment.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_agent_context_snapshots_immutable_delete
+      BEFORE DELETE ON agent_context_snapshots
+      BEGIN
+        SELECT RAISE(ABORT, 'Agent context snapshots are immutable.');
+      END;
+    `);
+
+    recordMigration(db, 13, "task-scoped-agent-context");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function applyDeliverableQualityReviewMigration(db) {
+  if (migrationApplied(db, 14)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS deliverable_quality_reviews (
+        id TEXT PRIMARY KEY,
+        venture_id TEXT NOT NULL,
+        workflow_id TEXT NOT NULL,
+        deliverable_id TEXT NOT NULL,
+        source_run_id TEXT,
+        review_task_id TEXT NOT NULL,
+        review_run_id TEXT NOT NULL,
+        reviewer_agent_id TEXT NOT NULL,
+        input_hash TEXT NOT NULL,
+        verdict TEXT NOT NULL,
+        quality_score INTEGER NOT NULL,
+        findings TEXT NOT NULL DEFAULT '[]',
+        operator_recommendation TEXT NOT NULL DEFAULT '',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        UNIQUE(deliverable_id, review_run_id),
+        FOREIGN KEY (venture_id) REFERENCES ventures(id),
+        FOREIGN KEY (workflow_id) REFERENCES workflows(id),
+        FOREIGN KEY (deliverable_id) REFERENCES deliverables(id),
+        FOREIGN KEY (source_run_id) REFERENCES agent_runs(id),
+        FOREIGN KEY (review_task_id) REFERENCES tasks(id),
+        FOREIGN KEY (review_run_id) REFERENCES agent_runs(id),
+        FOREIGN KEY (reviewer_agent_id) REFERENCES agent_definitions(id),
+        CHECK (verdict IN ('passed', 'changes_required', 'blocked'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_deliverable_quality_current
+        ON deliverable_quality_reviews(deliverable_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_deliverable_quality_workflow
+        ON deliverable_quality_reviews(workflow_id, created_at DESC);
+
+      CREATE TRIGGER IF NOT EXISTS trg_deliverable_quality_reviews_immutable_update
+      BEFORE UPDATE ON deliverable_quality_reviews
+      BEGIN
+        SELECT RAISE(ABORT, 'Deliverable quality reviews are immutable; run a new review.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_deliverable_quality_reviews_immutable_delete
+      BEFORE DELETE ON deliverable_quality_reviews
+      BEGIN
+        SELECT RAISE(ABORT, 'Deliverable quality reviews are immutable.');
+      END;
+    `);
+
+    recordMigration(db, 14, "deliverable-quality-review-gate");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1951,6 +2098,8 @@ function migrate(db) {
   applyAccountingLedgerMigration(db);
   applyCommercialDataTruthMigration(db);
   applyAgentOperationsEvidenceMigration(db);
+  applyAgentContextMigration(db);
+  applyDeliverableQualityReviewMigration(db);
 }
 
 function putSetting(db, key, value) {

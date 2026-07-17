@@ -219,9 +219,11 @@ test("source backup excludes reproducible and transient directories", async () =
     fs.mkdirSync(path.join(sourceRoot, "src"), { recursive: true });
     fs.mkdirSync(path.join(sourceRoot, "node_modules", "pkg"), { recursive: true });
     fs.mkdirSync(path.join(sourceRoot, "tmp"), { recursive: true });
+    fs.mkdirSync(path.join(sourceRoot, "private"), { recursive: true });
     fs.writeFileSync(path.join(sourceRoot, "src", "app.js"), "module.exports = true;\n");
     fs.writeFileSync(path.join(sourceRoot, "node_modules", "pkg", "index.js"), "ignored\n");
     fs.writeFileSync(path.join(sourceRoot, "tmp", "scratch.txt"), "ignored\n");
+    fs.writeFileSync(path.join(sourceRoot, "private", "runtime-credentials.json"), "ignored\n");
     const result = await createBackup({
       kind: "source",
       sourceRoot,
@@ -232,6 +234,7 @@ test("source backup excludes reproducible and transient directories", async () =
     assert.equal(fs.readFileSync(path.join(restoreRoot, "src", "app.js"), "utf8"), "module.exports = true;\n");
     assert.equal(fs.existsSync(path.join(restoreRoot, "node_modules")), false);
     assert.equal(fs.existsSync(path.join(restoreRoot, "tmp")), false);
+    assert.equal(fs.existsSync(path.join(restoreRoot, "private")), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -265,7 +268,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -302,7 +305,7 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 12);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 14);
   } finally {
     closeRuntime(runtime);
   }

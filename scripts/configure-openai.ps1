@@ -44,10 +44,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $profile = [ordered]@{
-  version = 1
+  version = 2
   openAiApiKeyProtected = ConvertFrom-SecureString $secureKey
   enableLiveModels = $true
   enableLiveResearch = $true
+  enableImageGeneration = $true
   configuredAt = [DateTime]::UtcNow.ToString("o")
 }
 $temporaryPath = "$credentialPath.tmp"

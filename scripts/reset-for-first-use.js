@@ -29,7 +29,7 @@ async function assertDashboardStopped(port) {
     const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: controller.signal });
     if (response.ok) {
       const health = await response.json();
-      if (health?.ok) throw new Error("Jarvis is still running. Use Stop Jarvis.bat before applying the first-use reset.");
+      if (health?.ok) throw new Error("Jarvis is still running. Use STOP JARVIS.cmd before applying the first-use reset.");
     }
   } catch (error) {
     if (error.name !== "AbortError" && /still running/i.test(error.message)) throw error;

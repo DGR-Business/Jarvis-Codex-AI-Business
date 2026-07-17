@@ -1,5 +1,7 @@
 const crypto = require("node:crypto");
 const { all, fromJson, get } = require("../db");
+const { contextForModel } = require("./agent-context");
+const { approvedDeliverableReviewTargets } = require("./deliverable-review-bindings");
 
 const MODEL_PACKET_SCHEMA = "jarvis_worker_model_packet_v1";
 const WORKER_OUTPUT_SCHEMA = "jarvis_worker_output_v1";
@@ -23,6 +25,13 @@ const WORKER_CONTRACTS = {
       decisionNeeded: "string",
       successMetric: "string",
       stopRule: "string",
+      specialistNeeded: "boolean",
+      specialistWorker: "string",
+      specialistObjective: "string",
+      specialistExpectedOutput: "string",
+      specialistMode: "string",
+      specialistContextClasses: "stringArray",
+      specialistReason: "string",
     },
   },
   opportunity_scout: {
@@ -270,6 +279,18 @@ function focusPayload(payload, keys) {
   return focus;
 }
 
+function assignmentBrief(payload) {
+  const brief = payload.workBrief;
+  if (!brief || typeof brief !== "object" || Array.isArray(brief)) return null;
+  return {
+    objective: compactText(brief.objective, 800),
+    deliverable: compactText(brief.deliverable, 800),
+    assetPrompt: compactText(brief.assetPrompt, 2400),
+    constraints: list(brief.constraints, 6),
+    acceptanceCriteria: list(brief.acceptanceCriteria, 6),
+  };
+}
+
 function approvedAssetDescriptors(db, task, payload, workerId) {
   if (!new Set(["product_builder", "quality_reviewer"]).has(workerId)) return [];
   const supplied = Array.isArray(payload.approvedAssets) ? payload.approvedAssets : [];
@@ -354,8 +375,10 @@ function buildWorkerModelPacket(db, task, agentDefinition) {
       nextActions: list(parsed(scorecard.next_actions, []), 4),
     } : null,
     focus: focusPayload(payload, contract.focusKeys),
+    assignmentBrief: assignmentBrief(payload),
     suppliedEvidenceFixture: payload.pilotFixture || null,
     approvedAssetInputs: approvedAssetDescriptors(db, task, payload, workerId),
+    qualityReviewTargets: approvedDeliverableReviewTargets(db, task, payload, workerId),
     relevantCompletedWork: recentWork,
     evidenceRules: {
       liveEvidenceOnlyWhenSupplied: true,
@@ -363,6 +386,9 @@ function buildWorkerModelPacket(db, task, agentDefinition) {
       externalActionsAllowed: false,
     },
   };
+  if (payload.contextSnapshot) {
+    packet.ventureContext = contextForModel(payload.contextSnapshot);
+  }
   packet.packetHash = crypto.createHash("sha256").update(JSON.stringify(packet)).digest("hex");
   return packet;
 }

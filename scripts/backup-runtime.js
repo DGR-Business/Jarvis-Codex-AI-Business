@@ -8,7 +8,14 @@ function argValue(name) {
 }
 
 async function main() {
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    console.log("Usage: node scripts/backup-runtime.js [--kind source|database|artifacts|all] [--destination <directory>]");
+    return;
+  }
   const requestedKind = argValue("--kind") || "all";
+  if (!["source", "database", "artifacts", "all"].includes(requestedKind)) {
+    throw new Error(`Unsupported backup kind: ${requestedKind}`);
+  }
   const kinds = requestedKind === "all" ? ["source", "database", "artifacts"] : [requestedKind];
   const destinationRoot = path.resolve(argValue("--destination") || CONFIG.backupDestination);
   const results = [];

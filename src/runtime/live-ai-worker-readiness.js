@@ -40,6 +40,14 @@ function getLiveAiWorkerReadiness(db) {
   const remainingBudgetCents = Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents) - budgetExposure.totalCents;
   const openaiIntegration = integrations.find((integration) => integration.id === "openai");
   const aiWorkerIntegration = integrations.find((integration) => integration.id === "ai_workers");
+  const imageTool = get(
+    db,
+    `SELECT tools.status, tools.requires_approval, tools.live_flag, assignments.permission
+     FROM agent_tools AS tools
+     LEFT JOIN agent_tool_assignments AS assignments
+       ON assignments.tool_id = tools.id AND assignments.agent_id = 'product_builder'
+     WHERE tools.id = 'image_generation_spend'`,
+  );
   const agentRuntime = getAgentRuntimeReadiness();
   const liveWorkerTasks = tasks.filter((task) => task.kind === "live_ai_worker_execution");
   const pendingApprovals = approvals.filter((approval) => approval.scope === "live_ai_worker_spend" && approval.status === "pending");
@@ -62,6 +70,17 @@ function getLiveAiWorkerReadiness(db) {
   const pricingReady = Boolean(modelPricing(CONFIG.liveModel));
   const budgetReady = remainingBudgetCents >= Number(CONFIG.liveModelDefaultBudgetCents || 0);
   const ready = credentialsConfigured && liveFlagEnabled && adapterReady && pricingReady && budgetReady;
+  const imageGenerationEnabled = process.env.JARVIS_ENABLE_IMAGE_GENERATION === "1";
+  const imageToolReady = imageTool?.status === "pilot_ready"
+    && imageTool?.permission === "requires_approval"
+    && Number(imageTool?.requires_approval) === 1;
+  const imageGenerationReady = ready && imageGenerationEnabled && imageToolReady;
+  const imageGenerationBlockers = [];
+  if (!credentialsConfigured) imageGenerationBlockers.push("The OpenAI connection is not available.");
+  if (!liveFlagEnabled) imageGenerationBlockers.push("AI workers are not enabled.");
+  if (!imageGenerationEnabled) imageGenerationBlockers.push("Product visual generation is not enabled for this runtime.");
+  if (!adapterReady) imageGenerationBlockers.push("The Agents SDK runner is not ready.");
+  if (!imageToolReady) imageGenerationBlockers.push("Product Builder does not have the required approval-controlled image tool.");
 
   const blockers = [];
   if (!credentialsConfigured) blockers.push("OpenAI API key is not configured for this runtime process.");
@@ -100,6 +119,16 @@ function getLiveAiWorkerReadiness(db) {
     blockedTasks: liveWorkerTasks.filter((task) => task.status === "blocked").length,
     completedLiveRuns: Number(completedLiveRuns),
     failedLiveRuns: Number(failedLiveRuns),
+    imageGeneration: {
+      provider: "openai",
+      model: "gpt-image-2",
+      ready: imageGenerationReady,
+      enabled: imageGenerationEnabled,
+      approvalRequired: true,
+      maxAssetsPerRun: 1,
+      publishingAllowed: false,
+      blockers: imageGenerationBlockers,
+    },
     latestTaskId: liveWorkerTasks[0]?.id || null,
     latestApprovalId: pendingApprovals[0]?.id || approvedApprovals[0]?.id || null,
     integration: aiWorkerIntegration || null,

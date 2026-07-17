@@ -281,7 +281,8 @@ test("stale recovery never retries an attempt after provider dispatch was record
 test("migration 12 installs receipt and provenance immutability controls", () => {
   const runtime = makeRuntime();
   try {
-    assert.equal(get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version, 12);
+    assert.equal(get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version, 14);
+    assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 12").name, "agent-operations-evidence-and-receipts");
     const tables = all(
       runtime.db,
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('agent_run_receipts', 'agent_run_provenance') ORDER BY name",

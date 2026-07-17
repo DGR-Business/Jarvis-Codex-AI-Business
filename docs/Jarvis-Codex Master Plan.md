@@ -76,6 +76,13 @@ receipt, audit, monitoring, and review contract around those provider paths. It
 does not replace Jarvis state with model memory or make a visible worker live by
 default.
 
+Task-scoped context snapshots now bind each live worker to the exact venture,
+record classes, purpose, task, and approval it needs. Chief of Staff may prepare
+at most one bounded assignment for one existing specialist; it cannot create
+workers or grant authority. Product, copy, and distribution outputs are frozen
+for an independent Quality Reviewer check before they can become ready for
+operator use.
+
 ## AI Team
 
 The Phase 1 business roster is fixed at 11 workers, grouped for clarity:
@@ -102,6 +109,10 @@ flow through the Chief of Staff only when the venture stage requires them.
 Product Builder and Quality Reviewer remain supervised in Phase 1. Product
 Builder cannot publish or approve its own output; Quality Reviewer can inspect
 only exact approved inputs and cannot generate, alter, publish, or approve them.
+The guarded Product Builder workspace can prepare one low-cost OpenAI image
+request, store exactly one validated local PNG, JPEG, or WebP asset, show it in
+the dashboard, and stop for a separate Quality Reviewer approval. Preparing the
+request makes no model call.
 
 ## Operator Experience
 
@@ -171,8 +182,8 @@ it never claims or exposes private chain-of-thought.
 
 - Maintain the recoverable, clean first-use baseline.
 - Operate against the fixed 11-worker Phase 1 contract. Its bounded assignment,
-  receipt, audit, monitoring, and model-routing foundation passed on
-  2026-07-17.
+  receipt, audit, task-scoped context, Chief assignment, Quality Reviewer,
+  monitoring, and model-routing foundation passed locally on 2026-07-17.
 - Use the cockpit to prepare one Evidence Brief that ranks three plausible
   digital-product opportunities.
 - Run the prepared Demand Validator supplied-evidence decision first. It is
@@ -186,7 +197,8 @@ it never claims or exposes private chain-of-thought.
 ### Next
 
 - Turn the selected opportunity into the smallest useful product and Publish
-  Pack through supervised Product Builder and Quality Reviewer work.
+  Pack through the implemented supervised Product Builder and Quality Reviewer
+  path. Its first paid live use remains a separate approval and proof.
 - Daniel completes any required private Gumroad account and KYC action and
   approves initial publication.
 - Run no more than three organic posts across two evidence-selected channels.
@@ -196,8 +208,9 @@ it never claims or exposes private chain-of-thought.
 ### Later
 
 - Promote only exact capabilities that earn five reviewed successes.
-- Add image generation, video, audio, or paid media only when a proven
-  commercial bottleneck requires it.
+- Use the prepared one-asset image capability only when the accepted product
+  needs it. Add video, audio, broader media generation, or paid media only when
+  a proven commercial bottleneck requires it.
 - Add a second venture only after repeatable first-venture results.
 - Expand fulfilment and customer operations after demand is proven.
 - Consider remote/mobile operation or dynamic workers only through separate
@@ -205,10 +218,11 @@ it never claims or exposes private chain-of-thought.
 
 ## Release Gates
 
-Status: satisfied for the clean first-use foundation on 2026-07-17. This is not
-the Autonomous Agent Operations Phase 1 release; its separate gates remain
-active. Future changes that affect either boundary must repeat proportionate
-proof.
+Status: satisfied for the clean first-use foundation and the bounded-worker
+engineering foundation on 2026-07-17. The live Autonomous Agent Operations
+gates remain active: Demand Validator, live web, supervised paid build/review,
+and retention still require their separate evidence and operator decisions.
+Future changes that affect either boundary must repeat proportionate proof.
 
 Foundation is releasable only when:
 

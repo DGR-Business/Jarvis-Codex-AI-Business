@@ -236,7 +236,7 @@ function createSourceArchive(sourceRoot, archivePath, options = {}) {
   const root = path.resolve(sourceRoot);
   const excludes = new Set([
     ".git", "*/.git", "node_modules", "*/node_modules", ".playwright-cli",
-    "tmp", "output", "backups", "data",
+    "tmp", "output", "backups", "data", "private", "*/private",
   ]);
   for (const candidate of [options.artifactRoot, options.dbPath, options.backupDestination].filter(Boolean)) {
     const relative = relativePathWithin(root, candidate);

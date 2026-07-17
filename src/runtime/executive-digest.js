@@ -47,6 +47,17 @@ function generateWeeklyDigest(db, options = {}) {
     "SELECT COUNT(*) AS count FROM tasks WHERE venture_id = ? AND outcome_status = 'unknown'",
     [ventureId],
   )?.count || 0);
+  const operatingIssues = Number(get(
+    db,
+    `SELECT COUNT(*) AS count
+     FROM monitor_findings
+     WHERE venture_id = ? AND status = 'open'
+       AND (
+         severity = 'error'
+         OR category IN ('quality_review', 'agent_context', 'chief_assignment')
+       )`,
+    [ventureId],
+  )?.count || 0);
   const decisions = all(
     db,
     `SELECT title, status, decision_note, decided_at
@@ -62,10 +73,11 @@ function generateWeeklyDigest(db, options = {}) {
      ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
     [ventureId],
   );
-  const importantCount = openDecisions + unknownOutcomes;
+  const importantCount = openDecisions + unknownOutcomes + operatingIssues;
   const nextActions = [
     commercial.ventureCase.next_money_move,
     ...(unknownOutcomes ? ["Reconcile unknown provider outcomes and costs; do not repeat affected work automatically."] : []),
+    ...(operatingIssues ? ["Review the operating issue Jarvis found before relying on the affected AI work."] : []),
     ...(openDecisions ? ["Review the waiting consequential decisions."] : []),
   ].filter(Boolean);
   const summary = [
@@ -83,6 +95,7 @@ function generateWeeklyDigest(db, options = {}) {
     completedWork,
     openDecisions,
     unknownOutcomes,
+    operatingIssues,
     independentBuyers: commercial.economics.independentBuyers,
     cashContributionCents: commercial.economics.cashContributionCents,
     salesCurrency: commercial.economics.salesCurrency,

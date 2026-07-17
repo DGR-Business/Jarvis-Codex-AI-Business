@@ -106,6 +106,11 @@ function badge(value, tone = statusTone(value)) {
   return `<span class="badge ${tone}">${escapeHtml(humanStatus(value))}</span>`;
 }
 
+function canPreview(format, filePath = true) {
+  const value = String(format || "").toLowerCase();
+  return Boolean(filePath) && (value === "pdf" || value === "application/pdf" || value.startsWith("image/"));
+}
+
 function money(cents, currency = "AUD") {
   return new Intl.NumberFormat("en-AU", { style: "currency", currency, maximumFractionDigits: 2 }).format(Number(cents || 0) / 100);
 }
@@ -357,7 +362,7 @@ function renderDecisions() {
       <footer><button class="text-button" data-action="open-drawer" data-kind="decision" data-id="${escapeHtml(item.id)}">Review details ${icon("arrow-right")}</button>${approvalButtons(item, true)}</footer>
     </article>`).join("")}</div>` : emptyState("No decisions waiting", "Reviews and suggestions remain separate so they do not compete with consequential choices.");
   } else if (store.decisionTab === "reviews") {
-    body = data.reviews.length ? `<div class="plain-list">${data.reviews.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p></div><div class="work-actions">${String(item.format).toLowerCase() === "pdf" ? `<button class="secondary-button" data-action="open-pdf" data-id="${escapeHtml(item.id)}" data-title="${escapeHtml(item.title)}">${icon("file-search")}Preview</button>` : ""}<button class="text-button" data-action="open-drawer" data-kind="review" data-id="${escapeHtml(item.id)}">Details ${icon("arrow-right")}</button></div></article>`).join("")}</div>` : emptyState("No outputs need review", "Completed decision briefs and supporting outputs will appear here without competing with consequential choices.", "files");
+    body = data.reviews.length ? `<div class="plain-list">${data.reviews.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p></div><div class="work-actions">${canPreview(item.format, item.filePath) ? `<button class="secondary-button" data-action="open-pdf" data-id="${escapeHtml(item.id)}" data-title="${escapeHtml(item.title)}">${icon("file-search")}Preview</button>` : ""}<button class="text-button" data-action="open-drawer" data-kind="review" data-id="${escapeHtml(item.id)}">Details ${icon("arrow-right")}</button></div></article>`).join("")}</div>` : emptyState("No outputs need review", "Completed decision briefs and supporting outputs will appear here without competing with consequential choices.", "files");
   } else if (store.decisionTab === "suggestions") {
     body = data.suggestions.length ? `<div class="plain-list">${data.suggestions.map((item) => `<article class="plain-row"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p></article>`).join("")}</div>` : emptyState("No suggestions at the moment", "The team will surface non-urgent improvements here.", "lightbulb");
   } else {
@@ -510,7 +515,7 @@ function systemTabs() {
 }
 
 function outputRows(items) {
-  return `<div class="plain-list">${items.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.human_name)}</h3><p>${escapeHtml(item.summary)}</p></div><div class="work-actions">${String(item.format).toLowerCase() === "pdf" && item.file_path ? `<button class="secondary-button" data-action="open-pdf" data-id="${escapeHtml(item.id)}" data-title="${escapeHtml(item.human_name)}">${icon("file-search")}Preview</button>` : ""}${badge(item.status)}</div></article>`).join("")}</div>`;
+  return `<div class="plain-list">${items.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.human_name)}</h3><p>${escapeHtml(item.summary)}</p></div><div class="work-actions">${canPreview(item.format, item.file_path) ? `<button class="secondary-button" data-action="open-pdf" data-id="${escapeHtml(item.id)}" data-title="${escapeHtml(item.human_name)}">${icon("file-search")}Preview</button>` : ""}${badge(item.status)}</div></article>`).join("")}</div>`;
 }
 
 function renderSystemPanel(data) {
@@ -521,6 +526,7 @@ function renderSystemPanel(data) {
       <article class="item-card"><header><h3>Runtime database</h3>${badge(data.health.database === "ok" ? "Operating normally" : "Needs attention")}</header><p>The durable operating state passed its latest integrity check.</p></article>
       <article class="item-card"><header><h3>AI worker connection</h3>${badge(ai.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(ai.ready ? "OpenAI workers can run from this dashboard when their exact capped task is approved." : compact(ai.blockers?.join(" ") || "Credentials and live permission are not configured."))}</p></article>
       <article class="item-card"><header><h3>Live research</h3>${badge(research.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(research.ready ? "Read-only sourced research can run from this dashboard after its exact cost approval." : compact(research.blockers?.join(" ") || "The research connection is not configured."))}</p></article>
+      <article class="item-card"><header><h3>Product visuals</h3>${badge(ai.imageGeneration?.ready ? "Connected" : "Setup needed")}</header><p>${escapeHtml(ai.imageGeneration?.ready ? "Product Builder can prepare one reviewed local visual after an exact cost approval. Publishing remains blocked." : compact(ai.imageGeneration?.blockers?.join(" ") || "The reviewed product-visual capability is not connected."))}</p></article>
       <article class="item-card"><header><h3>External actions</h3>${badge("Your approval required", "mint")}</header><p>Publishing, customer contact, account changes and spend still require your explicit decision.</p></article>
     </div>`;
   }
@@ -743,6 +749,10 @@ function runReviewBody(data) {
         return `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(humanStatus(item.sourceType))}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
       }).join("")}</div>`
     : "<p>No supplied evidence was recorded.</p>";
+  const businessContext = process.businessContext;
+  const businessContextSection = businessContext
+    ? detailSection("Business records supplied", `<p>${escapeHtml(businessContext.purpose)}</p><div class="evidence-list">${businessContext.sections.map((section) => `<article><strong>${escapeHtml(humanStatus(section.name))}</strong><p>${section.recordCount ? escapeHtml(section.records.map((item) => item.title).join(", ")) : "No current records in this category."}</p><small>${section.recordCount} record${section.recordCount === 1 ? "" : "s"} supplied${section.withheldLocalOnly ? ` · ${section.withheldLocalOnly} local-only record${section.withheldLocalOnly === 1 ? "" : "s"} withheld` : ""}${section.truncated ? " · limited to the latest relevant records" : ""}</small></article>`).join("")}</div><p class="muted-text">Only this venture and these record categories were available to the worker. Credentials and direct customer identifiers were excluded by default.</p>`)
+    : "";
   const traceEvents = data.developer.traceEvents?.length
     ? `<ol class="trace-list">${data.developer.traceEvents.map((event) => `<li><strong>${escapeHtml(event.title)}</strong><span>${escapeHtml(event.detail || humanStatus(event.type))}</span><small>${escapeHtml(dateTime(event.ts))}</small></li>`).join("")}</ol>`
     : "<p>No local trace events were recorded.</p>";
@@ -798,6 +808,7 @@ function runReviewBody(data) {
     errorSection,
     receiptSection,
     detailSection("Assignment", `<div class="detail-grid"><div><span>Question</span><strong>${escapeHtml(process.question)}</strong></div><div><span>Buyer</span><strong>${escapeHtml(process.buyer)}</strong></div></div><p><strong>Hypothesis:</strong> ${escapeHtml(process.hypothesis)}</p>`),
+    businessContextSection,
     detailSection("Evidence reviewed", suppliedEvidence),
     detailSection("How the judgement was formed", `<h4>Evidence supporting action</h4>${detailList(process.supportingEvidence)}<h4>Evidence against or still missing</h4>${detailList(process.counterevidence)}<h4>Assumptions</h4>${detailList(process.assumptions)}`),
     detailSection("Recommendation", `<p>${escapeHtml(process.conclusion)}</p><div class="review-facts"><div><span>Price and channel hypothesis</span><strong>${escapeHtml(process.priceChannelHypothesis)}</strong></div><div><span>Smallest proposed test</span><strong>${escapeHtml(process.smallestTest)}</strong></div><div><span>Success measure</span><strong>${escapeHtml(process.metric)}</strong></div><div><span>Stop rule</span><strong>${escapeHtml(process.stopRule)}</strong></div></div><p><strong>Confidence:</strong> ${escapeHtml(humanStatus(process.confidence))}<br><strong>Next action:</strong> ${escapeHtml(process.nextAction)}</p><h4>Risks</h4>${detailList(process.risks)}`),
@@ -805,7 +816,7 @@ function runReviewBody(data) {
     detailSection("Execution facts", `<div class="review-facts"><div><span>Execution</span><strong>${escapeHtml(execution.label)}</strong></div><div><span>Status</span><strong>${escapeHtml(humanStatus(data.run.status))}</strong></div><div><span>Provider</span><strong>${escapeHtml(execution.provider || (protectedRun ? "No provider used" : execution.requestedProvider || "Not captured"))}</strong></div><div><span>Model</span><strong>${escapeHtml(execution.modelRoute?.label || execution.model || (protectedRun ? "No model called" : execution.requestedModel || "Not captured"))}</strong></div><div><span>Why this model</span><strong>${escapeHtml(execution.modelRoute?.reason || (protectedRun ? "Internal rehearsal" : "Not captured"))}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Actual tokens</span><strong>${escapeHtml(actualTokens)}</strong></div><div><span>Planned limits</span><strong>${escapeHtml(plannedTokens)}</strong></div><div><span>Provider cost</span><strong>${escapeHtml(providerCost)}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div></div><p>${escapeHtml(providerVisibility)}</p>${handoffs.length ? `<h4>Runtime handoff after completion</h4>${detailList(handoffs)}` : ""}`),
     detailSection("Tools and sources", `<h4>Tools approved for the run</h4>${requestedTools}<h4>Tool activity Jarvis observed</h4>${observedTools}<h4>Research sources</h4>${sources}`),
     providerIds,
-    detailSection("Local runtime timeline", `${traceEvents}<div class="technical-ids"><span>Run ID</span><code>${escapeHtml(data.run.id)}</code><span>Local model record</span><code>${escapeHtml(data.developer.modelCallId || "Not captured")}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || "Not captured")}</code><span>Receipt fingerprint</span><code>${escapeHtml(receipt?.hash || (data.run.status === "running" ? "Recording" : "Not captured"))}</code></div>`),
+    detailSection("Local runtime timeline", `${traceEvents}<div class="technical-ids"><span>Run ID</span><code>${escapeHtml(data.run.id)}</code><span>Local model record</span><code>${escapeHtml(data.developer.modelCallId || "Not captured")}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || data.developer.contextSnapshotHash || "Not captured")}</code><span>Receipt fingerprint</span><code>${escapeHtml(receipt?.hash || (data.run.status === "running" ? "Recording" : "Not captured"))}</code></div>`),
     detailSection("Your verdict", verdictControls),
   ].join("");
 }
@@ -853,6 +864,9 @@ async function showDetail(kind, id, options = {}) {
     const execution = item.model || item.tools?.length || item.maxTurns
       ? detailSection("Execution", `<div class="review-facts"><div><span>Worker</span><strong>${escapeHtml(item.worker || "Not stated")}</strong></div><div><span>Model</span><strong>${escapeHtml(route?.label || item.model || "Not stated")}</strong></div><div><span>Why this model</span><strong>${escapeHtml(route?.reason || "Selected before approval for this exact task.")}</strong></div><div><span>Provider tools</span><strong>${item.tools?.length ? escapeHtml(item.tools.join(", ")) : "None"}</strong></div><div><span>Turns</span><strong>${escapeHtml(String(item.maxTurns || "Not stated"))}</strong></div><div><span>Output limit</span><strong>${item.maxOutputTokens ? `${escapeHtml(String(item.maxOutputTokens))} tokens` : "Not stated"}</strong></div></div>`)
       : "";
+    const businessContext = item.businessContext
+      ? detailSection("Business records", `<p>${escapeHtml(item.businessContext.purpose)}</p><div class="review-facts"><div><span>Records supplied</span><strong>${escapeHtml(String(item.businessContext.recordCount))}</strong></div><div><span>Categories</span><strong>${escapeHtml(item.businessContext.recordClasses.map(humanStatus).join(", "))}</strong></div></div><p class="muted-text">This approval is bound to one frozen record snapshot. Credentials, unrelated ventures, local-only records, and direct customer identifiers are excluded by default.</p>`)
+      : "";
     const pricedBound = item.pricedWorstCaseCostCents
       ? `<br>Current priced upper-bound estimate: ${money(item.pricedWorstCaseCostCents)}. Actual provider usage is reconciled after the run.`
       : "";
@@ -860,6 +874,7 @@ async function showDetail(kind, id, options = {}) {
       detailSection("Recommendation", `<p>${escapeHtml(item.recommendation)}</p>`),
       detailSection("Expected result", `<p>${escapeHtml(item.expectedUpside)}</p>`),
       assignment,
+      businessContext,
       execution,
       detailSection("Boundaries", `<p>Hard maximum cost: ${money(item.maxCostCents)}.${pricedBound}<br>Risk: ${escapeHtml(humanStatus(item.risk))}.<br>External actions: ${item.effects?.length ? escapeHtml(item.effects.join(", ")) : "None"}.<br>This decision applies only to the exact work shown here. The model cannot switch automatically after approval.${item.tracePolicy?.providerTraceContent ? " Provider trace input and output will be available for this approved non-personal run." : ""}</p>`),
       detailSection("Your decision", approvalButtons(item)),
@@ -873,7 +888,7 @@ async function showDetail(kind, id, options = {}) {
 
 function openPdf(id, title) {
   store.pdfReturnFocus = document.activeElement;
-  $("#pdf-title").textContent = title || "PDF preview";
+  $("#pdf-title").textContent = title || "Output preview";
   $("#pdf-frame").src = `/api/deliverables/${encodeURIComponent(id)}/file`;
   $("#pdf-modal").classList.add("open");
   $("#pdf-modal").setAttribute("aria-hidden", "false");

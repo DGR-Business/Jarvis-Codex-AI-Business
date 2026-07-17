@@ -1,5 +1,6 @@
 const crypto = require("node:crypto");
 const { all, fromJson, get, now, randomId, run, toJson } = require("../db");
+const { verifyAgentContextSnapshot } = require("./agent-context");
 
 const RECEIPT_SCHEMA = "jarvis.agent-run-receipt.v1";
 const PROVENANCE_SCHEMA = "jarvis.agent-run-provenance.v1";
@@ -316,6 +317,11 @@ function buildReceiptSnapshot(db, attemptId, explicitRunId) {
     || attemptRow.provider_request_id
     || null;
   const terminalTrace = traces.some((trace) => ["run_completed", "run_failed", "run_paused"].includes(trace.type));
+  const contextSnapshot = task.payload?.contextSnapshot || null;
+  const contextCheck = contextSnapshot ? verifyAgentContextSnapshot(contextSnapshot) : null;
+  const persistedContext = contextSnapshot?.snapshotHash
+    ? get(db, "SELECT id, task_id, agent_id, snapshot_hash FROM agent_context_snapshots WHERE snapshot_hash = ?", [contextSnapshot.snapshotHash])
+    : null;
 
   const snapshot = {
     schema: RECEIPT_SCHEMA,
@@ -384,6 +390,17 @@ function buildReceiptSnapshot(db, attemptId, explicitRunId) {
       consumedAt: approval.consumed_at,
       expectedEffects: approval.expected_effects,
     } : null,
+    context: contextSnapshot ? {
+      id: contextSnapshot.id,
+      snapshotHash: contextSnapshot.snapshotHash,
+      policyVersion: contextSnapshot.policyVersion,
+      accessProfile: contextSnapshot.accessProfile,
+      recordClasses: contextSnapshot.recordClasses,
+      recordCount: contextSnapshot.recordCount,
+      dataPolicy: contextSnapshot.dataPolicy,
+      valid: contextCheck?.valid === true,
+      persisted: Boolean(persistedContext),
+    } : null,
     evaluation,
     traces: traces.map((trace) => parseRow(trace, ["metadata"])),
     tools: tools.map((tool) => parseRow(tool, ["metadata"])),
@@ -405,6 +422,14 @@ function buildReceiptSnapshot(db, attemptId, explicitRunId) {
     if (!traceId && attemptRow.outcome_status !== "failed_before_effect") missingFields.push("OpenAI trace ID");
     if (!terminalTrace) missingFields.push("terminal worker event");
     if (!evaluationRow && attemptRow.status === "completed") missingFields.push("quality evaluation");
+  }
+  if (contextSnapshot) {
+    if (!contextCheck?.valid) missingFields.push("valid worker context snapshot");
+    if (!persistedContext
+        || persistedContext.task_id !== task.id
+        || persistedContext.agent_id !== task.agent) {
+      missingFields.push("persisted worker context snapshot");
+    }
   }
   if (requestedSearch && attemptRow.status === "completed" && researchSources.length === 0) {
     warnings.push("The web-search run returned no grounded source URLs.");

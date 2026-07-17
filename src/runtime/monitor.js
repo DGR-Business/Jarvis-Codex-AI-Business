@@ -7,6 +7,7 @@ const {
   auditTerminalAgentAttempts,
   verifyAgentRunReceiptChain,
 } = require("./agent-execution-evidence");
+const { verifyAgentContextSnapshot } = require("./agent-context");
 
 function minutesAgo(minutes) {
   return new Date(Date.now() - minutes * 60 * 1000).toISOString();
@@ -52,6 +53,223 @@ function findingFingerprint(finding) {
     finding.entityId || "",
     finding.title || "",
   ].join("|")).digest("hex");
+}
+
+function qualityReviewBindings(task) {
+  const payload = fromJson(task.payload, {});
+  const bindings = payload?.liveSpendRequest?.parameters?.reviewBindings;
+  return Array.isArray(bindings) ? bindings : [];
+}
+
+function collectQualityReviewFindings(db, findings) {
+  const reviewTasks = all(
+    db,
+    `SELECT id, workflow_id, status, error, payload, updated_at
+     FROM tasks
+     WHERE agent = 'quality_reviewer'
+     ORDER BY updated_at DESC`,
+  ).map((task) => ({ ...task, bindings: qualityReviewBindings(task) }));
+  const pendingDeliverables = all(
+    db,
+    `SELECT id, workflow_id, human_name, title, updated_at
+     FROM deliverables
+     WHERE status = 'quality_review_pending'
+     ORDER BY updated_at ASC`,
+  );
+
+  for (const deliverable of pendingDeliverables) {
+    const reviewTask = reviewTasks.find((task) => task.bindings.some(
+      (binding) => binding.deliverableId === deliverable.id,
+    ));
+    if (!reviewTask) {
+      addFinding(findings, {
+        severity: "error",
+        category: "quality_review",
+        entityType: "deliverable",
+        entityId: deliverable.id,
+        title: `Quality check missing: ${deliverable.human_name || deliverable.title}`,
+        detail: "This output is being held for quality review, but no exact Quality Reviewer task is linked to it.",
+        metadata: { workflowId: deliverable.workflow_id, updatedAt: deliverable.updated_at },
+      });
+      continue;
+    }
+    if (["failed", "cancelled"].includes(reviewTask.status)) {
+      addFinding(findings, {
+        severity: "error",
+        category: "quality_review",
+        entityType: "task",
+        entityId: reviewTask.id,
+        title: `Quality check stopped: ${deliverable.human_name || deliverable.title}`,
+        detail: reviewTask.error || "The linked Quality Reviewer task stopped before producing a trusted result.",
+        metadata: { deliverableId: deliverable.id, workflowId: deliverable.workflow_id, taskStatus: reviewTask.status },
+      });
+      continue;
+    }
+    if (reviewTask.status === "completed") {
+      const review = get(
+        db,
+        `SELECT id FROM deliverable_quality_reviews
+         WHERE deliverable_id = ? AND review_task_id = ?
+         ORDER BY created_at DESC LIMIT 1`,
+        [deliverable.id, reviewTask.id],
+      );
+      if (!review) {
+        addFinding(findings, {
+          severity: "error",
+          category: "quality_review",
+          entityType: "task",
+          entityId: reviewTask.id,
+          title: `Quality result missing: ${deliverable.human_name || deliverable.title}`,
+          detail: "The Quality Reviewer task completed, but no immutable verdict was recorded for this exact output.",
+          metadata: { deliverableId: deliverable.id, workflowId: deliverable.workflow_id },
+        });
+      }
+    }
+  }
+
+  const changesRequired = all(
+    db,
+    `SELECT deliverables.id, deliverables.human_name, deliverables.title, deliverables.workflow_id,
+            reviews.id AS review_id, reviews.verdict, reviews.quality_score, reviews.findings
+     FROM deliverables
+     JOIN deliverable_quality_reviews AS reviews ON reviews.deliverable_id = deliverables.id
+     WHERE deliverables.status = 'needs_changes'
+       AND reviews.created_at = (
+         SELECT MAX(latest.created_at)
+         FROM deliverable_quality_reviews AS latest
+         WHERE latest.deliverable_id = deliverables.id
+       )
+       AND reviews.verdict IN ('changes_required', 'blocked')
+     ORDER BY reviews.created_at DESC
+     LIMIT 20`,
+  );
+  for (const item of changesRequired) {
+    const reviewFindings = fromJson(item.findings, []);
+    addFinding(findings, {
+      severity: "warn",
+      category: "quality_review",
+      entityType: "deliverable",
+      entityId: item.id,
+      title: `Changes required: ${item.human_name || item.title}`,
+      detail: reviewFindings.join(" ") || "Quality Reviewer found changes before this output can be used.",
+      metadata: {
+        workflowId: item.workflow_id,
+        reviewId: item.review_id,
+        verdict: item.verdict,
+        qualityScore: item.quality_score,
+      },
+    });
+  }
+}
+
+function collectAgentContextFindings(db, findings) {
+  const snapshots = all(
+    db,
+    `SELECT id, venture_id, workflow_id, task_id, agent_id, snapshot_hash, snapshot
+     FROM agent_context_snapshots
+     ORDER BY created_at DESC`,
+  );
+  for (const row of snapshots) {
+    const snapshot = fromJson(row.snapshot, {});
+    const check = verifyAgentContextSnapshot(snapshot);
+    const ownershipMatches = snapshot.ventureId === row.venture_id
+      && snapshot.workflowId === row.workflow_id
+      && snapshot.taskId === row.task_id
+      && snapshot.agentId === row.agent_id
+      && snapshot.snapshotHash === row.snapshot_hash;
+    if (!check.valid || !ownershipMatches) {
+      addFinding(findings, {
+        severity: "error",
+        category: "agent_context",
+        entityType: "task",
+        entityId: row.task_id,
+        title: "Worker context verification failed",
+        detail: check.valid
+          ? "The stored worker context no longer matches its venture, workflow, task, or worker."
+          : check.reason,
+        metadata: { contextSnapshotId: row.id, contextSnapshotHash: row.snapshot_hash },
+      });
+    }
+  }
+
+  const liveTasks = all(
+    db,
+    `SELECT id, venture_id, workflow_id, agent, payload
+     FROM tasks
+     WHERE kind = 'live_ai_worker_execution' AND status <> 'cancelled'
+     ORDER BY updated_at DESC`,
+  );
+  for (const task of liveTasks) {
+    const payload = fromJson(task.payload, {});
+    const context = payload.contextSnapshot;
+    const reference = payload?.liveSpendRequest?.parameters?.contextSnapshot;
+    if (!context && !reference) continue;
+    const snapshotHash = context?.snapshotHash || reference?.hash || null;
+    const stored = snapshotHash
+      ? get(db, "SELECT * FROM agent_context_snapshots WHERE snapshot_hash = ?", [snapshotHash])
+      : null;
+    const ownershipMatches = stored
+      && stored.task_id === task.id
+      && stored.venture_id === task.venture_id
+      && stored.workflow_id === task.workflow_id
+      && stored.agent_id === task.agent;
+    if (!stored || !ownershipMatches) {
+      addFinding(findings, {
+        severity: "error",
+        category: "agent_context",
+        entityType: "task",
+        entityId: task.id,
+        title: "Worker context record missing",
+        detail: "This live worker task references business records that are not stored against the same venture, workflow, task, and worker.",
+        metadata: { workflowId: task.workflow_id, workerId: task.agent, contextSnapshotHash: snapshotHash },
+      });
+    }
+  }
+}
+
+function collectChiefAssignmentFindings(db, findings) {
+  const handoffs = all(
+    db,
+    `SELECT id, workflow_id, status, metadata, updated_at
+     FROM agent_handoffs
+     WHERE from_agent_id = 'chief_of_staff'
+       AND status IN (
+         'specialist_assignment_prepared',
+         'specialist_work_running',
+         'specialist_quality_review_pending'
+       )
+     ORDER BY updated_at ASC`,
+  );
+  for (const handoff of handoffs) {
+    const metadata = fromJson(handoff.metadata, {});
+    const childTaskId = metadata.childTaskId;
+    const childTask = childTaskId
+      ? get(db, "SELECT id, title, status, error FROM tasks WHERE id = ?", [childTaskId])
+      : null;
+    if (!childTask) {
+      addFinding(findings, {
+        severity: "error",
+        category: "chief_assignment",
+        entityType: "agent_handoff",
+        entityId: handoff.id,
+        title: "Chief assignment lost its worker task",
+        detail: "Chief of Staff has an open specialist assignment, but the exact child task cannot be found.",
+        metadata: { workflowId: handoff.workflow_id, childTaskId: childTaskId || null },
+      });
+      continue;
+    }
+    if (["failed", "cancelled"].includes(childTask.status)) {
+      addFinding(findings, {
+        severity: "error",
+        category: "chief_assignment",
+        entityType: "task",
+        entityId: childTask.id,
+        title: `Chief assignment stopped: ${childTask.title}`,
+        detail: childTask.error || "The specialist task stopped before Chief of Staff could close the assignment.",
+        metadata: { workflowId: handoff.workflow_id, handoffId: handoff.id, taskStatus: childTask.status },
+      });
+    }
+  }
 }
 
 function collectFindings(db, options = {}) {
@@ -243,6 +461,10 @@ function collectFindings(db, options = {}) {
       metadata: receiptVerification,
     });
   }
+
+  collectQualityReviewFindings(db, findings);
+  collectAgentContextFindings(db, findings);
+  collectChiefAssignmentFindings(db, findings);
 
   const budgetCents = monthlyCapCents(db);
   const budgetExposure = monthlyBudgetExposure(db);

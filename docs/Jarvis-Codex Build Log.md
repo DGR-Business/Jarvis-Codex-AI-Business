@@ -114,6 +114,45 @@ The documentation-only status above was superseded later on 2026-07-17:
   on 2026-07-17. The selected route and reason are approval-bound, visible to
   the operator, stored in the receipt, and cannot silently fall back.
 
+### Task-scoped team and supervised build proof
+
+The Phase 1 runtime foundation was expanded later on 2026-07-17:
+
+- schema migration 13 added immutable venture records and task-scoped worker
+  context snapshots. Each live request binds its exact venture, worker, purpose,
+  record classes, context hash, and approval; credentials and direct customer
+  identifiers remain excluded by default;
+- Chief of Staff can prepare exactly one bounded assignment for one existing
+  specialist in protected or supervised-live mode. The exact child task now
+  records running, quality-check, completed, changes-required, or failed state,
+  so a finished assignment cannot block the next valid assignment;
+- schema migration 14 added immutable per-deliverable Quality Reviewer records.
+  The reviewer sees the exact frozen content or approved local image; any change
+  after approval blocks before a provider call;
+- quality verdict writes are transactional and idempotent. A dashboard retry
+  returns the same immutable result rather than duplicating it;
+- Product Builder can prepare one exact `gpt-image-2` request with an A$1 cap,
+  one tool call, no external effects, and separate Quality Reviewer approval.
+  Returned image signatures are validated, bytes are written atomically to a
+  hash-versioned managed path, and PDF/image outputs preview in the dashboard;
+- the monitor now detects broken Quality Reviewer chains, missing or invalid
+  task context, and orphaned or stopped Chief assignments. Consequential
+  findings enter the weekly executive brief without turning normal queued work
+  into noise;
+- the Windows launcher now loads guarded image generation from the protected
+  OpenAI profile. Duplicate legacy launchers were moved to
+  `archive/historical/windows-launchers/`; `START JARVIS.cmd` and
+  `STOP JARVIS.cmd` remain the only operator shortcuts.
+
+Verification at this checkpoint:
+
+- 136 of 136 tests passed, including the real HTTP preparation and image-preview
+  paths;
+- Product Builder and Quality Reviewer SDK tests used mocked provider runners,
+  so no paid model or image call occurred;
+- the active database still contains one pending Demand Validator approval,
+  one blocked exact task, and zero post-reset model calls.
+
 Verification:
 
 - fresh encrypted source, database, and artifact backups were created and
@@ -152,6 +191,46 @@ exact approval:
 The dashboard decision drawer shows the assignment, model reason, limits, costs,
 trace policy, and external-action boundary in ordinary language. No paid model
 call has occurred.
+
+### Final Phase 1 engineering checkpoint
+
+The bounded-worker foundation received its final pre-live verification on
+2026-07-17:
+
+- one readiness-card defect was found and corrected: Product Builder's valid
+  `requires_approval` permission had been compared with the wrong internal
+  label. The strict approval-controlled tool policy itself was unchanged;
+- all 136 tests passed after the correction, including isolated context,
+  concurrency, exact approvals, immutable receipts, Chief assignments, frozen
+  Quality Reviewer inputs, Product Builder asset handling, monitoring, backup,
+  HTTP session, and preview paths;
+- Jarvis Doctor passed Node, dependencies, SQLite, archive/PDF tools, writable
+  runtime and backup destinations, database integrity, and backup encryption.
+  Its only warning was the expected occupied port while Jarvis was running;
+- the normal Windows launcher restarted the owned runtime successfully.
+  `/api/health` reported a healthy instance, locked external actions, paid AI
+  available only behind exact approval, and zero completed or failed
+  post-reset provider calls;
+- real-browser review passed Command Center, Decisions, Business Tests, AI
+  Team, Live Runs, and System Health at 1440x900, 1280x720, and 1024x768. There
+  was no horizontal overflow, clipped action, or Jarvis console error. A
+  narrow-desktop sidebar label was widened so the full active venture remains
+  readable;
+- fresh AES-256-GCM source, database, and artifact backups were created in the
+  private OneDrive recovery folder and restored independently under
+  `C:\tmp\jarvis-restore-20260717-1727`. All authenticated payload hashes
+  matched; the database passed quick, integrity, and foreign-key checks; a
+  current Product Builder source hash matched byte-for-byte; and the protected
+  `private/` area was correctly excluded from the source archive;
+- System Health truthfully reports the database, AI worker connection,
+  read-only research, and approval-controlled Product Builder visual path as
+  connected. External actions remain approval-controlled;
+- the cockpit contains one genuine pending item: Daniel's supplied-evidence
+  Demand Validator decision. Business Tests and Live Runs remain empty, and no
+  historical pilot activity was reintroduced.
+
+No approval was clicked, no provider call was made, and no external business
+action occurred during this verification.
 
 ## Accounting Preserved At Reset
 
@@ -206,5 +285,7 @@ Daniel reviews and approves, changes, or declines the prepared supplied-evidence
 Demand Validator run. After an approved run, Jarvis must inspect the immutable
 receipt, provider identifiers, tokens, cost state, deterministic evaluation, and
 structured result before Daniel records usefulness. Only an accepted result may
-lead to the separate A$2 read-only live-web decision. Do not create a Gumroad
-account, publish, spend beyond the exact approval, or contact buyers.
+lead to the separate A$2 read-only live-web decision. Daniel must also approve a
+plain-language retention schedule before ongoing live research or sensitive
+worker use widens. Do not create a Gumroad account, publish, spend beyond the
+exact approval, or contact buyers.

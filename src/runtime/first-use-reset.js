@@ -68,6 +68,7 @@ const EMPTY_OPERATIONAL_TABLES = Object.freeze([
   "approval_action_tokens",
   "deliverables",
   "deliverable_sections",
+  "deliverable_quality_reviews",
   "model_calls",
   "research_runs",
   "research_sources",
@@ -85,6 +86,7 @@ const EMPTY_OPERATIONAL_TABLES = Object.freeze([
   "venture_scorecards",
   "agent_run_receipts",
   "agent_run_provenance",
+  "agent_context_snapshots",
   "agent_runs",
   "agent_trace_events",
   "agent_eval_results",
@@ -101,6 +103,7 @@ const EMPTY_OPERATIONAL_TABLES = Object.freeze([
   "monitor_findings",
   "scheduler_runs",
   "executive_digests",
+  "venture_records",
   "events",
 ]);
 
