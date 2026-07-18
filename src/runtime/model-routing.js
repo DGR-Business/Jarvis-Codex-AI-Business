@@ -171,6 +171,9 @@ function tierForModel(model) {
 }
 
 function reasonForRoute(tier, modelClass, options = {}) {
+  if (options.proofMode === true) {
+    return "Luna is being used for a supervised system proof that checks the workflow, not the quality of the final business judgement.";
+  }
   if (options.routeHistory?.decision === "escalate") {
     return "Sol was selected before approval because the latest reviewed result for this exact worker, capability, and tool set failed or needs review.";
   }
@@ -194,14 +197,20 @@ function reasonForRoute(tier, modelClass, options = {}) {
 function selectModelRoute(options = {}) {
   const modelClass = String(options.modelClass || "reasoning-medium");
   const explicitModel = String(options.model || "").trim();
-  const forcedTier = options.routeHistory?.decision === "escalate"
+  const forcedTier = options.proofMode === true
+    ? "luna"
+    : options.routeHistory?.decision === "escalate"
     || options.qualityEscalation === true
     || options.highConsequence === true
-    ? "sol"
-    : null;
+      ? "sol"
+      : null;
   const tier = forcedTier || tierForModel(explicitModel) || MODEL_CLASS_TIERS[modelClass] || "terra";
   const tierDefinition = MODEL_TIERS[tier];
-  const model = explicitModel && !forcedTier ? explicitModel : tierDefinition.model();
+  const model = options.proofMode === true
+    ? MODEL_TIERS.luna.model()
+    : explicitModel && !forcedTier
+      ? explicitModel
+      : tierDefinition.model();
 
   return {
     tier,
@@ -214,6 +223,7 @@ function selectModelRoute(options = {}) {
     selectedBeforeApproval: true,
     automaticFallbackAllowed: false,
     automaticRetryAllowed: false,
+    proofMode: options.proofMode === true,
     routeHistory: options.routeHistory || null,
   };
 }

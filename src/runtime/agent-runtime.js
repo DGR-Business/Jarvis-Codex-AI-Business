@@ -25,6 +25,7 @@ const {
   extractGeneratedImages,
   materializeAgentsSdkTools,
   sdkInterruptionDetails,
+  summarizeAgentsSdkResult,
 } = require("./agent-sdk-capabilities");
 const {
   AgentToolApprovalRequiredError,
@@ -46,6 +47,34 @@ function safeId(value) {
 
 function stableSafetyIdentifier(task) {
   return `jarvis_${crypto.createHash("sha256").update(String(task.venture_id || task.workflow_id || "local-operator")).digest("hex").slice(0, 32)}`;
+}
+
+function isSdkInvalidFinalOutput(error) {
+  const name = String(error?.name || "");
+  const code = String(error?.code || error?.type || "");
+  const message = String(error?.message || "");
+  return ["invalid_output", "output_parse_error", "schema_validation_failed"].includes(code)
+    || (name === "ModelBehaviorError" && /output|schema|json/i.test(message))
+    || /^Invalid output type:/i.test(message);
+}
+
+function classifySdkRunError(error, dispatchStarted, traceId) {
+  error.agentSdkTraceId = traceId;
+  if (dispatchStarted && isSdkInvalidFinalOutput(error)) {
+    error.providerCallOccurred = true;
+    error.providerResponseReceived = true;
+    error.outcomeUnknown = false;
+    error.needsAttention = true;
+    error.providerDispatchStatus = "response_received_invalid_output";
+    error.errorKind = "provider_output_invalid";
+    return error;
+  }
+  if (error.providerCallOccurred === undefined) error.providerCallOccurred = dispatchStarted;
+  if (error.outcomeUnknown === undefined) error.outcomeUnknown = dispatchStarted;
+  if (!error.providerDispatchStatus) {
+    error.providerDispatchStatus = dispatchStarted ? "outcome_unknown" : "not_dispatched";
+  }
+  return error;
 }
 
 function getApprovedSdkResumeSelection(db, task) {
@@ -82,6 +111,7 @@ function getApprovedSdkResumeSelection(db, task) {
       invocationId: candidate.id,
       approvalId: candidate.approval_id,
       stateHash,
+      partialModelCallId: metadata.partialModelCallId || null,
     };
   }
   return null;
@@ -99,6 +129,33 @@ function sdkPricingEstimate(model, usage, approvedCapCents, toolActivity) {
     note: toolActivity.length
       ? "The token estimate is recorded now; hosted-tool charges remain pending until provider usage is reconciled."
       : "No hosted-tool charge applies to this run.",
+  };
+}
+
+function sdkUsageDelta(db, usage, resumeSelection) {
+  if (!resumeSelection?.partialModelCallId) return usage;
+  const prior = get(
+    db,
+    "SELECT input_tokens, output_tokens, metadata FROM model_calls WHERE id = ?",
+    [resumeSelection.partialModelCallId],
+  );
+  if (!prior) return usage;
+  const priorMetadata = fromJson(prior.metadata, {});
+  const priorCached = Number(
+    priorMetadata.tokenUsage?.cachedInputTokens
+    ?? priorMetadata.tokenUsage?.cached_input_tokens
+    ?? 0,
+  );
+  const input = Math.max(0, Number(usage.input_tokens || 0) - Number(prior.input_tokens || 0));
+  const output = Math.max(0, Number(usage.output_tokens || 0) - Number(prior.output_tokens || 0));
+  const cached = Math.max(0, Number(usage.cached_input_tokens || 0) - priorCached);
+  return {
+    ...usage,
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: input + output,
+    cached_input_tokens: cached,
+    usage_status: usage.usage_status === "unknown" ? "unknown" : "reported_delta",
   };
 }
 
@@ -480,10 +537,7 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
       const result = await testSdkRunner({ requestBody, task, agentDefinition, policy, options, traceId, tracePolicy, capabilityPlan });
       return { result, traceId };
     } catch (error) {
-      error.agentSdkTraceId = traceId;
-      if (error.providerCallOccurred === undefined) error.providerCallOccurred = dispatchStarted;
-      if (error.outcomeUnknown === undefined) error.outcomeUnknown = dispatchStarted;
-      if (!error.providerDispatchStatus) error.providerDispatchStatus = dispatchStarted ? "outcome_unknown" : "not_dispatched";
+      classifySdkRunError(error, dispatchStarted, traceId);
       throw error;
     }
   }
@@ -563,10 +617,7 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     });
     return { result, traceId };
   } catch (error) {
-    error.agentSdkTraceId = traceId;
-    if (error.providerCallOccurred === undefined) error.providerCallOccurred = dispatchStarted;
-    if (error.outcomeUnknown === undefined) error.outcomeUnknown = dispatchStarted;
-    if (!error.providerDispatchStatus) error.providerDispatchStatus = dispatchStarted ? "outcome_unknown" : "not_dispatched";
+    classifySdkRunError(error, dispatchStarted, traceId);
     throw error;
   } finally {
     detachLifecycleHooks();
@@ -669,6 +720,24 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     if (error.outcomeUnknown === undefined) error.outcomeUnknown = dispatched && error.providerCallOccurred !== false;
     if (error.providerCallOccurred === undefined) error.providerCallOccurred = dispatched;
     if (!error.providerDispatchStatus) error.providerDispatchStatus = error.outcomeUnknown ? "outcome_unknown" : "not_dispatched";
+    const providerResponseReceived = error.providerResponseReceived === true;
+    const pricedWorstCaseCents = Math.min(
+      approvedCapCents,
+      Math.max(
+        0,
+        Number(
+          task.payload?.liveSpendRequest?.pricedWorstCaseCostCents
+          || task.payload?.liveSpendRequest?.executionDescriptor?.worstCaseCost?.amountCents
+          || approvedCapCents,
+        ),
+      ),
+    );
+    if (providerResponseReceived) {
+      error.outcomeUnknown = false;
+      error.needsAttention = true;
+      error.errorKind = error.errorKind || "provider_output_invalid";
+      error.incurredEstimateCents = pricedWorstCaseCents;
+    }
     traceId = error.agentSdkTraceId || null;
     error.agentRunId = options.agentRunId || null;
     error.taskAttemptId = options.taskClaim?.attemptId || null;
@@ -686,8 +755,16 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       });
     }
     recordLiveWorkerFailureCost(db, task, error);
-    const failedCall = recordLiveWorkerModelCall(db, task, null, approvedCapCents, requestBody.model, "failed", {
+    const failedCall = recordLiveWorkerModelCall(
+      db,
+      task,
+      null,
+      providerResponseReceived ? pricedWorstCaseCents : approvedCapCents,
+      requestBody.model,
+      "failed",
+      {
       modelCallId: dispatchCall?.id,
+      reservedCostCents: approvedCapCents,
       provider: AGENTS_SDK_PROVIDER,
       sdkRunner: true,
       agentRunId: options.agentRunId || null,
@@ -695,11 +772,14 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       agentSdkTraceId: traceId,
       error: error.message,
       outcomeUnknown: error.outcomeUnknown === true,
-      errorKind: error.outcomeUnknown === true ? "provider_outcome_unknown" : "failed_before_provider_dispatch",
+      providerResponseReceived,
+      errorKind: error.errorKind
+        || (error.outcomeUnknown === true ? "provider_outcome_unknown" : "failed_before_provider_dispatch"),
       providerDispatchStatus: error.providerDispatchStatus,
       tracePolicy,
       inputAssets,
-    });
+      },
+    );
     error.modelCallId = failedCall.id;
     error.providerReceipt = {
       modelCallId: failedCall.id,
@@ -709,7 +789,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       traceId,
       deadlineMs: capabilityPlan.deadlineMs,
     };
-    error.incurredEstimateCents = 0;
+    error.incurredEstimateCents = Math.max(0, Number(error.incurredEstimateCents || 0));
     insertEvent(db, {
       level: "error",
       actor: "agent-runtime",
@@ -724,6 +804,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         provider: AGENTS_SDK_PROVIDER,
         agentSdkTraceId: traceId,
         outcomeUnknown: error.outcomeUnknown === true,
+        providerResponseReceived,
         providerDispatchStatus: error.providerDispatchStatus,
       },
     });
@@ -731,8 +812,10 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   }
 
   const toolActivity = extractAgentsSdkToolActivity(result);
+  const sdkItemSummary = summarizeAgentsSdkResult(result);
   const responseId = sdkResponseId(result) || `agents_sdk_${randomId()}`;
-  const usage = sdkUsage(result);
+  const cumulativeUsage = sdkUsage(result);
+  const usage = sdkUsageDelta(db, cumulativeUsage, resumeSelection);
   const pricingEstimate = sdkPricingEstimate(requestBody.model, usage, approvedCapCents, toolActivity);
   const estimateCents = pricingEstimate.amountCents;
   const providerCall = recordLiveWorkerModelCall(db, task, { id: responseId, usage, output: [] }, estimateCents, requestBody.model, "provider_completed", {
@@ -743,6 +826,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     taskAttemptId: options.taskClaim?.attemptId || null,
     agentSdkTraceId: traceId,
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
+    sdkItemSummary,
+    cumulativeUsage,
     reservedCostCents: approvedCapCents,
     pricingEstimate,
     tracePolicy,
@@ -805,6 +890,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       taskAttemptId: options.taskClaim?.attemptId || null,
       agentSdkTraceId: traceId,
       rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
+      sdkItemSummary,
+      cumulativeUsage,
       interruptionCount: interruptions.length,
       reservedCostCents: approvedCapCents,
       pricingEstimate,
@@ -957,6 +1044,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     taskAttemptId: options.taskClaim?.attemptId || null,
     agentSdkTraceId: traceId,
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
+    sdkItemSummary,
+    cumulativeUsage,
     interruptionCount: interruptions.length,
     finalAgent: result.lastAgent?.name || agentDefinition.name,
     reservedCostCents: approvedCapCents,
@@ -1055,6 +1144,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       provider: AGENTS_SDK_PROVIDER,
       structuredOutput: Boolean(result.finalOutput && typeof result.finalOutput === "object"),
       rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
+      sdkItemSummary,
+      cumulativeUsage,
       interruptions: Array.isArray(result.interruptions) ? result.interruptions.length : 0,
       usage,
       pricingEstimate,
@@ -1069,12 +1160,14 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   };
   } catch (error) {
     error.providerCallOccurred = true;
+    error.providerResponseReceived = true;
     error.incurredEstimateCents = Number(error.incurredEstimateCents || estimateCents);
     error.providerRequestId = error.providerRequestId || responseId;
     error.modelCallId = error.modelCallId || providerCall.id;
     error.agentSdkTraceId = error.agentSdkTraceId || traceId;
     error.providerReceipt = error.providerReceipt || providerReceipt;
     if (!error.agentToolApprovalRequired) {
+      recordLiveWorkerFailureCost(db, task, error);
       error.outcomeUnknown = false;
       error.needsAttention = true;
       error.providerDispatchStatus = "completed";
@@ -1086,6 +1179,8 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         agentRunId: options.agentRunId || null,
         taskAttemptId: options.taskClaim?.attemptId || null,
         agentSdkTraceId: traceId,
+        rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
+        sdkItemSummary,
         error: error.message,
         errorKind: error.errorKind,
         providerReceipt,

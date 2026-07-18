@@ -222,6 +222,7 @@ test("model routing selects Luna, Terra, and Sol before approval without automat
   const terra = selectModelRoute({ modelClass: "reasoning-medium" });
   const sol = selectModelRoute({ modelClass: "research-high" });
   const escalated = selectModelRoute({ modelClass: "reasoning-medium", qualityEscalation: true });
+  const proof = selectModelRoute({ modelClass: "research-high", qualityEscalation: true, proofMode: true });
 
   assert.equal(luna.model, "gpt-5.6-luna");
   assert.equal(luna.tier, "luna");
@@ -231,6 +232,9 @@ test("model routing selects Luna, Terra, and Sol before approval without automat
   assert.equal(sol.tier, "sol");
   assert.equal(escalated.model, "gpt-5.6-sol");
   assert.equal(escalated.tier, "sol");
+  assert.equal(proof.model, "gpt-5.6-luna");
+  assert.equal(proof.tier, "luna");
+  assert.equal(proof.proofMode, true);
   assert.equal(escalated.automaticFallbackAllowed, false);
   assert.equal(escalated.selectedBeforeApproval, true);
 });

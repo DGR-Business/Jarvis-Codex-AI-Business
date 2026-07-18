@@ -7,6 +7,7 @@ const {
   workerOutputJsonSchema,
 } = require("../runtime/agent-model-contracts");
 const { bindModelCallToAttempt } = require("../runtime/agent-execution-evidence");
+const { spendCostId } = require("../runtime/stable-id");
 const { markTaskAttemptProviderDispatched } = require("../runtime/task-claims");
 
 const LIVE_AI_WORKER_PROVIDER = "openai-responses-live-worker";
@@ -31,12 +32,6 @@ function providerError(error, state, extras = {}) {
   wrapped.definiteProviderRejection = state === "definite_rejection";
   Object.assign(wrapped, extras);
   return wrapped;
-}
-
-function safeId(value) {
-  return String(value || "task")
-    .replace(/[^a-zA-Z0-9_-]+/g, "_")
-    .slice(0, 88);
 }
 
 function compactText(value, max = 1000) {
@@ -87,7 +82,7 @@ function tokenUsage(response) {
 }
 
 function costIdForTask(task) {
-  return `cost_spend_${safeId(task.id)}`;
+  return spendCostId(task.id);
 }
 
 function approvedEstimateCents(task) {
@@ -272,6 +267,7 @@ function getRecentTasks(db, workflowId) {
 
 function buildWorkerPrompt(task, agentDefinition, policy) {
   const requested = task.payload || {};
+  const requestedTools = requested.liveSpendRequest?.tools || [];
   const hardStops = agentDefinition.approval_policy?.mustPauseFor || [];
   const chiefInstruction = agentDefinition.id === "chief_of_staff"
     ? requested.chiefOrchestration?.enabled === true
@@ -284,6 +280,11 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
   const outputInstruction = requested.pilotFixture
     ? "For this controlled Demand Validator pilot, return only the concise supplied-evidence recommendation fields requested by the output schema. Use no more than two short items in each list and one short paragraph per text field. Do not repeat the same judgement in a generic businessDecision object."
     : `Return the shared recommendation fields plus the exact ${agentDefinition.name} role fields inside work. Do not add a generic businessDecision object or fields that are not in the supplied schema.`;
+  const evidenceInstruction = requested.pilotFixture
+    ? "Reason only over suppliedEvidenceFixture. State counterevidence and assumptions explicitly. Never infer live demand from a controlled test example."
+    : requestedTools.some((toolId) => ["research_adapter", "live_web_with_approval"].includes(toolId))
+      ? "Use the approved web search before deciding. Search directly for current buyer language, competing alternatives, price signals, or a reachable audience relevant to this exact buyer and problem. A calculator, weather, time, or unrelated query does not satisfy this assignment. Base any live-evidence claim on attributable source URLs returned in this run. If no usable source URL is returned, state that the research is incomplete and do not recommend advancing on live evidence."
+      : null;
   return [
     `Worker: ${agentDefinition.name}`,
     `Role: ${agentDefinition.role}`,
@@ -293,10 +294,10 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
     `Hard stops: ${hardStops.join(", ")}`,
     `Expected output: ${requested.expectedOutput || "Operator-ready business decision summary."}`,
     "",
-    "You are running inside a business operating system. Do not take external actions. Do not publish, spend money, create accounts, contact customers, make legal/compliance determinations, or claim live market evidence unless supplied in the runtime context.",
+    "You are running inside a business operating system. Do not take external actions. Do not publish, spend money, create accounts, contact customers, or make legal/compliance determinations. Claim live market evidence only when it is supplied in the runtime context or returned by an approved tool in this run.",
     "Your job is to compress the available runtime evidence into a practical operator decision.",
     "Use ordinary business language. If evidence is weak, say so and recommend the smallest useful next action.",
-    "For a controlled pilot, reason only over suppliedEvidenceFixture. State counterevidence and assumptions explicitly. Never infer live demand from a test fixture.",
+    evidenceInstruction,
     chiefInstruction,
     qualityInstruction,
     outputInstruction,
@@ -399,7 +400,9 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
   const usage = tokenUsage(response || {});
   const reservedCostCents = Math.max(0, Number(metadata.reservedCostCents ?? estimateCents));
   const callId = metadata.modelCallId || `model_${randomId()}`;
-  const providerCompleted = ["completed", "provider_completed", "waiting_approval", "needs_attention"].includes(status);
+  const providerResponseReceived = metadata.providerResponseReceived === true;
+  const providerCompleted = providerResponseReceived
+    || ["completed", "provider_completed", "waiting_approval", "needs_attention"].includes(status);
   const outcomeUnknown = metadata.outcomeUnknown === true;
   const dispatching = status === "dispatching";
   const costStatus = providerCompleted ? "incurred_estimate" : outcomeUnknown ? "unknown" : dispatching ? "reserved" : "released";
@@ -547,6 +550,56 @@ function recordLiveWorkerFailureCost(db, task, error) {
     : null;
   const agentRunId = error.agentRunId || boundAttempt?.agent_run_id || null;
   const modelCallId = error.modelCallId || null;
+  if (error.providerResponseReceived === true && error.outcomeUnknown !== true) {
+    const approvedCapCents = approvedEstimateCents(task);
+    const amountCents = Math.min(
+      approvedCapCents,
+      Math.max(0, Number(error.incurredEstimateCents || approvedCapCents)),
+    );
+    const payload = toJson({
+      ...fromJson(existing?.metadata, {}),
+      taskId: task.id,
+      noSpendOccurred: false,
+      providerFailed: true,
+      outcomeUnknown: false,
+      providerResponseReceived: true,
+      exactBillingPending: true,
+      providerDispatchStatus: error.providerDispatchStatus || "response_received_invalid_output",
+      error: error.message,
+    });
+    const updated = run(
+      db,
+      `UPDATE costs
+       SET status = 'incurred_estimate', amount_cents = ?, occurred_at = ?, metadata = ?,
+           run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
+           model_call_id = COALESCE(?, model_call_id)
+       WHERE id = ?`,
+      [amountCents, ts, payload, agentRunId, task.id, modelCallId, costId],
+    );
+    if (updated.changes === 0) {
+      run(
+        db,
+        `INSERT INTO costs
+         (id, workflow_id, venture_id, run_id, task_id, model_call_id, category, source, status,
+          amount_cents, currency, occurred_at, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, 'live_ai_worker', ?, 'incurred_estimate', ?, ?, ?, ?)`,
+        [
+          costId,
+          task.workflow_id,
+          task.venture_id || null,
+          agentRunId,
+          task.id,
+          modelCallId,
+          LIVE_AI_WORKER_PROVIDER,
+          amountCents,
+          CONFIG.currency,
+          ts,
+          payload,
+        ],
+      );
+    }
+    return;
+  }
   if (error.outcomeUnknown !== true) {
     if (existing) {
       run(

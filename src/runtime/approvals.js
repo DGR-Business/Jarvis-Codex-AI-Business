@@ -5,6 +5,7 @@ const {
   validateAgentToolApprovalScope,
 } = require("./agent-tool-gate");
 const { ensureApprovalScope, persistApprovalScope, validateApprovalScope } = require("./approval-scope");
+const { isReviewedRetryableErrorKind } = require("./live-ai-retry-policy");
 
 const DECISIONS = new Set(["approved", "rejected", "needs_changes"]);
 
@@ -77,16 +78,80 @@ function decisionTaskIds(db, approval) {
   ).map((task) => task.id);
 }
 
+function closeReviewedRetryPredecessor(db, taskId, approval, ts) {
+  const task = get(db, "SELECT payload FROM tasks WHERE id = ?", [taskId]);
+  const retry = fromJson(task?.payload, {})?.liveSpendRequest?.parameters?.retry;
+  if (
+    retry?.operatorAuthorized !== true
+    || !retry.priorTaskId
+    || approval.task_id !== taskId
+  ) {
+    return null;
+  }
+  const prior = get(
+    db,
+    "SELECT id, status, outcome_status, error FROM tasks WHERE id = ?",
+    [retry.priorTaskId],
+  );
+  if (
+    !prior
+    || prior.status !== "needs_attention"
+    || prior.outcome_status !== "known_provider_result_needs_review"
+  ) {
+    return null;
+  }
+  const latestAttempt = get(
+    db,
+    "SELECT error_kind FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+    [prior.id],
+  );
+  if (!isReviewedRetryableErrorKind(latestAttempt?.error_kind)) {
+    return null;
+  }
+  run(
+    db,
+    `UPDATE tasks
+     SET status = 'failed', updated_at = ?
+     WHERE id = ? AND status = 'needs_attention'
+       AND outcome_status = 'known_provider_result_needs_review'`,
+    [ts, prior.id],
+  );
+  run(
+    db,
+    `UPDATE messages
+     SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?)
+     WHERE task_id = ? AND status = 'open'`,
+    [ts, prior.id],
+  );
+  insertEvent(db, {
+    level: "info",
+    actor: "operator",
+    type: "task.reviewed_failure_closed_for_retry",
+    entityType: "task",
+    entityId: prior.id,
+    message: "The reviewed unusable provider result was closed as a failed attempt when its exact retry was approved.",
+    metadata: {
+      retryTaskId: taskId,
+      retryApprovalId: approval.id,
+      outcomeStatus: prior.outcome_status,
+      errorKind: latestAttempt.error_kind,
+      priorError: prior.error || null,
+    },
+  });
+  return prior.id;
+}
+
 function updateApprovedWork(db, approval, ts) {
   const taskIds = decisionTaskIds(db, approval);
   for (const taskId of taskIds) {
-    run(
+    const queued = run(
       db,
       `UPDATE tasks
        SET status = 'queued', result = ?, updated_at = ?
        WHERE id = ? AND approval_id = ? AND status IN ('blocked', 'waiting_approval')`,
       [toJson({ approvedAt: ts, approvalId: approval.id }), ts, taskId, approval.id],
     );
+    if (queued.changes === 1) closeReviewedRetryPredecessor(db, taskId, approval, ts);
   }
   if (approval.workflow_id) {
     run(

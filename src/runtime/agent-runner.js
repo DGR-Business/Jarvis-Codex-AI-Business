@@ -21,7 +21,10 @@ const { getAgentToolPolicyForAgent } = require("./agent-tools");
 const { createResearchToExperimentPlanFromResearch } = require("./research-to-experiment");
 const { upsertDeliverableSection } = require("./deliverables");
 const { recordPilotRunReview } = require("./agent-pilot");
-const { prepareDemandInterestResearch } = require("./demand-interest-test");
+const {
+  prepareDemandInterestResearch,
+  sourceTaskCompletedLiveResearch,
+} = require("./demand-interest-test");
 const { renewTaskClaim } = require("./task-claims");
 const {
   prepareChiefSpecialistAssignment,
@@ -233,10 +236,21 @@ function inferHandoffNextAction(task) {
   };
 }
 
-function commercialNextActionForHandoff(task, output) {
+function commercialNextActionForHandoff(db, task, output) {
   const payload = task.payload || {};
   const source = payload.sourceBusinessDecision || {};
-  const inferred = inferHandoffNextAction(task);
+  const completedLiveResearch = sourceTaskCompletedLiveResearch(db, task);
+  const inferred = completedLiveResearch
+    ? {
+        ...inferHandoffNextAction(task),
+        type: "prepare_manual_market_test",
+        title: "Prepare the bounded interest test",
+        recommendation: "Use the completed research record to prepare one clear buyer, message, channel, metric, limit, and stop rule for a separate outside-action decision.",
+        action: "Prepare the internal test pack. Do not publish, contact customers, or spend money until Daniel reviews that exact pack.",
+        successMetric: "One reviewable interest-test pack is ready with attributable evidence and a five-qualified-signal threshold.",
+        killCriteria: "Do not move toward outside action if the evidence, buyer, channel, threshold, limit, or stop rule is unclear.",
+      }
+    : inferHandoffNextAction(task);
   const costCapCents = Math.max(0, Number(task.cost_budget_cents || 0));
   return {
     id: nextActionId(task),
@@ -296,7 +310,7 @@ function recordCommercialNextAction(db, agentRun, task, output) {
       task.id,
       "info",
       "open",
-      "Chief of Staff next business action ready",
+      "Chief of Staff recommendation ready",
       `${action.title}: ${action.recommendation}`,
       ts,
       toJson(metadata),
@@ -509,7 +523,7 @@ function outputForTask(db, task, workflow, command) {
       confidence: "approved_for_internal_followup",
       qualityScore: 78,
     };
-    output.commercialNextAction = commercialNextActionForHandoff(task, output);
+    output.commercialNextAction = commercialNextActionForHandoff(db, task, output);
     return output;
   }
 
@@ -854,8 +868,12 @@ async function runAgentTask(db, task, options = {}) {
   const requestedSdkTools = task.kind === "live_ai_worker_execution"
     ? (task.payload?.liveSpendRequest?.tools || [])
     : [];
+  const exactTaskCapCents = Math.max(0, Number(task.cost_budget_cents || 0));
   const policy = {
     ...basePolicy,
+    maxCostCents: exactTaskCapCents > 0
+      ? Math.min(Number(basePolicy.maxCostCents || 0), exactTaskCapCents)
+      : Number(basePolicy.maxCostCents || 0),
     allowedTools: [...new Set([...basePolicy.allowedTools, ...requestedSdkTools])],
   };
   const agentDefinition = findAgentDefinition(db, task);

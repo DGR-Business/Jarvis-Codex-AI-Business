@@ -38,6 +38,7 @@ const CONFIG = {
   lunaModel: process.env.JARVIS_LUNA_MODEL || "gpt-5.6-luna",
   terraModel: process.env.JARVIS_TERRA_MODEL || process.env.JARVIS_LIVE_MODEL || "gpt-5.6-terra",
   solModel: process.env.JARVIS_SOL_MODEL || "gpt-5.6-sol",
+  systemProofMode: process.env.JARVIS_SYSTEM_PROOF_MODE === "1",
   liveModelToolMaxInputTokens: Math.max(8000, numberFromEnv("JARVIS_LIVE_MODEL_TOOL_MAX_INPUT_TOKENS", 32000)),
   liveModelMaxOutputTokens: Math.max(400, numberFromEnv("JARVIS_LIVE_MODEL_MAX_OUTPUT_TOKENS", 1200)),
   targetFirstPassApprovalRate: numberFromEnv("JARVIS_TARGET_APPROVAL_RATE", 0.9),

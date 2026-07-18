@@ -185,13 +185,26 @@ function compact(value, max = 180) {
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 }
 
-async function fetchJson(url, options = {}) {
+async function fetchJson(url, options = {}, retry = 0) {
   const method = String(options.method || "GET").toUpperCase();
   const headers = { "content-type": "application/json", ...(options.headers || {}) };
   if (!["GET", "HEAD"].includes(method) && store.csrfToken) headers["x-jarvis-csrf"] = store.csrfToken;
   const response = await fetch(url, { credentials: "same-origin", ...options, headers });
   let payload;
   try { payload = await response.json(); } catch { payload = {}; }
+  if (
+    response.status === 403
+    && retry === 0
+    && url !== "/api/session"
+    && payload.error === "This action needs a fresh Jarvis session token."
+  ) {
+    const sessionResponse = await fetch("/api/session", { credentials: "same-origin" });
+    const session = await sessionResponse.json().catch(() => ({}));
+    if (sessionResponse.ok && session.csrfToken) {
+      store.csrfToken = session.csrfToken;
+      return fetchJson(url, options, 1);
+    }
+  }
   if (!response.ok) {
     const error = new Error(response.status === 401
       ? "Jarvis is not signed in. Start Jarvis with its launcher, then use the dashboard window it opens."
@@ -346,6 +359,7 @@ function renderCockpit() {
     .slice(0, 6);
 
   $("#view").innerHTML = `<div class="view-stack">
+    ${data.health?.proofMode ? `<section class="surface-block accent"><span class="eyebrow">System proof mode</span><h2>Luna-only testing is active</h2><p>Jarvis is checking workflow mechanics with the lowest-cost model. These results cannot authorize consequential or external work.</p></section>` : ""}
     ${renderCommandBand(data)}
     ${renderImportantWork(data.importantWork)}
     ${data.activeRuns?.length ? `<section class="active-run-strip">${sectionHeading("AI working now", "A genuine worker is running. Open the record to follow its plain-language progress.")}${data.activeRuns.map(renderAgentRunRow).join("")}</section>` : ""}
@@ -474,7 +488,7 @@ function filteredAgentRuns(state) {
   if (store.runFilter === "running") return runs.filter((run) => run.active);
   if (store.runFilter === "review") return runs.filter((run) => run.attentionRequired);
   if (store.runFilter === "completed") {
-    return runs.filter((run) => !run.active && !run.attentionRequired && run.executionKind !== "protected_rehearsal");
+    return runs.filter((run) => run.status === "completed" && !run.attentionRequired && run.executionKind !== "protected_rehearsal");
   }
   return runs.filter((run) => run.executionKind === store.runFilter);
 }
@@ -487,7 +501,9 @@ function renderAgentRunRow(run) {
   const cost = protectedRun
     ? "No provider charge"
     : run.cost?.actualCents === null || run.cost?.actualCents === undefined
-      ? "Cost not captured"
+      ? Number(run.cost?.estimatedCents || 0) > 0
+        ? `About ${money(run.cost.estimatedCents, run.cost.currency)}; final bill pending`
+        : "Cost not captured"
       : `${money(run.cost.actualCents, run.cost.currency)} ${humanStatus(run.cost.status)}`;
   const selected = store.drawerState?.kind === "agent-run" && store.drawerState.id === run.id;
   return `<button class="run-row${selected ? " selected" : ""}" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(run.id)}" aria-current="${selected ? "true" : "false"}">
@@ -584,6 +600,7 @@ function renderSystemPanel(data) {
       ? `<button class="secondary-button" data-action="prepare-retention-decision">${icon("shield-check")}Review this plan</button>`
       : "";
     return `<div class="card-grid">
+      ${data.health.proofMode ? `<article class="item-card"><header><h3>System proof mode</h3>${badge("Luna only", "sky")}</header><p>Temporary low-cost testing is active. Consequential work and external effects are blocked.</p></article>` : ""}
       <article class="item-card"><header><h3>Jarvis monitoring</h3>${badge(monitoring.label, monitoringTone)}</header><p>${escapeHtml(monitoring.summary)} ${escapeHtml(monitoringDetail)} ${escapeHtml(data.health.database === "ok" ? "The operating record also passed its integrity check." : "The operating record needs an integrity review.")}</p></article>
       <article class="item-card"><header><h3>AI worker connection</h3>${badge(ai.ready ? "Ready for approved work" : "Setup needed")}</header><p>${escapeHtml(ai.ready ? "The local Agents SDK path is configured. One exact capped approval is still required for each paid worker run." : compact(ai.blockers?.join(" ") || "Credentials and live permission are not configured."))}</p></article>
       <article class="item-card"><header><h3>Live research</h3>${badge(research.ready ? "Ready for approved test" : "Setup needed")}</header><p>${escapeHtml(research.ready ? "The read-only research path is configured. Provider reachability is proven only by an approved live test." : compact(research.blockers?.join(" ") || "The research connection is not configured."))}</p></article>
@@ -855,6 +872,7 @@ function runReviewFooter(data) {
   const handoff = activeRunHandoff(data);
   const reviewPending = data.review?.operatorVerdict === "pending";
   const demandResult = data.run.workerId === "demand_validator";
+  const qualityNeedsWork = ["failed", "needs_review"].includes(data.quality?.status);
   if (reviewPending) {
     return `<div class="drawer-footer-copy"><strong>Is this analysis clear enough to use?</strong><span>Your answer helps Jarvis improve this exact AI skill.</span></div>
       <div class="work-actions">
@@ -862,10 +880,21 @@ function runReviewFooter(data) {
         <button class="secondary-button" data-action="review-agent-run" data-run-id="${escapeHtml(data.run.id)}" data-handoff-id="${escapeHtml(handoff?.id || "")}" data-verdict="changes_required" data-score="2">${icon("pencil-line")}Request a better analysis</button>
       </div>`;
   }
+  if (!handoff && qualityNeedsWork && data.execution?.systemProof && data.run.taskId) {
+    return `<div class="drawer-footer-copy"><strong>Prove the corrected research path</strong><span>This prepares a separate Luna cost decision. It does not call OpenAI yet.</span></div>
+      <div class="work-actions">
+        <button class="primary-button" data-action="prepare-known-ai-retry" data-id="${escapeHtml(data.run.taskId)}">${icon("rotate-cw")}Prepare a better research check</button>
+      </div>`;
+  }
   if (!handoff) return "";
-  return `<div class="drawer-footer-copy"><strong>What should Jarvis do next?</strong><span>No publishing, customer contact, account change, or spend will occur.</span></div>
+  const nextStepLabel = demandResult
+    ? qualityNeedsWork && data.execution?.systemProof
+      ? "Continue this internal system test"
+      : "Prepare the interest test"
+    : "Prepare the next step";
+  return `<div class="drawer-footer-copy"><strong>What should Jarvis do next?</strong><span>${qualityNeedsWork && data.execution?.systemProof ? "This continues the internal workflow only. The result is not accepted as market evidence." : "No publishing, customer contact, account change, or spend will occur."}</span></div>
     <div class="work-actions">
-      <button class="primary-button" data-action="handoff-decision" data-id="${escapeHtml(handoff.id)}" data-decision="approve">${icon("arrow-right")}${demandResult ? "Prepare the interest test" : "Prepare the next step"}</button>
+      <button class="primary-button" data-action="handoff-decision" data-id="${escapeHtml(handoff.id)}" data-decision="approve">${icon("arrow-right")}${nextStepLabel}</button>
       <button class="secondary-button" data-action="handoff-decision" data-id="${escapeHtml(handoff.id)}" data-decision="changes">${icon("pencil-line")}Ask for changes</button>
       <button class="danger-button" data-action="handoff-decision" data-id="${escapeHtml(handoff.id)}" data-decision="reject">${icon("square")}Stop here</button>
     </div>`;
@@ -882,7 +911,8 @@ function runReviewBody(data) {
   const reviewPending = data.review?.operatorVerdict === "pending";
   const controlledEvidence = process.suppliedEvidence?.some((item) => item.sourceType === "test_fixture");
   const demandResult = data.run.workerId === "demand_validator";
-  const plainConclusion = demandResult
+  const qualityNeedsWork = ["failed", "needs_review"].includes(data.quality?.status);
+  const plainConclusion = demandResult && controlledEvidence
     ? "Demand Validator recommends a small, free interest test before anything is built. The controlled evidence suggests a recurring problem, but it does not prove real demand or willingness to pay."
     : plainAgentText(process.conclusion);
   const duration = durationLabel(data.run.durationMs);
@@ -917,17 +947,31 @@ function runReviewBody(data) {
   const observedTools = execution.observedTools?.length
     ? `<div class="evidence-list">${execution.observedTools.map((tool) => `<article><strong>${escapeHtml(tool.name)}</strong><p>${escapeHtml(tool.outputSummary || tool.inputSummary || "Tool activity was recorded.")}</p><small>${escapeHtml(humanStatus(tool.status))}</small></article>`).join("")}</div>`
     : "<p>No provider tool was used.</p>";
+  const researchAttempted = Boolean(
+    execution.research
+    || execution.observedTools?.some((tool) => ["research_adapter", "live_web_with_approval"].includes(tool.toolId)),
+  );
+  const researchLabel = execution.sources?.length
+    ? `${execution.sources.length} source${execution.sources.length === 1 ? "" : "s"}`
+    : researchAttempted
+      ? "Attempted; no usable sources"
+      : "Not used";
   const sources = execution.sources?.length
     ? `<div class="evidence-list">${execution.sources.map((source) => {
         const url = safeExternalUrl(source.url);
         return `<article><strong>${escapeHtml(source.title)}</strong><p>${escapeHtml(source.relevance || source.publisher || "Research source recorded by Jarvis.")}</p><small>${source.grounded ? "Grounded source" : "Source not independently verified"}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
       }).join("")}</div>`
-    : "<p>No web research was used for this run.</p>";
+    : researchAttempted
+      ? `<div class="error-callout"><strong>No usable web sources were returned</strong><p>${escapeHtml(execution.research?.summary || "The approved research tool ran, but it did not return an attributable source URL. Treat this result as incomplete market evidence.")}</p></div>`
+      : "<p>No web research was used for this run.</p>";
   const businessContext = process.businessContext
     ? detailSection("Business records supplied", `<p>${escapeHtml(process.businessContext.purpose)}</p><div class="evidence-list">${process.businessContext.sections.map((section) => `<article><strong>${escapeHtml(humanStatus(section.name))}</strong><p>${section.recordCount ? escapeHtml(section.records.map((item) => item.title).join(", ")) : "No current records in this category."}</p><small>${section.recordCount} record${section.recordCount === 1 ? "" : "s"} supplied</small></article>`).join("")}</div>`)
     : "";
   const errorSection = data.run.error || execution.error
     ? detailSection("What went wrong", `<div class="error-callout"><strong>${unknownOutcome ? "OpenAI outcome needs review" : "The run failed"}</strong><p>${escapeHtml(data.run.error || execution.error)}</p></div>`)
+    : "";
+  const qualitySection = qualityNeedsWork
+    ? `<div class="error-callout"><strong>This result did not pass Jarvis's evidence checks</strong><p>The worker completed its technical run, but the ${escapeHtml(String(data.quality?.score ?? "unscored"))}/100 check found incomplete evidence. ${execution.systemProof ? "It can continue only as an internal system test; it is not accepted as market proof." : "Ask for changes or stop before using it for a business decision."}</p></div>`
     : "";
   const reviewStatus = reviewPending
     ? `<div class="decision-step"><span>1</span><div><strong>Check the analysis</strong><p>Read the result, then use the buttons below to say whether it is clear enough to guide a decision.</p></div></div>`
@@ -952,9 +996,10 @@ function runReviewBody(data) {
       <div class="result-badges">${badge(`Confidence: ${humanStatus(process.confidence)}`, "amber")}${controlledEvidence ? badge("Controlled test; not market proof", "sky") : badge(data.run.status, data.run.status === "completed" ? "mint" : "amber")}</div>
     </section>
     ${errorSection}
+    ${qualitySection}
     <section class="run-fact-strip">
       <div><span>Evidence reviewed</span><strong>${process.suppliedEvidence?.length || 0} supplied item${process.suppliedEvidence?.length === 1 ? "" : "s"}</strong></div>
-      <div><span>Web research</span><strong>${execution.sources?.length ? `${execution.sources.length} source${execution.sources.length === 1 ? "" : "s"}` : "Not used"}</strong></div>
+      <div><span>Web research</span><strong>${escapeHtml(researchLabel)}</strong></div>
       <div><span>External action</span><strong>${execution.externalEffects.length ? "Recorded" : "None"}</strong></div>
       <div><span>Estimated cost</span><strong>${escapeHtml(providerCost)}</strong></div>
     </section>
@@ -1057,7 +1102,20 @@ async function showDetail(kind, id, options = {}) {
   }
   const source = kind === "review" ? store.data.decisions?.reviews : store.data.cockpit?.importantWork;
   const item = source?.find((entry) => entry.id === id);
-  openDrawer(item?.title || "Details", kind === "review" ? "Review" : "Important work", detailSection("Summary", `<p>${escapeHtml(item?.summary || item?.recommendation || "No additional detail is available.")}</p>`), { state: { kind, id }, preserveFocus: options.preserveFocus });
+  const retryAction = item?.action?.kind === "prepare_known_ai_retry"
+    ? `<div class="drawer-footer-copy"><strong>Prepare one corrected attempt</strong><span>This creates a separate cost decision. It does not call OpenAI yet.</span></div><button class="primary-button" data-action="prepare-known-ai-retry" data-id="${escapeHtml(item.id)}">${icon("rotate-cw")}${escapeHtml(item.action.label)}</button>`
+    : "";
+  const body = [
+    detailSection("What happened", `<p>${escapeHtml(item?.summary || item?.recommendation || "No additional detail is available.")}</p>`),
+    item?.recommendation ? detailSection("Recommended next step", `<p>${escapeHtml(item.recommendation)}</p>`) : "",
+    item?.expectedUpside ? detailSection("Why this is useful", `<p>${escapeHtml(item.expectedUpside)}</p>`) : "",
+  ].join("");
+  openDrawer(item?.title || "Details", kind === "review" ? "Review" : "Important work", body, {
+    wide: true,
+    footer: retryAction,
+    state: { kind, id },
+    preserveFocus: options.preserveFocus,
+  });
 }
 
 function openPdf(id, title) {
@@ -1132,6 +1190,8 @@ async function handleAction(button) {
       ? "Approved work completed. Review the new result."
       : execution?.status === "blocked"
         ? "Approved, but the work still needs setup or another exact decision."
+        : execution?.status === "waiting"
+          ? "Approved. An earlier work item must close before this can start; Jarvis has kept it visible."
         : `Decision ${decisionLabels[button.dataset.decision]}.`);
     return loadView(store.view, { silent: true });
   }
@@ -1143,8 +1203,8 @@ async function handleAction(button) {
     closeDrawer();
     toast(button.dataset.decision === "approve"
       ? payload.execution?.status === "completed"
-        ? "Jarvis prepared the next internal step. Nothing was published or sent."
-        : "The next internal step is ready."
+        ? "Chief of Staff saved the next recommendation. The Test Pack has not been created yet, and nothing was published or sent."
+        : "The next recommendation is waiting to be saved."
       : button.dataset.decision === "changes"
         ? "Changes requested. Jarvis will not continue until the result is revised."
         : "This path was stopped. No external action occurred.");
@@ -1185,6 +1245,14 @@ async function handleAction(button) {
       ? "That work item completed."
       : payload.result?.message || `Work item: ${humanStatus(payload.result?.status || "complete")}.`);
     return loadView(store.view, { silent: true });
+  }
+  if (action === "prepare-known-ai-retry") {
+    const payload = await postJson(`/api/tasks/${encodeURIComponent(button.dataset.id)}/prepare-known-ai-retry`, {});
+    closeDrawer();
+    await loadView("decisions", { silent: true });
+    if (payload.result?.approval?.id) await showDetail("decision", payload.result.approval.id);
+    toast("The corrected Luna retry is ready for your exact cost decision. OpenAI has not been called yet.");
+    return;
   }
   if (action === "review-agent-run") {
     const usefulnessScore = Number(button.dataset.score || 3);

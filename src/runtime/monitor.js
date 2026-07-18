@@ -34,6 +34,45 @@ function parseMetadata(row) {
   return { ...row, metadata: fromJson(row.metadata) };
 }
 
+function supersededRetryTaskIds(db) {
+  const tasks = all(
+    db,
+    `SELECT id, status, outcome_status, payload
+     FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+     ORDER BY created_at`,
+  ).map((task) => ({ ...task, payload: fromJson(task.payload, {}) }));
+  const parentByTaskId = new Map(tasks.map((task) => [
+    task.id,
+    task.payload?.liveSpendRequest?.parameters?.retry?.priorTaskId || null,
+  ]));
+  const successfulTaskIds = new Set(all(
+    db,
+    `SELECT DISTINCT tasks.id
+     FROM tasks
+     JOIN agent_runs AS runs ON runs.task_id = tasks.id
+     JOIN agent_eval_results AS evals ON evals.run_id = runs.id
+     JOIN agent_run_receipts AS receipts ON receipts.run_id = runs.id
+     WHERE tasks.kind = 'live_ai_worker_execution'
+       AND tasks.status = 'completed'
+       AND tasks.outcome_status = 'known'
+       AND runs.status = 'completed'
+       AND evals.status = 'passed'
+       AND receipts.status = 'complete'`,
+  ).map((row) => row.id));
+  const superseded = new Set();
+  for (const taskId of successfulTaskIds) {
+    const seen = new Set([taskId]);
+    let parentId = parentByTaskId.get(taskId);
+    while (parentId && !seen.has(parentId)) {
+      superseded.add(parentId);
+      seen.add(parentId);
+      parentId = parentByTaskId.get(parentId);
+    }
+  }
+  return superseded;
+}
+
 function addFinding(findings, finding) {
   findings.push({
     severity: finding.severity || "info",
@@ -529,6 +568,18 @@ function collectFindings(db, options = {}) {
      FROM tasks
      WHERE tasks.status = 'failed'
        AND NOT (
+         tasks.outcome_status = 'known_provider_result_needs_review'
+         AND EXISTS (
+           SELECT 1 FROM events
+           WHERE events.type = 'task.reviewed_failure_closed_for_retry'
+             AND events.entity_id = tasks.id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM messages
+           WHERE messages.task_id = tasks.id AND messages.status = 'open'
+         )
+       )
+       AND NOT (
          tasks.outcome_status = 'known'
          AND EXISTS (
            SELECT 1 FROM costs
@@ -666,7 +717,9 @@ function collectFindings(db, options = {}) {
      ORDER BY receipts.created_at DESC
      LIMIT 50`,
   );
+  const completedRetryPredecessors = supersededRetryTaskIds(db);
   for (const receipt of incompleteReceipts) {
+    if (receipt.status === "needs_review" && completedRetryPredecessors.has(receipt.task_id)) continue;
     const missingFields = fromJson(receipt.missing_fields, []);
     const warnings = fromJson(receipt.warnings, []);
     addFinding(findings, {
@@ -982,4 +1035,5 @@ module.exports = {
   collectFindings,
   latestMonitorRun,
   runMonitorCycle,
+  supersededRetryTaskIds,
 };

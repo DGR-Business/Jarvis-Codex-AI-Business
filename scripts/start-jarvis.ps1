@@ -2,7 +2,8 @@
 param(
   [ValidateRange(1, 65535)]
   [int]$Port = 5051,
-  [switch]$NoOpen
+  [switch]$NoOpen,
+  [switch]$SystemProof
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,6 +53,7 @@ $runtimeNames = @(
   "JARVIS_LUNA_MODEL",
   "JARVIS_TERRA_MODEL",
   "JARVIS_SOL_MODEL",
+  "JARVIS_SYSTEM_PROOF_MODE",
   "JARVIS_LIVE_RESEARCH_MODEL",
   "JARVIS_LIVE_MODEL_PROVIDER",
   "JARVIS_LIVE_RESEARCH_PROVIDER",
@@ -79,6 +81,9 @@ $runtimeEnvironment = @{}
 foreach ($name in $runtimeNames) {
   $value = Get-EnvironmentValue $name
   if (-not [string]::IsNullOrWhiteSpace($value)) { $runtimeEnvironment[$name] = $value }
+}
+if ($SystemProof) {
+  $runtimeEnvironment["JARVIS_SYSTEM_PROOF_MODE"] = "1"
 }
 
 if (Test-Path -LiteralPath $credentialPath) {

@@ -11,7 +11,10 @@ const {
   validateApprovalScope,
   workerDefinitionHash,
 } = require("./approval-scope");
-const { worstCaseExecutionCostAud } = require("./model-pricing");
+const {
+  estimateInputTokensUpperBound,
+  worstCaseExecutionCostAud,
+} = require("./model-pricing");
 const {
   createModelRouteSignature,
   readModelRouteHistory,
@@ -19,6 +22,10 @@ const {
 } = require("./model-routing");
 const { createCommandPlan } = require("./planner");
 const { ensureSpendApproval } = require("./spend-gate");
+const { spendCostId, stableIdSegment } = require("./stable-id");
+const {
+  canPrepareReviewedRetry,
+} = require("./live-ai-retry-policy");
 
 const MIN_LIVE_AI_WORKER_BUDGET_CENTS = 40;
 const MAX_LIVE_AI_WORKER_BUDGET_CENTS = 5000;
@@ -33,9 +40,7 @@ const SUPPLIED_EVIDENCE_EXPECTED_METRIC = "Deterministic scope, source, structur
 const SUPPLIED_EVIDENCE_TRACE_PURPOSE = "Make the supplied fixture and structured recommendation reviewable in OpenAI traces while retaining the local audit record.";
 
 function safeId(value) {
-  return String(value || "workflow")
-    .replace(/[^a-zA-Z0-9_-]+/g, "_")
-    .slice(0, 72);
+  return stableIdSegment(value, 72, "workflow");
 }
 
 function withSavepoint(db, prefix, operation) {
@@ -303,20 +308,22 @@ function exactSuppliedEvidenceFixtureException(
   };
 }
 
-function modelCapabilityKey(options, workerDefinition, contextException) {
-  if (contextException) return DEMAND_VALIDATOR_FIXTURE_CAPABILITY;
+function modelCapabilityKey(options, workerDefinition, contextException, proofMode = false) {
+  let capabilityKey;
+  if (contextException) capabilityKey = DEMAND_VALIDATOR_FIXTURE_CAPABILITY;
   const explicit = String(options.capabilityKey || "").trim();
-  if (explicit) return explicit;
-  if (workerDefinition.id === "chief_of_staff" && options.chiefOrchestration?.enabled === true) {
-    return "chief_of_staff.next_bounded_specialist";
+  if (!capabilityKey && explicit) capabilityKey = explicit;
+  if (!capabilityKey && workerDefinition.id === "chief_of_staff" && options.chiefOrchestration?.enabled === true) {
+    capabilityKey = "chief_of_staff.next_bounded_specialist";
   }
-  if (workerDefinition.id === "quality_reviewer" && options.parameters?.reviewOfTaskId) {
-    return "quality_reviewer.exact_deliverable_review";
+  if (!capabilityKey && workerDefinition.id === "quality_reviewer" && options.parameters?.reviewOfTaskId) {
+    capabilityKey = "quality_reviewer.exact_deliverable_review";
   }
-  if (options.parameters?.chiefAssignment?.schema === "jarvis.chief-specialist-assignment.v1") {
-    return `${workerDefinition.id}.chief_bounded_specialist`;
+  if (!capabilityKey && options.parameters?.chiefAssignment?.schema === "jarvis.chief-specialist-assignment.v1") {
+    capabilityKey = `${workerDefinition.id}.chief_bounded_specialist`;
   }
-  return `${workerDefinition.id}.live_assignment`;
+  if (!capabilityKey) capabilityKey = `${workerDefinition.id}.live_assignment`;
+  return proofMode ? `${capabilityKey}.system_proof` : capabilityKey;
 }
 
 function approvalIdForRequest(db, taskId, workflowId, requestedAt) {
@@ -389,6 +396,12 @@ function refreshOptionsForTask(task, trigger) {
     maxTurns: Number(request.maxTurns || 1),
     maxToolCalls: Number(request.maxToolCalls || 0),
     deadlineMs: Number(request.deadlineMs || 60000),
+    maxInputTokens: Number(
+      request.maxInputTokens
+      || request.executionDescriptor?.limits?.maxInputTokens
+      || 0,
+    ) || undefined,
+    repriceChangedInput: true,
     maxOutputTokens: Number(request.maxOutputTokens || CONFIG.liveModelMaxOutputTokens || 1200),
     tracePolicy: request.tracePolicy,
     parameters: originalRequestParameters(request.parameters),
@@ -407,6 +420,231 @@ function refreshOptionsForTask(task, trigger) {
     qualityEscalation: !isPilotFixture
       && /quality escalation/i.test(String(route.reason || "")),
     audPerUsd: Number(request.executionDescriptor?.worstCaseCost?.audPerUsd || 0) || undefined,
+  };
+}
+
+function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
+  const task = hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]));
+  if (!task || task.kind !== "live_ai_worker_execution") {
+    throw new Error("This recovery action is only available for a recorded AI worker run.");
+  }
+  if (task.agent !== "demand_validator") {
+    throw new Error("The first dashboard recovery path is limited to Demand Validator system tests.");
+  }
+
+  const attempt = get(
+    db,
+    "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+    [task.id],
+  );
+  const modelCall = attempt?.model_call_id
+    ? get(db, "SELECT * FROM model_calls WHERE id = ? AND task_id = ?", [attempt.model_call_id, task.id])
+    : null;
+  const modelMetadata = fromJson(modelCall?.metadata, {});
+  const providerResultKnown = modelCall?.outcome_status === "known"
+    && Boolean(modelCall.provider_request_id || modelMetadata.providerResponseReceived === true);
+  const evaluation = attempt?.id ? get(
+    db,
+    `SELECT evals.id, evals.run_id, evals.attempt_id, evals.status, evals.findings
+     FROM agent_eval_results AS evals
+     WHERE evals.attempt_id = ?
+     ORDER BY evals.created_at DESC, evals.id DESC LIMIT 1`,
+    [attempt.id],
+  ) : null;
+  const receipt = attempt?.id ? get(
+    db,
+    `SELECT id, run_id, attempt_id, status, outcome_status
+     FROM agent_run_receipts
+     WHERE attempt_id = ?
+     ORDER BY sequence DESC LIMIT 1`,
+    [attempt.id],
+  ) : null;
+  const unresolvedAttempts = all(
+    db,
+    `SELECT id FROM task_attempts
+     WHERE task_id = ?
+       AND (status = 'running' OR outcome_status = 'unknown')`,
+    [task.id],
+  );
+  if (unresolvedAttempts.length) {
+    throw new Error("An execution attempt still has an unresolved provider outcome. Reconcile it before retrying.");
+  }
+  const seenAncestors = new Set([task.id]);
+  let ancestorTaskId = task.payload?.liveSpendRequest?.parameters?.retry?.priorTaskId || null;
+  while (ancestorTaskId && !seenAncestors.has(ancestorTaskId)) {
+    seenAncestors.add(ancestorTaskId);
+    const unresolvedAncestor = get(
+      db,
+      `SELECT attempts.id
+       FROM task_attempts AS attempts
+       WHERE attempts.task_id = ?
+         AND (attempts.status = 'running' OR attempts.outcome_status = 'unknown')
+       LIMIT 1`,
+      [ancestorTaskId],
+    );
+    if (unresolvedAncestor) {
+      throw new Error("An earlier attempt in this retry chain still has an unresolved provider outcome.");
+    }
+    const ancestor = hydrateTask(get(db, "SELECT payload FROM tasks WHERE id = ?", [ancestorTaskId]));
+    ancestorTaskId = ancestor?.payload?.liveSpendRequest?.parameters?.retry?.priorTaskId || null;
+  }
+  const knownResultFailure = task.status === "needs_attention"
+    && task.outcome_status === "known_provider_result_needs_review";
+  const reviewedQualityShortfall = task.status === "completed"
+    && task.outcome_status === "known"
+    && ["failed", "needs_review"].includes(evaluation?.status);
+  if (!knownResultFailure && !reviewedQualityShortfall) {
+    throw new Error("This AI result is not in a reviewed state that permits a safe corrected attempt.");
+  }
+
+  let retryReason;
+  if (knownResultFailure) {
+    if (
+      !attempt
+      || attempt.outcome_status !== "known_provider_result_needs_review"
+      || !providerResultKnown
+    ) {
+      throw new Error("Jarvis cannot prove that the prior provider outcome is known. Reconcile it before retrying.");
+    }
+    const errorKind = attempt.error_kind || modelCall.error_kind || modelMetadata.errorKind;
+    if (!canPrepareReviewedRetry(task, errorKind)) {
+      throw new Error("This result needs developer review before another provider call can be prepared.");
+    }
+    if (!receipt || receipt.attempt_id !== attempt.id) {
+      throw new Error("The reviewed provider result does not have an exact immutable execution receipt.");
+    }
+    retryReason = task.error || modelMetadata.error || "The reviewed provider result could not be accepted locally.";
+  } else {
+    if (
+      !attempt
+      || attempt.status !== "completed"
+      || attempt.outcome_status !== "known"
+      || modelCall?.status !== "completed"
+      || !providerResultKnown
+      || evaluation?.attempt_id !== attempt.id
+      || receipt?.status !== "complete"
+      || receipt?.outcome_status !== "known"
+    ) {
+      throw new Error("Jarvis cannot prove a completed provider result and local evidence check for this retry.");
+    }
+    const findings = fromJson(evaluation.findings, []);
+    retryReason = findings.length
+      ? `Jarvis evidence check: ${findings.join(" ")}`
+      : `Jarvis evidence check status: ${evaluation.status}.`;
+  }
+
+  const workflowTasks = all(
+    db,
+    "SELECT * FROM tasks WHERE workflow_id = ? AND kind = 'live_ai_worker_execution' ORDER BY created_at, id",
+    [task.workflow_id],
+  ).map(hydrateTask);
+  const taskById = new Map(workflowTasks.map((candidate) => [candidate.id, candidate]));
+  const retryChainRoot = (candidate) => {
+    let current = candidate;
+    const seen = new Set();
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      const priorTaskId = current.payload?.liveSpendRequest?.parameters?.retry?.priorTaskId;
+      if (!priorTaskId) return current;
+      current = taskById.get(priorTaskId) || hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [priorTaskId]));
+    }
+    return current || candidate;
+  };
+  const rootTask = retryChainRoot(task);
+  const relatedTasks = workflowTasks.filter((candidate) => retryChainRoot(candidate)?.id === rootTask.id);
+  const existingPrepared = relatedTasks.find((candidate) => {
+    const retry = candidate.payload?.liveSpendRequest?.parameters?.retry;
+    if (
+      retry?.priorTaskId !== task.id
+      || retry?.operatorAuthorized !== true
+      || !["blocked", "waiting_approval", "queued"].includes(candidate.status)
+    ) {
+      return false;
+    }
+    const evidence = get(
+      db,
+      `SELECT
+         (SELECT COUNT(*) FROM task_attempts WHERE task_id = ?) AS attempts,
+         (SELECT COUNT(*) FROM model_calls WHERE task_id = ?) AS model_calls,
+         (SELECT COUNT(*) FROM agent_runs WHERE task_id = ?) AS agent_runs`,
+      [candidate.id, candidate.id, candidate.id],
+    );
+    return !Object.values(evidence || {}).some((count) => Number(count || 0) > 0);
+  });
+  if (existingPrepared) {
+    const approval = existingPrepared.approval_id
+      ? get(db, "SELECT * FROM approvals WHERE id = ?", [existingPrepared.approval_id])
+      : null;
+    return {
+      status: "prepared",
+      existing: true,
+      priorTaskId: task.id,
+      retryNumber: Number(existingPrepared.payload?.liveSpendRequest?.parameters?.retry?.number || 1),
+      task: existingPrepared,
+      approval,
+      model: existingPrepared.payload?.liveSpendRequest?.model || null,
+      maxCostCents: Number(existingPrepared.cost_budget_cents || 0),
+    };
+  }
+  const retryNumber = 1 + relatedTasks.reduce((maximum, candidate) => Math.max(
+    maximum,
+    Number(candidate.payload?.liveSpendRequest?.parameters?.retry?.number || 0),
+    Number(String(candidate.id).match(/_retry_(\d+)$/)?.[1] || 0),
+  ), 0);
+  if (retryNumber > 5) {
+    throw new Error("Five reviewed attempts have already been prepared. Stop and reassess this test before spending again.");
+  }
+
+  const baseRequestKey = String(requestKeyForTask(rootTask) || `reviewed_${rootTask.id}`).replace(/_retry_\d+$/, "");
+  const retryOptions = refreshOptionsForTask(task, "operator-dashboard");
+  retryOptions.requestKey = `${stableIdSegment(baseRequestKey, 55, "reviewed_task")}_retry_${retryNumber}`;
+  retryOptions.requestedBy = "operator-dashboard";
+  retryOptions.proofMode = options.proofMode === true
+    || task.payload?.systemProof === true
+    || CONFIG.systemProofMode === true;
+  retryOptions.maxOutputTokens = Math.max(2400, Number(retryOptions.maxOutputTokens || 0));
+  retryOptions.parameters = {
+    ...(retryOptions.parameters || {}),
+    retry: {
+      number: retryNumber,
+      priorTaskId: task.id,
+      reason: retryReason,
+      operatorAuthorized: true,
+      sourceAttemptId: attempt.id,
+      sourceModelCallId: modelCall.id,
+      sourceEvaluationId: evaluation?.id || null,
+      sourceReceiptId: receipt?.id || null,
+    },
+  };
+
+  const prepared = requestLiveAiWorker(db, task.workflow_id, retryOptions);
+  insertEvent(db, {
+    actor: "operator-dashboard",
+    type: "live_ai_worker.reviewed_retry_prepared",
+    entityType: "task",
+    entityId: prepared.task.id,
+    message: "A corrected Demand Validator retry was prepared for an exact operator decision. No provider call occurred.",
+    metadata: {
+      priorTaskId: task.id,
+      retryTaskId: prepared.task.id,
+      retryNumber,
+      approvalId: prepared.approval?.id || null,
+      model: prepared.task.payload?.liveSpendRequest?.model || null,
+      maxCostCents: prepared.estimatedCostCents,
+      retryReason,
+      priorEvaluationStatus: evaluation?.status || null,
+      noProviderCall: true,
+      noSpendOccurred: true,
+    },
+  });
+  return {
+    status: "prepared",
+    priorTaskId: task.id,
+    retryNumber,
+    task: prepared.task,
+    approval: prepared.approval,
+    model: prepared.task.payload?.liveSpendRequest?.model || null,
+    maxCostCents: prepared.estimatedCostCents,
   };
 }
 
@@ -506,7 +744,7 @@ function refreshOutdatedLiveAiWorkerApproval(db, approvalId, options = {}) {
     if (replacement.task?.id !== task.id) {
       throw new Error("The refreshed AI-work decision did not stay attached to the same work item.");
     }
-    const costId = `cost_spend_${safeId(task.id)}`;
+    const costId = spendCostId(task.id);
     const cost = get(db, "SELECT * FROM costs WHERE id = ?", [costId]);
     if (cost && Number(cost.amount_cents || 0) === 0) {
       const metadata = fromJson(cost.metadata, {});
@@ -669,6 +907,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       }
       : options,
   );
+  const proofMode = options.proofMode === true || CONFIG.systemProofMode === true;
   const toolArguments = JSON.parse(JSON.stringify(options.toolArguments || {}));
   const workBrief = cleanWorkBrief(options.workBrief);
   const qualityReviewedWorker = ["product_builder", "copy_conversion_agent", "distribution_operator"].includes(workerDefinition.id);
@@ -677,18 +916,29 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     ...(qualityReviewedWorker ? { requiredReviewer: "quality_reviewer" } : {}),
   };
   const effects = Array.isArray(options.effects) ? options.effects : [];
+  if (
+    proofMode
+    && (
+      effects.length > 0
+      || options.highConsequence === true
+      || options.qualityEscalation === true
+    )
+  ) {
+    throw new Error("System proof mode cannot run consequential work or any action with external effects.");
+  }
   const provider = options.provider || CONFIG.liveModelProvider;
   const routeSignature = createModelRouteSignature({
     workerId: workerDefinition.id,
-    capabilityKey: modelCapabilityKey(options, workerDefinition, contextException),
+    capabilityKey: modelCapabilityKey(options, workerDefinition, contextException, proofMode),
     tools: toolControls.tools,
   });
   const routeHistory = readModelRouteHistory(db, routeSignature);
   const selectedModelRoute = selectModelRoute({
-    model: options.model,
+    model: proofMode ? CONFIG.lunaModel : options.model,
     modelClass: workerDefinition.modelClass,
     highConsequence: options.highConsequence === true,
     qualityEscalation: options.qualityEscalation === true,
+    proofMode,
     routeHistory,
   });
   const modelRoute = {
@@ -716,6 +966,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     commandId: command?.id || null,
     requestedAt: ts,
     requestedBy: options.requestedBy || "operator",
+    systemProof: proofMode,
     workerMode: "live-ai-worker",
     requestedWorker: workerDefinition.id,
     requestedWorkerName: workerDefinition.name,
@@ -754,6 +1005,13 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       toolArguments,
       parameters: {
         ...requestParameters,
+        ...(proofMode ? {
+          systemProof: {
+            enabled: true,
+            purpose: "Check the operating path with the lowest-cost model.",
+            commercialQualityClaimAllowed: false,
+          },
+        } : {}),
         ...(contextSnapshot ? {
           contextSnapshot: {
             id: contextSnapshot.id,
@@ -776,6 +1034,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
           selectedBeforeApproval: true,
           automaticFallbackAllowed: false,
           automaticRetryAllowed: false,
+          proofMode,
         },
       },
       maxTurns: toolControls.maxTurns,
@@ -822,11 +1081,15 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     };
   }
   const materializedPacket = buildWorkerModelPacket(db, descriptorTask, workerDefinition);
+  const materializedInputTokens = estimateInputTokensUpperBound(materializedPacket, 2200);
+  const pricedMaxInputTokens = options.repriceChangedInput === true
+    ? Math.max(Number(maxInputTokens || 0), materializedInputTokens)
+    : maxInputTokens;
   const worstCaseCost = worstCaseExecutionCostAud({
     model,
     materializedInput: materializedPacket,
     inputOverheadTokens: 2200,
-    maxInputTokens,
+    maxInputTokens: pricedMaxInputTokens,
     maxOutputTokens,
     maxTurns: toolControls.maxTurns,
     tools: toolControls.tools,
@@ -924,6 +1187,19 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       ],
     );
   } else if (!["completed", "running"].includes(existing.status)) {
+    const executionEvidence = get(
+      db,
+      `SELECT
+         (SELECT COUNT(*) FROM task_attempts WHERE task_id = ?) AS attempts,
+         (SELECT COUNT(*) FROM model_calls WHERE task_id = ?) AS model_calls,
+         (SELECT COUNT(*) FROM agent_runs WHERE task_id = ?) AS agent_runs,
+         (SELECT COUNT(*) FROM costs
+          WHERE task_id = ? AND status IN ('incurred_estimate', 'unknown', 'reconciled')) AS costs`,
+      [taskId, taskId, taskId, taskId],
+    );
+    if (Object.values(executionEvidence || {}).some((count) => Number(count || 0) > 0)) {
+      throw new Error("This AI work item already has execution evidence and cannot be reused. Prepare a new exact request.");
+    }
     run(
       db,
       `UPDATE tasks
@@ -1030,6 +1306,7 @@ module.exports = {
   MIN_LIVE_AI_WORKER_BUDGET_CENTS,
   SUPPLIED_EVIDENCE_CONTEXT_EXCEPTION,
   createLiveAiWorkerSmokeTest,
+  prepareReviewedLiveAiWorkerRetry,
   refreshOutdatedLiveAiWorkerApproval,
   refreshOutdatedLiveAiWorkerApprovals,
   requestLiveAiWorker,

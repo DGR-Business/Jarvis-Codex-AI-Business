@@ -2,6 +2,7 @@ const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { bindModelCallToAttempt } = require("../runtime/agent-execution-evidence");
 const { recordAgentToolObservation } = require("../runtime/agent-tool-gate");
+const { spendCostId } = require("../runtime/stable-id");
 const { markTaskAttemptProviderDispatched } = require("../runtime/task-claims");
 
 const DEFAULT_RESEARCH_BUDGET_CENTS = 75;
@@ -27,12 +28,6 @@ function providerError(error, state, extras = {}) {
   wrapped.definiteProviderRejection = state === "definite_rejection";
   Object.assign(wrapped, extras);
   return wrapped;
-}
-
-function safeId(value) {
-  return String(value || "task")
-    .replace(/[^a-zA-Z0-9_-]+/g, "_")
-    .slice(0, 88);
 }
 
 function subjectFrom(task, workflow) {
@@ -333,7 +328,7 @@ function liveCostEstimateCents(task) {
 }
 
 function costIdForTask(task) {
-  return `cost_spend_${safeId(task.id)}`;
+  return spendCostId(task.id);
 }
 
 function recordLiveResearchCost(db, task, estimateCents, response, metadata = {}) {

@@ -171,6 +171,14 @@ function remainingWorkflowTasks(db, workflowId) {
 function updateWorkflowAfterCompletion(db, task, result, done) {
   const current = get(db, "SELECT status FROM workflows WHERE id = ?", [task.workflow_id]);
   if (["cancelled", "failed", "needs_changes", "needs_attention"].includes(current?.status)) return;
+  run(
+    db,
+    `UPDATE messages
+     SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?)
+     WHERE task_id = ? AND status = 'open'
+       AND subject IN ('Chief of Staff follow-up queued', 'Internal work queued')`,
+    [done, task.id],
+  );
   if (task.kind === "activate_retention_policy") {
     run(
       db,
@@ -225,16 +233,34 @@ function updateWorkflowAfterCompletion(db, task, result, done) {
     run(db, "UPDATE commands SET status = 'ready_for_review', updated_at = ? WHERE workflow_id = ?", [done, task.workflow_id]);
     const scorecard = upsertWorkflowScorecard(db, task.workflow_id, { taskId: task.id });
     const approvalPack = generateApprovalPack(db, task.workflow_id, { taskId: task.id });
-    const reviewSubject = teamSummary ? "AI Team drill summary ready" : "Operator review pack ready";
+    const isHandoffFollowup = task.kind === "handoff_followup";
+    const reviewSubject = teamSummary
+      ? "AI Team drill summary ready"
+      : isHandoffFollowup
+        ? "Chief of Staff recommendation ready"
+        : "Operator review pack ready";
     const reviewBody = teamSummary
       ? `${teamSummary.operatorSummary} ${teamSummary.nextAction}`
-      : "Dry-run agent execution has prepared review deliverables, a commercial scorecard, and a PDF approval pack. Treat them as process proof until live research and paid model/tool adapters are approved.";
-    run(
-      db,
-      `INSERT INTO messages (id, task_id, severity, status, subject, body, created_at, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [`msg_review_${randomId()}`, task.id, "approval", "open", reviewSubject, reviewBody, done, toJson({ workflowId: task.workflow_id, taskKind: task.kind, scorecardId: scorecard.id, approvalPack, teamSummary })],
-    );
+      : isHandoffFollowup
+        ? "Chief of Staff prepared the next safe internal recommendation. Nothing was published, sent, or purchased."
+        : task.kind === "live_ai_worker_execution"
+          ? "The AI result, evidence record, scorecard, and review PDF are ready. Review the result before choosing the next business step."
+          : "Internal work prepared review deliverables, a commercial scorecard, and a PDF decision brief.";
+    const existingRecommendation = isHandoffFollowup
+      ? get(
+        db,
+        "SELECT id FROM messages WHERE task_id = ? AND subject = ? AND status = 'open' LIMIT 1",
+        [task.id, reviewSubject],
+      )
+      : null;
+    if (!existingRecommendation) {
+      run(
+        db,
+        `INSERT INTO messages (id, task_id, severity, status, subject, body, created_at, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [`msg_review_${randomId()}`, task.id, isHandoffFollowup ? "info" : "approval", "open", reviewSubject, reviewBody, done, toJson({ workflowId: task.workflow_id, taskKind: task.kind, scorecardId: scorecard.id, approvalPack, teamSummary })],
+      );
+    }
     return;
   }
 

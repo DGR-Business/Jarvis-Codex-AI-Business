@@ -246,6 +246,55 @@ function reconciledTaskResult(rawResult, amountCents, reconciliation) {
   return result;
 }
 
+function reconcileTaskAttempt(db, task, modelCall, taskStatus, outcomeStatus, reconciledAt, evidence) {
+  let attempt = get(
+    db,
+    `SELECT * FROM task_attempts
+     WHERE task_id = ?
+       AND (model_call_id = ? OR provider_dispatch_model_call_id = ?)
+     ORDER BY started_at DESC, id DESC LIMIT 1`,
+    [task.id, modelCall.id, modelCall.id],
+  );
+  if (!attempt) {
+    const unresolved = all(
+      db,
+      `SELECT * FROM task_attempts
+       WHERE task_id = ? AND outcome_status = 'unknown'
+       ORDER BY started_at DESC, id DESC`,
+      [task.id],
+    );
+    if (unresolved.length > 1) {
+      throw new Error("Provider reconciliation found multiple unresolved attempts without an exact model-call binding.");
+    }
+    attempt = unresolved[0] || null;
+  }
+  if (!attempt) return null;
+  const attemptStatus = taskStatus === "completed"
+    ? "completed"
+    : taskStatus === "failed"
+      ? "failed"
+      : taskStatus;
+  run(
+    db,
+    `UPDATE task_attempts
+     SET status = ?, outcome_status = ?,
+         completed_at = COALESCE(completed_at, ?),
+         metadata = ?
+     WHERE id = ?`,
+    [
+      attemptStatus,
+      outcomeStatus,
+      reconciledAt,
+      toJson({
+        ...fromJson(attempt.metadata, {}),
+        providerReconciliation: evidence,
+      }),
+      attempt.id,
+    ],
+  );
+  return attempt.id;
+}
+
 function reconcileProviderUsageBatch(db, input = {}) {
   const allocations = Array.isArray(input.allocations) ? input.allocations : [];
   if (!allocations.length) throw new Error("Provider reconciliation needs at least one exact task allocation.");
@@ -364,6 +413,15 @@ function reconcileProviderUsageBatch(db, input = {}) {
            WHERE task_id = ? AND status = 'open' AND subject LIKE 'Check provider outcome:%'`,
           [reconciledAt, task.id],
         );
+        const reconciledAttemptId = reconcileTaskAttempt(
+          db,
+          task,
+          modelCall,
+          task.status,
+          task.outcome_status,
+          reconciledAt,
+          costReconciliation,
+        );
         existingResults.push({
           taskId: task.id,
           costId: cost.id,
@@ -373,6 +431,7 @@ function reconcileProviderUsageBatch(db, input = {}) {
           outcomeStatus: task.outcome_status,
           reservationId: null,
           agentSdkTraceId: traceId,
+          attemptId: reconciledAttemptId,
         });
       }
       db.exec("COMMIT");
@@ -452,6 +511,15 @@ function reconcileProviderUsageBatch(db, input = {}) {
          WHERE id = ?`,
         [taskStatus, outcomeStatus, amountCents, toJson(result), reconciledAt, task.id],
       );
+      const reconciledAttemptId = reconcileTaskAttempt(
+        db,
+        task,
+        modelCall,
+        taskStatus,
+        outcomeStatus,
+        reconciledAt,
+        allocationEvidence,
+      );
       if (outcomeStatus === "known") {
         run(
           db,
@@ -516,6 +584,7 @@ function reconcileProviderUsageBatch(db, input = {}) {
         outcomeStatus,
         reservationId: reservation?.id || null,
         agentSdkTraceId: traceId,
+        attemptId: reconciledAttemptId,
       });
     }
     insertEvent(db, {

@@ -3,8 +3,9 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
+const { spendCostId } = require("./runtime/stable-id");
 
-const LATEST_SCHEMA_VERSION = 17;
+const LATEST_SCHEMA_VERSION = 18;
 
 function now() {
   return new Date().toISOString();
@@ -1609,6 +1610,63 @@ function applyProviderAttemptReceiptBackfillMigration(db) {
   }
 }
 
+function applyStableSpendCostIdMigration(db) {
+  if (migrationApplied(db, 18)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const costs = all(
+      db,
+      `SELECT id, task_id, metadata
+       FROM costs
+       WHERE task_id IS NOT NULL
+         AND category IN ('live_ai_worker', 'live_research')`,
+    );
+    for (const cost of costs) {
+      const stableId = spendCostId(cost.task_id);
+      if (cost.id === stableId) continue;
+      const conflict = get(db, "SELECT id FROM costs WHERE id = ?", [stableId]);
+      if (conflict) {
+        run(
+          db,
+          "UPDATE costs SET metadata = ? WHERE id = ?",
+          [
+            toJson({
+              ...fromJson(cost.metadata, {}),
+              stableIdMigrationConflict: {
+                targetId: stableId,
+                schemaVersion: 18,
+                requiresReview: true,
+              },
+            }),
+            cost.id,
+          ],
+        );
+        continue;
+      }
+      run(
+        db,
+        "UPDATE costs SET id = ?, metadata = ? WHERE id = ?",
+        [
+          stableId,
+          toJson({
+            ...fromJson(cost.metadata, {}),
+            stableIdMigration: {
+              previousId: cost.id,
+              schemaVersion: 18,
+            },
+          }),
+          cost.id,
+        ],
+      );
+    }
+    recordMigration(db, 18, "stable-spend-cost-identifiers");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2420,6 +2478,7 @@ function migrate(db) {
   applyDataRetentionPolicyMigration(db);
   applyExecutionEvidenceBindingMigration(db);
   applyProviderAttemptReceiptBackfillMigration(db);
+  applyStableSpendCostIdMigration(db);
 }
 
 function putSetting(db, key, value) {
@@ -2710,6 +2769,7 @@ function seedDatabase(db, options = {}) {
 
 module.exports = {
   LATEST_SCHEMA_VERSION,
+  applyStableSpendCostIdMigration,
   all,
   fromJson,
   get,

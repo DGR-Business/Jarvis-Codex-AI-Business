@@ -331,6 +331,33 @@ function collectOutputItems(result) {
   return items;
 }
 
+function providerActivityType(raw) {
+  const candidates = [
+    raw?.type,
+    raw?.name,
+    raw?.providerData?.type,
+    raw?.providerData?.name,
+  ].filter(Boolean).map(String);
+  if (candidates.some((value) => value.includes("web_search"))) return "web_search";
+  if (candidates.some((value) => value.includes("image_generation"))) return "image_generation";
+  if (candidates.some((value) => value.includes("code_interpreter"))) return "code_interpreter";
+  return null;
+}
+
+function summarizeAgentsSdkResult(result) {
+  return collectOutputItems(result).slice(0, 50).map((item) => {
+    const raw = item?.rawItem || item;
+    return {
+      id: raw?.id || raw?.call_id || raw?.callId || null,
+      type: raw?.type || null,
+      name: raw?.name || null,
+      providerType: raw?.providerData?.type || null,
+      activityType: providerActivityType(raw),
+      status: raw?.status || null,
+    };
+  });
+}
+
 function webSources(item) {
   const sources = item?.action?.sources || item?.sources || item?.providerData?.action?.sources || [];
   return Array.isArray(sources)
@@ -389,14 +416,14 @@ function extractAgentsSdkToolActivity(result) {
   const citationSources = outputCitationSources(outputItems);
   for (const item of outputItems) {
     const raw = item?.rawItem || item;
-    const type = raw?.type || raw?.providerData?.type || "";
-    if (!String(type).includes("search") && !String(type).includes("image_generation") && !String(type).includes("code_interpreter")) continue;
+    const type = providerActivityType(raw);
+    if (!type) continue;
     const id = raw.id || raw.call_id || raw.callId || `${type}_${activity.length + 1}`;
     const key = `${type}:${id}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
-    if (String(type).includes("web_search")) {
+    if (type === "web_search") {
       const queries = webQueries(raw);
       activity.push({
         id,
@@ -408,8 +435,8 @@ function extractAgentsSdkToolActivity(result) {
       });
       continue;
     }
-    if (String(type).includes("image_generation")) {
-      const base64 = typeof raw.result === "string" ? raw.result : null;
+    if (type === "image_generation") {
+      const base64 = [raw.result, raw.output, raw.providerData?.result].find((value) => typeof value === "string") || null;
       const bytes = base64 ? Buffer.from(base64, "base64") : null;
       activity.push({
         id,
@@ -455,10 +482,11 @@ function extractGeneratedImages(result) {
   const seen = new Set();
   for (const item of collectOutputItems(result)) {
     const raw = item?.rawItem || item;
-    const type = raw?.type || raw?.providerData?.type || "";
-    if (!String(type).includes("image_generation") || typeof raw.result !== "string") continue;
+    if (providerActivityType(raw) !== "image_generation") continue;
+    const base64 = [raw.result, raw.output, raw.providerData?.result].find((value) => typeof value === "string");
+    if (!base64) continue;
     const id = raw.id || raw.call_id || raw.callId || `image_${images.length + 1}`;
-    const bytes = Buffer.from(raw.result, "base64");
+    const bytes = Buffer.from(base64, "base64");
     const hash = crypto.createHash("sha256").update(bytes).digest("hex");
     if (seen.has(hash)) continue;
     seen.add(hash);
@@ -503,4 +531,5 @@ module.exports = {
   materializeAgentsSdkTools,
   sdkInterruptionDetails,
   serializeSdkRunState,
+  summarizeAgentsSdkResult,
 };

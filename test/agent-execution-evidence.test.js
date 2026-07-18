@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  applyStableSpendCostIdMigration,
   all,
   get,
   openDatabase,
@@ -11,6 +12,7 @@ const {
   seedDatabase,
   toJson,
 } = require("../src/db");
+const { spendCostId } = require("../src/runtime/stable-id");
 const { ensureAiTeam } = require("../src/runtime/ai-team");
 const { ensureAgentTools } = require("../src/runtime/agent-tools");
 const {
@@ -95,6 +97,35 @@ test("Agents SDK search extraction retains provider sources, citations, and quer
     activity[0].sources.map((source) => source.groundingType).sort(),
     ["output_url_citation", "provider_search_source"],
   );
+});
+
+test("Agents SDK search extraction recognises the official hosted-tool item shape", () => {
+  const activity = extractAgentsSdkToolActivity({
+    newItems: [{
+      rawItem: {
+        id: "search_hosted_1",
+        type: "hosted_tool_call",
+        name: "web_search_call",
+        status: "completed",
+        providerData: {
+          type: "web_search_call",
+          action: {
+            type: "search",
+            query: "buyer demand evidence",
+            sources: [{
+              title: "Grounded source",
+              url: "https://example.com/grounded",
+            }],
+          },
+        },
+      },
+    }],
+  });
+
+  assert.equal(activity.length, 1);
+  assert.equal(activity[0].type, "web_search");
+  assert.deepEqual(activity[0].queries, ["buyer demand evidence"]);
+  assert.equal(activity[0].sources[0].url, "https://example.com/grounded");
 });
 
 test("completed SDK work receives an immutable grounded receipt that preserves historical output", () => {
@@ -286,10 +317,11 @@ test("stale recovery never retries an attempt after provider dispatch was record
 test("migrations install receipt immutability, exact attempt bindings, and provider receipt repair", () => {
   const runtime = makeRuntime();
   try {
-    assert.equal(get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version, 17);
+    assert.equal(get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version, 18);
     assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 12").name, "agent-operations-evidence-and-receipts");
     assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 16").name, "exact-agent-execution-evidence-bindings");
     assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 17").name, "provider-request-attempt-receipt-backfill");
+    assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 18").name, "stable-spend-cost-identifiers");
     const tables = all(
       runtime.db,
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('agent_run_receipts', 'agent_run_provenance') ORDER BY name",
@@ -344,6 +376,44 @@ test("migrations install receipt immutability, exact attempt bindings, and provi
     );
     assert.equal(repairedAttempt.provider_request_id, "resp_provider_repair");
     assert.equal(JSON.parse(repairedAttempt.metadata).providerRequestIdBackfill.source, "exact_model_call_binding");
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("stable spend-cost migration upgrades a legacy truncated task identifier without duplication", () => {
+  const runtime = makeRuntime();
+  try {
+    const taskId = `task_${"long_segment_".repeat(12)}retry_2`;
+    const legacyId = `cost_spend_${taskId.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 88)}`;
+    insertWorkflow(runtime.db, "wf-cost-id-upgrade");
+    const ts = "2026-07-17T00:00:00.000Z";
+    run(
+      runtime.db,
+      `INSERT INTO tasks
+       (id, workflow_id, venture_id, title, kind, agent, status, priority,
+        payload, result, created_at, updated_at)
+       VALUES (?, 'wf-cost-id-upgrade', 'venture-digital-products', 'Legacy cost id',
+        'live_ai_worker_execution', 'demand_validator', 'failed', 1, '{}', '{}', ?, ?)`,
+      [taskId, ts, ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO costs
+       (id, workflow_id, venture_id, task_id, category, source, status,
+        amount_cents, currency, occurred_at, metadata)
+       VALUES (?, 'wf-cost-id-upgrade', 'venture-digital-products', ?,
+        'live_ai_worker', 'openai-agents-sdk', 'incurred_estimate',
+        3, 'AUD', ?, '{}')`,
+      [legacyId, taskId, ts],
+    );
+    run(runtime.db, "DELETE FROM schema_migrations WHERE version = 18");
+    applyStableSpendCostIdMigration(runtime.db);
+
+    const upgraded = get(runtime.db, "SELECT * FROM costs WHERE task_id = ?", [taskId]);
+    assert.equal(upgraded.id, spendCostId(taskId));
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM costs WHERE task_id = ?", [taskId]).count, 1);
+    assert.equal(JSON.parse(upgraded.metadata).stableIdMigration.previousId, legacyId);
   } finally {
     closeRuntime(runtime);
   }

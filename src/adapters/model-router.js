@@ -52,6 +52,7 @@ function recordModelCall(db, task, policy, options = {}) {
     modelClass: policy.modelClass,
     highConsequence: options.highConsequence === true,
     qualityEscalation: options.qualityEscalation === true,
+    proofMode: CONFIG.systemProofMode === true,
   });
   const route = { ...baseRoute, selectedModel: selected.model };
   const live = liveModelCallsEnabled(options);

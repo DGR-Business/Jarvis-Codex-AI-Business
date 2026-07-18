@@ -1263,6 +1263,15 @@ function decideAgentHandoff(db, handoffId, decision, note = "", options = {}) {
      WHERE id = ?`,
     [status, toJson(metadata), ts, ts, handoff.id],
   );
+  if (handoff.task_id) {
+    run(
+      db,
+      `UPDATE messages
+       SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?)
+       WHERE task_id = ? AND status = 'open' AND severity = 'approval'`,
+      [ts, handoff.task_id],
+    );
+  }
   addAgentTrace(
     db,
     handoff.from_run_id,

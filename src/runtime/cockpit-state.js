@@ -12,6 +12,9 @@ const { monthlyBudgetExposure } = require("./cost-ledger");
 const { latestAgentRunReceipt, verifyAgentRunReceiptChain } = require("./agent-execution-evidence");
 const { getRetentionPolicyState } = require("./retention-policy");
 const { unsafeTaskReason } = require("./scheduler");
+const { spendCostId } = require("./stable-id");
+const { canPrepareReviewedRetry } = require("./live-ai-retry-policy");
+const { supersededRetryTaskIds } = require("./monitor");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -143,21 +146,40 @@ function pendingHandoffs(db) {
     db,
     `SELECT agent_handoffs.*, workflows.title AS workflow_title,
             agent_definitions.name AS from_agent_name,
-            workflows.expected_profit_cents, workflows.cost_estimate_cents
+            workflows.expected_profit_cents, workflows.cost_estimate_cents,
+            source_tasks.payload AS source_task_payload,
+            source_tasks.result AS source_task_result
      FROM agent_handoffs
      LEFT JOIN workflows ON workflows.id = agent_handoffs.workflow_id
      LEFT JOIN agent_definitions ON agent_definitions.id = agent_handoffs.from_agent_id
+     LEFT JOIN tasks AS source_tasks ON source_tasks.id = agent_handoffs.task_id
      WHERE agent_handoffs.status IN ('needs_operator_decision', 'waiting_for_review', 'waiting_approval')
      ORDER BY CASE agent_handoffs.risk_level WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
               agent_handoffs.updated_at`,
-  ));
+  ), ["metadata", "source_task_payload", "source_task_result"]);
 }
 
 function handoffCard(handoff) {
   const taskKind = String(handoff.metadata?.taskKind || "").toLowerCase();
   const businessDecision = handoff.metadata?.businessDecision || {};
+  const sourcePayload = handoff.source_task_payload || {};
+  const sourceResult = handoff.source_task_result || {};
+  const liveRequest = sourcePayload.liveSpendRequest || {};
+  const controlledEvidence = Boolean(sourcePayload.pilotFixture);
+  const researchSources = (
+    sourceResult.output?.toolActivity
+    || sourceResult.liveWorker?.output?.toolActivity
+    || []
+  ).flatMap((item) => Array.isArray(item.sources) ? item.sources : []);
+  const liveResearch = Array.isArray(liveRequest.tools)
+    && liveRequest.tools.some((toolId) => ["research_adapter", "live_web_with_approval"].includes(toolId));
   const demandResult = taskKind === "live_ai_worker_execution"
     && String(handoff.from_agent_id || "").toLowerCase() === "demand_validator";
+  const demandRecommendation = controlledEvidence
+    ? "Demand Validator found a plausible recurring problem in the controlled evidence, but it did not prove real buyer demand. It recommends a free interest check before anything is built."
+    : liveResearch && researchSources.length
+      ? `Demand Validator completed live research with ${researchSources.length} attributable source${researchSources.length === 1 ? "" : "s"}. It recommends a small interest test; the research does not itself prove demand or willingness to pay.`
+      : handoff.summary || businessDecision.evidenceSummary || "Review the recorded evidence before deciding whether Jarvis should prepare a small interest test.";
   return {
     id: handoff.id,
     type: "decision",
@@ -172,7 +194,7 @@ function handoffCard(handoff) {
       : handoff.risk_level || "medium",
     requestedAt: handoff.updated_at || handoff.created_at,
     recommendation: demandResult
-      ? "Demand Validator recommends a free interest check before the checklist is built. The controlled test found a plausible recurring problem, but it did not prove real buyer demand."
+      ? demandRecommendation
       : handoff.summary || handoff.reason || "Review the completed work and choose whether the team should continue.",
     expectedUpside: demandResult
       ? "A small interest check can show whether the idea deserves more work without spending money."
@@ -232,7 +254,7 @@ function importantWork(db) {
   const items = [];
   const unknownTasks = parseRows(all(
     db,
-    "SELECT id, venture_id, workflow_id, title, status, error, payload, result, created_at, updated_at, '{}' AS metadata FROM tasks WHERE outcome_status = 'unknown' OR status = 'needs_attention' ORDER BY updated_at DESC",
+    "SELECT id, venture_id, workflow_id, title, kind, agent, status, outcome_status, error, payload, result, created_at, updated_at, '{}' AS metadata FROM tasks WHERE outcome_status = 'unknown' OR status = 'needs_attention' ORDER BY updated_at DESC",
     [],
   ), ["payload", "result"]);
   const completedPilotTasks = parseRows(all(
@@ -248,18 +270,49 @@ function importantWork(db) {
         && Date.parse(candidate.created_at) > Date.parse(task.created_at)
       ))
       : null;
+    const knownDemandRetry = task.status === "needs_attention"
+      && task.outcome_status === "known_provider_result_needs_review"
+      && task.kind === "live_ai_worker_execution"
+      && task.agent === "demand_validator";
+    const latestAttempt = knownDemandRetry
+      ? get(
+        db,
+        "SELECT error_kind FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+        [task.id],
+      )
+      : null;
+    const reviewedRetryAvailable = knownDemandRetry
+      && canPrepareReviewedRetry(task, latestAttempt?.error_kind);
+    const issueSummary = /provider tool activity was missing/i.test(String(task.error || ""))
+      ? "Jarvis did not recognise the web-research record returned by OpenAI."
+      : /invalid output|unterminated string/i.test(String(task.error || ""))
+        ? "OpenAI returned an incomplete structured answer that Jarvis could not safely use."
+        : "The AI call finished, but Jarvis could not safely accept the local result.";
     items.push({
       id: task.id,
-      type: "unknown_outcome",
+      type: knownDemandRetry ? "known_ai_result" : "unknown_outcome",
       title: correctedRun ? `${task.title}: first call billing check` : task.title,
-      risk: "high",
+      risk: knownDemandRetry ? "medium" : "high",
+      summary: knownDemandRetry
+        ? `${issueSummary} The software issue has been reviewed; a new attempt still needs your separate approval.`
+        : undefined,
       recommendation: correctedRun
         ? "The corrected run completed successfully. Reconcile only the first call's final provider charge; do not run it again."
-        : "Check the provider outcome and reconcile any cost before deciding whether another attempt is justified.",
+        : knownDemandRetry
+          ? reviewedRetryAvailable
+            ? "Prepare one corrected Luna retry, then review its exact cost limit before it can run."
+            : "Keep this result stopped while Jarvis reviews the exact failure record. Another paid call is not available yet."
+          : "Check the provider outcome and reconcile any cost before deciding whether another attempt is justified.",
       expectedUpside: correctedRun
         ? "Keeps the cost record accurate without reopening completed work."
-        : "Prevents duplicate work, duplicate spend and contradictory state.",
+        : knownDemandRetry
+          ? "Tests the repaired path without publishing, customer contact or automatic spend."
+          : "Prevents duplicate work, duplicate spend and contradictory state.",
       workflowId: task.workflow_id,
+      action: reviewedRetryAvailable ? {
+        kind: "prepare_known_ai_retry",
+        label: "Prepare one corrected retry",
+      } : null,
     });
   }
   const urgent = parseRows(all(
@@ -487,6 +540,7 @@ function getCockpitState(db) {
           : "Operating normally",
       queuedWork: Number(queue?.count || 0),
       importantItems: work.length,
+      proofMode: CONFIG.systemProofMode === true,
     },
     weeklyDigest: digestWithCurrentAttention(getLatestDigest(db, commercial.venture.id), work),
   };
@@ -581,6 +635,37 @@ function modelCallForRun(db, runRecord) {
     if (exact) return { ...exact, metadata: fromJson(exact.metadata, {}) };
   }
   if (!runRecord.task_id) return null;
+  const attempt = get(
+    db,
+    `SELECT attempt_id
+     FROM agent_eval_results
+     WHERE run_id = ? AND attempt_id IS NOT NULL
+     ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [runRecord.id],
+  ) || get(
+    db,
+    `SELECT attempt_id
+     FROM agent_run_receipts
+     WHERE run_id = ? AND attempt_id IS NOT NULL
+     ORDER BY sequence DESC LIMIT 1`,
+    [runRecord.id],
+  );
+  if (attempt?.attempt_id) {
+    const exactAttemptCall = get(
+      db,
+      "SELECT * FROM model_calls WHERE attempt_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+      [attempt.attempt_id],
+    );
+    if (exactAttemptCall) {
+      return { ...exactAttemptCall, metadata: fromJson(exactAttemptCall.metadata, {}) };
+    }
+  }
+  const runCount = Number(get(
+    db,
+    "SELECT COUNT(*) AS count FROM agent_runs WHERE task_id = ?",
+    [runRecord.task_id],
+  )?.count || 0);
+  if (runCount !== 1) return null;
   const fallback = get(
     db,
     "SELECT * FROM model_calls WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
@@ -591,8 +676,20 @@ function modelCallForRun(db, runRecord) {
 
 function exactCostForRun(db, runRecord, task, modelCall) {
   if (!task) return null;
-  const exact = get(db, "SELECT * FROM costs WHERE id = ?", [`cost_spend_${task.id}`]);
-  if (exact) return { ...exact, metadata: fromJson(exact.metadata, {}) };
+  const exact = get(db, "SELECT * FROM costs WHERE id = ?", [spendCostId(task.id)]);
+  if (exact) {
+    const parsed = { ...exact, metadata: fromJson(exact.metadata, {}) };
+    const exactMatchesCall = modelCall && (
+      parsed.metadata?.modelCallId === modelCall.id
+      || (modelCall.provider_request_id && parsed.metadata?.providerResponseId === modelCall.provider_request_id)
+    );
+    const runCount = Number(get(
+      db,
+      "SELECT COUNT(*) AS count FROM agent_runs WHERE task_id = ?",
+      [task.id],
+    )?.count || 0);
+    if (exactMatchesCall || runCount === 1) return parsed;
+  }
   if (!modelCall || !task.workflow_id) return null;
   const candidates = all(
     db,
@@ -660,8 +757,6 @@ function executionKindForRun(runRecord, modelCall, task, cost, receipt) {
   const providerEvidence = Boolean(
     modelCall?.provider_request_id
     || modelCall?.metadata?.responseId
-    || modelCall?.metadata?.agentSdkTraceId
-    || fromJson(runRecord.metadata, {}).agentSdkTraceId
     || modelCall?.metadata?.dispatchIntent?.status === "dispatched"
     || receiptAttempt.providerDispatchedAt
     || Number(runRecord.actual_cost_cents || 0) > 0
@@ -669,6 +764,9 @@ function executionKindForRun(runRecord, modelCall, task, cost, receipt) {
   );
   if (callStatus === "not_called" || callMode === "dry-run" || (!providerEvidence && ["dry-run", "protected"].includes(runMode))) {
     return "protected_rehearsal";
+  }
+  if (!providerEvidence && ["failed", "needs_attention"].includes(String(runRecord.status || "").toLowerCase())) {
+    return "provider_not_contacted";
   }
   const outcomeUnknown = task?.outcome_status === "unknown"
     || modelCall?.outcome_status === "unknown"
@@ -773,7 +871,6 @@ function runExecutionContext(db, runRecord, taskRow = null) {
     protectedRehearsal,
     providerAttempted: !protectedRehearsal && Boolean(
       responseId
-      || traceId
       || modelMetadata.dispatchIntent?.status === "dispatched"
       || receipt?.receipt?.attempt?.providerDispatchedAt
       || Number(runRecord.actual_cost_cents || 0) > 0
@@ -801,12 +898,13 @@ function runExecutionContext(db, runRecord, taskRow = null) {
 function executionLabel(kind) {
   return {
     protected_rehearsal: "Internal rehearsal",
+    provider_not_contacted: "Stopped before OpenAI",
     model_backed: "OpenAI used",
     provider_outcome_unknown: "Outcome needs review",
   }[kind] || "Run recorded";
 }
 
-function agentRunSummary(db, row) {
+function agentRunSummary(db, row, supersededTaskIds = new Set()) {
   const context = runExecutionContext(db, row);
   const latestTrace = context.traces.at(-1) || null;
   const active = ACTIVE_RUN_STATUSES.has(String(row.status || "").toLowerCase());
@@ -822,9 +920,16 @@ function agentRunSummary(db, row) {
         : context.providerAttempted
           ? "contacting_provider"
           : "not_contacted";
-  const attentionRequired = context.kind === "provider_outcome_unknown"
-    || ["needs_attention", "failed"].includes(row.status)
-    || ["needs_review", "incomplete"].includes(context.receipt?.status);
+  const resolvedByRetry = Boolean(row.task_id && supersededTaskIds.has(row.task_id));
+  const attentionRequired = context.receipt?.status === "incomplete"
+    || (
+      !resolvedByRetry
+      && (
+        context.kind === "provider_outcome_unknown"
+        || ["needs_attention", "failed"].includes(row.status)
+        || context.receipt?.status === "needs_review"
+      )
+    );
   return {
     id: row.id,
     executionKind: context.kind,
@@ -835,6 +940,7 @@ function agentRunSummary(db, row) {
     activityState: active ? "working" : attentionRequired ? "needs_review" : "finished",
     providerState,
     attentionRequired,
+    resolvedByRetry,
     workerId: row.agent_id,
     workerName: row.worker_name || row.agent_id,
     taskId: row.task_id,
@@ -904,7 +1010,8 @@ function getAgentRunsState(db, filters = {}) {
      ORDER BY agent_runs.started_at DESC, agent_runs.id DESC
      LIMIT 500`,
   );
-  const summaries = rows.map((row) => agentRunSummary(db, row));
+  const supersededTaskIds = supersededRetryTaskIds(db);
+  const summaries = rows.map((row) => agentRunSummary(db, row, supersededTaskIds));
   const execution = String(filters.execution || "all");
   const state = String(filters.state || "all");
   const status = String(filters.status || "all");
@@ -1285,6 +1392,7 @@ function getSystemState(db) {
       liveAi: getLiveAiWorkerReadiness(db),
       liveResearch: getLiveResearchReadiness(db),
       retention: getRetentionPolicyState(db),
+      proofMode: CONFIG.systemProofMode === true,
     },
     queue,
     spend: spendState(db),
@@ -1472,7 +1580,7 @@ function getAgentRunDetail(db, id) {
     },
     process: {
       explanation: "This is a structured account of the evidence, judgement and result. It does not expose hidden private model chain-of-thought.",
-      question: fixture?.question || task?.payload?.subject || "No question was recorded.",
+      question: fixture?.question || task?.title || task?.payload?.subject || "No question was recorded.",
       buyer: fixture?.buyer || output.businessDecision?.buyer || "No buyer was recorded.",
       hypothesis: fixture?.hypothesis || output.businessDecision?.continuousImprovement?.hypothesis || "No hypothesis was recorded.",
       suppliedEvidence,
@@ -1502,6 +1610,7 @@ function getAgentRunDetail(db, id) {
     execution: {
       kind: context.kind,
       label: executionLabel(context.kind),
+      systemProof: task?.payload?.systemProof === true,
       providerAttempted: context.providerAttempted,
       provider: context.protectedRehearsal ? null : (modelCall?.metadata?.provider || review?.provider || context.liveRequest.provider || modelCall?.provider || null),
       requestedProvider: context.liveRequest.provider || modelCall?.provider || null,

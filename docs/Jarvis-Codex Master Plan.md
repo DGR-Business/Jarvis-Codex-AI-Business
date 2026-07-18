@@ -226,27 +226,30 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
 - Operate against the fixed 11-worker Phase 1 contract. Its bounded assignment,
   receipt, audit, task-scoped context, Chief assignment, Quality Reviewer,
   monitoring, model-routing, retention-enforcement, exact attempt binding, and
-  startup-readiness foundation passed locally on 2026-07-18 with schema 17,
-  162 automated tests, encrypted restore proof, and authenticated real-browser
+  startup-readiness foundation passed locally on 2026-07-18 with schema 18,
+  175 automated tests, encrypted restore proof, and authenticated real-browser
   proof at all supported desktop sizes. Approval lifecycle recovery also proved
   that an outdated decision can be replaced with zero task attempts, model
   calls, agent runs, receipts, or spend.
-- Use the cockpit to prepare one Evidence Brief that ranks three plausible
-  digital-product opportunities.
-- Review the completed first Agents SDK Demand Validator result. The exact
-  no-tool, one-turn run used controlled supplied evidence, completed safely,
-  and recommended a small free interest test. Daniel accepted the analysis as
-  clear enough to use. It did not perform web research or establish real
-  demand.
-- Offer the one separately approved A$2 live-web proof now prepared in the
-  Command Center. Its current scope is valid and it has not run or incurred
-  spend. The completed A$1 approval is consumed and grants no authority to
-  search, publish, contact buyers, or spend again.
-- After the current Demand Validator decision, present Daniel with the prepared
-  plain-language retention and privacy decision. Keep ongoing live research,
-  provider storage, personal-data work, and sensitive work blocked until it is
-  accepted.
-- Present one concise opportunity-selection decision to Daniel.
+- Treat the completed Luna-only Demand Validator sequence as proof of the
+  dashboard, approval, Agents SDK, hosted-search, evidence, evaluation, cost,
+  retry, receipt, and Chief handoff path. The final attempt returned 41
+  attributable URLs and passed local structural checks, but the mixed source
+  quality and cheap proof model do not establish market demand or willingness
+  to pay.
+- Complete the deterministic Chief-to-Test-Pack handoff against a protected
+  copy of the proven run. Materialise one bounded Test Pack with buyer, message,
+  channel, metric, seven-day or 50-view limit, five-signal threshold, and stop
+  rule without another model call. This closes an implementation gap; it does
+  not convert the Luna systems proof into real market evidence.
+- Keep the active business position clean: rank three digital-product
+  opportunities, present one evidence-backed selection, and run a fresh
+  approved validation path for the selected opportunity. Do not publish,
+  contact buyers, create an account, or spend from a Test Pack preparation.
+- Present the prepared plain-language retention and privacy decision before
+  wider provider storage, personal-data work, or sensitive worker access.
+- Resume ranking three digital-product opportunities if the Test Pack or real
+  buyer evidence does not justify continuing the weekly cash-control concept.
 
 ### Next
 
@@ -274,8 +277,12 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
 
 Status: satisfied for the clean first-use foundation and the bounded-worker
 engineering foundation on 2026-07-17. The live Autonomous Agent Operations
-gates remain active: Demand Validator, live web, supervised paid build/review,
-and retention still require their separate evidence and operator decisions.
+proof now covers Demand Validator and one capped read-only web-search path.
+The 2026-07-18 independent release audit also proved exact dashboard recovery,
+retry-chain identity, resumed usage accounting, immutable receipt handling,
+accepted-research provenance, and resolved-history presentation.
+Promotion, supervised paid build/review, market action, and retention gates
+remain active and require their separate evidence and operator decisions.
 Future changes that affect either boundary must repeat proportionate proof.
 
 Foundation is releasable only when:

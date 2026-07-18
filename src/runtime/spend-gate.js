@@ -8,12 +8,14 @@ const {
   validateApprovalScope,
   verifyExecutionDescriptor,
 } = require("./approval-scope");
-const { retentionRequirementsForTask } = require("./retention-policy");
+const {
+  prepareRetentionPolicyDecision,
+  retentionRequirementsForTask,
+} = require("./retention-policy");
+const { spendCostId, stableIdSegment } = require("./stable-id");
 
 function safeId(value) {
-  return String(value || "task")
-    .replace(/[^a-zA-Z0-9_-]+/g, "_")
-    .slice(0, 88);
+  return stableIdSegment(value, 88, "task");
 }
 
 function spendRequestForTask(task) {
@@ -27,7 +29,7 @@ function approvalIdForTask(task) {
 }
 
 function costIdForTask(task) {
-  return `cost_spend_${safeId(task.id)}`;
+  return spendCostId(task.id);
 }
 
 function amountForRequest(task, request) {
@@ -193,9 +195,11 @@ function getSpendApprovalState(db, task, options = {}) {
   };
 }
 
-function blockForProviderReadiness(db, task, approval, request, amountCents, missingRequirements, ts) {
+function blockForProviderReadiness(db, task, approval, request, amountCents, missingRequirements, ts, options = {}) {
   const policyBlocked = missingRequirements.some((requirement) => requirement.kind === "policy");
   const safetyBlocked = missingRequirements.some((requirement) => requirement.kind === "safety");
+  const approvalId = approval?.id || null;
+  const approvalStatus = approval?.status || "not_requested";
   const subject = policyBlocked
     ? `Data protection decision needed: ${task.title}`
     : safetyBlocked
@@ -203,8 +207,8 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
       : `Provider setup needed: ${task.title}`;
   const labels = missingRequirements.map(requirementLabel);
   const result = {
-    blockedBy: approval.id,
-    approvalStatus: approval.status,
+    blockedBy: approvalId,
+    approvalStatus,
     spendApprovalRequired: true,
     estimatedCostCents: amountCents,
     providerBlocked: true,
@@ -223,7 +227,7 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
   run(
     db,
     `UPDATE tasks SET status = 'blocked', approval_id = ?, result = ?, setup_block_reason = ?, outcome_status = 'not_started', updated_at = ? WHERE id = ?`,
-    [approval.id, toJson(result), labels.join(", "), ts, task.id],
+    [approvalId, toJson(result), labels.join(", "), ts, task.id],
   );
   run(
     db,
@@ -239,12 +243,14 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
     ],
   );
 
-  const existing = get(
-    db,
-    `SELECT id FROM messages WHERE task_id = ? AND subject = ? AND status = 'open' LIMIT 1`,
-    [task.id, subject],
-  );
-  if (!existing) {
+  const existing = options.suppressMessage
+    ? null
+    : get(
+      db,
+      `SELECT id FROM messages WHERE task_id = ? AND subject = ? AND status = 'open' LIMIT 1`,
+      [task.id, subject],
+    );
+  if (!options.suppressMessage && !existing) {
     run(
       db,
       `INSERT INTO messages (id, task_id, severity, status, subject, body, created_at, metadata)
@@ -255,11 +261,15 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
         "urgent",
         "open",
         subject,
-        policyBlocked
-          ? "The task approval is recorded, but no live spend occurred. Review the data protection plan before this work uses sensitive records, live web research, or provider-side storage."
-          : `The spend approval is approved, but no live spend occurred. Missing: ${labels.join(", ")}.`,
+        !approval
+          ? policyBlocked
+            ? "This work has not been offered for paid approval or run. Review the data protection plan first."
+            : `Jarvis stopped before asking for paid approval. Correct this issue first: ${labels.join(", ")}.`
+          : policyBlocked
+            ? "The task approval is recorded, but no live spend occurred. Review the data protection plan before this work uses sensitive records, live web research, or provider-side storage."
+            : `The spend approval is approved, but no live spend occurred. Missing: ${labels.join(", ")}.`,
         ts,
-        toJson({ approvalId: approval.id, missingRequirements, provider: request.provider || "not_selected" }),
+        toJson({ approvalId, missingRequirements, provider: request.provider || "not_selected" }),
       ],
     );
   }
@@ -271,9 +281,9 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
     entityType: "task",
     entityId: task.id,
     message: policyBlocked
-      ? `Approved paid work remains blocked for ${task.title}; the data protection plan is not active.`
-      : `Approved paid work remains blocked for ${task.title}; provider/runtime setup is incomplete.`,
-    metadata: { approvalId: approval.id, missingRequirements, estimatedCostCents: amountCents, currency: CONFIG.currency },
+      ? `${approval ? "Approved paid work remains" : "Paid work is"} blocked for ${task.title}; the data protection plan is not active.`
+      : `${approval ? "Approved paid work remains" : "Paid work is"} blocked for ${task.title}; provider/runtime setup is incomplete.`,
+    metadata: { approvalId, missingRequirements, estimatedCostCents: amountCents, currency: CONFIG.currency },
   });
 
   return {
@@ -304,6 +314,28 @@ function ensureSpendApproval(db, task, options = {}) {
   let approval = get(db, "SELECT * FROM approvals WHERE id = ?", [approvalId]);
 
   if (!approval) {
+    const missingRequirements = missingTaskRequirements(db, task, request).filter((requirement) => (
+      requirement.kind === "safety"
+      || (requirement.kind === "policy" && request.type === "live_ai_worker")
+    ));
+    if (missingRequirements.length > 0) {
+      const policyBlocked = missingRequirements.some((requirement) => requirement.kind === "policy");
+      const retentionDecision = policyBlocked ? prepareRetentionPolicyDecision(db) : null;
+      const blocked = blockForProviderReadiness(
+        db,
+        task,
+        null,
+        request,
+        amountCents,
+        missingRequirements,
+        ts,
+        { suppressMessage: Boolean(retentionDecision?.prepared || retentionDecision?.state?.status === "waiting_for_decision") },
+      );
+      return {
+        ...blocked,
+        prerequisiteDecision: retentionDecision,
+      };
+    }
     const title = request.title || `Approve paid work for ${task.title}`;
     run(
       db,
@@ -389,7 +421,7 @@ function ensureSpendApproval(db, task, options = {}) {
   if (approval.status !== "approved") {
     run(
       db,
-      `UPDATE tasks SET status = 'blocked', approval_id = ?, result = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE tasks SET status = 'blocked', approval_id = ?, setup_block_reason = NULL, result = ?, updated_at = ? WHERE id = ?`,
       [
         approval.id,
         toJson({ blockedBy: approval.id, approvalStatus: approval.status, spendApprovalRequired: true, estimatedCostCents: amountCents }),
@@ -467,7 +499,19 @@ function recoverSetupBlockedTasks(db) {
       continue;
     }
     const approvalId = task.approval_id || request.approvalId;
-    const approval = approvalId ? ensureApprovalScope(db, approvalId).approval : null;
+    const approvalRow = approvalId ? get(db, "SELECT id FROM approvals WHERE id = ?", [approvalId]) : null;
+    const approval = approvalRow ? ensureApprovalScope(db, approvalId).approval : null;
+    if (!approval) {
+      const prepared = ensureSpendApproval(db, task);
+      stillBlocked.push({
+        taskId: task.id,
+        reason: prepared.approval
+          ? "The prerequisite is complete and the paid work decision is now ready."
+          : "A current approval is required.",
+        approvalId: prepared.approval?.id || null,
+      });
+      continue;
+    }
     const validation = approval ? validateApprovalScope(db, approval.id, task) : { valid: false, reason: "A current approval is required." };
     if (!approval || approval.status !== "approved" || !validation.valid) {
       if (approval && !validation.valid && approval.status === "approved") {

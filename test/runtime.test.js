@@ -47,9 +47,10 @@ const { getAgentPlaybooksState, queueAgentPlaybookRehearsal, queueAgentPlaybookR
 const { getAgentModelReadinessState, queueAgentModelComparisonPacket, storedComparisonPackets } = require("../src/runtime/agent-model-readiness");
 const { recordAiPilotReviewDecision } = require("../src/runtime/ai-pilot-review");
 const { generateWeeklyDigest } = require("../src/runtime/executive-digest");
-const { runMonitorCycle } = require("../src/runtime/monitor");
+const { collectFindings, runMonitorCycle } = require("../src/runtime/monitor");
 const {
   createLiveAiWorkerSmokeTest,
+  prepareReviewedLiveAiWorkerRetry,
   refreshOutdatedLiveAiWorkerApproval,
   requestLiveAiWorker,
 } = require("../src/runtime/live-ai-workers");
@@ -58,6 +59,7 @@ const {
   getRetentionPolicyState,
   prepareRetentionPolicyDecision,
 } = require("../src/runtime/retention-policy");
+const { recoverSetupBlockedTasks } = require("../src/runtime/spend-gate");
 const { AI_TEAM_DEFINITIONS, createAgentRun, decideAgentHandoff, findAgentDefinition, finishAgentRun } = require("../src/runtime/ai-team");
 const { ensureSchedulerJobs, runDueSchedulerJobs, runSchedulerJob, setSchedulerJobStatus } = require("../src/runtime/scheduler");
 const { recordCommercialFeedback, recordCommercialResult } = require("../src/runtime/commercial-results");
@@ -2200,7 +2202,39 @@ test("approved worker handoff queues and runs Chief of Staff follow-up", async (
     assert.equal(workflow.status, "ready_for_review");
     assert.ok(get(db, "SELECT id FROM agent_trace_events WHERE run_id = ? AND type = ?", [followupRun.id, "commercial_next_action_recommended"]));
     assert.ok(get(db, "SELECT id FROM events WHERE type = ? AND entity_id = ?", ["commercial.next_action_recommended", decision.followupTask.id]));
-    assert.ok(get(db, "SELECT id FROM messages WHERE subject = ? AND task_id = ?", ["Chief of Staff next business action ready", decision.followupTask.id]));
+    assert.ok(get(db, "SELECT id FROM messages WHERE subject = ? AND task_id = ?", ["Chief of Staff recommendation ready", decision.followupTask.id]));
+    assert.equal(
+      get(
+        db,
+        "SELECT status FROM messages WHERE task_id = ? AND subject = 'Chief of Staff follow-up queued'",
+        [decision.followupTask.id],
+      ).status,
+      "resolved",
+    );
+    const chiefRecommendation = get(
+      db,
+      "SELECT severity, status, body FROM messages WHERE task_id = ? AND subject = 'Chief of Staff recommendation ready'",
+      [decision.followupTask.id],
+    );
+    assert.equal(chiefRecommendation.severity, "info");
+    assert.equal(chiefRecommendation.status, "open");
+    assert.match(chiefRecommendation.body, /prepare|recommend/i);
+    assert.equal(
+      get(
+        db,
+        "SELECT COUNT(*) AS count FROM messages WHERE task_id = ? AND subject = 'Chief of Staff recommendation ready'",
+        [decision.followupTask.id],
+      ).count,
+      1,
+    );
+    assert.equal(
+      get(
+        db,
+        "SELECT COUNT(*) AS count FROM messages WHERE task_id = ? AND status = 'open' AND severity = 'approval'",
+        [decision.followupTask.id],
+      ).count,
+      0,
+    );
   } finally {
     db.close();
     if (previousPackDir === undefined) delete process.env.JARVIS_APPROVAL_PACK_DIR;
@@ -2242,6 +2276,18 @@ test("cockpit surfaces queued work and exact-task execution cannot start a diffe
 
 test("approved Demand Validator interest handoff prepares one capped web-research decision", async () => {
   const db = seededDb("demand-interest-research");
+  const previousProviderEnvironment = {
+    apiKey: process.env.OPENAI_API_KEY,
+    liveModels: process.env.JARVIS_ENABLE_LIVE_MODELS,
+    liveResearch: process.env.JARVIS_ENABLE_LIVE_RESEARCH,
+  };
+  const unrelatedPending = all(
+    db,
+    "SELECT id FROM approvals WHERE status = 'pending' ORDER BY requested_at",
+  );
+  for (const approval of unrelatedPending) {
+    decideApproval(db, approval.id, "rejected", "Clear the unrelated demo decision before testing the interest-research path.");
+  }
   const planned = createCommandPlan(db, {
     text: "Define a non-paid interest test for a weekly cash-control checklist for solo service businesses",
     source: "test",
@@ -2251,12 +2297,20 @@ test("approved Demand Validator interest handoff prepares one capped web-researc
   run(db, "UPDATE tasks SET status = 'completed' WHERE workflow_id = ?", [planned.workflow.id]);
   getAiTeamState(db);
   const definition = AI_TEAM_DEFINITIONS.find((item) => item.id === "demand_validator");
-  const sourceRun = createAgentRun(db, definition, sourceTask, {
-    mode: "openai-agents-sdk",
-    inputSummary: "Reviewed supplied evidence for a weekly cash-control checklist.",
-    approvalRequired: true,
-  });
-  finishAgentRun(db, sourceRun.id, {
+    const sourceRun = createAgentRun(db, definition, sourceTask, {
+      mode: "openai-agents-sdk",
+      inputSummary: "Reviewed supplied evidence for a weekly cash-control checklist.",
+      approvalRequired: true,
+    });
+    run(
+      db,
+      `INSERT INTO messages
+       (id, task_id, severity, status, subject, body, created_at, metadata)
+       VALUES ('msg-source-review-proof', ?, 'approval', 'open',
+        'Operator review pack ready', 'Review the source worker result.', ?, '{}')`,
+      [sourceTask.id, new Date().toISOString()],
+    );
+    finishAgentRun(db, sourceRun.id, {
     status: "completed",
     outputSummary: "Advance only to a small, non-paid interest test because no live willingness-to-pay evidence exists.",
     approvalRequired: true,
@@ -2278,16 +2332,47 @@ test("approved Demand Validator interest handoff prepares one capped web-researc
   try {
     const handoff = getDashboardState(db).aiTeam.handoffs.find((item) => item.from_run_id === sourceRun.id);
     const decision = decideAgentHandoff(db, handoff.id, "approve", "Advance to the bounded interest-test preparation step.");
+    assert.equal(get(db, "SELECT status FROM messages WHERE id = 'msg-source-review-proof'").status, "resolved");
     const completed = await runOnce(db, { taskId: decision.followupTask.id });
 
     assert.equal(completed.status, "completed");
     assert.equal(completed.result.output.commercialNextAction.type, "prepare_manual_market_test");
     assert.equal(completed.result.output.commercialNextAction.preparedWork.kind, "demand_validator_web_research");
     assert.equal(completed.result.output.commercialNextAction.preparedWork.maxCostCents, 200);
-    const researchTask = get(db, "SELECT * FROM tasks WHERE id = ?", [completed.result.output.commercialNextAction.preparedWork.taskId]);
-    const approval = get(db, "SELECT * FROM approvals WHERE id = ?", [completed.result.output.commercialNextAction.preparedWork.approvalId]);
+    assert.equal(completed.result.output.commercialNextAction.preparedWork.approvalId, null);
+    assert.equal(
+      get(
+        db,
+        "SELECT status FROM messages WHERE task_id = ? AND subject = 'Chief of Staff follow-up queued'",
+        [decision.followupTask.id],
+      ).status,
+      "resolved",
+    );
+    assert.equal(
+      get(
+        db,
+        "SELECT COUNT(*) AS count FROM messages WHERE task_id = ? AND status = 'open' AND severity = 'approval'",
+        [decision.followupTask.id],
+      ).count,
+      0,
+    );
+    assert.equal(getRetentionPolicyState(db).status, "waiting_for_decision");
+    let researchTask = get(db, "SELECT * FROM tasks WHERE id = ?", [completed.result.output.commercialNextAction.preparedWork.taskId]);
     assert.equal(researchTask.status, "blocked");
-    assert.deepEqual(JSON.parse(researchTask.payload).liveSpendRequest.tools, ["research_adapter"]);
+    const initialRequest = JSON.parse(researchTask.payload).liveSpendRequest;
+    assert.deepEqual(initialRequest.tools, ["research_adapter"]);
+    assert.equal(initialRequest.tracePolicy.providerResponseStored, false);
+    assert.equal(initialRequest.tracePolicy.providerTraceContent, false);
+    assert.equal(get(db, "SELECT COUNT(*) AS count FROM approvals WHERE task_id = ?", [researchTask.id]).count, 0);
+
+    await activateRetentionPolicyForTest(db);
+    process.env.OPENAI_API_KEY = "test-only-key";
+    process.env.JARVIS_ENABLE_LIVE_MODELS = "1";
+    process.env.JARVIS_ENABLE_LIVE_RESEARCH = "1";
+    const recovery = recoverSetupBlockedTasks(db);
+    assert.equal(recovery.stillBlocked.some((item) => item.taskId === researchTask.id && item.approvalId), true);
+    researchTask = get(db, "SELECT * FROM tasks WHERE id = ?", [researchTask.id]);
+    const approval = get(db, "SELECT * FROM approvals WHERE id = ?", [researchTask.approval_id]);
     assert.equal(approval.status, "pending");
     assert.equal(approval.scope, "live_ai_worker_spend");
     const approvalValidation = validateApprovalScope(db, approval.id, researchTask);
@@ -2318,6 +2403,12 @@ test("approved Demand Validator interest handoff prepares one capped web-researc
     assert.equal(validateApprovalScope(db, refreshed.replacementApprovalId, replacementTask).valid, true);
     assert.equal(get(db, "SELECT COUNT(*) AS count FROM model_calls WHERE task_id = ?", [researchTask.id]).count, 0);
   } finally {
+    if (previousProviderEnvironment.apiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousProviderEnvironment.apiKey;
+    if (previousProviderEnvironment.liveModels === undefined) delete process.env.JARVIS_ENABLE_LIVE_MODELS;
+    else process.env.JARVIS_ENABLE_LIVE_MODELS = previousProviderEnvironment.liveModels;
+    if (previousProviderEnvironment.liveResearch === undefined) delete process.env.JARVIS_ENABLE_LIVE_RESEARCH;
+    else process.env.JARVIS_ENABLE_LIVE_RESEARCH = previousProviderEnvironment.liveResearch;
     db.close();
   }
 });
@@ -3015,7 +3106,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
 
     const requested = requestLiveAiWorker(db, workflowId, {
-      estimatedCostCents: 160,
+      estimatedCostCents: 80,
       worker: "demand_validator",
       provider: "openai-agents-sdk",
       model: "gpt-5.6-terra",
@@ -3061,6 +3152,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(capturedRequest.requestBody.metadata.adapter, "openai-agents-sdk");
     assert.equal(capturedRequest.requestBody.model, "gpt-5.6-terra");
     assert.equal(capturedRequest.agentDefinition.id, "demand_validator");
+    assert.equal(capturedRequest.policy.maxCostCents, 80);
     assert.match(capturedRequest.traceId, /^trace_[A-Za-z0-9_-]+$/);
     assert.equal(capturedRequest.tracePolicy.providerResponseStored, false);
     assert.equal(capturedRequest.tracePolicy.providerTraceContent, false);
@@ -3158,7 +3250,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     const resultDecision = getDecisionsState(db).approvals.find((item) => item.runId === liveRun.id);
     assert.equal(resultDecision.title, "Decide whether to prepare the interest test");
     assert.equal(resultDecision.primaryActionLabel, "Review result");
-    assert.match(resultDecision.recommendation, /did not prove real buyer demand/i);
+    assert.match(resultDecision.recommendation, /real buyer signal/i);
 
     assert.equal(state.aiPilotReview.status, "live_output_ready_for_review");
     assert.equal(state.aiPilotReview.contract.status, "passed");
@@ -3186,6 +3278,26 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(reviewedState.aiPilotReview.latestReview.decision, "mark_useful");
     assert.equal(reviewedState.aiPilotReview.recommendation.includes("mark_useful") || reviewedState.aiPilotReview.recommendation.includes("Latest operator review recorded"), true);
     assert.ok(reviewedState.events.some((event) => event.type === "ai_pilot_review.decision_recorded" && event.entity_id === review.runId));
+
+    run(
+      db,
+      "UPDATE agent_eval_results SET status = 'failed', findings = ? WHERE id = ?",
+      [toJson(["Live demand research returned no provider-grounded source URLs."]), liveEval.id],
+    );
+    const qualityRetry = prepareReviewedLiveAiWorkerRetry(db, liveTask.id, {
+      proofMode: true,
+    });
+    assert.equal(qualityRetry.retryNumber, 1);
+    assert.equal(["blocked", "waiting_approval"].includes(qualityRetry.task.status), true);
+    assert.equal(qualityRetry.task.payload.liveSpendRequest.model, "gpt-5.6-luna");
+    assert.match(
+      qualityRetry.task.payload.liveSpendRequest.parameters.retry.reason,
+      /no provider-grounded source URLs/i,
+    );
+    assert.equal(
+      get(db, "SELECT COUNT(*) AS count FROM model_calls WHERE task_id = ?", [qualityRetry.task.id]).count,
+      0,
+    );
   } finally {
     db.close();
     __setAgentRuntimeSdkRunnerForTests(null);
@@ -3364,7 +3476,23 @@ test("SDK tool interruption uses Jarvis approval and resumes the same serialized
     assert.equal(completed.result.output.roleOutput.demandVerdict.includes("Promising"), true);
     const nestedApproval = get(db, "SELECT consumed_at FROM approvals WHERE id = ?", [paused.approval.id]);
     assert.ok(nestedApproval.consumed_at);
-    assert.ok(all(db, "SELECT status FROM model_calls WHERE task_id = ? ORDER BY created_at", [requested.task.id]).some((call) => call.status === "waiting_approval"));
+    const recordedCalls = all(
+      db,
+      "SELECT * FROM model_calls WHERE task_id = ? ORDER BY created_at, id",
+      [requested.task.id],
+    );
+    const pausedCall = recordedCalls.find((call) => call.status === "waiting_approval");
+    const resumedCall = recordedCalls.find((call) => call.status === "completed");
+    assert.ok(pausedCall);
+    assert.ok(resumedCall);
+    assert.equal(pausedCall.input_tokens, 500);
+    assert.equal(pausedCall.output_tokens, 40);
+    assert.equal(resumedCall.input_tokens, 120);
+    assert.equal(resumedCall.output_tokens, 240);
+    const accumulatedCost = get(db, "SELECT * FROM costs WHERE task_id = ?", [requested.task.id]);
+    const accumulatedMetadata = JSON.parse(accumulatedCost.metadata);
+    assert.notEqual(accumulatedMetadata.providerFailed, true);
+    assert.equal(accumulatedCost.amount_cents, pausedCall.incurred_estimate_cents + resumedCall.incurred_estimate_cents);
   } finally {
     db.close();
     __setAgentRuntimeSdkRunnerForTests(null);
@@ -3468,6 +3596,306 @@ test("live AI worker provider failure records failed run and no-spend evidence",
     else process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK = previousDisabledSdk;
     if (previousModel === undefined) delete process.env.JARVIS_LIVE_MODEL;
     else process.env.JARVIS_LIVE_MODEL = previousModel;
+    if (previousPackDir === undefined) delete process.env.JARVIS_APPROVAL_PACK_DIR;
+    else process.env.JARVIS_APPROVAL_PACK_DIR = previousPackDir;
+  }
+});
+
+test("Agents SDK invalid structured output is recorded as a known provider response needing review", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
+  const previousDisabledAdapter = process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  const previousDisabledSdk = process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+  const previousPackDir = process.env.JARVIS_APPROVAL_PACK_DIR;
+  const packDir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-sdk-invalid-output-pdf-"));
+  process.env.OPENAI_API_KEY = "test-sdk-invalid-output-key";
+  process.env.JARVIS_ENABLE_LIVE_MODELS = "1";
+  delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+  process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
+  __setAgentRuntimeSdkRunnerForTests(async () => {
+    throw new Error("Invalid output type: Unterminated string in JSON at position 2770");
+  });
+
+  const db = seededDb("sdk-invalid-structured-output");
+  try {
+    const planned = createCommandPlan(db, {
+      text: "Evaluate a small digital product idea using supplied evidence",
+      source: "test",
+      createFiles: false,
+    });
+    const workflowId = planned.workflow.id;
+    await runUntilBlocked(db, { workflowId, maxSteps: 12 });
+
+    const requested = requestLiveAiWorker(db, workflowId, {
+      estimatedCostCents: 40,
+      worker: "demand_validator",
+      provider: "openai-agents-sdk",
+      model: "gpt-5.6-luna",
+      maxInputTokens: 12000,
+      maxOutputTokens: 1000,
+    });
+    decideApproval(db, requested.approval.id, "approved", "approve invalid-output classification proof");
+    const failed = await runOnce(db, { workflowId });
+
+    assert.equal(failed.status, "needs_attention");
+    assert.match(failed.error, /Invalid output type/);
+
+    const state = getDashboardState(db);
+    const liveTask = state.tasks.find((task) => task.id === requested.task.id);
+    const liveRun = state.aiTeam.runs.find((runRecord) => runRecord.task_id === liveTask.id);
+    const liveEval = state.aiTeam.evalResults.find((result) => result.run_id === liveRun.id);
+    const modelCall = state.modelCalls.find((call) => call.task_id === liveTask.id && call.mode === "live");
+    const cost = state.costs.find((item) => item.id === `cost_spend_${liveTask.id}`);
+    const attempt = get(db, "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC LIMIT 1", [liveTask.id]);
+    const pricedWorstCaseCents = Number(liveTask.payload.liveSpendRequest.pricedWorstCaseCostCents);
+
+    assert.equal(liveTask.status, "needs_attention");
+    assert.equal(liveTask.outcome_status, "known_provider_result_needs_review");
+    assert.equal(liveRun.status, "failed");
+    assert.equal(liveEval.status, "not_evaluable");
+    assert.equal(liveEval.metadata.providerOutcome, "known_provider_result_needs_review");
+    assert.equal(modelCall.status, "failed");
+    assert.equal(modelCall.outcome_status, "known");
+    assert.equal(modelCall.error_kind, "provider_output_invalid");
+    assert.equal(modelCall.cost_status, "incurred_estimate");
+    assert.equal(modelCall.incurred_estimate_cents, pricedWorstCaseCents);
+    assert.equal(modelCall.metadata.providerResponseReceived, true);
+    assert.equal(modelCall.metadata.outcomeUnknown, false);
+    assert.equal(cost.status, "incurred_estimate");
+    assert.equal(cost.amount_cents, pricedWorstCaseCents);
+    assert.equal(cost.metadata.providerResponseReceived, true);
+    assert.equal(cost.metadata.exactBillingPending, true);
+    assert.equal(cost.metadata.outcomeUnknown, false);
+    assert.equal(attempt.outcome_status, "known_provider_result_needs_review");
+    assert.equal(attempt.error_kind, "provider_output_invalid");
+
+    run(
+      db,
+      "UPDATE task_attempts SET error_kind = ? WHERE id = ?",
+      ["approved_provider_tool_activity_missing", attempt.id],
+    );
+    run(
+      db,
+      "UPDATE model_calls SET error_kind = ? WHERE id = ?",
+      ["approved_provider_tool_activity_missing", modelCall.id],
+    );
+    run(
+      db,
+      "UPDATE tasks SET error = ? WHERE id = ?",
+      ["Approved provider tool activity was missing for: web_search.", liveTask.id],
+    );
+    const retry = prepareReviewedLiveAiWorkerRetry(db, liveTask.id, {
+      proofMode: true,
+    });
+    assert.equal(
+      retry.task.payload.liveSpendRequest.maxInputTokens,
+      Math.max(
+        12000,
+        retry.task.payload.liveSpendRequest.executionDescriptor.worstCaseCost.materializedInputTokens,
+      ),
+    );
+    const repeatedPreparation = prepareReviewedLiveAiWorkerRetry(db, liveTask.id, {
+      proofMode: true,
+    });
+    assert.equal(repeatedPreparation.existing, true);
+    assert.equal(repeatedPreparation.task.id, retry.task.id);
+    assert.equal(
+      get(
+        db,
+        "SELECT COUNT(*) AS count FROM tasks WHERE workflow_id = ? AND id LIKE ?",
+        [workflowId, "%_retry_1"],
+      ).count,
+      1,
+    );
+    const retryDecision = decideApproval(db, retry.approval.id, "approved", "approve exact retry");
+    assert.deepEqual(retryDecision.approvedTaskIds, [retry.task.id]);
+    assert.equal(get(db, "SELECT status FROM tasks WHERE id = ?", [liveTask.id]).status, "failed");
+    assert.equal(get(db, "SELECT status FROM tasks WHERE id = ?", [retry.task.id]).status, "queued");
+    assert.ok(
+      get(
+        db,
+        "SELECT id FROM events WHERE type = 'task.reviewed_failure_closed_for_retry' AND entity_id = ?",
+        [liveTask.id],
+      ),
+    );
+    assert.equal(
+      JSON.parse(
+        get(
+          db,
+          "SELECT metadata FROM events WHERE type = 'task.reviewed_failure_closed_for_retry' AND entity_id = ?",
+          [liveTask.id],
+        ).metadata,
+      ).errorKind,
+      "approved_provider_tool_activity_missing",
+    );
+    assert.equal(
+      collectFindings(db).some(
+        (finding) => finding.category === "tasks"
+          && finding.metadata?.failedTasks?.some((failed) => failed.id === liveTask.id),
+      ),
+      false,
+    );
+  } finally {
+    db.close();
+    __setAgentRuntimeSdkRunnerForTests(null);
+    fs.rmSync(packDir, { recursive: true, force: true });
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+    if (previousLiveModels === undefined) delete process.env.JARVIS_ENABLE_LIVE_MODELS;
+    else process.env.JARVIS_ENABLE_LIVE_MODELS = previousLiveModels;
+    if (previousDisabledAdapter === undefined) delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+    else process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER = previousDisabledAdapter;
+    if (previousDisabledSdk === undefined) delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+    else process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK = previousDisabledSdk;
+    if (previousPackDir === undefined) delete process.env.JARVIS_APPROVAL_PACK_DIR;
+    else process.env.JARVIS_APPROVAL_PACK_DIR = previousPackDir;
+  }
+});
+
+test("dashboard recovery prepares and completes a new exact Luna attempt without overwriting failed evidence", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
+  const previousDisabledAdapter = process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  const previousDisabledSdk = process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+  const previousPackDir = process.env.JARVIS_APPROVAL_PACK_DIR;
+  const packDir = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-dashboard-recovery-pdf-"));
+  process.env.OPENAI_API_KEY = "test-dashboard-recovery-key";
+  process.env.JARVIS_ENABLE_LIVE_MODELS = "1";
+  delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+  process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
+
+  let shouldFail = true;
+  __setAgentRuntimeSdkRunnerForTests(async () => {
+    if (shouldFail) {
+      throw new Error("Invalid output type: Unterminated string in JSON at position 411");
+    }
+    return {
+      finalOutput: {
+        summary: "The supplied evidence supports one small interest test, but it does not yet prove paid demand.",
+        recommendation: "Prepare a bounded buyer-interest test and keep all external action behind operator approval.",
+        evidence: [
+          "The supplied evidence describes a repeated buyer workflow problem.",
+          "No real buyer purchase or willingness-to-pay result has been recorded.",
+        ],
+        risks: ["The evidence may not represent the wider buyer group.", "Price sensitivity remains unknown."],
+        nextAction: "Prepare a 20-view buyer-interest test for operator review.",
+        operatorDecision: "revise",
+        confidence: "medium",
+        work: {
+          demandVerdict: "Problem evidence is promising; paid demand remains unproven.",
+          sourceSummary: ["Supplied operator evidence only."],
+          counterevidence: ["No paid buyers or live conversion evidence were supplied."],
+          assumptions: ["The supplied evidence reflects the intended buyer group."],
+          priceChannelHypothesis: "Test one low-risk price through one qualified channel.",
+          smallestTest: "Show the offer to 20 qualified visitors.",
+          successMetric: "At least one paid buyer or three strong buyer-intent actions.",
+          stopRule: "Stop or revise after 20 qualified views with no buyer action.",
+        },
+      },
+      lastResponseId: "resp_dashboard_recovery_success",
+      rawResponses: [{
+        responseId: "resp_dashboard_recovery_success",
+        usage: { input_tokens: 620, output_tokens: 280, total_tokens: 900 },
+      }],
+      runContext: { usage: { inputTokens: 620, outputTokens: 280, totalTokens: 900 } },
+      lastAgent: { name: "Demand Validator" },
+      interruptions: [],
+    };
+  });
+
+  const db = seededDb("dashboard-known-retry");
+  let app;
+  try {
+    const planned = createCommandPlan(db, {
+      text: "Evaluate a compact digital checklist using supplied evidence",
+      source: "test",
+      createFiles: false,
+    });
+    const workflowId = planned.workflow.id;
+    await runUntilBlocked(db, { workflowId, maxSteps: 12 });
+    const requestOptions = {
+      estimatedCostCents: 100,
+      worker: "demand_validator",
+      provider: "openai-agents-sdk",
+      model: "gpt-5.6-luna",
+      maxInputTokens: 12000,
+      maxOutputTokens: 1000,
+      proofMode: true,
+    };
+    const requested = requestLiveAiWorker(db, workflowId, requestOptions);
+    decideApproval(db, requested.approval.id, "approved", "approve failed-response recovery proof");
+    const failed = await runOnce(db, { taskId: requested.task.id, workflowId });
+    assert.equal(failed.status, "needs_attention");
+
+    assert.throws(
+      () => requestLiveAiWorker(db, workflowId, requestOptions),
+      /already has execution evidence and cannot be reused/i,
+    );
+
+    shouldFail = false;
+    app = createApp({ db, dbPath: tempDbPath("dashboard-known-retry-unused"), security: false });
+    await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+    const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+    const preparedResponse = await fetch(
+      `${baseUrl}/api/tasks/${encodeURIComponent(requested.task.id)}/prepare-known-ai-retry`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    const preparedPayload = await preparedResponse.json();
+    assert.equal(preparedResponse.status, 202);
+    assert.equal(preparedPayload.result.priorTaskId, requested.task.id);
+    assert.equal(preparedPayload.result.task.payload.liveSpendRequest.model, "gpt-5.6-luna");
+
+    const approval = get(
+      db,
+      "SELECT id, scope_hash FROM approvals WHERE id = ?",
+      [preparedPayload.result.approval.id],
+    );
+    const approvedResponse = await fetch(
+      `${baseUrl}/api/approvals/${encodeURIComponent(approval.id)}/approve`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scopeHash: approval.scope_hash, note: "Approve exact dashboard recovery proof." }),
+      },
+    );
+    const approvedPayload = await approvedResponse.json();
+    assert.equal(approvedResponse.status, 200);
+    assert.equal(approvedPayload.execution.status, "completed");
+    assert.equal(
+      get(db, "SELECT status FROM tasks WHERE id = ?", [preparedPayload.result.task.id]).status,
+      "completed",
+    );
+    assert.equal(
+      get(db, "SELECT status FROM tasks WHERE id = ?", [requested.task.id]).status,
+      "failed",
+    );
+    assert.equal(
+      get(
+        db,
+        "SELECT COUNT(*) AS count FROM task_attempts WHERE task_id IN (?, ?)",
+        [requested.task.id, preparedPayload.result.task.id],
+      ).count,
+      2,
+    );
+  } finally {
+    if (app) {
+      await new Promise((resolve) => app.wss.close(resolve));
+      await new Promise((resolve) => app.server.close(resolve));
+    }
+    db.close();
+    __setAgentRuntimeSdkRunnerForTests(null);
+    fs.rmSync(packDir, { recursive: true, force: true });
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+    if (previousLiveModels === undefined) delete process.env.JARVIS_ENABLE_LIVE_MODELS;
+    else process.env.JARVIS_ENABLE_LIVE_MODELS = previousLiveModels;
+    if (previousDisabledAdapter === undefined) delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+    else process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER = previousDisabledAdapter;
+    if (previousDisabledSdk === undefined) delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+    else process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK = previousDisabledSdk;
     if (previousPackDir === undefined) delete process.env.JARVIS_APPROVAL_PACK_DIR;
     else process.env.JARVIS_APPROVAL_PACK_DIR = previousPackDir;
   }
@@ -4582,6 +5010,14 @@ test("HTTP dashboard approval executes the exact authorised task immediately", a
 
 test("HTTP API exposes focused cockpit sections and retires unsafe legacy routes", async () => {
   const db = seededDb("server");
+  run(
+    db,
+    `INSERT INTO model_calls
+     (id, provider, model_class, selected_model, mode, status, metadata, created_at, outcome_status, error_kind)
+     VALUES ('model-pre-dispatch-trace-only', 'openai', 'live-ai-worker', 'gpt-5.6-luna',
+       'live', 'failed', ?, ?, 'known', 'failed_before_provider_dispatch')`,
+    [toJson({ agentSdkTraceId: "trace_created_before_dispatch" }), new Date().toISOString()],
+  );
   const app = createApp({ db, dbPath: tempDbPath("server-unused"), security: false });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const port = app.server.address().port;
@@ -4596,6 +5032,14 @@ test("HTTP API exposes focused cockpit sections and retires unsafe legacy routes
     assert.equal(health.monitoring.reason, "scheduler_not_running");
     assert.equal(health.externalActionsMode, "locked");
     assert.equal(typeof health.providerProof.completedCalls, "number");
+    assert.equal(typeof health.providerProof.failedCalls, "number");
+    assert.equal(typeof health.providerProof.knownCalls, "number");
+    assert.equal(
+      health.providerProof.knownCalls,
+      health.providerProof.completedCalls + health.providerProof.failedCalls,
+    );
+    assert.equal(health.providerProof.knownCalls, 0);
+    assert.equal(typeof health.proofMode, "boolean");
 
     const [cockpit, decisions, tests, team, system, agentRuns] = await Promise.all([
       fetch(`${baseUrl}/api/cockpit`).then((response) => response.json()),

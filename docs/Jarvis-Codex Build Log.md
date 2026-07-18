@@ -16,9 +16,14 @@ commercial move.
 - Runtime: Node.js 24, CommonJS, built-in SQLite, local signed operator session.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
-- First live worker position: one Demand Validator call completed from
-  controlled supplied evidence and Daniel accepted it as clear enough to use.
-  The separately capped live market-research decision is ready for Daniel.
+- First live worker position: the controlled Demand Validator proof and the
+  separately capped Luna live-research path both completed. The final research
+  attempt captured 41 attributable URLs and passed local structural checks.
+  It proves the operating path, not commercial demand.
+- Current operator state: no decision, queue item, unknown outcome, or system
+  finding is waiting. The active business move is to rank three digital-product
+  opportunities; the next engineering move is the deterministic
+  Chief-to-Test-Pack bridge.
 - External actions: locked by default.
 - Operator budget: eight hours per week in the build and first-proof phase.
 - Pre-revenue AI and tool cap: A$100 per month.
@@ -512,6 +517,158 @@ Verified production state at this checkpoint:
 No OpenAI call or external action occurred from either blocked click or the
 repair.
 
+### Luna-only end-to-end research and handoff proof
+
+Daniel authorised Codex to operate the dashboard like the operator and use
+multiple low-cost calls to prove the system through its current capability
+boundary. Every new paid call in this sequence used `gpt-5.6-luna`; the earlier
+controlled Sol call remained historical. `JARVIS_SYSTEM_PROOF_MODE=1` forced
+Luna across worker routes during the proof and was switched off by the normal
+launcher afterward.
+
+The browser sequence exposed and corrected real faults rather than treating
+provider success as system success:
+
+- the first Luna response reached OpenAI but returned unusable structured
+  output. Its outcome was known, token usage and response ID remained unknown,
+  and A$0.09 is retained as an incurred estimate;
+- retry 2 returned response
+  `resp_0978df73aad5a31d016a5b02eef484819abd71b48e2ca5131a` and trace
+  `trace_85b59822125e41fc92595e998c136395`, using 6,821 input and
+  1,094 output tokens. Jarvis stopped because the approved hosted-tool activity
+  could not be matched locally;
+- retry 3 returned response
+  `resp_004293b9884f6001016a5b090a27a0819bb6018b22161893d6` and trace
+  `trace_d21c6346154d460aa0bc69406b45cf06`, using 6,841 input and
+  1,196 output tokens. The call completed technically, but the model used a
+  calculator-style query and returned no grounded URLs. The local evidence
+  check failed at 45/100, so Jarvis did not accept it as market evidence;
+- the corrected final attempt returned response
+  `resp_0e22006995373c88016a5b0e8bd47c819a871799c60b3ce3d7` and trace
+  `trace_137ca3299b9441b5895c6eabad81e859`, using 15,197 input and
+  1,829 output tokens. OpenAI web search recorded four relevant query strings
+  and 41 attributable URLs. The immutable local receipt is complete and the
+  structural evidence check passed 100/100.
+
+The final recommendation supports only one free bounded interest test for a
+weekly cash-control checklist. It does not establish demand, price, conversion,
+or willingness to pay. The 41-source set includes mixed-quality search results,
+so this deliberately cheap Luna run proves the operating path, not a final
+commercial verdict.
+
+The proof sequence fixed:
+
+- long task-ID collisions in cost records;
+- invalid structured-output classification, known-result cost capture, and
+  safe reviewed retries;
+- missing official hosted-tool activity and source extraction;
+- a live-research prompt that incorrectly forced workers to use only a
+  controlled fixture;
+- historical-attempt/model/cost association in Live Runs;
+- pending-estimate and incomplete-source wording in the dashboard;
+- recursive re-creation of the same research job after completed research;
+- stale failed-task, receipt, review-pack, and queued-handoff alerts after a
+  successful exact retry;
+- health accounting that omitted known provider calls in `needs_attention`;
+- generic dry-run review text shown after genuine live work.
+
+After the final result was accepted, the browser ran the Chief of Staff
+handoff. Chief completed internally with no model call, no open approval, no
+queued hidden task, and no external effect. It recommended
+`Prepare the bounded interest test`. The current boundary is now explicit:
+Chief records that recommendation, but the dashboard handoff does not yet
+materialise the existing deterministic Test Pack path from this completed
+research record.
+
+Financial truth at this checkpoint:
+
+- the current Demand Validator workflow carries A$0.23 of incurred estimates:
+  A$0.03 for the earlier controlled Sol run and A$0.20 for the Luna research
+  sequence;
+- the monthly AI/tool exposure is A$0.28, consisting of A$0.05 previously
+  reconciled usage and A$0.23 pending provider reconciliation;
+- final provider billing and hosted-search charges remain pending, so the
+  dashboard does not label the estimates as actual spend;
+- no publishing, customer contact, account action, legal decision, money
+  movement, or other external business effect occurred.
+
+Verification:
+
+- all 172 automated tests passed at this proof checkpoint;
+- Jarvis Doctor passed Node 24, dependencies, SQLite, archive and PDF tools,
+  writable runtime/artifact/private-backup locations, database integrity, and
+  backup encryption. Its only warning was the expected occupied dashboard port;
+- the startup monitor reports `ok` with zero findings, the scheduler is current,
+  paid AI is connected behind exact approval, and external actions are locked;
+- encrypted database backup
+  `jarvis-database-2026-07-18T05-38-11-729Z.jbackup` authenticated and restored
+  independently. Payload hashes matched, `quick_check` and full integrity
+  passed, and there were zero foreign-key violations;
+- the real Chrome path completed approval, paid Luna execution, result review,
+  retry preparation, grounded-source review, Chief handoff, and maintenance
+  without an external action.
+
+### Independent post-proof release audit
+
+After the browser proof, three independent engineering reviews examined the
+runtime, dashboard, provider evidence, accounting, recovery, and commercial
+handoff boundaries. The resulting release work corrected:
+
+- exact attempt, model-call, evaluation, receipt, and cost binding for reviewed
+  retries and provider reconciliation;
+- a long retry-key lineage defect by following recorded parent-task links
+  instead of inferring ancestry from truncated identifiers;
+- repeated retry preparation so one still-unused exact retry remains
+  idempotent, while a work item with execution evidence can never be reused or
+  overwritten;
+- accepted live research so only a completed provider response with a passed
+  evaluation, complete immutable receipt, `completed_live` research record,
+  and at least one captured attributable URL can advance;
+- resumed Agents SDK usage so a continuation records only newly billable
+  tokens, while the cumulative provider total remains available as metadata;
+- tool-approval pauses so they are not recorded as provider failures;
+- reconciliation so the exact task attempt closes with the same provider
+  evidence and cost state as its bound model call;
+- provider health accounting so a trace created before dispatch cannot be
+  mistaken for a real OpenAI call;
+- proof mode so Luna-only systems checks cannot carry consequential flags or
+  external effects;
+- historical retry failures in Live Runs so they remain in `All records` but no
+  longer appear as fresh operator work after a complete, passed exact retry.
+  Incomplete receipts and unknown outcomes can never be hidden this way.
+
+The dashboard recovery route was then proven end to end with a stubbed Luna
+failure and corrected response: prepare the exact retry, approve its current
+scope, execute it through the same HTTP path as the dashboard, preserve the
+failed first attempt, and complete the new attempt. No live credential was
+available to this isolated test and no provider charge occurred.
+
+Final release verification:
+
+- all 175 automated tests passed in an isolated process with live credentials
+  disabled;
+- Jarvis Doctor passed Node 24, dependency lock, SQLite, archive and PDF tools,
+  writable runtime/artifact/backup locations, database integrity, and backup
+  encryption; the occupied dashboard port was the expected warning;
+- the production runtime restarted on schema 18 with a new owned instance,
+  `quick_check=ok`, zero foreign-key violations, zero pending approvals, zero
+  queued work, zero unknown attempts, and zero incomplete receipts;
+- the independent startup monitor completed with zero findings, paid AI stayed
+  behind exact approval, proof mode was off, and external actions stayed locked;
+- the authenticated Chrome dashboard passed Command Center, Decisions,
+  Business Tests, AI Team, Live Runs, final-result detail, and System Health at
+  1440x900, 1280x720, and 1024x768 with no horizontal overflow or clipped
+  visible controls;
+- Live Runs now reports five genuine OpenAI calls and zero unresolved reviews.
+  The final result drawer shows the supplied records, 41 grounded sources,
+  counterevidence, test proposal, metric, stop rule, pending cost estimate, and
+  no external action;
+- Jarvis produced no browser console error. One unrelated EverBee extension
+  authentication warning remained outside the system.
+
+No additional paid OpenAI call or external business action was made during this
+post-proof hardening.
+
 ## Accounting Preserved At Reset
 
 - ChatGPT Pro active monthly commitment: A$100.00.
@@ -561,11 +718,9 @@ review.
 
 ## Next Best Work
 
-Daniel reviews the one corrected market-research decision in the Command Center.
-Only Daniel's fresh `Run this market research` choice may begin the capped A$2,
-three-search proof. Jarvis then reviews the actual sources, recommendation,
-usage, cost state, trace, and evaluation before any business action is offered.
-After that result is resolved, Jarvis presents the prepared plain-language
-retention plan as a separate decision. Until then, ongoing provider storage,
-personal-data work, and sensitive worker use remain blocked. Do not create a
-Gumroad account, publish, contact buyers, or initiate unapproved spend.
+Complete the deterministic Chief-to-Test-Pack bridge against a protected copy
+of the proven run without another provider call. Keep that engineering proof
+separate from the active commercial record. The Command Center should continue
+to show the real business move: rank three digital-product opportunities,
+select one from evidence, and prepare its fresh validation path. Publishing,
+buyer contact, account creation, and spend remain separate locked actions.

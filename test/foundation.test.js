@@ -277,7 +277,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -314,7 +314,7 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 17);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 18);
   } finally {
     closeRuntime(runtime);
   }
@@ -866,6 +866,25 @@ test("aggregate provider usage reconciliation updates exact runtime records atom
       );
       run(
         runtime.db,
+        `INSERT INTO task_attempts
+         (id, task_id, workflow_id, venture_id, claim_token, status, outcome_status,
+          model_call_id, started_at, completed_at, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
+        [
+          `attempt-reconcile-${sequence}`,
+          task.id,
+          task.workflow_id,
+          task.venture_id,
+          `claim-reconcile-${sequence}`,
+          status === "unknown" ? "needs_attention" : "completed",
+          status === "unknown" ? "unknown" : "known",
+          `model-reconcile-${sequence}`,
+          ts,
+          ts,
+        ],
+      );
+      run(
+        runtime.db,
         "UPDATE tasks SET status = ?, outcome_status = ?, result = ? WHERE id = ?",
         [
           status === "unknown" ? "needs_attention" : "completed",
@@ -968,6 +987,10 @@ test("aggregate provider usage reconciliation updates exact runtime records atom
     assert.equal(get(runtime.db, "SELECT status, outcome_status, cost_actual_cents FROM tasks WHERE id = ?", [firstTask.id]).status, "failed");
     assert.equal(get(runtime.db, "SELECT outcome_status FROM tasks WHERE id = ?", [firstTask.id]).outcome_status, "known");
     assert.equal(get(runtime.db, "SELECT cost_actual_cents FROM tasks WHERE id = ?", [firstTask.id]).cost_actual_cents, 3);
+    assert.equal(
+      get(runtime.db, "SELECT outcome_status FROM task_attempts WHERE id = 'attempt-reconcile-1'").outcome_status,
+      "known",
+    );
     assert.equal(get(runtime.db, "SELECT cost_status FROM model_calls WHERE id = 'model-reconcile-2'").cost_status, "reconciled");
     assert.equal(get(runtime.db, "SELECT actual_cost_cents FROM model_calls WHERE id = 'model-reconcile-2'").actual_cost_cents, 2);
     const secondResult = JSON.parse(get(runtime.db, "SELECT result FROM tasks WHERE id = ?", [secondTask.id]).result);

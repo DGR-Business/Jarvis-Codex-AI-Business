@@ -15,6 +15,7 @@ const { generateApprovalPack } = require("./runtime/approval-pack");
 const { runMonitorCycle } = require("./runtime/monitor");
 const {
   createLiveAiWorkerSmokeTest,
+  prepareReviewedLiveAiWorkerRetry,
   refreshOutdatedLiveAiWorkerApproval,
   refreshOutdatedLiveAiWorkerApprovals,
   requestLiveAiWorker,
@@ -527,7 +528,32 @@ function createApp(options = {}) {
           db,
           `SELECT
              SUM(CASE WHEN mode = 'live' AND status = 'completed' AND provider_request_id IS NOT NULL THEN 1 ELSE 0 END) AS completed_calls,
-             SUM(CASE WHEN mode = 'live' AND status = 'failed' THEN 1 ELSE 0 END) AS failed_calls
+             SUM(CASE WHEN mode = 'live' AND status IN ('failed', 'needs_attention')
+                        AND outcome_status <> 'not_started'
+                        AND (
+                          provider_request_id IS NOT NULL
+                          OR json_extract(
+                            CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+                            '$.providerResponseReceived'
+                          ) = 1
+                        )
+                      THEN 1 ELSE 0 END) AS failed_calls,
+             SUM(CASE WHEN mode = 'live'
+                        AND (
+                          (status = 'completed' AND provider_request_id IS NOT NULL)
+                          OR (
+                            status IN ('failed', 'needs_attention')
+                            AND outcome_status <> 'not_started'
+                            AND (
+                              provider_request_id IS NOT NULL
+                              OR json_extract(
+                                CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+                                '$.providerResponseReceived'
+                              ) = 1
+                            )
+                          )
+                        )
+                      THEN 1 ELSE 0 END) AS known_calls
            FROM model_calls`,
         ) || {};
         const payload = {
@@ -542,10 +568,12 @@ function createApp(options = {}) {
           externalActionsMode: CONFIG.dryRun ? "locked" : "enabled",
           paidAiArmed: Boolean(process.env.OPENAI_API_KEY)
             && (process.env.JARVIS_ENABLE_LIVE_MODELS === "1" || process.env.JARVIS_ENABLE_LIVE_RESEARCH === "1"),
+          proofMode: CONFIG.systemProofMode === true,
           providerProof: {
             completedCalls: Number(providerProof.completed_calls || 0),
             failedCalls: Number(providerProof.failed_calls || 0),
-            verifiedByPriorCall: Number(providerProof.completed_calls || 0) > 0,
+            knownCalls: Number(providerProof.known_calls || 0),
+            verifiedByPriorCall: Number(providerProof.known_calls || 0) > 0,
           },
         };
         if (authenticated || !security.enabled) {
@@ -1035,6 +1063,16 @@ function createApp(options = {}) {
         return;
       }
 
+      const taskKnownRetry = routeMatch(url.pathname, "/api/tasks/:id/prepare-known-ai-retry");
+      if (req.method === "POST" && taskKnownRetry) {
+        const result = prepareReviewedLiveAiWorkerRetry(db, taskKnownRetry.id, {
+          proofMode: CONFIG.systemProofMode === true,
+        });
+        broadcastState();
+        jsonResponse(res, 202, { result });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/runtime/run-until-blocked") {
         const body = await readBody(req);
         const result = await runUntilBlocked(db, { maxSteps: body.maxSteps });
@@ -1233,8 +1271,11 @@ function createApp(options = {}) {
         const execution = decision === "approved" && result.changed && result.approvedTaskIds?.length
           ? await runOnce(db, { taskId: result.approvedTaskIds[0], claimant: "dashboard_approval" })
           : null;
+        const recovery = decision === "approved" && execution?.status === "completed"
+          ? recoverSetupBlockedTasks(db)
+          : null;
         broadcastState();
-        jsonResponse(res, 200, { result, execution });
+        jsonResponse(res, 200, { result, execution, recovery });
         return;
       }
 

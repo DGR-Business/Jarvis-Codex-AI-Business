@@ -143,3 +143,191 @@ test("monitor accepts a correctly stored task-scoped worker context", () => {
     closeRuntime(runtime);
   }
 });
+
+test("monitor retires an older receipt warning after its exact retry completes cleanly", () => {
+  const runtime = makeRuntime();
+  try {
+    const workflowId = "wf-monitor-reviewed-retry";
+    const ts = "2026-07-17T01:00:00.000Z";
+    insertWorkflow(runtime.db, workflowId);
+    run(
+      runtime.db,
+      `INSERT INTO tasks
+       (id, workflow_id, venture_id, title, kind, agent, status, outcome_status,
+        priority, payload, result, created_at, updated_at)
+       VALUES
+       ('task-monitor-prior', ?, 'venture-digital-products', 'Prior research',
+        'live_ai_worker_execution', 'demand_validator', 'failed',
+        'known_provider_result_needs_review', 1, '{}', '{}', ?, ?),
+       ('task-monitor-retry', ?, 'venture-digital-products', 'Corrected research',
+        'live_ai_worker_execution', 'demand_validator', 'completed', 'known', 1, ?, '{}', ?, ?)`,
+      [
+        workflowId,
+        ts,
+        ts,
+        workflowId,
+        toJson({
+          liveSpendRequest: {
+            parameters: {
+              retry: { number: 2, priorTaskId: "task-monitor-prior", operatorAuthorized: true },
+            },
+          },
+        }),
+        "2026-07-17T01:05:00.000Z",
+        "2026-07-17T01:06:00.000Z",
+      ],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO task_attempts
+       (id, task_id, workflow_id, venture_id, claim_token, status, outcome_status,
+        started_at, completed_at, metadata)
+       VALUES
+       ('attempt-monitor-prior', 'task-monitor-prior', ?, 'venture-digital-products',
+        'claim-monitor-prior', 'completed', 'known_provider_result_needs_review', ?, ?, '{}'),
+       ('attempt-monitor-retry', 'task-monitor-retry', ?, 'venture-digital-products',
+        'claim-monitor-retry', 'completed', 'known', ?, ?, '{}')`,
+      [workflowId, ts, ts, workflowId, "2026-07-17T01:05:00.000Z", "2026-07-17T01:06:00.000Z"],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO agent_runs
+       (id, agent_id, workflow_id, task_id, venture_id, mode, status, input_summary,
+        output_summary, eval_status, metadata, started_at, completed_at)
+       VALUES
+       ('run-monitor-prior', 'demand_validator', ?, 'task-monitor-prior',
+        'venture-digital-products', 'openai-agents-sdk', 'failed', 'Prior input',
+        'Unusable prior result', 'needs_review', '{}', ?, ?),
+       ('run-monitor-retry', 'demand_validator', ?, 'task-monitor-retry',
+        'venture-digital-products', 'openai-agents-sdk', 'completed', 'Corrected input',
+        'Usable corrected result', 'passed', '{}', ?, ?)`,
+      [
+        workflowId,
+        ts,
+        ts,
+        workflowId,
+        "2026-07-17T01:05:00.000Z",
+        "2026-07-17T01:06:00.000Z",
+      ],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO agent_eval_results
+       (id, run_id, agent_id, task_id, status, score, criteria, findings, metadata, created_at)
+       VALUES ('eval-monitor-retry', 'run-monitor-retry', 'demand_validator',
+        'task-monitor-retry', 'passed', 100, '[]', '[]', '{}', ?)`,
+      ["2026-07-17T01:06:00.000Z"],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO agent_run_receipts
+       (id, attempt_id, run_id, task_id, sequence, status, outcome_status,
+        snapshot_hash, previous_hash, receipt_hash, missing_fields, warnings, receipt, created_at)
+       VALUES
+       ('receipt-monitor-prior', 'attempt-monitor-prior', 'run-monitor-prior',
+        'task-monitor-prior', 1, 'needs_review', 'known_provider_result_needs_review',
+        'snapshot-monitor-prior', NULL, 'hash-monitor-prior', '[]',
+        '["No grounded sources."]', '{}', ?),
+       ('receipt-monitor-retry', 'attempt-monitor-retry', 'run-monitor-retry',
+        'task-monitor-retry', 1, 'complete', 'known',
+        'snapshot-monitor-retry', NULL, 'hash-monitor-retry', '[]', '[]', '{}', ?)`,
+      [ts, "2026-07-17T01:06:00.000Z"],
+    );
+
+    const findings = collectFindings(runtime.db);
+    assert.equal(findings.some(
+      (finding) => finding.category === "agent_receipts" && finding.entityId === "run-monitor-prior",
+    ), false);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("monitor never hides an incomplete paid-attempt receipt behind a successful retry", () => {
+  const runtime = makeRuntime();
+  try {
+    const workflowId = "wf-monitor-incomplete-ancestor";
+    const ts = "2026-07-17T02:00:00.000Z";
+    insertWorkflow(runtime.db, workflowId);
+    const retryPayload = toJson({
+      liveSpendRequest: {
+        parameters: {
+          retry: { number: 1, priorTaskId: "task-monitor-incomplete", operatorAuthorized: true },
+        },
+      },
+    });
+    run(
+      runtime.db,
+      `INSERT INTO tasks
+       (id, workflow_id, venture_id, title, kind, agent, status, outcome_status,
+        priority, payload, result, created_at, updated_at)
+       VALUES
+       ('task-monitor-incomplete', ?, 'venture-digital-products', 'Incomplete provider record',
+        'live_ai_worker_execution', 'demand_validator', 'failed',
+        'known_provider_result_needs_review', 1, '{}', '{}', ?, ?),
+       ('task-monitor-complete-retry', ?, 'venture-digital-products', 'Successful retry',
+        'live_ai_worker_execution', 'demand_validator', 'completed', 'known',
+        1, ?, '{}', ?, ?)`,
+      [workflowId, ts, ts, workflowId, retryPayload, ts, ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO task_attempts
+       (id, task_id, workflow_id, venture_id, claim_token, status, outcome_status,
+        started_at, completed_at, metadata)
+       VALUES
+       ('attempt-monitor-incomplete', 'task-monitor-incomplete', ?, 'venture-digital-products',
+        'claim-monitor-incomplete', 'completed', 'known_provider_result_needs_review', ?, ?, '{}'),
+       ('attempt-monitor-complete-retry', 'task-monitor-complete-retry', ?, 'venture-digital-products',
+        'claim-monitor-complete-retry', 'completed', 'known', ?, ?, '{}')`,
+      [workflowId, ts, ts, workflowId, ts, ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO agent_runs
+       (id, agent_id, workflow_id, task_id, venture_id, mode, status, input_summary,
+        output_summary, eval_status, metadata, started_at, completed_at)
+       VALUES
+       ('run-monitor-incomplete', 'demand_validator', ?, 'task-monitor-incomplete',
+        'venture-digital-products', 'openai-agents-sdk', 'failed', 'Input',
+        'Incomplete record', 'needs_review', '{}', ?, ?),
+       ('run-monitor-complete-retry', 'demand_validator', ?, 'task-monitor-complete-retry',
+        'venture-digital-products', 'openai-agents-sdk', 'completed', 'Input',
+        'Accepted result', 'passed', '{}', ?, ?)`,
+      [workflowId, ts, ts, workflowId, ts, ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO agent_eval_results
+       (id, run_id, agent_id, task_id, status, score, criteria, findings, metadata, created_at)
+       VALUES ('eval-monitor-complete-retry', 'run-monitor-complete-retry', 'demand_validator',
+        'task-monitor-complete-retry', 'passed', 100, '[]', '[]', '{}', ?)`,
+      [ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO agent_run_receipts
+       (id, attempt_id, run_id, task_id, sequence, status, outcome_status,
+        snapshot_hash, previous_hash, receipt_hash, missing_fields, warnings, receipt, created_at)
+       VALUES
+       ('receipt-monitor-incomplete', 'attempt-monitor-incomplete', 'run-monitor-incomplete',
+        'task-monitor-incomplete', 1, 'incomplete', 'known_provider_result_needs_review',
+        'snapshot-monitor-incomplete', NULL, 'hash-monitor-incomplete',
+        '["providerRequestId"]', '[]', '{}', ?),
+       ('receipt-monitor-complete-retry', 'attempt-monitor-complete-retry',
+        'run-monitor-complete-retry', 'task-monitor-complete-retry', 1, 'complete', 'known',
+        'snapshot-monitor-complete-retry', NULL, 'hash-monitor-complete-retry',
+        '[]', '[]', '{}', ?)`,
+      [ts, ts],
+    );
+
+    const findings = collectFindings(runtime.db);
+    assert.equal(findings.some(
+      (finding) => finding.category === "agent_receipts"
+        && finding.entityId === "run-monitor-incomplete"
+        && finding.severity === "error",
+    ), true);
+  } finally {
+    closeRuntime(runtime);
+  }
+});

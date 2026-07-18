@@ -10,7 +10,7 @@ const {
 } = require("../src/runtime/cockpit-state");
 const { ensureAiTeam } = require("../src/runtime/ai-team");
 const { ensureAgentTools } = require("../src/runtime/agent-tools");
-const { openDatabase, run, seedDatabase, toJson } = require("../src/db");
+const { get, openDatabase, run, seedDatabase, toJson } = require("../src/db");
 
 function makeRuntime() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-live-runs-"));
@@ -278,7 +278,11 @@ function seedRunEvidence(db) {
     costStatus: "unknown",
     reconciledCents: 0,
     outcomeStatus: "unknown",
-    metadata: { outcomeUnknown: true, agentSdkTraceId: "trace_unknown" },
+    metadata: {
+      outcomeUnknown: true,
+      agentSdkTraceId: "trace_unknown",
+      dispatchIntent: { status: "dispatched" },
+    },
   });
   insertRun(db, {
     id: "run-unknown",
@@ -355,6 +359,163 @@ test("Live Runs separates real provider work, unknown outcomes and internal rehe
     const aiTeam = getAiTeamState(runtime.db);
     assert.equal(aiTeam.pilot, undefined);
     assert.equal(aiTeam.liveRuns.counts.total, 3);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("multiple attempts under one task do not duplicate provider usage or cost", () => {
+  const runtime = makeRuntime();
+  try {
+    seedRunEvidence(runtime.db);
+    insertTask(runtime.db, {
+      id: "task-multi",
+      status: "failed",
+      outcomeStatus: "known_provider_result_needs_review",
+      payload: {
+        liveSpendRequest: {
+          provider: "openai-agents-sdk",
+          model: "gpt-test",
+          maxCostCents: 100,
+        },
+      },
+      error: "The accepted provider result could not be processed.",
+    });
+    insertModelCall(runtime.db, {
+      id: "model-multi",
+      taskId: "task-multi",
+      model: "gpt-test",
+      mode: "live",
+      status: "failed",
+      inputTokens: 100,
+      outputTokens: 50,
+      estimatedCents: 2,
+      actualCents: 0,
+      responseId: "resp_multi",
+      costStatus: "incurred_estimate",
+      reconciledCents: 0,
+      outcomeStatus: "known",
+      metadata: { providerResponseReceived: true },
+    });
+    insertRun(runtime.db, {
+      id: "run-multi-pre-provider",
+      taskId: "task-multi",
+      mode: "openai-agents-sdk",
+      status: "failed",
+      summary: "Stopped before provider dispatch.",
+      modelCallId: null,
+      estimatedCents: 0,
+      actualCents: 0,
+      metadata: { agentSdkTraceId: "trace_created_before_dispatch" },
+      startedAt: "2026-07-17T00:03:00.000Z",
+      completedAt: "2026-07-17T00:03:01.000Z",
+    });
+    insertRun(runtime.db, {
+      id: "run-multi-provider",
+      taskId: "task-multi",
+      mode: "openai-agents-sdk",
+      status: "failed",
+      summary: "Provider result needs review.",
+      modelCallId: "model-multi",
+      estimatedCents: 2,
+      actualCents: 0,
+      metadata: {},
+      startedAt: "2026-07-17T00:04:00.000Z",
+      completedAt: "2026-07-17T00:04:01.000Z",
+    });
+    run(
+      runtime.db,
+      `INSERT INTO costs (
+         id, workflow_id, venture_id, category, source, status,
+         amount_cents, currency, occurred_at, metadata
+       ) VALUES (
+         'cost_spend_task-multi', 'wf-live-runs', 'venture-digital-products',
+         'live_ai_worker', 'openai-agents-sdk', 'incurred_estimate',
+         2, 'AUD', '2026-07-17T00:04:01.000Z', ?
+       )`,
+      [toJson({ modelCallId: "model-multi", providerResponseId: "resp_multi" })],
+    );
+
+    const state = getAgentRunsState(runtime.db, { execution: "all" });
+    const beforeProvider = state.runs.find((item) => item.id === "run-multi-pre-provider");
+    const providerRun = state.runs.find((item) => item.id === "run-multi-provider");
+    assert.equal(beforeProvider.executionKind, "provider_not_contacted");
+    assert.equal(beforeProvider.responseId, null);
+    assert.equal(beforeProvider.cost.estimatedCents, 0);
+    assert.equal(beforeProvider.cost.actualCents, null);
+    assert.equal(providerRun.executionKind, "model_backed");
+    assert.equal(providerRun.responseId, "resp_multi");
+    assert.equal(providerRun.cost.estimatedCents, 2);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("a successful exact retry leaves failed history visible without presenting it as new operator work", () => {
+  const runtime = makeRuntime();
+  try {
+    seedRunEvidence(runtime.db);
+    insertTask(runtime.db, {
+      id: "task-prior-failure",
+      status: "failed",
+      outcomeStatus: "known_provider_result_needs_review",
+      payload: {
+        liveSpendRequest: {
+          provider: "openai-agents-sdk",
+          model: "gpt-test",
+          maxCostCents: 100,
+        },
+      },
+      error: "The first structured result could not be accepted.",
+    });
+    insertRun(runtime.db, {
+      id: "run-prior-failure",
+      taskId: "task-prior-failure",
+      mode: "openai-agents-sdk",
+      status: "failed",
+      summary: "The first result needs review.",
+      modelCallId: null,
+      estimatedCents: 2,
+      actualCents: 0,
+      metadata: {},
+      startedAt: "2026-07-17T00:00:30.000Z",
+      completedAt: "2026-07-17T00:00:31.000Z",
+    });
+
+    const retryPayload = JSON.parse(get(runtime.db, "SELECT payload FROM tasks WHERE id = ?", ["task-live"]).payload);
+    retryPayload.liveSpendRequest.parameters = {
+      retry: {
+        number: 1,
+        priorTaskId: "task-prior-failure",
+        operatorAuthorized: true,
+      },
+    };
+    run(runtime.db, "UPDATE tasks SET payload = ? WHERE id = ?", [toJson(retryPayload), "task-live"]);
+    run(
+      runtime.db,
+      `INSERT INTO task_attempts
+       (id, task_id, workflow_id, venture_id, claim_token, status, outcome_status,
+        provider_request_id, started_at, completed_at, metadata)
+       VALUES ('attempt-live-retry', 'task-live', 'wf-live-runs', 'venture-digital-products',
+        'claim-live-retry', 'completed', 'known', 'resp_live',
+        '2026-07-17T00:01:00.000Z', '2026-07-17T00:01:05.000Z', '{}')`,
+    );
+    run(
+      runtime.db,
+      `INSERT INTO agent_run_receipts
+       (id, attempt_id, run_id, task_id, sequence, status, outcome_status,
+        snapshot_hash, previous_hash, receipt_hash, missing_fields, warnings, receipt, created_at)
+       VALUES ('receipt-live-retry', 'attempt-live-retry', 'run-live', 'task-live', 1,
+        'complete', 'known', 'snapshot-live-retry', NULL, 'hash-live-retry',
+        '[]', '[]', '{}', '2026-07-17T00:01:05.000Z')`,
+    );
+
+    const state = getAgentRunsState(runtime.db, { execution: "all" });
+    const prior = state.runs.find((item) => item.id === "run-prior-failure");
+    assert.equal(prior.resolvedByRetry, true);
+    assert.equal(prior.attentionRequired, false);
+    assert.equal(prior.status, "failed");
+    assert.equal(state.counts.needsReview, 1);
   } finally {
     closeRuntime(runtime);
   }
