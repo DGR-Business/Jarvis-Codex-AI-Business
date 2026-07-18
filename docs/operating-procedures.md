@@ -2,14 +2,14 @@
 
 ## Session Start
 
-1. Start Jarvis with `START JARVIS.cmd` and use the secure dashboard window it
+1. Start Pantheon with `START PANTHEON.cmd` and use the secure dashboard window it
    opens. A manually opened localhost tab is not an authenticated operator
    session.
 2. Confirm `/api/health` reports `alive`, `operationsReady`, a running
    scheduler, and a recent completed monitor check. `alive` alone means only
    that the local process is responding.
-3. Read `docs/Jarvis-Codex Master Plan.md`.
-4. Read `docs/Jarvis-Codex Build Log.md`.
+3. Read `docs/Pantheon Master Plan.md`.
+4. Read `docs/Pantheon Build Log.md`.
 5. For worker operations, read
    `docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md` and
    `docs/decisions/0006-autonomous-agent-operations-foundation.md`.
@@ -125,7 +125,7 @@ Until then:
 
 - Keep external actions in dry-run unless the operator explicitly approves live
   execution.
-- Record work in runtime state where the system already has a table or event
+- Record work in runtime state where Pantheon already has a table or event
   path.
 - Update the master plan or build log after meaningful foundation changes.
 - Prefer digital-product pilot work before POD/Gelato work unless the operator
@@ -136,7 +136,7 @@ Until then:
 After runtime or worker-operation changes:
 
 1. Run `npm.cmd test` on Windows PowerShell.
-2. Start the operator runtime with `START JARVIS.cmd`; use `npm.cmd start` or
+2. Start the operator runtime with `START PANTHEON.cmd`; use `npm.cmd start` or
    `node src/server.js` only for isolated development proof.
 3. Check `/api/health` for liveness and operations readiness, including the
    scheduler and latest monitor cycle.

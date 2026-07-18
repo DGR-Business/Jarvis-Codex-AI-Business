@@ -6,7 +6,7 @@ const store = {
   decisionTab: "approvals",
   testTab: "candidate",
   aiTeamTab: "team",
-  runFilter: "all",
+  runFilter: "running",
   systemTab: "health",
   showArchivedOutputs: false,
   reloadTimer: null,
@@ -90,6 +90,17 @@ function humanStatus(value) {
     complete: "Evidence complete",
     review_recommended: "Review recommended",
     operating_normally: "Operating normally",
+    researching: "Researching opportunities",
+    validating: "Checking demand",
+    checking_economics: "Checking the numbers",
+    structuring_offer: "Designing the offer",
+    needs_direction: "Needs a new direction",
+    selected_for_validation: "Selected for deeper research",
+    validated: "Demand check passed",
+    ready_to_build: "Ready for build decision",
+    ranked: "Ranked opportunity",
+    rejected: "Did not pass",
+    awaiting_verification: "Waiting for confirmation",
   };
   return labels[key] || key.replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
@@ -100,8 +111,8 @@ function humanActor(value) {
     operator: "Daniel",
     "spend-gate": "Cost control",
     "agent-pilot": "Demand Validator",
-    "runtime-monitor": "Jarvis monitoring",
-    scheduler: "Jarvis scheduler",
+    "runtime-monitor": "Pantheon monitoring",
+    scheduler: "Pantheon scheduler",
   }[key] || humanStatus(value);
 }
 
@@ -188,7 +199,10 @@ function compact(value, max = 180) {
 async function fetchJson(url, options = {}, retry = 0) {
   const method = String(options.method || "GET").toUpperCase();
   const headers = { "content-type": "application/json", ...(options.headers || {}) };
-  if (!["GET", "HEAD"].includes(method) && store.csrfToken) headers["x-jarvis-csrf"] = store.csrfToken;
+  if (!["GET", "HEAD"].includes(method) && store.csrfToken) {
+    headers["x-pantheon-csrf"] = store.csrfToken;
+    headers["x-jarvis-csrf"] = store.csrfToken;
+  }
   const response = await fetch(url, { credentials: "same-origin", ...options, headers });
   let payload;
   try { payload = await response.json(); } catch { payload = {}; }
@@ -196,7 +210,8 @@ async function fetchJson(url, options = {}, retry = 0) {
     response.status === 403
     && retry === 0
     && url !== "/api/session"
-    && payload.error === "This action needs a fresh Jarvis session token."
+    && (payload.error === "This action needs a fresh Pantheon session token."
+      || payload.error === "This action needs a fresh Pantheon session token.")
   ) {
     const sessionResponse = await fetch("/api/session", { credentials: "same-origin" });
     const session = await sessionResponse.json().catch(() => ({}));
@@ -207,7 +222,7 @@ async function fetchJson(url, options = {}, retry = 0) {
   }
   if (!response.ok) {
     const error = new Error(response.status === 401
-      ? "Jarvis is not signed in. Start Jarvis with its launcher, then use the dashboard window it opens."
+      ? "Pantheon is not signed in. Start Pantheon with its launcher, then use the dashboard window it opens."
       : payload.error || `Request failed with status ${response.status}.`);
     error.status = response.status;
     error.code = payload.code || null;
@@ -279,13 +294,13 @@ function approvalButtons(item, compactButtons = false) {
   const sizeClass = compactButtons ? "" : "";
   const action = item.decisionKind === "handoff" ? "handoff-decision" : "approval";
   const liveResearch = item.tools?.some((tool) => ["research_adapter", "live_web_with_approval"].includes(tool));
-  const approvalLabel = item.decisionKind === "handoff"
+  const approvalLabel = item.approveLabel || (item.decisionKind === "handoff"
     ? "Prepare next step"
     : liveResearch
       ? "Run this market research"
       : Number(item.maxCostCents || 0) > 0 || item.provider
         ? "Start this AI check"
-        : "Approve";
+        : "Approve");
   return `<div class="work-actions ${sizeClass}">
     <button class="primary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="approve" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("check")}${escapeHtml(approvalLabel)}</button>
     <button class="secondary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="changes" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("pencil-line")}Ask for changes</button>
@@ -302,24 +317,39 @@ function decisionReviewButton(item, className = "primary-button") {
 }
 
 function renderCommandBand(data) {
+  const discovery = data.commercialDiscovery || {};
+  const active = discovery.activeRound;
+  const currentTask = discovery.currentTask;
+  const progress = active
+    ? `<div class="discovery-progress">
+        <span class="status-dot ${currentTask?.status === "running" ? "working" : "waiting-to-start"}"></span>
+        <div><strong>${escapeHtml(humanStatus(active.status))}</strong><p>${escapeHtml(currentTask?.title || active.prompt)}</p></div>
+        ${currentTask && !["running", "needs_attention"].includes(currentTask.status)
+          ? `<button type="button" class="primary-button" data-action="run-pantheon">${icon("play")}Continue now</button>`
+          : badge(currentTask?.status || active.status)}
+      </div>`
+    : "";
   return `<section class="command-band">
     <div>
-      <span class="section-label">Command Jarvis</span>
-      <textarea id="command-text" aria-label="Business instruction" placeholder="What should the team investigate, prepare or improve next?"></textarea>
+      <span class="section-label">${active ? "Commercial work" : "Do this next"}</span>
+      <h2>${active ? "Pantheon is moving the venture forward" : "Start with a broad opportunity scan"}</h2>
+      <p>${active ? "Pantheon will continue internal work and stop at the next genuine decision or protected action." : "Pantheon will research across suitable online business models, then narrow the strongest options by demand, economics and execution fit."}</p>
+      <textarea id="command-text" aria-label="Business idea" placeholder="Optional: describe a particular business idea for Pantheon to review"></textarea>
     </div>
     <div class="command-controls">
-      <div class="segmented" aria-label="Command mode">
-        <button type="button" class="${store.commandMode === "plan_only" ? "active" : ""}" data-action="command-mode" data-mode="plan_only">Plan only</button>
-        <button type="button" class="${store.commandMode === "run_protected" ? "active" : ""}" data-action="command-mode" data-mode="run_protected">Run internal work</button>
-      </div>
-      <button type="button" class="primary-button" data-action="submit-command" data-venture-id="${escapeHtml(data.activeVenture.id)}">${icon("send")}Send</button>
+      ${active
+        ? `<button type="button" class="secondary-button" data-view="tests">${icon("search")}View opportunities</button>`
+        : `<button type="button" class="primary-button" data-action="start-discovery" data-mode="broad">${icon("radar")}Find opportunities</button>
+           <button type="button" class="secondary-button" data-action="start-discovery" data-mode="idea">${icon("lightbulb")}Review my idea</button>`}
     </div>
+    ${progress}
   </section>`;
 }
 
-function renderImportantWork(items) {
+function renderImportantWork(items, commercialWorkExists = false) {
   if (!items.length) {
-    return `<section class="priority-panel clear"><div class="priority-header"><div><span class="eyebrow">Important work</span><h2>Nothing needs your attention</h2></div>${badge("Operating normally", "mint")}</div></section>`;
+    if (!commercialWorkExists) return "";
+    return `<section class="priority-panel clear"><div class="priority-header"><div><span class="eyebrow">Important work</span><h2>Pantheon is working without needing you</h2></div>${badge("No action needed", "mint")}</div></section>`;
   }
   const onlyWaitingToStart = items.every((item) => item.type === "queued_work");
   return `<section class="priority-panel">
@@ -330,7 +360,7 @@ function renderImportantWork(items) {
       ${item.type === "decision"
         ? decisionReviewButton(item)
         : ["queued_work", "approved_work"].includes(item.type)
-          ? `<button class="primary-button" data-action="run-task" data-id="${escapeHtml(item.id)}" data-execution-kind="${escapeHtml(item.execution_kind || "internal")}">${icon("play")}${escapeHtml(item.run_label || "Run internal step")}${Number(item.max_cost_cents || 0) > 0 ? ` · up to ${money(item.max_cost_cents)}` : ""}</button>`
+          ? `<button class="primary-button" data-action="run-task" data-id="${escapeHtml(item.id)}" data-execution-kind="${escapeHtml(item.execution_kind || "internal")}">${icon("play")}${escapeHtml(item.run_label || "Run internal step")}${Number(item.max_cost_cents || 0) > 0 ? ` / up to ${money(item.max_cost_cents)}` : ""}</button>`
           : `<button class="secondary-button" data-action="open-drawer" data-kind="work" data-id="${escapeHtml(item.id)}">${icon("arrow-right")}Review</button>`}
     </article>`).join("")}</div>
   </section>`;
@@ -350,6 +380,26 @@ function renderCockpit() {
   const economics = data.economics;
   const spend = data.spend;
   const test = data.currentTest;
+  const discovery = data.commercialDiscovery || {};
+  const topOpportunity = discovery.topOpportunity;
+  const productionPlan = discovery.production?.plans?.[0] || null;
+  const nextMoneyMove = productionPlan?.status === "waiting_for_build_decision"
+    ? `Decide whether Pantheon should build the ${productionPlan.target_item_count}-product catalogue.`
+    : productionPlan?.status === "quality_review"
+      ? "Pantheon is checking the finished product files before launch preparation."
+      : productionPlan?.status === "preparing_launch"
+        ? "Pantheon is preparing truthful listing copy and the first measured market test."
+        : productionPlan?.status === "launch_decision"
+          ? "Review the finished product and launch package."
+          : productionPlan?.status === "ready_to_publish"
+            ? "Complete the separate Gumroad publishing action shown in Important Work."
+            : productionPlan?.status === "requires_capability"
+              ? "Choose another executable opportunity or add the missing production capability."
+              : topOpportunity?.status === "ready_to_build"
+    ? `Decide whether Pantheon should build the ${topOpportunity.title} catalogue.`
+    : discovery.activeRound
+      ? `${humanStatus(discovery.activeRound.status)} for ${discovery.activeRound.prompt}.`
+      : data.nextMoneyMove;
   const importantDecisions = data.importantWork.filter((item) => item.type === "decision").length;
   const decisionCount = $("#decision-count");
   decisionCount.textContent = importantDecisions;
@@ -359,9 +409,14 @@ function renderCockpit() {
     .slice(0, 6);
 
   $("#view").innerHTML = `<div class="view-stack">
-    ${data.health?.proofMode ? `<section class="surface-block accent"><span class="eyebrow">System proof mode</span><h2>Luna-only testing is active</h2><p>Jarvis is checking workflow mechanics with the lowest-cost model. These results cannot authorize consequential or external work.</p></section>` : ""}
+    ${data.health?.proofMode ? `<section class="surface-block accent"><span class="eyebrow">System proof mode</span><h2>Luna-only testing is active</h2><p>Pantheon is checking workflow mechanics with the lowest-cost model. These results cannot authorize consequential or external work.</p></section>` : ""}
     ${renderCommandBand(data)}
-    ${renderImportantWork(data.importantWork)}
+    ${renderImportantWork(data.importantWork, Boolean(discovery.activeRound || productionPlan || test))}
+    <section class="money-move">
+      <span class="move-icon">${icon("move-right")}</span>
+      <div><span class="eyebrow">Next money move</span><h2>${escapeHtml(nextMoneyMove)}</h2><p>Pantheon keeps internal work moving and stops only for a material choice, setup need, or protected external action.</p></div>
+      <button class="secondary-button" data-view="tests">${icon("flask-conical")}Open business tests</button>
+    </section>
     ${data.activeRuns?.length ? `<section class="active-run-strip">${sectionHeading("AI working now", "A genuine worker is running. Open the record to follow its plain-language progress.")}${data.activeRuns.map(renderAgentRunRow).join("")}</section>` : ""}
     <section>
       ${sectionHeading("Business position", "One venture, one active commercial path, measured by real buyer results.")}
@@ -373,11 +428,6 @@ function renderCockpit() {
       </div>
     </section>
     ${renderWeeklyDigest(data.weeklyDigest)}
-    <section class="money-move">
-      <span class="move-icon">${icon("move-right")}</span>
-      <div><span class="eyebrow">Next money move</span><h2>${escapeHtml(data.nextMoneyMove)}</h2><p>Everything else is support work until this advances or evidence changes the recommendation.</p></div>
-      <button class="secondary-button" data-view="tests">${icon("flask-conical")}Open business tests</button>
-    </section>
     <div class="two-column">
       <section class="section-block">
         ${sectionHeading("Current commercial test", "What is being tested and what would make it worth continuing.")}
@@ -429,24 +479,106 @@ function renderDecisions() {
 }
 
 function testTabs(data) {
-  const tabs = [["candidate", "Plan"], ["ready", "Ready"], ["running", "Running"], ["completed", "Results"]];
-  return `<div class="view-tabs">${tabs.map(([id, label]) => `<button class="${store.testTab === id ? "active" : ""}" data-action="test-tab" data-tab="${id}">${label}<span> ${data.tests[id]?.length || 0}</span></button>`).join("")}</div>`;
+  const tabs = [["candidate", "Opportunities"], ["ready", "Ready"], ["running", "Running"], ["completed", "Results"]];
+  return `<div class="view-tabs">${tabs.map(([id, label]) => {
+    const count = id === "candidate" ? data.opportunities?.length || 0 : data.tests[id]?.length || 0;
+    return `<button class="${store.testTab === id ? "active" : ""}" data-action="test-tab" data-tab="${id}">${label}<span> ${count}</span></button>`;
+  }).join("")}</div>`;
+}
+
+function productionStage(plan, currentTask) {
+  if (!plan) return {
+    label: "Opportunity selection",
+    detail: "Research, demand and economics must pass before product work begins.",
+    tone: "sky",
+  };
+  const stages = {
+    waiting_for_build_decision: {
+      label: "Build decision",
+      detail: `The ${plan.target_item_count}-product catalogue is planned. Product files have not been created yet.`,
+      tone: "amber",
+    },
+    building: {
+      label: "Building products",
+      detail: currentTask?.title || "Product Builder is creating and retaining the exact local files.",
+      tone: "sky",
+    },
+    rebuilding: {
+      label: "Correcting products",
+      detail: currentTask?.title || "Pantheon is correcting a product package that did not pass review.",
+      tone: "amber",
+    },
+    quality_review: {
+      label: "Quality review",
+      detail: "The product files exist and are being checked for completeness, usefulness, and claim safety.",
+      tone: "sky",
+    },
+    preparing_launch: {
+      label: "Preparing launch",
+      detail: "The products passed review. Listing copy and the measured first-market test are being prepared.",
+      tone: "mint",
+    },
+    launch_decision: {
+      label: "Launch decision",
+      detail: "The product and launch package are ready. Nothing is public yet.",
+      tone: "amber",
+    },
+    ready_to_publish: {
+      label: "Ready to publish",
+      detail: "The internal package is complete. The separate Gumroad action still needs to happen.",
+      tone: "mint",
+    },
+    requires_capability: {
+      label: "Production capability needed",
+      detail: "Pantheon stopped honestly because this product type needs a production pipeline that is not yet connected.",
+      tone: "coral",
+    },
+    needs_attention: {
+      label: "Needs review",
+      detail: "The corrected product package still has a material quality issue.",
+      tone: "coral",
+    },
+  };
+  if (currentTask?.status === "running") return stages.building;
+  return stages[plan.status] || {
+    label: humanStatus(plan.status),
+    detail: currentTask?.title || "Pantheon has retained the current production state.",
+    tone: "sky",
+  };
 }
 
 function renderTests() {
   const data = store.data.tests;
   const items = data.tests[store.testTab] || [];
-  const testsBody = items.length ? `<div class="card-grid">${items.map((item) => `<article class="item-card">
+  const opportunities = data.opportunities || [];
+  const opportunityBody = opportunities.length ? `<div class="opportunity-list">${opportunities.map((item, index) => `<article class="opportunity-row">
+    <div class="opportunity-rank">${String(index + 1).padStart(2, "0")}</div>
+    <div class="opportunity-copy">
+      <span class="eyebrow">${escapeHtml(item.business_model)} / ${escapeHtml(item.geography)}</span>
+      <h3>${escapeHtml(item.title)}</h3>
+      <p>${escapeHtml(item.problem)}</p>
+      <small>${escapeHtml(item.buyer)} via ${escapeHtml(item.channel)}</small>
+    </div>
+    <div class="opportunity-score"><strong>${Number(item.overall_score || 0)}</strong><span>score</span>${badge(item.status)}</div>
+  </article>`).join("")}</div>` : `<div class="empty-action-state">${emptyState(
+    data.opportunityRounds?.some((round) => ["researching", "validating", "checking_economics", "structuring_offer"].includes(round.status))
+      ? "Pantheon is researching now"
+      : "No opportunities have been researched",
+    data.opportunityRounds?.length
+      ? "The ranked shortlist will appear here after the current AI worker finishes."
+      : "Start a broad commercial scan here or give Pantheon a particular idea from the Command Center.",
+    "radar",
+  )}${data.opportunityRounds?.length ? "" : `<button class="primary-button" data-action="start-discovery" data-mode="broad">${icon("radar")}Find opportunities</button>`}</div>`;
+  const testsBody = store.testTab === "candidate" ? opportunityBody : items.length ? `<div class="card-grid">${items.map((item) => `<article class="item-card">
     <header><div><span class="eyebrow">${escapeHtml(humanStatus(item.status))}</span><h3>${escapeHtml(item.name)}</h3></div>${badge(item.status)}</header>
     <p>${escapeHtml(item.hypothesis || "Hypothesis needs to be defined.")}</p>
     <div class="detail-grid"><div><span>Buyer</span><strong>${escapeHtml(item.buyer || "Not selected")}</strong></div><div><span>Price</span><strong>${money(item.price_cents)}</strong></div><div><span>Channel</span><strong>${escapeHtml(item.channel || "Not selected")}</strong></div><div><span>Cost cap</span><strong>${money(item.cost_cap_cents)}</strong></div></div>
     <footer>${badge(item.status)}<button class="text-button" data-action="open-drawer" data-kind="test" data-id="${escapeHtml(item.id)}">Open test ${icon("arrow-right")}</button></footer>
   </article>`).join("")}</div>` : emptyState(
-    store.testTab === "candidate" ? "No opportunity has been selected" : `No tests are ${store.testTab}`,
-    store.testTab === "candidate" ? "The first Evidence Brief will rank three digital-product opportunities before one is selected." : "A test will move here only when the real commercial state changes.",
+    `No tests are ${store.testTab}`,
+    "A test will move here only when a real commercial action or result justifies the change.",
     "flask-conical",
   );
-  const workPackages = data.workPackages.slice(0, 8);
   const economics = data.economics || {};
   const resultsPanel = store.testTab === "completed" ? `<section class="section-block">
     ${sectionHeading("Gumroad results", "Measured sales, platform fees and refunds determine whether the first loop has proved itself.")}
@@ -462,10 +594,34 @@ function renderTests() {
       <button class="secondary-button" data-action="import-gumroad" data-venture-id="${escapeHtml(data.activeVenture.id)}">${icon("file-up")}Import sales</button>
     </div>
   </section>` : "";
+  const latestRound = data.opportunityRounds?.[0];
+  const latestPlan = data.cataloguePlans?.[0];
+  const production = data.production || {};
+  const productionPlan = production.plans?.find((plan) => plan.id === latestPlan?.id)
+    || production.plans?.[0]
+    || latestPlan;
+  const stage = productionStage(productionPlan, production.currentTask);
   $("#view").innerHTML = `<div class="view-stack">
     ${testTabs(data)}
-    <section>${sectionHeading(store.testTab === "completed" ? "Results" : `${humanStatus(store.testTab)} tests`, "Tests move only when a real-world action or result justifies the change.")}${testsBody}</section>
-    ${store.testTab === "candidate" ? `<section class="section-block">${sectionHeading("Current preparation", "Four operator-ready packs replace long chains of disconnected worker documents.")}<div class="plain-list">${workPackages.length ? workPackages.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(humanStatus(item.status))}</p></div>${badge(item.status)}</article>`).join("") : `<article class="plain-row"><div><h3>Evidence Brief</h3><p>${escapeHtml(data.ventureCase.next_money_move)}</p></div>${badge("Waiting")}</article>`}</div></section>
+    <section>${sectionHeading(
+      store.testTab === "candidate" ? "Commercial opportunities" : store.testTab === "completed" ? "Results" : `${humanStatus(store.testTab)} tests`,
+      store.testTab === "candidate"
+        ? "Ranked from attributable research, then narrowed by demand, economics and execution fit."
+        : "Tests move only when a real-world action or result justifies the change.",
+    )}${testsBody}</section>
+    ${store.testTab === "candidate" ? `<section class="section-block">${sectionHeading("Current commercial stage", "Pantheon handles the internal analysis and shows the exact point it has reached.")}
+      <div class="detail-grid">
+        <div><span>Latest round</span><strong>${escapeHtml(humanStatus(latestRound?.status || "not started"))}</strong></div>
+        <div><span>Catalogue</span><strong>${latestPlan ? `${latestPlan.target_item_count} products` : "Not ready"}</strong></div>
+        <div><span>Research mode</span><strong>${escapeHtml(humanStatus(latestRound?.mode || "broad discovery"))}</strong></div>
+        <div><span>Production stage</span><strong>${escapeHtml(stage.label)}</strong></div>
+      </div>
+      ${latestPlan ? `<div class="stage-callout ${escapeHtml(stage.tone)}"><div><span class="section-label">What is happening</span><h3>${escapeHtml(stage.label)}</h3><p>${escapeHtml(stage.detail)}</p></div>${badge(latestPlan.status, stage.tone)}</div>` : ""}
+      ${latestRound && !["ready_to_build", "needs_direction"].includes(latestRound.status) ? `<button class="primary-button" data-action="run-pantheon">${icon("play")}Continue Pantheon now</button>` : ""}
+      ${productionPlan && ["quality_review", "preparing_launch"].includes(productionPlan.status) && production.currentTask && production.currentTask.status !== "running" ? `<button class="primary-button" data-action="run-pantheon">${icon("play")}Continue internal work</button>` : ""}
+      ${productionPlan && ["launch_decision", "waiting_for_build_decision"].includes(productionPlan.status) ? `<button class="secondary-button" data-view="decisions">${icon("check-square")}Open the decision</button>` : ""}
+      ${productionPlan?.status === "ready_to_publish" ? `<button class="secondary-button" data-action="open-outputs">${icon("files")}Open product and launch files</button>` : ""}
+    </section>
     <section class="section-block">${sectionHeading("First-test boundaries", "The first venture earns expansion through measured buyer proof.")}<div class="detail-grid"><div><span>Test window</span><strong>${data.pilotPolicy.testDurationDays || 14} days or ${data.pilotPolicy.qualifiedViewTarget || 50} qualified views</strong></div><div><span>Success</span><strong>${data.pilotPolicy.successBuyers || 3} paid buyers and positive contribution</strong></div><div><span>Organic limit</span><strong>${data.pilotPolicy.organicPostLimit || 3} posts across ${data.pilotPolicy.organicChannelLimit || 2} channels</strong></div><div><span>Optional paid test</span><strong>${money(data.pilotPolicy.optionalPaidTestCents || 2500)} with your approval</strong></div></div></section>` : ""}
     ${resultsPanel}
   </div>`;
@@ -508,13 +664,13 @@ function renderAgentRunRow(run) {
   const selected = store.drawerState?.kind === "agent-run" && store.drawerState.id === run.id;
   return `<button class="run-row${selected ? " selected" : ""}" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(run.id)}" aria-current="${selected ? "true" : "false"}">
     <span class="run-kind-icon ${escapeHtml(run.executionKind)}">${icon(protectedRun ? "shield-check" : run.executionKind === "provider_outcome_unknown" ? "triangle-alert" : run.active ? "loader-circle" : "sparkles")}</span>
-    <span class="run-main"><span class="run-title-line"><strong>${escapeHtml(run.taskTitle)}</strong>${badge(run.executionKind)}</span><small>${escapeHtml(run.workerName)} · ${escapeHtml(dateTime(run.startedAt))}</small>${run.currentStage && run.active ? `<em>${escapeHtml(run.currentStage.title)}</em>` : ""}</span>
+    <span class="run-main"><span class="run-title-line"><strong>${escapeHtml(run.taskTitle)}</strong>${badge(run.executionKind)}</span><small>${escapeHtml(run.workerName)} / ${escapeHtml(dateTime(run.startedAt))}</small>${run.currentStage && run.active ? `<em>${escapeHtml(run.currentStage.title)}</em>` : ""}</span>
     <span class="run-facts"><span>${badge(run.status)} ${badge(
       run.receipt?.status === "complete"
-        ? "Evidence complete"
+        ? "Record complete"
         : run.receipt?.status === "recording"
-          ? "Recording evidence"
-          : "Review record",
+          ? "Saving record"
+          : "Check record",
       run.receipt?.status === "complete" ? "mint" : run.receipt?.status === "recording" ? "sky" : "amber",
     )}</span><small>${escapeHtml(actualTokens)}</small><small>${escapeHtml(cost)}</small></span>
     ${icon("chevron-right")}
@@ -538,7 +694,7 @@ function renderLiveRuns(data) {
       <div><span>Running now</span><strong>${activeRuns.length}</strong></div>
       <div><span>OpenAI runs</span><strong>${Number(counts.modelBacked || 0)}</strong></div>
       <div><span>Need review</span><strong>${Number(counts.needsReview || 0)}</strong></div>
-      <div><span>Confirmed AI cost</span><strong>${money(counts.reconciledCostCents || 0)}</strong></div>
+      <div><span>Reconciled AI cost</span><strong>${money(counts.reconciledCostCents || 0)}</strong></div>
     </section>
     ${activeRuns.length ? `<section class="active-run-strip">${sectionHeading("Working now", "These are genuine AI executions currently in progress.")}${activeRuns.map(renderAgentRunRow).join("")}</section>` : ""}
     <section>
@@ -560,7 +716,7 @@ function renderAiTeam() {
     <div class="agent-groups">${groups.map((group) => {
       const agents = data.agents.filter((agent) => agent.group === group);
       return `<section class="agent-group"><span class="section-label">${escapeHtml(agentGroupLabels[group])}</span><div class="agent-grid">${agents.map((agent) => `<button class="agent-card" data-action="open-drawer" data-kind="agent" data-id="${escapeHtml(agent.id)}">
-        <span class="agent-initial">${escapeHtml(initials(agent.name))}</span><div><h3>${escapeHtml(agent.name)}</h3><p>${escapeHtml(agent.assignment)}</p></div><span class="agent-meta">${badge(agent.status)}<small>${agent.autonomy.passes}/${agent.autonomy.required} for best proven skill</small></span>
+        <span class="agent-initial">${escapeHtml(initials(agent.name))}</span><div><h3>${escapeHtml(agent.name)}</h3><p>${escapeHtml(agent.assignment)}</p></div><span class="agent-meta">${badge(agent.status)}<small>${agent.autonomy.passes} of ${agent.autonomy.required} reviewed successes</small></span>
       </button>`).join("")}</div></section>`;
     }).join("")}</div>
   </section>`;
@@ -584,7 +740,7 @@ function renderSystemPanel(data) {
     const monitoring = data.health.monitoring || {
       status: "starting",
       label: "Starting",
-      summary: "Jarvis monitoring starts with the business runtime.",
+      summary: "Pantheon monitoring starts with the business runtime.",
       latestFindingCount: 0,
       lastCheckAt: null,
     };
@@ -601,7 +757,7 @@ function renderSystemPanel(data) {
       : "";
     return `<div class="card-grid">
       ${data.health.proofMode ? `<article class="item-card"><header><h3>System proof mode</h3>${badge("Luna only", "sky")}</header><p>Temporary low-cost testing is active. Consequential work and external effects are blocked.</p></article>` : ""}
-      <article class="item-card"><header><h3>Jarvis monitoring</h3>${badge(monitoring.label, monitoringTone)}</header><p>${escapeHtml(monitoring.summary)} ${escapeHtml(monitoringDetail)} ${escapeHtml(data.health.database === "ok" ? "The operating record also passed its integrity check." : "The operating record needs an integrity review.")}</p></article>
+      <article class="item-card"><header><h3>Pantheon monitoring</h3>${badge(monitoring.label, monitoringTone)}</header><p>${escapeHtml(monitoring.summary)} ${escapeHtml(monitoringDetail)} ${escapeHtml(data.health.database === "ok" ? "The operating record also passed its integrity check." : "The operating record needs an integrity review.")}</p></article>
       <article class="item-card"><header><h3>AI worker connection</h3>${badge(ai.ready ? "Ready for approved work" : "Setup needed")}</header><p>${escapeHtml(ai.ready ? "The local Agents SDK path is configured. One exact capped approval is still required for each paid worker run." : compact(ai.blockers?.join(" ") || "Credentials and live permission are not configured."))}</p></article>
       <article class="item-card"><header><h3>Live research</h3>${badge(research.ready ? "Ready for approved test" : "Setup needed")}</header><p>${escapeHtml(research.ready ? "The read-only research path is configured. Provider reachability is proven only by an approved live test." : compact(research.blockers?.join(" ") || "The research connection is not configured."))}</p></article>
       <article class="item-card"><header><h3>Product visuals</h3>${badge(ai.imageGeneration?.ready ? "Ready for approved test" : "Setup needed")}</header><p>${escapeHtml(ai.imageGeneration?.ready ? "Product Builder's reviewed visual path is configured. A paid test and separate quality review are still required." : compact(ai.imageGeneration?.blockers?.join(" ") || "The reviewed product-visual capability is not connected."))}</p></article>
@@ -629,13 +785,13 @@ function renderSystemPanel(data) {
       return badge(item.severity);
     };
     return `<div class="view-stack">
-      <section>${sectionHeading("System checks", "Jarvis verifies that genuine AI work left a complete local record and did not hide an uncertain outcome.")}
+      <section>${sectionHeading("System checks", "Pantheon verifies that genuine AI work left a complete local record and did not hide an uncertain outcome.")}
         <div class="metric-grid"><div class="metric ${checks.openCount ? "amber" : "mint"}"><span>Current status</span><strong>${escapeHtml(humanStatus(checks.status))}</strong><small>${checks.openCount ? `${checks.openCount} item${checks.openCount === 1 ? "" : "s"} to review` : "No unresolved execution-record issues"}</small></div><div class="metric sky"><span>Receipts verified</span><strong>${Number(checks.verifiedReceiptCount || 0)}</strong><small>${checks.receiptChainVerified ? "Integrity checks passed" : "Integrity review required"}</small></div></div>
       </section>
-      <section>${checks.items?.length ? `<div class="plain-list">${checks.items.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.detail)}</p>${item.workerName ? `<small>${escapeHtml(item.workerName)}</small>` : ""}</div>${item.runId ? `<button class="secondary-button" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(item.runId)}">${icon("file-search")}Review</button>` : badge(item.status)}</article>`).join("")}</div>` : emptyState("All execution records are complete", "Jarvis found no missing receipts, uncertain provider outcomes or broken evidence links.", "shield-check")}</section>
-      <section>${sectionHeading("Jarvis findings", "Current risks, stalled work and exceptions found by the independent runtime monitor.")}
+      <section>${checks.items?.length ? `<div class="plain-list">${checks.items.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.detail)}</p>${item.workerName ? `<small>${escapeHtml(item.workerName)}</small>` : ""}</div>${item.runId ? `<button class="secondary-button" data-action="open-drawer" data-kind="agent-run" data-id="${escapeHtml(item.runId)}">${icon("file-search")}Review</button>` : badge(item.status)}</article>`).join("")}</div>` : emptyState("All execution records are complete", "Pantheon found no missing receipts, uncertain provider outcomes or broken evidence links.", "shield-check")}</section>
+      <section>${sectionHeading("Pantheon findings", "Current risks, stalled work and exceptions found by the independent runtime monitor.")}
         <div class="metric-grid"><div class="metric ${monitor.openCount ? "amber" : "mint"}"><span>Open findings</span><strong>${Number(monitor.openCount || 0)}</strong><small>${monitor.openCount ? "Each item remains visible until resolved" : "No current runtime exception"}</small></div><div class="metric ${monitor.criticalCount ? "coral" : "mint"}"><span>Critical</span><strong>${Number(monitor.criticalCount || 0)}</strong><small>${monitor.criticalCount ? "Stop and review before retrying affected work" : "No critical monitor finding"}</small></div></div>
-        ${monitor.items?.length ? `<div class="plain-list">${monitor.items.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.detail)}</p><small>Last checked ${escapeHtml(shortDate(item.last_seen || item.first_seen))}${Number(item.occurrence_count || 0) > 1 ? ` · seen ${Number(item.occurrence_count)} times` : ""}</small></div>${monitorAction(item)}</article>`).join("")}</div>` : emptyState("Jarvis found no current exception", "Scheduled checks will place a concrete issue and next action here when something needs review.", "check-circle-2")}
+        ${monitor.items?.length ? `<div class="plain-list">${monitor.items.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.detail)}</p><small>Last checked ${escapeHtml(shortDate(item.last_seen || item.first_seen))}${Number(item.occurrence_count || 0) > 1 ? ` / seen ${Number(item.occurrence_count)} times` : ""}</small></div>${monitorAction(item)}</article>`).join("")}</div>` : emptyState("Pantheon found no current exception", "Scheduled checks will place a concrete issue and next action here when something needs review.", "check-circle-2")}
       </section>
     </div>`;
   }
@@ -831,6 +987,7 @@ function detailList(items, emptyMessage = "None recorded.") {
 
 function plainAgentText(value) {
   return String(value || "")
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^)\s]+\)/gi, "$1")
     .replace(/All observations are evaluation fixtures, not real-business market evidence\./gi, "All observations came from a controlled test, not real market activity.")
     .replace(/\bevaluation fixtures\b/gi, "controlled test examples")
     .replace(/\bfixtures\b/gi, "controlled test examples")
@@ -874,7 +1031,7 @@ function runReviewFooter(data) {
   const demandResult = data.run.workerId === "demand_validator";
   const qualityNeedsWork = ["failed", "needs_review"].includes(data.quality?.status);
   if (reviewPending) {
-    return `<div class="drawer-footer-copy"><strong>Is this analysis clear enough to use?</strong><span>Your answer helps Jarvis improve this exact AI skill.</span></div>
+    return `<div class="drawer-footer-copy"><strong>Is this analysis clear enough to use?</strong><span>Your answer helps Pantheon improve this exact AI skill.</span></div>
       <div class="work-actions">
         <button class="primary-button" data-action="review-agent-run" data-run-id="${escapeHtml(data.run.id)}" data-verdict="useful" data-score="4">${icon("check")}Analysis is clear</button>
         <button class="secondary-button" data-action="review-agent-run" data-run-id="${escapeHtml(data.run.id)}" data-handoff-id="${escapeHtml(handoff?.id || "")}" data-verdict="changes_required" data-score="2">${icon("pencil-line")}Request a better analysis</button>
@@ -892,7 +1049,7 @@ function runReviewFooter(data) {
       ? "Continue this internal system test"
       : "Prepare the interest test"
     : "Prepare the next step";
-  return `<div class="drawer-footer-copy"><strong>What should Jarvis do next?</strong><span>${qualityNeedsWork && data.execution?.systemProof ? "This continues the internal workflow only. The result is not accepted as market evidence." : "No publishing, customer contact, account change, or spend will occur."}</span></div>
+  return `<div class="drawer-footer-copy"><strong>What should Pantheon do next?</strong><span>${qualityNeedsWork && data.execution?.systemProof ? "This continues the internal workflow only. The result is not accepted as market evidence." : "No publishing, customer contact, account change, or spend will occur."}</span></div>
     <div class="work-actions">
       <button class="primary-button" data-action="handoff-decision" data-id="${escapeHtml(handoff.id)}" data-decision="approve">${icon("arrow-right")}${nextStepLabel}</button>
       <button class="secondary-button" data-action="handoff-decision" data-id="${escapeHtml(handoff.id)}" data-decision="changes">${icon("pencil-line")}Ask for changes</button>
@@ -933,12 +1090,12 @@ function runReviewBody(data) {
     ? "No provider call was made. This was an internal rehearsal."
     : visibility.providerResponseStored && visibility.providerTraceContent
       ? "OpenAI trace content was enabled for this approved non-personal run."
-      : "Jarvis retained the structured result and local execution record; full provider trace content was not enabled.";
+      : "Pantheon retained the structured result and local execution record; full provider trace content was not enabled.";
   const suppliedEvidence = process.suppliedEvidence?.length
     ? `<div class="evidence-list">${process.suppliedEvidence.map((item) => {
         const url = safeExternalUrl(item.url);
         const sourceLabel = item.sourceType === "test_fixture" ? "Controlled test evidence" : humanStatus(item.sourceType);
-        return `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(sourceLabel)}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
+        return `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(sourceLabel)}${url ? ` / <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
       }).join("")}</div>`
     : "<p>No supplied evidence was recorded.</p>";
   const traceEvents = data.developer.traceEvents?.length
@@ -959,7 +1116,7 @@ function runReviewBody(data) {
   const sources = execution.sources?.length
     ? `<div class="evidence-list">${execution.sources.map((source) => {
         const url = safeExternalUrl(source.url);
-        return `<article><strong>${escapeHtml(source.title)}</strong><p>${escapeHtml(source.relevance || source.publisher || "Research source recorded by Jarvis.")}</p><small>${source.grounded ? "Grounded source" : "Source not independently verified"}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
+        return `<article><strong>${escapeHtml(source.title)}</strong><p>${escapeHtml(source.relevance || source.publisher || "Research source recorded by Pantheon.")}</p><small>${source.grounded ? "Grounded source" : "Source not independently verified"}${url ? ` / <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
       }).join("")}</div>`
     : researchAttempted
       ? `<div class="error-callout"><strong>No usable web sources were returned</strong><p>${escapeHtml(execution.research?.summary || "The approved research tool ran, but it did not return an attributable source URL. Treat this result as incomplete market evidence.")}</p></div>`
@@ -971,22 +1128,22 @@ function runReviewBody(data) {
     ? detailSection("What went wrong", `<div class="error-callout"><strong>${unknownOutcome ? "OpenAI outcome needs review" : "The run failed"}</strong><p>${escapeHtml(data.run.error || execution.error)}</p></div>`)
     : "";
   const qualitySection = qualityNeedsWork
-    ? `<div class="error-callout"><strong>This result did not pass Jarvis's evidence checks</strong><p>The worker completed its technical run, but the ${escapeHtml(String(data.quality?.score ?? "unscored"))}/100 check found incomplete evidence. ${execution.systemProof ? "It can continue only as an internal system test; it is not accepted as market proof." : "Ask for changes or stop before using it for a business decision."}</p></div>`
+    ? `<div class="error-callout"><strong>This result did not pass Pantheon's evidence checks</strong><p>The worker completed its technical run, but the ${escapeHtml(String(data.quality?.score ?? "unscored"))}/100 check found incomplete evidence. ${execution.systemProof ? "It can continue only as an internal system test; it is not accepted as market proof." : "Ask for changes or stop before using it for a business decision."}</p></div>`
     : "";
   const reviewStatus = reviewPending
     ? `<div class="decision-step"><span>1</span><div><strong>Check the analysis</strong><p>Read the result, then use the buttons below to say whether it is clear enough to guide a decision.</p></div></div>`
     : `<div class="decision-step complete"><span>${icon("check")}</span><div><strong>Analysis reviewed</strong><p>${escapeHtml(data.review?.note || `You marked this analysis as ${humanStatus(data.review?.operatorVerdict || "reviewed")}.`)}</p></div></div>`;
   const nextStepStatus = handoff
-    ? `<div class="decision-step${reviewPending ? " waiting" : ""}"><span>2</span><div><strong>Choose the business direction</strong><p>${reviewPending ? "This becomes available as soon as you finish step one." : demandResult ? "Choose whether Jarvis should prepare the free interest test, revise the work, or stop here." : escapeHtml(handoff.decisionNeeded || "Choose what Jarvis should do next.")}</p></div></div>`
+    ? `<div class="decision-step${reviewPending ? " waiting" : ""}"><span>2</span><div><strong>Choose the business direction</strong><p>${reviewPending ? "This becomes available as soon as you finish step one." : demandResult ? "Choose whether Pantheon should prepare the free interest test, revise the work, or stop here." : escapeHtml(handoff.decisionNeeded || "Choose what Pantheon should do next.")}</p></div></div>`
     : `<div class="decision-step complete"><span>${icon("check")}</span><div><strong>Next step recorded</strong><p>No further direction is waiting on this result.</p></div></div>`;
   const receiptRecord = receipt
-    ? `<div class="review-check"><span>${receipt.status === "complete" ? "Inputs, output, provider evidence, cost state, and checks were captured." : "Jarvis found an issue in the stored run record."}</span>${badge(receipt.status === "complete" ? "Record complete" : "Review needed", receipt.status === "complete" ? "mint" : "amber")}</div>${receipt.missingFields?.length ? `<h4>Missing details</h4>${detailList(receipt.missingFields)}` : ""}${receipt.warnings?.length ? `<h4>Review notes</h4>${detailList(receipt.warnings)}` : ""}`
-    : `<div class="error-callout"><strong>Run record not finalized</strong><p>${data.run.status === "running" ? "Jarvis is still recording this run." : "The system monitor will keep this visible until the record is complete."}</p></div>`;
+    ? `<div class="review-check"><span>${receipt.status === "complete" ? "Inputs, output, provider evidence, cost state, and checks were captured." : "Pantheon found an issue in the stored run record."}</span>${badge(receipt.status === "complete" ? "Record complete" : "Review needed", receipt.status === "complete" ? "mint" : "amber")}</div>${receipt.missingFields?.length ? `<h4>Missing details</h4>${detailList(receipt.missingFields)}` : ""}${receipt.warnings?.length ? `<h4>Review notes</h4>${detailList(receipt.warnings)}` : ""}`
+    : `<div class="error-callout"><strong>Run record not finalized</strong><p>${data.run.status === "running" ? "Pantheon is still recording this run." : "The system monitor will keep this visible until the record is complete."}</p></div>`;
   const technicalRecord = [
     detailSection("Automated checks", `${reviewCriteria(data.review?.criteria || {})}<p>The ${escapeHtml(String(data.quality?.score ?? "unscored"))}${data.quality?.score !== undefined ? "/100" : ""} result checks structure and safety only. You decide whether the work is commercially useful.</p>`),
     detailSection("Execution facts", `<div class="review-facts"><div><span>Run type</span><strong>${escapeHtml(execution.label)}</strong></div><div><span>Status</span><strong>${escapeHtml(humanStatus(data.run.status))}</strong></div><div><span>Provider</span><strong>${escapeHtml(execution.provider || (protectedRun ? "No provider used" : execution.requestedProvider || "Not captured"))}</strong></div><div><span>Model</span><strong>${escapeHtml(execution.modelRoute?.label || execution.model || (protectedRun ? "No model called" : execution.requestedModel || "Not captured"))}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Tokens</span><strong>${escapeHtml(actualTokens)}</strong></div><div><span>Planned limits</span><strong>${escapeHtml(plannedTokens)}</strong></div><div><span>Cost</span><strong>${escapeHtml(providerCost)}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div></div><p>${escapeHtml(providerVisibility)}</p>`),
     detailSection("Tools and research", `<h4>Tool activity</h4>${observedTools}<h4>Research sources</h4>${sources}`),
-    detailSection("Stored run record", `${receiptRecord}<div class="technical-ids"><span>OpenAI trace</span><code>${escapeHtml(execution.traceId || "Not captured")}</code><span>OpenAI response</span><code>${escapeHtml(execution.responseId || "Not captured")}</code><span>Jarvis run</span><code>${escapeHtml(data.run.id)}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || data.developer.contextSnapshotHash || "Not captured")}</code><span>Receipt fingerprint</span><code>${escapeHtml(receipt?.hash || "Not captured")}</code></div>`),
+    detailSection("Stored run record", `${receiptRecord}<div class="technical-ids"><span>OpenAI trace</span><code>${escapeHtml(execution.traceId || "Not captured")}</code><span>OpenAI response</span><code>${escapeHtml(execution.responseId || "Not captured")}</code><span>Pantheon run</span><code>${escapeHtml(data.run.id)}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || data.developer.contextSnapshotHash || "Not captured")}</code><span>Receipt fingerprint</span><code>${escapeHtml(receipt?.hash || "Not captured")}</code></div>`),
     detailSection("Run timeline", traceEvents),
   ].join("");
 
@@ -1055,6 +1212,8 @@ async function showDetail(kind, id, options = {}) {
     const aiCheck = Boolean(item.provider || item.model || item.worker);
     const liveResearch = item.tools?.some((tool) => ["research_adapter", "live_web_with_approval"].includes(tool));
     const handoffDecision = item.decisionKind === "handoff";
+    const catalogueBuild = item.decisionActionKind === "catalogue_build";
+    const launchReadiness = item.decisionActionKind === "launch_readiness";
     const assignment = item.assignment
       ? detailSection("What the AI will review", `<p class="lead-copy">${escapeHtml(item.assignment.question || "The question was not stated.")}</p><div class="review-facts simple"><div><span>Intended buyer</span><strong>${escapeHtml(item.assignment.buyer || "Not stated")}</strong></div><div><span>Evidence supplied</span><strong>${escapeHtml(String(item.assignment.evidenceCount || 0))} item${Number(item.assignment.evidenceCount || 0) === 1 ? "" : "s"}</strong></div></div>`)
       : "";
@@ -1071,22 +1230,29 @@ async function showDetail(kind, id, options = {}) {
     const pricedBound = item.pricedWorstCaseCostCents
       ? ` The current priced upper estimate is ${money(item.pricedWorstCaseCostCents)}; final usage is recorded after the run.`
       : "";
-    const whatHappens = handoffDecision
-      ? "Jarvis will turn the reviewed result into the next internal work step. Nothing will be published or sent outside the system."
+    const whatHappens = catalogueBuild
+      ? `Pantheon will create and retain the complete ${item.productBuild?.productCount || "planned"}-product catalogue, then run an independent quality review. The files stay local until a later launch decision.`
+      : launchReadiness
+        ? "Pantheon will mark the finished package ready for the separate Gumroad publishing action. It will not create an account, complete KYC, publish, post, contact anyone, or spend money."
+        : handoffDecision
+      ? "Pantheon will turn the reviewed result into the next internal work step. Nothing will be published or sent outside Pantheon."
       : liveResearch
         ? `${item.worker || "The Demand Validator"} will search current public sources for buyer demand, alternatives, pricing signals, and a suitable audience. It will return the evidence and recommendation here for your review.`
         : aiCheck
           ? `${item.worker || "The AI worker"} will complete this one check and return the result for your review.`
-          : "Jarvis will carry out only the work described in this decision.";
+          : "Pantheon will carry out only the work described in this decision.";
     const limits = item.effects?.length
       ? `Only these approved effects are allowed: ${item.effects.join(", ")}.`
       : "It cannot publish, contact anyone, change an account, sign anything, or move money.";
     const costStatement = Number(item.maxCostCents || 0) > 0
       ? `The absolute cost limit is ${money(item.maxCostCents)}.${pricedBound}`
       : "No provider spend is approved by this decision.";
-    const technical = [businessContext, execution, detailSection("Exact limits", `<p>${escapeHtml(costStatement)}<br>Risk level: ${escapeHtml(humanStatus(item.risk))}.<br>${escapeHtml(limits)}${item.tracePolicy?.providerTraceContent ? "<br>The approved non-personal input and output will be available in the OpenAI trace." : ""}</p>`)].join("");
+    const productBuild = item.productBuild
+      ? detailSection("What will be built", `<div class="review-facts"><div><span>Products</span><strong>${escapeHtml(String(item.productBuild.productCount))}</strong></div><div><span>Expected formats</span><strong>${escapeHtml(item.productBuild.formats.join(", ") || "Defined in the build plan")}</strong></div></div><p>${escapeHtml(item.productBuild.qualityBar || "Every file must be complete and customer-usable.")}</p>`)
+      : "";
+    const technical = [businessContext, execution, productBuild, detailSection("Exact limits", `<p>${escapeHtml(costStatement)}<br>Risk level: ${escapeHtml(humanStatus(item.risk))}.<br>${escapeHtml(limits)}${item.tracePolicy?.providerTraceContent ? "<br>The approved non-personal input and output will be available in the OpenAI trace." : ""}</p>`)].join("");
     openDrawer(item.title, "Your decision", `<div class="review-workspace">
-      <section class="result-hero decision-hero"><div><span class="eyebrow">What Jarvis recommends</span><h3>${escapeHtml(item.recommendation)}</h3><p>${escapeHtml(item.expectedUpside)}</p></div>${badge(`${humanStatus(item.risk)} risk`, item.risk === "high" ? "coral" : "amber")}</section>
+      <section class="result-hero decision-hero"><div><span class="eyebrow">What Pantheon recommends</span><h3>${escapeHtml(item.recommendation)}</h3><p>${escapeHtml(item.expectedUpside)}</p></div>${badge(`${humanStatus(item.risk)} risk`, item.risk === "high" ? "coral" : "amber")}</section>
       ${detailSection("What happens if you continue", `<p class="lead-copy">${escapeHtml(whatHappens)}</p><p>${escapeHtml(costStatement)}</p>`)}
       ${detailSection("What will not happen", `<p>${escapeHtml(limits)}</p>`)}
       ${assignment}
@@ -1164,6 +1330,10 @@ async function handleAction(button) {
     return;
   }
   if (action === "system-tab") { store.systemTab = button.dataset.tab; return renderSystem(); }
+  if (action === "open-outputs") {
+    store.systemTab = "outputs";
+    return loadView("system");
+  }
   if (action === "toggle-output-history") { store.showArchivedOutputs = !store.showArchivedOutputs; return renderSystem(); }
   if (action === "open-drawer") return showDetail(button.dataset.kind, button.dataset.id);
   if (action === "open-pdf") return openPdf(button.dataset.id, button.dataset.title);
@@ -1191,7 +1361,7 @@ async function handleAction(button) {
       : execution?.status === "blocked"
         ? "Approved, but the work still needs setup or another exact decision."
         : execution?.status === "waiting"
-          ? "Approved. An earlier work item must close before this can start; Jarvis has kept it visible."
+          ? "Approved. An earlier work item must close before this can start; Pantheon has kept it visible."
         : `Decision ${decisionLabels[button.dataset.decision]}.`);
     return loadView(store.view, { silent: true });
   }
@@ -1201,14 +1371,37 @@ async function handleAction(button) {
       note: `Dashboard decision: ${decisionLabels[button.dataset.decision]}.`,
     }));
     closeDrawer();
-    toast(button.dataset.decision === "approve"
-      ? payload.execution?.status === "completed"
+    toast(payload.pantheonDecision?.decision === "approve"
+      ? "The package is ready for the separate Gumroad publishing action. Nothing was published automatically."
+      : button.dataset.decision === "approve"
+        ? payload.execution?.status === "completed"
         ? "Chief of Staff saved the next recommendation. The Test Pack has not been created yet, and nothing was published or sent."
         : "The next recommendation is waiting to be saved."
       : button.dataset.decision === "changes"
-        ? "Changes requested. Jarvis will not continue until the result is revised."
+        ? "Changes requested. Pantheon will not continue until the result is revised."
         : "This path was stopped. No external action occurred.");
     return loadView("cockpit", { silent: true });
+  }
+  if (action === "start-discovery") {
+    const text = $("#command-text")?.value.trim() || "";
+    if (button.dataset.mode === "idea" && !text) {
+      throw new Error("Describe the business idea you want Pantheon to review.");
+    }
+    const payload = await withRunPolling(() => postJson("/api/pantheon/discovery", button.dataset.mode === "idea"
+      ? { idea: text, runNow: true }
+      : { prompt: text || undefined, runNow: true }));
+    const supervisor = payload.supervisor;
+    toast(supervisor?.status === "needs_attention"
+      ? "Pantheon stopped safely because this work needs review."
+      : supervisor?.status === "waiting_for_operator"
+        ? supervisor.cycle?.summary || "Pantheon needs one setup or policy decision before continuing."
+        : "Pantheon started the commercial research.");
+    return loadView("tests", { silent: true });
+  }
+  if (action === "run-pantheon") {
+    const payload = await withRunPolling(() => postJson("/api/pantheon/run", { maxSteps: 1 }));
+    toast(payload.result?.cycle?.summary || `Pantheon: ${humanStatus(payload.result?.status || "complete")}.`);
+    return loadView(store.view, { silent: true });
   }
   if (action === "submit-command") {
     const text = $("#command-text")?.value.trim();
@@ -1267,15 +1460,15 @@ async function handleAction(button) {
     });
     if (button.dataset.verdict === "changes_required" && button.dataset.handoffId) {
       await postJson(`/api/agent-handoffs/${encodeURIComponent(button.dataset.handoffId)}/changes`, {
-        note: "The analysis needs to be clearer or more useful before Jarvis continues.",
+        note: "The analysis needs to be clearer or more useful before Pantheon continues.",
       });
       closeDrawer();
-      toast("A better analysis was requested. Jarvis will not continue from this result.");
+      toast("A better analysis was requested. Pantheon will not continue from this result.");
       return loadView("cockpit", { silent: true });
     }
     await loadView(store.view, { silent: true });
     await showDetail("agent-run", runId, { preserveFocus: true });
-    toast("Review recorded. Now choose what Jarvis should do next.");
+    toast("Review recorded. Now choose what Pantheon should do next.");
     return;
   }
   if (action === "import-gumroad") {
@@ -1356,7 +1549,7 @@ function establishSession() {
   if (!bootstrapToken) return fetchJson("/api/session");
   const sessionRequest = fetchJson("/api/session", {
     method: "POST",
-    headers: { "x-jarvis-bootstrap": bootstrapToken },
+    headers: { "x-pantheon-bootstrap": bootstrapToken, "x-jarvis-bootstrap": bootstrapToken },
   });
   window.history.replaceState(window.history.state, document.title, `${window.location.pathname}${window.location.search}`);
   return sessionRequest;
@@ -1374,11 +1567,11 @@ async function boot() {
     await loadView("cockpit");
     connectSocket();
   } catch (error) {
-    setConnection(false, error.status === 401 ? "Start Jarvis" : "Offline");
+    setConnection(false, error.status === 401 ? "Start Pantheon" : "Offline");
     if (error.status === 401) {
       $("#view").innerHTML = emptyState(
-        "Start Jarvis to open this dashboard",
-        "This window does not have an operator session. Close it, run the Jarvis launcher, and use the secure dashboard window it opens.",
+        "Start Pantheon to open this dashboard",
+        "This window does not have an operator session. Close it, run the Pantheon launcher, and use the secure dashboard window it opens.",
         "shield-alert",
       );
       refreshIcons();

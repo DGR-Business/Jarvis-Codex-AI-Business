@@ -5,7 +5,7 @@ Status: accepted
 
 ## Decision
 
-Jarvis-Codex will prove one digital-product venture through Gumroad Direct before
+Pantheon will prove one digital-product venture through Gumroad Direct before
 adding another venture, broader channel automation, or paid media capability.
 
 The proof threshold is three independent paying buyers and positive cash

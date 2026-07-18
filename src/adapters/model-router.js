@@ -1,6 +1,7 @@
 const CONFIG = require("../config");
 const { now, randomId, run, toJson } = require("../db");
 const { MODEL_CLASS_TIERS, selectModelRoute } = require("../runtime/model-routing");
+const { environmentEnabled } = require("./pantheon-environment");
 
 const MODEL_CLASS_ROUTES = {
   "reasoning-medium": {
@@ -43,7 +44,7 @@ function estimateCostCents(policy, route) {
 }
 
 function liveModelCallsEnabled(options = {}) {
-  return options.live === true && process.env.JARVIS_ENABLE_LIVE_MODELS === "1";
+  return options.live === true && environmentEnabled("enableLiveModels");
 }
 
 function recordModelCall(db, task, policy, options = {}) {

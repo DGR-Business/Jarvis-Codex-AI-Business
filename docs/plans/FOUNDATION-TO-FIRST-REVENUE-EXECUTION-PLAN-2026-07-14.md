@@ -1,14 +1,15 @@
 # Foundation-to-First-Revenue Execution Plan
 
 Date: 2026-07-14
-Status: active execution directive
+Status: commercial constraints retained; implementation superseded by the 2026-07-18 Pantheon plan
 Owner: Daniel
-Maintainer: Codex
+Maintainer: Jarvis (Codex)
 
 ## Objective
 
-Prove one digital-product venture before the system expands. Jarvis performs
-the analysis and preparation. Daniel receives concise recommendations,
+Prove one digital-product venture before Pantheon expands. Pantheon's workers
+perform the analysis and preparation while Jarvis builds and monitors the
+runtime. Daniel receives concise recommendations,
 consequential decisions, and material exception alerts.
 
 Success requires:
@@ -28,8 +29,8 @@ Success requires:
   cleanup.
 - Use the Node SQLite backup API plus AES-256-GCM encryption.
 - Default backup destination:
-  `C:\Users\radul\OneDrive\Jarvis-Codex-Backups`, configurable through an
-  environment variable.
+  `C:\Users\radul\OneDrive\Pantheon-Backups`, configurable through
+  `PANTHEON_BACKUP_DESTINATION`.
 - Retain seven daily and four weekly backups and prove full restoration into a
   temporary location.
 - Establish a clean tracked baseline in a private GitHub repository.

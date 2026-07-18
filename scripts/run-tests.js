@@ -4,7 +4,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const workspaceRoot = path.resolve(__dirname, "..");
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-test-runtime-"));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-test-runtime-"));
 const isolatedTempRoot = path.join(root, "os-temp");
 const pdfTempRoot = path.join(workspaceRoot, "tmp", "pdfs");
 const pdfSnapshot = path.join(root, "pre-test-pdfs");
@@ -37,10 +37,18 @@ function requestedTestFiles(args) {
   });
 }
 
+// Legacy JARVIS_* names are scrubbed only so an older developer shell cannot
+// leak credentials or live-mode flags into Pantheon's isolated test process.
 const blockedEnvironment = new Set([
   "OPENAI_API_KEY",
+  "PANTHEON_ENABLE_LIVE_MODELS",
+  "PANTHEON_ENABLE_LIVE_RESEARCH",
+  "PANTHEON_ENABLE_IMAGE_GENERATION",
+  "PANTHEON_LIVE_MODE",
+  "PANTHEON_BACKUP_PASSPHRASE",
   "JARVIS_ENABLE_LIVE_MODELS",
   "JARVIS_ENABLE_LIVE_RESEARCH",
+  "JARVIS_ENABLE_IMAGE_GENERATION",
   "JARVIS_LIVE_MODE",
   "JARVIS_BACKUP_PASSPHRASE",
 ]);
@@ -53,15 +61,13 @@ const env = {
   TEMP: isolatedTempRoot,
   TMP: isolatedTempRoot,
   TMPDIR: isolatedTempRoot,
-  JARVIS_ARTIFACT_ROOT: path.join(root, "artifacts"),
-  JARVIS_APPROVAL_PACK_DIR: path.join(root, "approval-packs"),
-  JARVIS_BACKUP_DESTINATION: path.join(root, "backups"),
-  JARVIS_DATA_DIR: path.join(root, "data"),
-  JARVIS_DB_PATH: path.join(root, "data", "runtime.sqlite"),
-  JARVIS_PRIVACY_HASH_KEY: "test-only-privacy-hash-key-32-bytes",
-  JARVIS_ENABLE_LIVE_MODELS: "0",
-  JARVIS_ENABLE_LIVE_RESEARCH: "0",
-  JARVIS_LIVE_MODE: "0",
+  PANTHEON_ARTIFACT_ROOT: path.join(root, "artifacts"),
+  PANTHEON_APPROVAL_PACK_DIR: path.join(root, "approval-packs"),
+  PANTHEON_BACKUP_DESTINATION: path.join(root, "backups"),
+  PANTHEON_DATA_DIR: path.join(root, "data"),
+  PANTHEON_DB_PATH: path.join(root, "data", "runtime.sqlite"),
+  PANTHEON_PRIVACY_HASH_KEY: "test-only-privacy-hash-key-32-bytes",
+  PANTHEON_LIVE_MODE: "0",
 };
 
 try {

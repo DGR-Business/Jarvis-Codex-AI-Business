@@ -32,6 +32,16 @@ const AGENT_TOOL_DEFINITIONS = [
   tool("local_deliverables", "Local Deliverables", "internal", "dry_run", {
     description: "Create or update local review artifacts without external publishing or spend.",
   }),
+  tool("product_file_factory", "Product File Workspace", "creative", "approval_gated", {
+    riskLevel: "medium",
+    dryRunAvailable: false,
+    spendPossible: true,
+    approvalScope: "live_ai_worker_spend",
+    integrationId: "ai_workers",
+    providerCapability: "openai_code_interpreter",
+    liveFlag: "PANTHEON_ENABLE_LIVE_MODELS",
+    description: "Use an isolated OpenAI Code Interpreter container to create exact product files. Pantheon downloads, hashes, validates, and stores every accepted output locally.",
+  }),
   tool("approval_pack", "Review Pack Builder", "internal", "dry_run", {
     description: "Prepare local operator review packs and PDFs without sending or publishing.",
   }),

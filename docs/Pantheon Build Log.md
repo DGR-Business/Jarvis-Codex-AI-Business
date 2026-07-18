@@ -1,6 +1,11 @@
-# Jarvis-Codex Build Log
+# Pantheon Build Log
 
 Last updated: 2026-07-18
+
+Pantheon is the active product name from 2026-07-18. Earlier entries retain
+Jarvis-Codex or Jarvis where that was the product name at the time. Jarvis now
+means Daniel's Codex-based developer and technical steward, not the business
+runtime.
 Status: active concise record
 
 The detailed pre-first-use development history is preserved at
@@ -13,20 +18,23 @@ commercial move.
 - Product direction: one digital-product venture to first revenue.
 - Checkout direction: Gumroad Direct; private KYC is permitted; public identity
   remains faceless and voiceless.
-- Runtime: Node.js 24, CommonJS, built-in SQLite, local signed operator session.
+- Runtime: Node.js 24, CommonJS, built-in SQLite schema 20, local signed operator
+  session, scheduler-backed supervisor, and independent monitor.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
-- First live worker position: the controlled Demand Validator proof and the
-  separately capped Luna live-research path both completed. The final research
-  attempt captured 41 attributable URLs and passed local structural checks.
-  It proves the operating path, not commercial demand.
+- First live worker position: one real Luna Opportunity Scout and three real
+  Luna Demand Validator assignments completed through the Agents SDK. They
+  stored 137 attributable sources, four traces, complete receipts, and passed
+  deterministic checks. They prove the operating path, not Pantheon's own
+  demand, conversion, contribution, or revenue.
 - Current operator state: no decision, queue item, unknown outcome, or system
-  finding is waiting. The active business move is to rank three digital-product
-  opportunities; the next engineering move is the deterministic
-  Chief-to-Test-Pack bridge.
+  finding is waiting. All 11 workers are on standby. The active move is one
+  broad opportunity scan, followed by three validations and one concise venture
+  selection.
 - External actions: locked by default.
 - Operator budget: eight hours per week in the build and first-proof phase.
-- Pre-revenue AI and tool cap: A$100 per month.
+- Pre-revenue AI and tool cap: A$100 per month. July exposure is A$1.18:
+  A$0.05 reconciled and A$1.13 pending provider reconciliation.
 
 ## Durable Decisions
 
@@ -45,6 +53,9 @@ commercial move.
 | 2026-07-17 | Make Jarvis monitoring runtime-backed and independent of the Codex chat. | Every dashboard action and worker run must remain reviewable through durable logs, receipts, evaluations, and scheduler checks even when Codex is not open. |
 | 2026-07-17 | Let Chief coordinate the fixed team one bounded assignment at a time. | Daniel wants manager-style delegation, while runtime-created roles and open-ended teams remain too complex before the first commercial loop proves itself. |
 | 2026-07-17 | Present one immutable data-retention plan after the current business decision. | Workers need broad task context, but sensitive/provider storage, deletion, and long-lived records need one explicit, ordinary-language operating rule. |
+| 2026-07-18 | Name the business runtime Pantheon and reserve Jarvis for Codex as Daniel's developer and technical steward. | The business software and the all-seeing engineering role need clear, durable identities. |
+| 2026-07-18 | Allow exact internal research and production work within the A$100 monthly mandate while retaining capability, cost, and external-action boundaries. | Daniel should not approve routine internal work repeatedly, but authority must remain scoped and auditable. |
+| 2026-07-18 | Begin with broad-to-deep opportunity discovery rather than a preselected token product. | A commercial system must compare opportunities, challenge demand and economics, and build a credible venture-specific catalogue. |
 
 ## 2026-07-17 Foundation Hardening
 
@@ -153,8 +164,9 @@ The Phase 1 runtime foundation was expanded later on 2026-07-17:
   into noise;
 - the Windows launcher now loads guarded image generation from the protected
   OpenAI profile. Duplicate legacy launchers were moved to
-  `archive/historical/windows-launchers/`; `START JARVIS.cmd` and
-  `STOP JARVIS.cmd` remain the only operator shortcuts.
+  `archive/historical/windows-launchers/`. This historical checkpoint used
+  `START JARVIS.cmd` and `STOP JARVIS.cmd`; both were superseded by the Pantheon
+  launchers on 2026-07-18.
 
 Verification at this checkpoint:
 
@@ -664,10 +676,101 @@ Final release verification:
   counterevidence, test proposal, metric, stop rule, pending cost estimate, and
   no external action;
 - Jarvis produced no browser console error. One unrelated EverBee extension
-  authentication warning remained outside the system.
+  authentication warning remained outside Pantheon.
 
 No additional paid OpenAI call or external business action was made during this
 post-proof hardening.
+
+## 2026-07-18 Pantheon Commercial Foundation Release
+
+The active product was renamed Pantheon. Jarvis now means Codex acting as
+Daniel's developer, IT engineer, monitor, maintainer, and improvement owner.
+Historical names remain only in archived records, compatibility aliases, and
+the existing workspace or Git infrastructure where renaming would add risk
+without changing the product.
+
+Implemented:
+
+- the durable commercial constitution covering broad-to-deep discovery,
+  venture-specific catalogue breadth, evidence provenance, AUD contribution,
+  diagnose-before-kill rules, make-or-buy decisions, production truth,
+  capability-level autonomy, and one active venture before expansion;
+- a recorded A$100 monthly internal operating mandate with 30% post-proof
+  reinvestment policy;
+- opportunity rounds, ranked opportunities, catalogue plans, commercial
+  diagnoses, mandate state, supervisor cycles, and immutable data-protection
+  activation records in schema 20;
+- an event-driven commercial supervisor that advances one highest-value
+  unblocked step, uses exact internal approvals under mandate, and stops for a
+  material decision, setup problem, uncertain provider outcome, or protected
+  outside action;
+- production Agents SDK paths for Opportunity Scout, Demand Validator, Finance,
+  Offer Architect, Product Builder, Quality Reviewer, Copy and Conversion, and
+  Distribution assignments;
+- official hosted web search, image generation, and Code Interpreter
+  capability registration with exact worker policy, cost ceilings, traces,
+  structured output, local file validation, and independent review;
+- a deterministic commercial journey from discovery through validation,
+  economics, offer, minimum credible catalogue, product work, quality, copy,
+  distribution, launch readiness, results, diagnosis, and learning;
+- a clean five-section desktop cockpit with one clear first action, all 11
+  workers, genuine Live Runs, service connections, simple decisions, AUD spend,
+  spacious drawers, and same-origin PDF preview;
+- one-click Pantheon start, stop, check, backup, encrypted recovery, and
+  Windows-user-bound secret loading;
+- a redesigned four-page operator decision brief focused on the recommendation,
+  next money move, evidence, economics, risk, and exact decision.
+
+The final current-code live proof was
+`pantheon-live-proof-2026-07-18T13-13-36-240Z`:
+
+- one Luna Opportunity Scout handed off to three Luna Demand Validators;
+- 64,202 input and 8,264 output tokens;
+- four observed web-search calls and 137 stored attributable sources;
+- four provider response IDs, four trace IDs, four passed deterministic
+  evaluations, and four complete immutable receipts;
+- three materialised opportunities;
+- zero publishing, customer contact, account action, money movement, legal
+  action, or other external business effect.
+
+The commercial result was intentionally conservative. A small-business
+bookkeeping and cash-flow template ranked above wedding-planning spreadsheets
+and an ADHD executive-function system, but the evidence proved only category
+activity and competitive signals. It did not prove Pantheon's conversion,
+positive contribution, or three buyers. The supervisor stopped at
+`needs_direction` instead of manufacturing a build decision.
+
+Cost truth:
+
+- earlier successful four-call proof: A$0.27 incurred estimate;
+- one malformed structured response with unavailable usage: A$0.61
+  conservative incurred estimate;
+- final successful four-call proof: A$0.25 incurred estimate;
+- new release-proof allocation retained in the clean ledger: A$1.13 pending
+  reconciliation;
+- total July AI/tool exposure including earlier A$0.05 reconciled usage:
+  A$1.18, leaving A$98.82 under the monthly mandate.
+
+Release verification:
+
+- `npm ci` installed 105 locked packages and npm reported zero known
+  vulnerabilities;
+- all 201 automated tests passed after the clean install;
+- Pantheon Doctor reported operations-ready;
+- encrypted recovery set
+  `pantheon-recovery-set-2026-07-18T13-40-08-470Z.jbackup` authenticated its
+  manifest and 405-file inventory and restored a valid database;
+- the real signed Chrome dashboard passed at 1440x900, 1280x720, and 1024x768
+  with no horizontal overflow, clipped visible content, or Pantheon console
+  error;
+- an isolated registered output opened the four-page decision brief in the
+  dashboard PDF viewer;
+- the production runtime was reset to one active venture, all 11 workers on
+  standby, and no pilot opportunity, decision, output, run, queue item, or
+  finding.
+
+Exact evidence and limits are recorded in
+`docs/proofs/2026-07-18-pantheon-release-proof.md`.
 
 ## Accounting Preserved At Reset
 
@@ -675,6 +778,7 @@ post-proof hardening.
 - ChatGPT Pro upgrade cash cost: A$94.68.
 - OpenAI API credit cash cost: A$15.79.
 - Confirmed historical provider usage: A$0.05.
+- Pantheon release-proof provider usage: A$1.13 pending reconciliation.
 
 These records remain in the active accounting and cost ledgers after pilot work
 is removed. Historical workflows, approvals, packs, model calls, and runs remain
@@ -718,9 +822,9 @@ review.
 
 ## Next Best Work
 
-Complete the deterministic Chief-to-Test-Pack bridge against a protected copy
-of the proven run without another provider call. Keep that engineering proof
-separate from the active commercial record. The Command Center should continue
-to show the real business move: rank three digital-product opportunities,
-select one from evidence, and prepare its fresh validation path. Publishing,
-buyer contact, account creation, and spend remain separate locked actions.
+Run the first real broad opportunity scan from Command Center. Let Pantheon rank
+three candidates and validate each one, then present Daniel with one concise
+selection. After selection, build the venture-specific minimum credible
+catalogue, economics case, and smallest valid buyer test. Publishing, buyer
+contact, Gumroad account/KYC, advertising activation, and spend remain separate
+protected actions.

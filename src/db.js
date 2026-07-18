@@ -1,11 +1,60 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 const { spendCostId } = require("./runtime/stable-id");
 
-const LATEST_SCHEMA_VERSION = 18;
+const LATEST_SCHEMA_VERSION = 20;
+
+const REQUIRED_SCHEMA_SHAPE = Object.freeze({
+  tasks: ["id", "workflow_id", "venture_id", "claim_token", "outcome_status"],
+  approvals: ["id", "workflow_id", "venture_id", "task_id", "scope_hash", "consumed_at"],
+  task_attempts: ["id", "task_id", "claim_token", "status", "outcome_status"],
+  model_calls: ["id", "task_id", "provider_request_id", "cost_status", "outcome_status"],
+  commercial_results: [
+    "id",
+    "venture_id",
+    "revenue_cents",
+    "refund_amount_cents",
+    "platform_fee_cents",
+    "fulfilment_cost_cents",
+    "product_cost_cents",
+    "tool_cost_cents",
+    "attributed_ai_cost_cents",
+    "other_cost_cents",
+    "verified",
+  ],
+  commercial_evidence: [
+    "id",
+    "venture_id",
+    "source_type",
+    "source_url",
+    "claim",
+    "metric",
+    "measured_value",
+    "measured_unit",
+    "market",
+    "geography",
+    "observed_at",
+    "sample_size",
+  ],
+  opportunity_rounds: ["id", "status", "mode", "prompt", "created_at"],
+  opportunities: ["id", "round_id", "source_type", "status", "overall_score", "evidence_ids"],
+  catalogue_plans: ["id", "venture_id", "opportunity_id", "status", "target_item_count"],
+  catalogue_items: ["id", "plan_id", "venture_id", "status", "quality_status"],
+  commercial_diagnoses: ["id", "experiment_id", "status", "primary_constraint", "dimensions"],
+  operating_mandates: ["id", "period_start", "period_end", "budget_cap_cents", "status"],
+  supervisor_cycles: ["id", "status", "trigger_type", "next_action_type", "created_at"],
+  data_retention_policy_activations: [
+    "id",
+    "policy_id",
+    "policy_hash",
+    "approval_id",
+    "proof_hash",
+    "activated_at",
+  ],
+});
 
 function now() {
   return new Date().toISOString();
@@ -70,6 +119,32 @@ function verifyDatabase(db) {
   const current = Number(get(db, "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")?.version || 0);
   if (current !== LATEST_SCHEMA_VERSION) {
     throw new Error(`Runtime schema ${current} does not match supported schema ${LATEST_SCHEMA_VERSION}.`);
+  }
+  for (const [tableName, requiredColumns] of Object.entries(REQUIRED_SCHEMA_SHAPE)) {
+    const table = get(
+      db,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      [tableName],
+    );
+    if (!table) throw new Error(`Runtime schema is missing required table ${tableName}.`);
+    const columns = tableColumns(db, tableName);
+    const missing = requiredColumns.filter((column) => !columns.has(column));
+    if (missing.length) {
+      throw new Error(`Runtime schema table ${tableName} is missing: ${missing.join(", ")}.`);
+    }
+  }
+  for (const triggerName of [
+    "trg_tasks_venture_match_insert",
+    "trg_tasks_venture_match_update",
+    "trg_approvals_venture_match_insert",
+    "trg_approvals_venture_match_update",
+  ]) {
+    const trigger = get(
+      db,
+      "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+      [triggerName],
+    );
+    if (!trigger) throw new Error(`Runtime schema is missing required ownership trigger ${triggerName}.`);
   }
   return { quickCheck: "ok", foreignKeyFailures: 0, schemaVersion: current };
 }
@@ -1667,6 +1742,347 @@ function applyStableSpendCostIdMigration(db) {
   }
 }
 
+function applyPantheonCommercialOperatingModelMigration(db) {
+  if (migrationApplied(db, 19)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    addColumn(db, "commercial_results", "refund_amount_cents INTEGER NOT NULL DEFAULT 0");
+    addColumn(db, "commercial_results", "fulfilment_cost_cents INTEGER NOT NULL DEFAULT 0");
+    addColumn(db, "commercial_results", "attributed_ai_cost_cents INTEGER NOT NULL DEFAULT 0");
+    addColumn(db, "commercial_results", "other_cost_cents INTEGER NOT NULL DEFAULT 0");
+
+    addColumn(db, "commercial_evidence", "claim TEXT NOT NULL DEFAULT ''");
+    addColumn(db, "commercial_evidence", "metric TEXT NOT NULL DEFAULT ''");
+    addColumn(db, "commercial_evidence", "measured_value REAL");
+    addColumn(db, "commercial_evidence", "measured_unit TEXT NOT NULL DEFAULT ''");
+    addColumn(db, "commercial_evidence", "market TEXT NOT NULL DEFAULT ''");
+    addColumn(db, "commercial_evidence", "geography TEXT NOT NULL DEFAULT ''");
+    addColumn(db, "commercial_evidence", "observed_at TEXT");
+    addColumn(db, "commercial_evidence", "sample_size INTEGER");
+    addColumn(db, "commercial_evidence", "publisher TEXT NOT NULL DEFAULT ''");
+    addColumn(db, "commercial_evidence", "extraction_method TEXT NOT NULL DEFAULT ''");
+    addColumn(db, "commercial_evidence", "confidence TEXT NOT NULL DEFAULT 'unknown'");
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS opportunity_rounds (
+        id TEXT PRIMARY KEY,
+        venture_id TEXT,
+        status TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        geography TEXT NOT NULL DEFAULT 'global',
+        language TEXT NOT NULL DEFAULT 'English',
+        max_candidates INTEGER NOT NULL DEFAULT 5,
+        started_at TEXT,
+        completed_at TEXT,
+        created_by TEXT NOT NULL DEFAULT 'pantheon',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (venture_id) REFERENCES ventures(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS opportunities (
+        id TEXT PRIMARY KEY,
+        round_id TEXT,
+        venture_id TEXT,
+        source_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        title TEXT NOT NULL,
+        business_model TEXT NOT NULL,
+        buyer TEXT NOT NULL DEFAULT '',
+        problem TEXT NOT NULL DEFAULT '',
+        offer_direction TEXT NOT NULL DEFAULT '',
+        geography TEXT NOT NULL DEFAULT 'global',
+        language TEXT NOT NULL DEFAULT 'English',
+        channel TEXT NOT NULL DEFAULT '',
+        demand_score INTEGER NOT NULL DEFAULT 0,
+        supply_gap_score INTEGER NOT NULL DEFAULT 0,
+        economics_score INTEGER NOT NULL DEFAULT 0,
+        channel_fit_score INTEGER NOT NULL DEFAULT 0,
+        execution_fit_score INTEGER NOT NULL DEFAULT 0,
+        risk_score INTEGER NOT NULL DEFAULT 0,
+        overall_score INTEGER NOT NULL DEFAULT 0,
+        confidence TEXT NOT NULL DEFAULT 'low',
+        recommendation TEXT NOT NULL DEFAULT '',
+        smallest_validation TEXT NOT NULL DEFAULT '',
+        evidence_ids TEXT NOT NULL DEFAULT '[]',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (round_id) REFERENCES opportunity_rounds(id),
+        FOREIGN KEY (venture_id) REFERENCES ventures(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS catalogue_plans (
+        id TEXT PRIMARY KEY,
+        venture_id TEXT NOT NULL,
+        opportunity_id TEXT,
+        status TEXT NOT NULL,
+        title TEXT NOT NULL,
+        rationale TEXT NOT NULL DEFAULT '',
+        target_item_count INTEGER NOT NULL DEFAULT 1,
+        target_variant_count INTEGER NOT NULL DEFAULT 0,
+        audience_segments TEXT NOT NULL DEFAULT '[]',
+        channels TEXT NOT NULL DEFAULT '[]',
+        geographies TEXT NOT NULL DEFAULT '[]',
+        languages TEXT NOT NULL DEFAULT '["English"]',
+        price_floor_cents INTEGER NOT NULL DEFAULT 0,
+        price_ceiling_cents INTEGER NOT NULL DEFAULT 0,
+        estimated_build_cost_cents INTEGER NOT NULL DEFAULT 0,
+        estimated_unit_cost_cents INTEGER NOT NULL DEFAULT 0,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (venture_id) REFERENCES ventures(id),
+        FOREIGN KEY (opportunity_id) REFERENCES opportunities(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS catalogue_items (
+        id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL,
+        venture_id TEXT NOT NULL,
+        parent_item_id TEXT,
+        status TEXT NOT NULL,
+        quality_status TEXT NOT NULL DEFAULT 'not_reviewed',
+        title TEXT NOT NULL,
+        product_type TEXT NOT NULL,
+        audience TEXT NOT NULL DEFAULT '',
+        geography TEXT NOT NULL DEFAULT 'global',
+        language TEXT NOT NULL DEFAULT 'English',
+        offer TEXT NOT NULL DEFAULT '',
+        price_cents INTEGER NOT NULL DEFAULT 0,
+        deliverable_id TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (plan_id) REFERENCES catalogue_plans(id),
+        FOREIGN KEY (venture_id) REFERENCES ventures(id),
+        FOREIGN KEY (parent_item_id) REFERENCES catalogue_items(id),
+        FOREIGN KEY (deliverable_id) REFERENCES deliverables(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS commercial_diagnoses (
+        id TEXT PRIMARY KEY,
+        venture_id TEXT NOT NULL,
+        experiment_id TEXT NOT NULL,
+        result_id TEXT,
+        status TEXT NOT NULL,
+        primary_constraint TEXT NOT NULL,
+        dimensions TEXT NOT NULL DEFAULT '{}',
+        evidence_needed TEXT NOT NULL DEFAULT '[]',
+        recommended_test TEXT NOT NULL DEFAULT '',
+        decision TEXT NOT NULL DEFAULT '',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (venture_id) REFERENCES ventures(id),
+        FOREIGN KEY (experiment_id) REFERENCES commercial_experiments(id),
+        FOREIGN KEY (result_id) REFERENCES commercial_results(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS operating_mandates (
+        id TEXT PRIMARY KEY,
+        period_start TEXT NOT NULL,
+        period_end TEXT NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'AUD' CHECK(currency = 'AUD'),
+        budget_cap_cents INTEGER NOT NULL,
+        reinvestment_rate REAL NOT NULL DEFAULT 0.30,
+        status TEXT NOT NULL,
+        allowed_internal_actions TEXT NOT NULL DEFAULT '[]',
+        protected_actions TEXT NOT NULL DEFAULT '[]',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS supervisor_cycles (
+        id TEXT PRIMARY KEY,
+        venture_id TEXT,
+        workflow_id TEXT,
+        trigger_type TEXT NOT NULL,
+        trigger_id TEXT,
+        status TEXT NOT NULL,
+        decision_type TEXT,
+        next_action_type TEXT,
+        worker_id TEXT,
+        task_id TEXT,
+        approval_id TEXT,
+        summary TEXT NOT NULL DEFAULT '',
+        error TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (venture_id) REFERENCES ventures(id),
+        FOREIGN KEY (workflow_id) REFERENCES workflows(id),
+        FOREIGN KEY (task_id) REFERENCES tasks(id),
+        FOREIGN KEY (approval_id) REFERENCES approvals(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_opportunity_rounds_status
+        ON opportunity_rounds(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_opportunities_rank
+        ON opportunities(status, overall_score DESC, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_catalogue_items_plan
+        ON catalogue_items(plan_id, status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_commercial_diagnoses_status
+        ON commercial_diagnoses(venture_id, status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_operating_mandates_period
+        ON operating_mandates(status, period_start, period_end);
+      CREATE INDEX IF NOT EXISTS idx_supervisor_cycles_status
+        ON supervisor_cycles(status, created_at DESC);
+    `);
+
+    const workflowOwnedTables = [
+      "commands",
+      "tasks",
+      "approvals",
+      "deliverables",
+      "model_calls",
+      "research_runs",
+      "costs",
+      "commercial_results",
+      "agent_runs",
+      "workflow_runs",
+      "task_attempts",
+      "budget_reservations",
+      "commercial_experiments",
+      "commercial_briefs",
+      "commercial_test_candidates",
+      "commercial_execution_packs",
+      "venture_scorecards",
+    ];
+    for (const tableName of workflowOwnedTables) {
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_${tableName}_venture_match_insert
+        BEFORE INSERT ON ${tableName}
+        FOR EACH ROW
+        WHEN NEW.workflow_id IS NOT NULL
+          AND NEW.venture_id IS NOT NULL
+          AND NEW.venture_id <> (SELECT venture_id FROM workflows WHERE id = NEW.workflow_id)
+        BEGIN
+          SELECT RAISE(ABORT, 'Venture ownership does not match the workflow.');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_${tableName}_venture_match_update
+        BEFORE UPDATE OF workflow_id, venture_id ON ${tableName}
+        FOR EACH ROW
+        WHEN NEW.workflow_id IS NOT NULL
+          AND NEW.venture_id IS NOT NULL
+          AND NEW.venture_id <> (SELECT venture_id FROM workflows WHERE id = NEW.workflow_id)
+        BEGIN
+          SELECT RAISE(ABORT, 'Venture ownership does not match the workflow.');
+        END;
+      `);
+    }
+
+    recordMigration(db, 19, "pantheon-commercial-operating-model");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function applyRetentionActivationLedgerMigration(db) {
+  if (migrationApplied(db, 20)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS data_retention_policy_activations (
+        id TEXT PRIMARY KEY,
+        policy_id TEXT NOT NULL,
+        policy_hash TEXT NOT NULL,
+        approval_id TEXT,
+        proof_hash TEXT NOT NULL UNIQUE,
+        activated_at TEXT NOT NULL,
+        activated_by TEXT NOT NULL DEFAULT 'operator',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        UNIQUE(policy_id, policy_hash),
+        FOREIGN KEY (policy_id) REFERENCES data_retention_policies(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_retention_policy_activations_policy
+        ON data_retention_policy_activations(policy_id, activated_at DESC);
+
+      CREATE TRIGGER IF NOT EXISTS trg_retention_policy_activations_immutable_update
+      BEFORE UPDATE ON data_retention_policy_activations
+      BEGIN
+        SELECT RAISE(ABORT, 'Data-retention policy activations are immutable.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_retention_policy_activations_immutable_delete
+      BEFORE DELETE ON data_retention_policy_activations
+      BEGIN
+        SELECT RAISE(ABORT, 'Data-retention policy activations are immutable.');
+      END;
+    `);
+
+    const legacyApprovals = all(
+      db,
+      `SELECT approvals.id AS approval_id, approvals.payload AS approval_payload,
+              approvals.decision_note, approvals.decided_at,
+              tasks.result AS task_result
+       FROM approvals
+       JOIN tasks ON tasks.id = approvals.task_id
+       WHERE approvals.scope = 'data_retention_policy'
+         AND approvals.status = 'approved'
+         AND tasks.status = 'completed'
+       ORDER BY approvals.decided_at DESC, approvals.requested_at DESC`,
+    );
+    for (const approval of legacyApprovals) {
+      const payload = fromJson(approval.approval_payload, {});
+      const result = fromJson(approval.task_result, {});
+      if (result.retentionPolicyActivated !== true) continue;
+      const policy = get(
+        db,
+        "SELECT id, policy_hash, version FROM data_retention_policies WHERE id = ? AND policy_hash = ?",
+        [payload.policyId, payload.policyHash],
+      );
+      if (!policy) continue;
+      const activatedAt = result.activatedAt || approval.decided_at || now();
+      const proof = {
+        policyId: policy.id,
+        policyHash: policy.policy_hash,
+        approvalId: approval.approval_id,
+        activatedAt,
+        source: "legacy-approved-activation",
+      };
+      const proofHash = createHash("sha256").update(JSON.stringify(proof)).digest("hex");
+      run(
+        db,
+        `INSERT OR IGNORE INTO data_retention_policy_activations
+         (id, policy_id, policy_hash, approval_id, proof_hash, activated_at,
+          activated_by, metadata, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'operator', ?, ?)`,
+        [
+          `retention_activation_${policy.policy_hash.slice(0, 24)}`,
+          policy.id,
+          policy.policy_hash,
+          approval.approval_id,
+          proofHash,
+          activatedAt,
+          toJson({
+            source: "schema-20-backfill",
+            decisionNote: approval.decision_note || "",
+            policyVersion: policy.version,
+          }),
+          now(),
+        ],
+      );
+    }
+
+    recordMigration(db, 20, "durable-retention-policy-activation-ledger");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2479,6 +2895,8 @@ function migrate(db) {
   applyExecutionEvidenceBindingMigration(db);
   applyProviderAttemptReceiptBackfillMigration(db);
   applyStableSpendCostIdMigration(db);
+  applyPantheonCommercialOperatingModelMigration(db);
+  applyRetentionActivationLedgerMigration(db);
 }
 
 function putSetting(db, key, value) {
@@ -2754,8 +3172,8 @@ function seedDatabase(db, options = {}) {
     entityType: "runtime",
     entityId: "v2",
     message: includeDemoProof
-      ? "Jarvis-Codex test runtime seeded with explicit demo proof fixtures."
-      : "Jarvis-Codex runtime initialized with one digital-product venture, integrations, and cost controls.",
+      ? "Pantheon test runtime seeded with explicit demo proof fixtures."
+      : "Pantheon runtime initialized with one commercial venture, integrations, and cost controls.",
   });
 
   putSetting(db, "runtime.initialized", { at: ts, version: LATEST_SCHEMA_VERSION });

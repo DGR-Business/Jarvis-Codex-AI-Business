@@ -157,15 +157,23 @@ async function executeTask(db, task, options = {}) {
   });
 }
 
-function remainingWorkflowTasks(db, workflowId) {
+function remainingWorkflowTasks(db, workflowId, completedTaskId = null) {
   const row = get(
     db,
     `SELECT COUNT(*) AS count
      FROM tasks
-     WHERE workflow_id = ? AND status IN ('planned', 'queued', 'blocked', 'running')`,
-    [workflowId],
+     WHERE workflow_id = ?
+       AND status IN ('planned', 'queued', 'blocked', 'running')
+       AND (? IS NULL OR id <> ?)`,
+    [workflowId, completedTaskId, completedTaskId],
   );
   return row ? row.count : 0;
+}
+
+function isPantheonSupervisorOwnedTask(task) {
+  const parameters = task?.payload?.liveSpendRequest?.parameters || {};
+  return parameters.pantheonCommercial?.supervisorOwned === true
+    || parameters.pantheonProduction?.supervisorOwned === true;
 }
 
 function updateWorkflowAfterCompletion(db, task, result, done) {
@@ -216,11 +224,29 @@ function updateWorkflowAfterCompletion(db, task, result, done) {
     return;
   }
 
-  const remaining = remainingWorkflowTasks(db, task.workflow_id);
+  if (isPantheonSupervisorOwnedTask(task)) {
+    run(
+      db,
+      `UPDATE workflows
+       SET status = 'agent_running', current_step = ?,
+           quality_score = CASE WHEN ? > quality_score THEN ? ELSE quality_score END,
+           approval_required = 0, updated_at = ?
+       WHERE id = ?`,
+      [
+        `${task.title} finished; Pantheon is incorporating the result`,
+        Number(result.output?.qualityScore || 0),
+        Number(result.output?.qualityScore || 0),
+        done,
+        task.workflow_id,
+      ],
+    );
+    return;
+  }
+
+  const remaining = remainingWorkflowTasks(db, task.workflow_id, task.id);
   const qualityScore = Number(result.output?.qualityScore || 0);
 
   if (remaining === 0 || task.kind === "operator_pack_qc") {
-    const teamSummary = recordAgentWorkbenchTeamSummary(db, task.workflow_id);
     run(
       db,
       `UPDATE workflows
@@ -233,6 +259,7 @@ function updateWorkflowAfterCompletion(db, task, result, done) {
     run(db, "UPDATE commands SET status = 'ready_for_review', updated_at = ? WHERE workflow_id = ?", [done, task.workflow_id]);
     const scorecard = upsertWorkflowScorecard(db, task.workflow_id, { taskId: task.id });
     const approvalPack = generateApprovalPack(db, task.workflow_id, { taskId: task.id });
+    const teamSummary = recordAgentWorkbenchTeamSummary(db, task.workflow_id, { completingTaskId: task.id });
     const isHandoffFollowup = task.kind === "handoff_followup";
     const reviewSubject = teamSummary
       ? "AI Team drill summary ready"
@@ -273,7 +300,7 @@ function updateWorkflowAfterCompletion(db, task, result, done) {
 
 function markReceiptFinalizationNeedsAttention(db, claim, task, receiptError) {
   const failedAt = now();
-  const message = `Jarvis could not finalize exact execution evidence for ${task.title}: ${receiptError.message}`;
+  const message = `Pantheon could not finalize exact execution evidence for ${task.title}: ${receiptError.message}`;
   const attempt = get(db, "SELECT metadata FROM task_attempts WHERE id = ?", [claim.attemptId]);
   const currentTask = get(db, "SELECT result FROM tasks WHERE id = ?", [task.id]);
   run(
@@ -337,7 +364,7 @@ function markReceiptFinalizationNeedsAttention(db, claim, task, receiptError) {
     type: "agent_receipt.finalization_failed",
     entityType: "task_attempt",
     entityId: claim.attemptId,
-    message: "Jarvis could not finalize the immutable execution receipt, so the task and workflow now need attention.",
+    message: "Pantheon could not finalize the immutable execution receipt, so the task and workflow now need attention.",
     metadata: { taskId: task.id, workflowId: task.workflow_id, error: receiptError.message, noAutomaticRetry: true },
   });
   return {
@@ -500,6 +527,21 @@ async function runOnce(db, options = {}) {
         metadata: { providerRequestId },
       });
     }
+    const staged = run(
+      db,
+      `UPDATE tasks
+       SET result = ?, updated_at = ?
+       WHERE id = ? AND status = 'running' AND claim_token = ?`,
+      [toJson(result), done, task.id, claim.claimToken],
+    );
+    if (staged.changes !== 1) {
+      throw new Error(`Pantheon lost the claim for ${task.title} before result finalization.`);
+    }
+
+    // Workflow state and human artifacts must be finalized while the claim is
+    // still owned. A renderer or projection failure can then be recovered
+    // without falsely reporting the task as completed.
+    updateWorkflowAfterCompletion(db, task, result, done);
     completeTaskClaim(db, claim, {
       status: "completed",
       result,
@@ -509,7 +551,6 @@ async function runOnce(db, options = {}) {
       providerRequestId,
       metadata: { costStatus: result.costStatus || (incurredEstimateCents > 0 ? "incurred_estimate" : "none") },
     });
-    updateWorkflowAfterCompletion(db, task, result, done);
     insertEvent(db, {
       actor: task.agent,
       type: "task.completed",
@@ -636,8 +677,8 @@ async function runOnce(db, options = {}) {
           "open",
           outcomeUnknown ? `Check provider outcome: ${task.title}` : `Review completed provider work: ${task.title}`,
           outcomeUnknown
-            ? "The provider request may have been accepted. Jarvis will not retry until the outcome and cost are reconciled."
-            : "The provider call completed and its receipt and cost were retained, but Jarvis could not safely accept the local result. Review it before any retry.",
+            ? "The provider request may have been accepted. Pantheon will not retry until the outcome and cost are reconciled."
+            : "The provider call completed and its receipt and cost were retained, but Pantheon could not safely accept the local result. Review it before any retry.",
           failedAt,
           toJson({ workflowId: task.workflow_id, outcomeUnknown, providerCallOccurred, approvalId, providerReceipt, incurredEstimateCents }),
         ],
@@ -680,7 +721,7 @@ async function runOnce(db, options = {}) {
       message: outcomeUnknown
         ? `${task.title} needs review because the provider outcome is unknown.`
         : providerResultNeedsReview
-          ? `${task.title} needs review because the provider completed but Jarvis could not safely accept the local result.`
+          ? `${task.title} needs review because the provider completed but Pantheon could not safely accept the local result.`
         : `${task.title} ${retryable ? "will retry" : "failed"}: ${error.message}`,
       metadata: { retries, maxRetries: task.max_retries, workflowId: task.workflow_id, outcomeUnknown, providerCallOccurred, providerReceipt, incurredEstimateCents },
     });

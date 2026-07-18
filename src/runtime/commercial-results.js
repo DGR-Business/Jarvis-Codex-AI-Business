@@ -148,10 +148,14 @@ function resultPayload(input = {}) {
     sales: asInt(input.sales),
     refunds: asInt(input.refunds),
     revenueCents: asMoney(input.revenueCents ?? input.revenue_cents),
+    refundAmountCents: asMoney(input.refundAmountCents ?? input.refund_amount_cents),
     spendCents: asMoney(input.spendCents ?? input.spend_cents),
     platformFeeCents: asMoney(input.platformFeeCents ?? input.platform_fee_cents),
+    fulfilmentCostCents: asMoney(input.fulfilmentCostCents ?? input.fulfilment_cost_cents),
     productCostCents: asMoney(input.productCostCents ?? input.product_cost_cents),
     toolCostCents: asMoney(input.toolCostCents ?? input.tool_cost_cents),
+    attributedAiCostCents: asMoney(input.attributedAiCostCents ?? input.attributed_ai_cost_cents),
+    otherCostCents: asMoney(input.otherCostCents ?? input.other_cost_cents),
     timeSpentMinutes: asInt(input.timeSpentMinutes ?? input.time_spent_minutes),
     notes: asText(input.notes),
     currency,
@@ -170,7 +174,6 @@ function verificationState(db, input = {}) {
       [input.metadata.executionPackId],
     );
     if (!pack) throw new Error("The operator result refers to an execution pack that does not exist.");
-    return { verified: true, at: now(), evidenceId: null, method: "operator_execution_pack_record" };
   }
   if (input.verified !== true && input.status !== "verified") {
     return { verified: false, at: null, evidenceId: null, method: "pending" };
@@ -212,7 +215,14 @@ function insertFinanceRows(db, experiment, result, values) {
       ],
     );
   }
-  const cashCostCents = values.spendCents + values.platformFeeCents + values.productCostCents + values.toolCostCents;
+  const cashCostCents = values.refundAmountCents
+    + values.spendCents
+    + values.platformFeeCents
+    + values.fulfilmentCostCents
+    + values.productCostCents
+    + values.toolCostCents
+    + values.attributedAiCostCents
+    + values.otherCostCents;
   if (cashCostCents > 0) {
     run(
       db,
@@ -232,10 +242,14 @@ function insertFinanceRows(db, experiment, result, values) {
         toJson({
           resultId: result.id,
           experimentId: experiment.id,
+          refundAmountCents: values.refundAmountCents,
           externalSpendCents: values.spendCents,
           platformFeeCents: values.platformFeeCents,
+          fulfilmentCostCents: values.fulfilmentCostCents,
           productCostCents: values.productCostCents,
           toolCostCents: values.toolCostCents,
+          attributedAiCostCents: values.attributedAiCostCents,
+          otherCostCents: values.otherCostCents,
         }),
         experiment.venture_id || null,
         null,
@@ -351,8 +365,9 @@ function recordCommercialResult(db, input = {}) {
        (id, experiment_id, workflow_id, source, status, views, clicks, leads, sales, refunds,
         revenue_cents, spend_cents, time_spent_minutes, notes, occurred_at, metadata, created_at,
         venture_id, platform_fee_cents, product_cost_cents, tool_cost_cents, verified, currency,
-        verified_at, verification_evidence_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        verified_at, verification_evidence_id, refund_amount_cents, fulfilment_cost_cents,
+        attributed_ai_cost_cents, other_cost_cents)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         experiment.id,
@@ -379,6 +394,10 @@ function recordCommercialResult(db, input = {}) {
         values.currency,
         verification.at,
         verification.evidenceId,
+        values.refundAmountCents,
+        values.fulfilmentCostCents,
+        values.attributedAiCostCents,
+        values.otherCostCents,
       ],
     );
     const result = parseRows(all(db, "SELECT * FROM commercial_results WHERE id = ?", [id]))[0];
@@ -501,10 +520,33 @@ function summarizeRows({ results = [], feedback = [], learningCycles = [] }) {
       sales: acc.sales + asInt(result.sales),
       refunds: acc.refunds + asInt(result.refunds),
       revenueCents: acc.revenueCents + asMoney(result.revenue_cents),
+      refundAmountCents: acc.refundAmountCents + asMoney(result.refund_amount_cents),
       spendCents: acc.spendCents + asMoney(result.spend_cents),
+      platformFeeCents: acc.platformFeeCents + asMoney(result.platform_fee_cents),
+      fulfilmentCostCents: acc.fulfilmentCostCents + asMoney(result.fulfilment_cost_cents),
+      productCostCents: acc.productCostCents + asMoney(result.product_cost_cents),
+      toolCostCents: acc.toolCostCents + asMoney(result.tool_cost_cents),
+      attributedAiCostCents: acc.attributedAiCostCents + asMoney(result.attributed_ai_cost_cents),
+      otherCostCents: acc.otherCostCents + asMoney(result.other_cost_cents),
       timeSpentMinutes: acc.timeSpentMinutes + asInt(result.time_spent_minutes),
     }),
-    { views: 0, clicks: 0, leads: 0, sales: 0, refunds: 0, revenueCents: 0, spendCents: 0, timeSpentMinutes: 0 },
+    {
+      views: 0,
+      clicks: 0,
+      leads: 0,
+      sales: 0,
+      refunds: 0,
+      revenueCents: 0,
+      refundAmountCents: 0,
+      spendCents: 0,
+      platformFeeCents: 0,
+      fulfilmentCostCents: 0,
+      productCostCents: 0,
+      toolCostCents: 0,
+      attributedAiCostCents: 0,
+      otherCostCents: 0,
+      timeSpentMinutes: 0,
+    },
   );
   const sentiment = feedback.reduce(
     (acc, item) => {
@@ -516,15 +558,25 @@ function summarizeRows({ results = [], feedback = [], learningCycles = [] }) {
     },
     { positive: 0, neutral: 0, negative: 0 },
   );
-  const profitCents = totals.revenueCents - totals.spendCents;
+  const totalCostCents = totals.refundAmountCents
+    + totals.spendCents
+    + totals.platformFeeCents
+    + totals.fulfilmentCostCents
+    + totals.productCostCents
+    + totals.toolCostCents
+    + totals.attributedAiCostCents
+    + totals.otherCostCents;
+  const cashContributionCents = totals.revenueCents - totalCostCents;
   return {
     ...totals,
-    profitCents,
+    totalCostCents,
+    cashContributionCents,
+    profitCents: cashContributionCents,
     clickRate: pct(totals.clicks, totals.views),
     leadRate: pct(totals.leads, totals.clicks || totals.views),
     salesRate: pct(totals.sales, totals.clicks || totals.views),
     refundRate: pct(totals.refunds, totals.sales),
-    roi: totals.spendCents > 0 ? Number((profitCents / totals.spendCents).toFixed(2)) : null,
+    roi: totalCostCents > 0 ? Number((cashContributionCents / totalCostCents).toFixed(2)) : null,
     resultCount: results.length,
     feedbackCount: feedback.length,
     sentiment,
@@ -542,8 +594,8 @@ function resultSentence(summary) {
     `${summary.sales} sales`,
     `${summary.refunds} refunds`,
     `${moneyLabel(summary.revenueCents)} revenue`,
-    `${moneyLabel(summary.spendCents)} spend`,
-    `${moneyLabel(summary.profitCents)} profit`,
+    `${moneyLabel(summary.totalCostCents)} total costs`,
+    `${moneyLabel(summary.cashContributionCents)} net cash contribution`,
   ];
   return parts.join(", ");
 }
@@ -558,7 +610,7 @@ function judgeEvidence(summary, experiment) {
     (targetUnit.includes("revenue") && summary.revenueCents >= target) ||
     (targetUnit.includes("view") && summary.views >= target);
 
-  if (summary.sales > 0 && summary.profitCents >= 0 && summary.refundRate <= 15 && summary.sentiment.negative <= summary.sentiment.positive) {
+  if (summary.sales > 0 && summary.cashContributionCents > 0 && summary.refundRate <= 15 && summary.sentiment.negative <= summary.sentiment.positive) {
     return {
       verdict: "continue",
       confidence: summary.sales >= 3 || reachedTarget ? "medium" : "low",
@@ -567,7 +619,7 @@ function judgeEvidence(summary, experiment) {
       nextAction: "Scale the test carefully or repeat it with a tighter buyer/channel segment.",
     };
   }
-  if (summary.sales > 0 && summary.profitCents < 0) {
+  if (summary.sales > 0 && summary.cashContributionCents <= 0) {
     return {
       verdict: "revise",
       confidence: "medium",
@@ -596,11 +648,11 @@ function judgeEvidence(summary, experiment) {
   }
   if (summary.views > 0 && (reachedTarget || summary.views >= 100)) {
     return {
-      verdict: "kill_or_rework",
+      verdict: "diagnose",
       confidence: "medium",
       learning: "The channel produced exposure but no meaningful buyer action.",
-      improvement: "Stop this angle or rework buyer, promise, channel, or creative before more time is spent.",
-      nextAction: "Pause this version and only continue if the offer is substantially reworked.",
+      improvement: "Diagnose audience, creative, listing, value, catalogue, price, checkout, fulfilment and underlying demand before deciding whether to stop.",
+      nextAction: "Run a structured constraint diagnosis before choosing revise or pause.",
     };
   }
   return {
@@ -616,9 +668,78 @@ function statusForVerdict(verdict) {
   return {
     continue: "validated",
     revise: "needs_revision",
+    diagnose: "diagnosing",
     kill_or_rework: "stopped",
     needs_evidence: "measuring",
   }[verdict] || "measuring";
+}
+
+function diagnoseCommercialConstraint(summary) {
+  const dimensions = {
+    reach: summary.views > 0 ? "observed" : "not_proven",
+    audience: summary.views > 0 && summary.clicks === 0 ? "possible_mismatch" : "unknown",
+    creative: summary.views > 0 && summary.clicks === 0 ? "possible_mismatch" : "unknown",
+    listing: summary.clicks > 0 && summary.sales === 0 ? "possible_friction" : "unknown",
+    value: summary.clicks > 0 && summary.sales === 0 ? "not_proven" : "unknown",
+    catalogue: summary.sales === 0 ? "not_proven" : "unknown",
+    price: summary.clicks > 0 && summary.sales === 0 ? "possible_friction" : "unknown",
+    checkout: summary.clicks > 0 && summary.sales === 0 ? "possible_friction" : "unknown",
+    fulfilment: summary.refunds > 0 ? "possible_problem" : "unknown",
+    demand: summary.views >= 100 && summary.clicks === 0 ? "weak_for_current_angle" : "not_yet_isolated",
+    economics: summary.sales > 0 && summary.cashContributionCents <= 0 ? "unhealthy" : "unknown",
+  };
+  let primaryConstraint = "insufficient_evidence";
+  let recommendedTest = "Collect enough qualified exposure to isolate the first weak step in the buyer path.";
+  const evidenceNeeded = ["qualified reach by channel", "buyer segment", "creative or listing version"];
+  if (summary.views >= 100 && summary.clicks === 0) {
+    primaryConstraint = "attention_to_interest";
+    recommendedTest = "Test a materially different audience-message pair before changing the product.";
+    evidenceNeeded.push("click-through rate by audience-message pair");
+  } else if (summary.clicks > 0 && summary.sales === 0) {
+    primaryConstraint = "interest_to_purchase";
+    recommendedTest = "Review listing value, proof, price and checkout friction, then test one isolated change.";
+    evidenceNeeded.push("checkout starts", "price objections", "listing scroll or engagement");
+  } else if (summary.sales > 0 && summary.cashContributionCents <= 0) {
+    primaryConstraint = "unit_economics";
+    recommendedTest = "Model price, fees, fulfilment and acquisition cost before any additional traffic.";
+    evidenceNeeded.push("fee receipt", "fulfilment cost", "cost per acquired buyer");
+  } else if (summary.refunds > 0) {
+    primaryConstraint = "promise_or_fulfilment";
+    recommendedTest = "Review refund reasons and expectation gaps before more promotion.";
+    evidenceNeeded.push("refund reason", "buyer expectation", "product quality finding");
+  }
+  return { primaryConstraint, dimensions, evidenceNeeded, recommendedTest };
+}
+
+function recordCommercialDiagnosis(db, experiment, summary, resultId = null) {
+  const diagnosis = diagnoseCommercialConstraint(summary);
+  const id = `diagnosis_${safeSlug(experiment.name)}_${randomId().slice(0, 8)}`;
+  const ts = now();
+  run(
+    db,
+    `INSERT INTO commercial_diagnoses
+     (id, venture_id, experiment_id, result_id, status, primary_constraint, dimensions,
+      evidence_needed, recommended_test, decision, metadata, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'required', ?, ?, ?, ?, '', ?, ?, ?)`,
+    [
+      id,
+      experiment.venture_id,
+      experiment.id,
+      resultId,
+      diagnosis.primaryConstraint,
+      toJson(diagnosis.dimensions),
+      toJson(diagnosis.evidenceNeeded),
+      diagnosis.recommendedTest,
+      toJson({ summary }),
+      ts,
+      ts,
+    ],
+  );
+  return {
+    ...get(db, "SELECT * FROM commercial_diagnoses WHERE id = ?", [id]),
+    dimensions: diagnosis.dimensions,
+    evidence_needed: diagnosis.evidenceNeeded,
+  };
 }
 
 function recordLearningCycle(db, experimentId) {
@@ -651,12 +772,31 @@ function recordLearningCycle(db, experimentId) {
       ts,
     ],
   );
+  let diagnosis = null;
+  if (["diagnose", "revise"].includes(judgement.verdict)) {
+    diagnosis = recordCommercialDiagnosis(db, experiment, summary, summary.latestResult?.id || null);
+    run(
+      db,
+      "UPDATE commercial_learning_cycles SET metadata = ? WHERE id = ?",
+      [
+        toJson({
+          summary,
+          targetValue: experiment.target_value,
+          targetUnit: experiment.target_unit,
+          diagnosisId: diagnosis.id,
+        }),
+        id,
+      ],
+    );
+  }
   run(
     db,
     "UPDATE commercial_experiments SET status = ?, ended_at = COALESCE(ended_at, ?), updated_at = ? WHERE id = ?",
     [statusForVerdict(judgement.verdict), judgement.verdict === "needs_evidence" ? null : ts, ts, experiment.id],
   );
-  return parseRows(all(db, "SELECT * FROM commercial_learning_cycles WHERE id = ?", [id]))[0];
+  const learning = parseRows(all(db, "SELECT * FROM commercial_learning_cycles WHERE id = ?", [id]))[0];
+  if (diagnosis) learning.diagnosis = diagnosis;
+  return learning;
 }
 
 module.exports = {
@@ -664,6 +804,7 @@ module.exports = {
   getCommercialExperiment,
   recordCommercialFeedback,
   recordCommercialResult,
+  recordCommercialDiagnosis,
   recordLearningCycle,
   summarizeCommercialEvidence,
   summarizeRows,

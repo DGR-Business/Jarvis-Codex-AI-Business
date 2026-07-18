@@ -5,6 +5,12 @@ const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("../src/config");
+const {
+  preferredEnvironment,
+  readEncryptedHeader,
+  requiredPassphrase,
+  verifyBackup,
+} = require("../src/runtime/backup");
 
 const root = path.resolve(__dirname, "..");
 
@@ -70,7 +76,8 @@ function checkTar() {
 
 function pythonCandidates() {
   const candidates = [];
-  if (process.env.JARVIS_PYTHON) candidates.push({ command: process.env.JARVIS_PYTHON, prefix: [] });
+  const configuredPython = preferredEnvironment("PYTHON");
+  if (configuredPython) candidates.push({ command: configuredPython, prefix: [] });
   const dependencyRoot = path.resolve(path.dirname(process.execPath), "..", "..");
   candidates.push({ command: path.join(dependencyRoot, "python", "python.exe"), prefix: [] });
   for (const home of [process.env.USERPROFILE, process.env.HOME].filter(Boolean)) {
@@ -99,12 +106,17 @@ function checkRenderer() {
       return result("PDF renderer", "pass", `Python ${lines[0] || "3"} and ReportLab ${lines[1] || "available"} are available.`);
     }
   }
-  return result("PDF renderer", "fail", "No usable Python 3 runtime with ReportLab was found. Set JARVIS_PYTHON to the approved runtime.");
+  return result(
+    "PDF renderer",
+    "fail",
+    "No usable Python 3 runtime with ReportLab was found. Set PANTHEON_PYTHON "
+      + "(or the legacy JARVIS_PYTHON alias) to the approved runtime.",
+  );
 }
 
 function checkWritableDirectory(name, directory) {
   const target = path.resolve(directory);
-  const probe = path.join(target, `.jarvis-doctor-${process.pid}-${crypto.randomBytes(4).toString("hex")}`);
+  const probe = path.join(target, `.pantheon-doctor-${process.pid}-${crypto.randomBytes(4).toString("hex")}`);
   try {
     fs.mkdirSync(target, { recursive: true });
     fs.writeFileSync(probe, "ok", { flag: "wx" });
@@ -116,8 +128,8 @@ function checkWritableDirectory(name, directory) {
   }
 }
 
-function checkRuntimeDatabase() {
-  const dbPath = path.resolve(CONFIG.dbPath);
+function checkRuntimeDatabase(options = {}) {
+  const dbPath = path.resolve(options.dbPath || CONFIG.dbPath);
   if (!fs.existsSync(dbPath)) return result("Runtime database", "warn", "No runtime database exists yet; first startup must create it.", { path: dbPath });
   let db;
   try {
@@ -134,12 +146,148 @@ function checkRuntimeDatabase() {
   }
 }
 
-function checkBackupConfiguration() {
-  const destination = path.resolve(CONFIG.backupDestination);
-  if (!process.env.JARVIS_BACKUP_PASSPHRASE || process.env.JARVIS_BACKUP_PASSPHRASE.length < 16) {
-    return result("Backup encryption", "fail", "The backup passphrase is not available to this process or is too short. No credential value was displayed.", { path: destination });
+function checkBackupConfiguration(options = {}) {
+  const destination = path.resolve(options.destinationRoot || CONFIG.backupDestination);
+  try {
+    requiredPassphrase(options.passphrase);
+  } catch {
+    return result(
+      "Backup encryption",
+      "fail",
+      "The Pantheon backup passphrase is not available to this process or is too short. "
+        + "No credential value was displayed.",
+      { path: destination, preferredVariable: "PANTHEON_BACKUP_PASSPHRASE", compatibilityAlias: "JARVIS_BACKUP_PASSPHRASE" },
+    );
   }
-  return result("Backup encryption", "pass", "The backup passphrase is present and passed a length check. No credential value was displayed.", { path: destination });
+  return result(
+    "Backup encryption",
+    "pass",
+    "The Pantheon backup passphrase is present and passed a length check. No credential value was displayed.",
+    { path: destination, preferredVariable: "PANTHEON_BACKUP_PASSPHRASE", compatibilityAlias: "JARVIS_BACKUP_PASSPHRASE" },
+  );
+}
+
+function backupAgeHours(createdAt, now = new Date()) {
+  return (now.getTime() - new Date(createdAt).getTime()) / 3600000;
+}
+
+async function checkRecoverySet(options = {}) {
+  const destinationRoot = path.resolve(options.destinationRoot || CONFIG.backupDestination);
+  const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
+  const configuredMaxAge = Number(
+    options.maxAgeHours
+      ?? preferredEnvironment("BACKUP_MAX_AGE_HOURS")
+      ?? 36,
+  );
+  const maxAgeHours = Number.isFinite(configuredMaxAge) && configuredMaxAge > 0
+    ? configuredMaxAge
+    : 36;
+  if (!fs.existsSync(destinationRoot)) {
+    return result(
+      "Recovery set",
+      "warn",
+      "No Pantheon recovery set exists yet. Create and verify one before relying on this installation.",
+      { path: destinationRoot, maxAgeHours },
+    );
+  }
+
+  const candidates = fs.readdirSync(destinationRoot)
+    .filter((name) => name.endsWith(".jbackup"))
+    .map((name) => path.join(destinationRoot, name));
+  const sets = [];
+  const unreadable = [];
+  for (const candidate of candidates) {
+    try {
+      const { header } = readEncryptedHeader(candidate);
+      if (header.kind === "set") {
+        sets.push({ filePath: candidate, header, createdAt: new Date(header.createdAt) });
+      }
+    } catch (error) {
+      unreadable.push({ filePath: candidate, error: error.message });
+    }
+  }
+  if (!sets.length) {
+    return result(
+      "Recovery set",
+      unreadable.length ? "fail" : "warn",
+      unreadable.length
+        ? "Backup files exist, but no readable Pantheon recovery set could be identified."
+        : "No coherent Pantheon recovery set exists yet; legacy component backups are not a complete recovery proof.",
+      { path: destinationRoot, unreadableCount: unreadable.length, maxAgeHours },
+    );
+  }
+
+  sets.sort((left, right) => right.createdAt - left.createdAt);
+  let verified = null;
+  const invalidSets = [...unreadable];
+  for (const candidate of sets) {
+    try {
+      const proof = await verifyBackup(candidate.filePath, { passphrase: options.passphrase });
+      verified = { ...candidate, proof };
+      break;
+    } catch (error) {
+      invalidSets.push({ filePath: candidate.filePath, error: error.message });
+    }
+  }
+  if (!verified) {
+    return result(
+      "Recovery set",
+      "fail",
+      "Pantheon found recovery-set files, but none passed decryption, manifest, inventory, and database verification.",
+      { path: destinationRoot, invalidCount: invalidSets.length, maxAgeHours },
+    );
+  }
+
+  const ageHours = backupAgeHours(verified.header.createdAt, now);
+  const futureDated = ageHours < -0.25;
+  const stale = ageHours > maxAgeHours;
+  const newerInvalid = invalidSets.some((item) => {
+    try {
+      return new Date(readEncryptedHeader(item.filePath).header.createdAt) > verified.createdAt;
+    } catch {
+      return fs.statSync(item.filePath).mtime > verified.createdAt;
+    }
+  });
+  const details = {
+    path: verified.filePath,
+    setId: verified.proof.recoverySet.setId,
+    createdAt: verified.header.createdAt,
+    ageHours: Number(ageHours.toFixed(2)),
+    maxAgeHours,
+    fileCount: verified.proof.recoverySet.fileCount,
+    components: Object.fromEntries(
+      Object.entries(verified.proof.recoverySet.components).map(([name, component]) => [
+        name,
+        {
+          present: component.present,
+          fileCount: component.fileCount,
+          bytes: component.bytes,
+        },
+      ]),
+    ),
+    sqlite: verified.proof.recoverySet.sqlite,
+    invalidCount: invalidSets.length,
+  };
+  if (futureDated) {
+    return result("Recovery set", "warn", "The newest valid recovery set is dated in the future; check the system clock.", details);
+  }
+  if (newerInvalid) {
+    return result("Recovery set", "warn", "A valid recovery set exists, but a newer backup file failed verification.", details);
+  }
+  if (stale) {
+    return result(
+      "Recovery set",
+      "warn",
+      `The newest valid recovery set is older than the ${maxAgeHours}-hour readiness target.`,
+      details,
+    );
+  }
+  return result(
+    "Recovery set",
+    "pass",
+    "A recent encrypted Pantheon recovery set passed manifest, file-inventory, and SQLite verification.",
+    details,
+  );
 }
 
 function checkPort(port = CONFIG.port) {
@@ -152,7 +300,7 @@ function checkPort(port = CONFIG.port) {
     server.unref();
     server.once("error", (error) => {
       if (error.code === "EADDRINUSE") {
-        resolve(result("Dashboard port", "warn", `Port ${port} is already in use; this is normal when Jarvis is running.`));
+        resolve(result("Dashboard port", "warn", `Port ${port} is already in use; this is normal when Pantheon is running.`));
       } else {
         resolve(result("Dashboard port", "fail", `Port ${port} could not be checked: ${error.message}`));
       }
@@ -163,22 +311,59 @@ function checkPort(port = CONFIG.port) {
   });
 }
 
-async function runDoctor() {
+function assessOperationsReady(results) {
+  const byName = new Map(results.map((item) => [item.name, item]));
+  const requiredPasses = [
+    "Node.js",
+    "Dependency lock",
+    "Node SQLite",
+    "Archive tool",
+    "PDF renderer",
+    "Data directory",
+    "Artifact directory",
+    "Backup destination",
+    "Runtime database",
+    "Backup encryption",
+    "Recovery set",
+  ];
+  const blockers = [];
+  for (const name of requiredPasses) {
+    const item = byName.get(name);
+    if (!item || item.status !== "pass") {
+      blockers.push(item?.message || `${name} was not checked.`);
+    }
+  }
+  for (const item of results.filter((entry) => entry.status === "fail")) {
+    if (!blockers.includes(item.message)) blockers.push(item.message);
+  }
+  return { operationsReady: blockers.length === 0, readinessBlockers: blockers };
+}
+
+async function runDoctor(options = {}) {
+  const destinationRoot = options.destinationRoot || CONFIG.backupDestination;
   const results = [
     checkNodeVersion(),
     checkLockfile(),
     checkNodeSqlite(),
     checkTar(),
     checkRenderer(),
-    checkWritableDirectory("Data directory", CONFIG.dataDir),
-    checkWritableDirectory("Artifact directory", CONFIG.artifactRoot),
-    checkWritableDirectory("Backup destination", CONFIG.backupDestination),
-    checkRuntimeDatabase(),
-    checkBackupConfiguration(),
-    await checkPort(),
+    checkWritableDirectory("Data directory", options.dataDir || CONFIG.dataDir),
+    checkWritableDirectory("Artifact directory", options.artifactRoot || CONFIG.artifactRoot),
+    checkWritableDirectory("Backup destination", destinationRoot),
+    checkRuntimeDatabase({ dbPath: options.dbPath }),
+    checkBackupConfiguration({ destinationRoot, passphrase: options.passphrase }),
+    await checkRecoverySet({
+      destinationRoot,
+      passphrase: options.passphrase,
+      maxAgeHours: options.maxAgeHours,
+      now: options.now,
+    }),
+    await checkPort(options.port || CONFIG.port),
   ];
+  const readiness = assessOperationsReady(results);
   return {
     ok: results.every((item) => item.status !== "fail"),
+    ...readiness,
     warningCount: results.filter((item) => item.status === "warn").length,
     failureCount: results.filter((item) => item.status === "fail").length,
     results,
@@ -191,31 +376,38 @@ function printHuman(report) {
     console.log(`[${marker}] ${item.name}: ${item.message}`);
   }
   console.log(report.ok
-    ? `Jarvis doctor passed${report.warningCount ? ` with ${report.warningCount} warning(s)` : ""}.`
-    : `Jarvis doctor found ${report.failureCount} blocking problem(s).`);
+    ? `Pantheon doctor passed${report.warningCount ? ` with ${report.warningCount} warning(s)` : ""}.`
+    : `Pantheon doctor found ${report.failureCount} blocking problem(s).`);
+  console.log(report.operationsReady
+    ? "Pantheon is operations-ready, including a recent validated recovery set."
+    : `Pantheon is not yet operations-ready (${report.readinessBlockers.length} readiness blocker(s)).`);
 }
 
 async function main() {
   const report = await runDoctor();
   if (process.argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
   else printHuman(report);
-  if (!report.ok) process.exitCode = 1;
+  if (!report.ok || (process.argv.includes("--operations-ready") && !report.operationsReady)) {
+    process.exitCode = 1;
+  }
 }
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(`Jarvis doctor failed: ${error.message}`);
+    console.error(`Pantheon doctor failed: ${error.message}`);
     process.exitCode = 1;
   });
 }
 
 module.exports = {
+  assessOperationsReady,
   checkBackupConfiguration,
   checkLockfile,
   checkNodeSqlite,
   checkNodeVersion,
   checkPort,
   checkRenderer,
+  checkRecoverySet,
   checkRuntimeDatabase,
   checkTar,
   checkWritableDirectory,

@@ -11,6 +11,63 @@ const FIELD_TYPES = {
   number: { json: { type: "number" } },
   boolean: { json: { type: "boolean" } },
   stringArray: { json: { type: "array", items: { type: "string" }, maxItems: 5 } },
+  opportunityArray: {
+    json: {
+      type: "array",
+      minItems: 3,
+      maxItems: 5,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string" },
+          businessModel: { type: "string" },
+          buyer: { type: "string" },
+          problem: { type: "string" },
+          offerDirection: { type: "string" },
+          geography: { type: "string" },
+          language: { type: "string" },
+          channel: { type: "string" },
+          demandEvidence: { type: "array", items: { type: "string" }, maxItems: 4 },
+          competitionEvidence: { type: "array", items: { type: "string" }, maxItems: 4 },
+          economicsHypothesis: { type: "string" },
+          smallestValidation: { type: "string" },
+          risks: { type: "array", items: { type: "string" }, maxItems: 3 },
+          demandScore: { type: "number" },
+          supplyGapScore: { type: "number" },
+          economicsScore: { type: "number" },
+          channelFitScore: { type: "number" },
+          executionFitScore: { type: "number" },
+          riskScore: { type: "number" },
+          score: { type: "number" },
+          confidence: { type: "string", enum: ["low", "medium", "high"] },
+        },
+        required: [
+          "title",
+          "businessModel",
+          "buyer",
+          "problem",
+          "offerDirection",
+          "geography",
+          "language",
+          "channel",
+          "demandEvidence",
+          "competitionEvidence",
+          "economicsHypothesis",
+          "smallestValidation",
+          "risks",
+          "demandScore",
+          "supplyGapScore",
+          "economicsScore",
+          "channelFitScore",
+          "executionFitScore",
+          "riskScore",
+          "score",
+          "confidence",
+        ],
+      },
+    },
+  },
 };
 
 const WORKER_CONTRACTS = {
@@ -38,11 +95,10 @@ const WORKER_CONTRACTS = {
     label: "Opportunity Scout",
     focusKeys: ["businessDirection", "targetMarket", "channel", "subject"],
     fields: {
-      buyer: "string",
-      problem: "string",
-      demandSignals: "stringArray",
+      opportunities: "opportunityArray",
+      marketScope: "string",
       evidenceGaps: "stringArray",
-      rankedOpportunity: "string",
+      exclusionNotes: "stringArray",
       recommendedNextTest: "string",
     },
   },
@@ -83,7 +139,10 @@ const WORKER_CONTRACTS = {
       productFormat: "string",
       assetPlan: "stringArray",
       productionMethod: "string",
+      producedFiles: "stringArray",
+      catalogueCoverage: "stringArray",
       qualityChecks: "stringArray",
+      limitations: "stringArray",
       approvalNeeded: "string",
       channelFit: "string",
     },
@@ -186,6 +245,31 @@ function zodField(z, type) {
   if (type === "number") return z.number();
   if (type === "boolean") return z.boolean();
   if (type === "stringArray") return z.array(z.string()).max(5);
+  if (type === "opportunityArray") {
+    return z.array(z.object({
+      title: z.string(),
+      businessModel: z.string(),
+      buyer: z.string(),
+      problem: z.string(),
+      offerDirection: z.string(),
+      geography: z.string(),
+      language: z.string(),
+      channel: z.string(),
+      demandEvidence: z.array(z.string()).max(4),
+      competitionEvidence: z.array(z.string()).max(4),
+      economicsHypothesis: z.string(),
+      smallestValidation: z.string(),
+      risks: z.array(z.string()).max(3),
+      demandScore: z.number(),
+      supplyGapScore: z.number(),
+      economicsScore: z.number(),
+      channelFitScore: z.number(),
+      executionFitScore: z.number(),
+      riskScore: z.number(),
+      score: z.number(),
+      confidence: z.enum(["low", "medium", "high"]),
+    }).strict()).min(3).max(5);
+  }
   return z.string();
 }
 
@@ -413,6 +497,7 @@ function normalizeWorkerOutput(workerId, raw, agentName = null) {
   }
 
   const work = raw.work || {};
+  const topOpportunity = Array.isArray(work.opportunities) ? work.opportunities[0] || {} : {};
   const evidence = list(raw.evidence, 5);
   const risks = list(raw.risks, 4);
   const counterevidence = list(work.counterevidence || work.evidenceGaps || work.missingEvidence, 5);
@@ -423,14 +508,15 @@ function normalizeWorkerOutput(workerId, raw, agentName = null) {
     work.smallestTest,
     work.testHypothesis,
     work.nextExperiment,
+    topOpportunity.smallestValidation,
     raw.recommendation,
   );
   const metric = firstText(work.successMetric, work.expectedMetric, work.trackingNote);
   const stopRule = firstText(work.stopRule, work.killRule, "Stop or revise when the declared evidence threshold is not met.");
-  const buyer = firstText(work.buyer, work.audience);
-  const problem = firstText(work.problem, work.objections?.[0]);
-  const offer = firstText(work.offer, work.productFormat, work.rankedOpportunity, raw.recommendation);
-  const channel = firstText(work.channel, work.channelFit);
+  const buyer = firstText(work.buyer, work.audience, topOpportunity.buyer);
+  const problem = firstText(work.problem, work.objections?.[0], topOpportunity.problem);
+  const offer = firstText(work.offer, work.productFormat, topOpportunity.offerDirection, topOpportunity.title, raw.recommendation);
+  const channel = firstText(work.channel, work.channelFit, topOpportunity.channel);
   const actualResult = firstText(work.actualResult, "No real-world result was supplied to this run.");
   const learning = firstText(work.learning, "Use the next measured result to confirm or revise this recommendation.");
   const improvement = firstText(work.improvement, work.recommendedRevision, raw.nextAction);
@@ -442,8 +528,8 @@ function normalizeWorkerOutput(workerId, raw, agentName = null) {
     moneyMove,
     evidence,
     counterevidence,
-    priceChannelHypothesis: firstText(work.priceChannelHypothesis, work.price, work.channelFit),
-    smallestTest: firstText(work.smallestTest, work.recommendedNextTest, work.testHypothesis, work.nextExperiment, raw.nextAction),
+    priceChannelHypothesis: firstText(work.priceChannelHypothesis, work.price, work.channelFit, topOpportunity.economicsHypothesis),
+    smallestTest: firstText(work.smallestTest, work.recommendedNextTest, work.testHypothesis, work.nextExperiment, topOpportunity.smallestValidation, raw.nextAction),
     metric,
     killRule: stopRule,
     risks,

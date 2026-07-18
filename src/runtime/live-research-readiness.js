@@ -2,6 +2,11 @@ const CONFIG = require("../config");
 const { all, fromJson, get } = require("../db");
 const { monthlyBudgetExposure } = require("./cost-ledger");
 const { modelPricing } = require("./model-pricing");
+const {
+  environmentDisabled,
+  environmentEnabled,
+  preferredEnvironmentName,
+} = require("../adapters/pantheon-environment");
 
 function parseRows(rows, fields = ["metadata", "payload", "result"]) {
   return rows.map((row) => {
@@ -49,16 +54,16 @@ function getLiveResearchReadiness(db) {
   const failedRuns = all(db, "SELECT COUNT(*) AS count FROM research_runs WHERE status = 'failed_live'")[0]?.count || 0;
 
   const credentialsConfigured = Boolean(process.env.OPENAI_API_KEY) && openaiIntegration?.health === "ok";
-  const liveFlagEnabled = process.env.JARVIS_ENABLE_LIVE_RESEARCH === "1";
-  const adapterReady = process.env.JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER !== "1";
+  const liveFlagEnabled = environmentEnabled("enableLiveResearch");
+  const adapterReady = !environmentDisabled("disableLiveResearchAdapter");
   const pricingReady = Boolean(modelPricing(CONFIG.liveResearchModel));
   const budgetReady = remainingBudgetCents >= Number(CONFIG.liveResearchDefaultBudgetCents || 0);
   const ready = credentialsConfigured && liveFlagEnabled && adapterReady && pricingReady && budgetReady;
 
   const blockers = [];
-  if (!credentialsConfigured) blockers.push("OpenAI API key is not configured for this runtime process.");
-  if (!liveFlagEnabled) blockers.push("JARVIS_ENABLE_LIVE_RESEARCH is not enabled.");
-  if (!adapterReady) blockers.push("Live research adapter is disabled by JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER.");
+  if (!credentialsConfigured) blockers.push("Pantheon is not connected to an OpenAI API key in this running session.");
+  if (!liveFlagEnabled) blockers.push("Live research is turned off for this Pantheon runtime.");
+  if (!adapterReady) blockers.push(`Pantheon's research connection is disabled by ${preferredEnvironmentName("disableLiveResearchAdapter")}.`);
   if (!pricingReady) blockers.push("The selected research model has no registered AUD safety pricing.");
   if (!budgetReady) blockers.push("Monthly budget remaining is below the default live research cap.");
 
@@ -95,24 +100,24 @@ function getLiveResearchReadiness(db) {
     checklist: [
       checklistItem(
         "openai_key",
-        "OpenAI API key",
+        "OpenAI connection",
         credentialsConfigured,
-        credentialsConfigured ? "Configured in the runtime environment." : "Missing from this runtime process.",
-        "Set OPENAI_API_KEY outside the repo.",
+        credentialsConfigured ? "Pantheon can authenticate with OpenAI." : "Pantheon has no OpenAI API key in this running session.",
+        "Connect OPENAI_API_KEY outside the repository, then restart Pantheon.",
       ),
       checklistItem(
         "live_flag",
-        "Live research flag",
+        "Live research enabled",
         liveFlagEnabled,
-        liveFlagEnabled ? "JARVIS_ENABLE_LIVE_RESEARCH=1." : "Live research is deliberately disabled.",
-        "Set JARVIS_ENABLE_LIVE_RESEARCH=1 only when ready for approved spend.",
+        liveFlagEnabled ? "Approved live research calls are enabled." : "Live research is turned off.",
+        `Set ${preferredEnvironmentName("enableLiveResearch")}=1 only when approved research should be allowed.`,
       ),
       checklistItem(
         "adapter",
-        "Adapter code",
+        "Research connection",
         adapterReady,
         adapterReady ? "OpenAI web-search adapter is available." : "Adapter is disabled by environment flag.",
-        "Unset JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER.",
+        `Leave ${preferredEnvironmentName("disableLiveResearchAdapter")} unset.`,
       ),
       checklistItem(
         "pricing",

@@ -265,14 +265,15 @@ function decideApproval(db, approvalId, decision, note = "", options = {}) {
       throw new Error(toolApproval.reason || "The exact worker-tool approval could not be resolved.");
     }
 
+    const decidedBy = String(options.decidedBy || options.actor || "operator");
     insertEvent(db, {
       level: decision === "approved" ? "info" : "warn",
-      actor: "operator",
+      actor: decidedBy,
       type: `approval.${decision}`,
       entityType: "approval",
       entityId: approvalId,
-      message: `Operator marked approval ${approvalId} as ${decision}.`,
-      metadata: { note, toolApproval: toolApproval.handled ? toolApproval : null },
+      message: `${decidedBy === "operator" ? "Operator" : "Pantheon operating policy"} marked approval ${approvalId} as ${decision}.`,
+      metadata: { note, decidedBy, toolApproval: toolApproval.handled ? toolApproval : null },
     });
 
     return {

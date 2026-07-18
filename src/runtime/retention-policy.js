@@ -36,7 +36,7 @@ function defaultPolicy() {
   return {
     schema: RETENTION_POLICY_SCHEMA,
     version: 1,
-    title: "Jarvis data protection and retention plan",
+    title: "Pantheon data protection and retention plan",
     plainSummary: "Keep evidence that protects the business, remove short-lived clutter, minimise personal data, and keep sensitive provider storage off by default.",
     schedule: [
       {
@@ -120,7 +120,7 @@ function defaultPolicy() {
       {
         label: "ATO business record keeping",
         url: "https://www.ato.gov.au/businesses-and-organisations/preparing-lodging-and-paying/record-keeping-for-business",
-        note: "Many Australian tax and business records have a five-year minimum; Jarvis uses one conservative seven-year finance standard.",
+        note: "Many Australian tax and business records have a five-year minimum; Pantheon uses one conservative seven-year finance standard.",
       },
     ],
     legalNote: "This is an operating control, not legal advice. A specific law, dispute, contract or regulator can require a longer hold.",
@@ -170,13 +170,21 @@ function policyApprovals(db, policy) {
 function getRetentionPolicyState(db) {
   const policy = ensureRetentionPolicy(db);
   const approvals = policyApprovals(db, policy);
+  const durableActivation = get(
+    db,
+    `SELECT * FROM data_retention_policy_activations
+     WHERE policy_id = ? AND policy_hash = ?
+     ORDER BY activated_at DESC LIMIT 1`,
+    [policy.id, policy.policy_hash],
+  );
   const activeApproval = approvals.find((approval) => (
     approval.status === "approved"
     && approval.task_status === "completed"
     && approval.task_result?.retentionPolicyActivated === true
   )) || null;
+  const active = durableActivation || activeApproval;
   const pendingApproval = approvals.find((approval) => approval.status === "pending") || null;
-  const approvedPending = activeApproval
+  const approvedPending = active
     ? null
     : approvals.find((approval) => approval.status === "approved") || null;
   const terminalApproval = approvals.find((approval) => (
@@ -187,7 +195,7 @@ function getRetentionPolicyState(db) {
     "SELECT COUNT(*) AS count FROM approvals WHERE status = 'pending' AND scope <> ?",
     [RETENTION_APPROVAL_SCOPE],
   )?.count || 0);
-  const status = activeApproval
+  const status = active
     ? "active"
     : pendingApproval
       ? "waiting_for_decision"
@@ -204,7 +212,7 @@ function getRetentionPolicyState(db) {
     title: policy.title,
     policyHash: policy.policy_hash,
     status,
-    label: activeApproval
+    label: active
       ? "Active"
       : pendingApproval
         ? "Waiting for your decision"
@@ -219,35 +227,43 @@ function getRetentionPolicyState(db) {
         : otherPendingCount
           ? "Ready after the current decision"
           : "Ready to review",
-    summary: activeApproval
+    summary: active
       ? "Sensitive and long-running AI work is now checked against the approved data plan."
       : approvedPending
         ? activationNeedsAttention
-          ? "The plan was approved, but its local activation did not complete. Jarvis must inspect and safely resume it."
+          ? "The plan was approved, but its local activation did not complete. Pantheon needs a developer review before it can safely resume."
           : "The plan is approved and its local checks are being activated. No records are being deleted."
       : terminalApproval
-        ? "The previous data plan was not accepted. Jarvis must prepare a revised policy version before asking again."
+        ? "The previous data plan was not accepted. Pantheon needs a revised policy version before asking again."
       : "A plain-language data plan is prepared. It does not delete anything when approved.",
     schedule: policy.policy.schedule,
     providerPolicy: policy.policy.providerPolicy,
     sourceBasis: policy.policy.sourceBasis,
     legalNote: policy.policy.legalNote,
-    approvalId: pendingApproval?.id || activeApproval?.id || approvedPending?.id || terminalApproval?.id || null,
-    activeAt: activeApproval?.task_result?.activatedAt || activeApproval?.decided_at || null,
+    approvalId: pendingApproval?.id
+      || durableActivation?.approval_id
+      || activeApproval?.id
+      || approvedPending?.id
+      || terminalApproval?.id
+      || null,
+    activeAt: durableActivation?.activated_at
+      || activeApproval?.task_result?.activatedAt
+      || activeApproval?.decided_at
+      || null,
     otherPendingDecisionCount: otherPendingCount,
-    canPrepareDecision: !activeApproval && !pendingApproval && !approvedPending && !terminalApproval && otherPendingCount === 0,
-    nextAction: activeApproval
+    canPrepareDecision: !active && !pendingApproval && !approvedPending && !terminalApproval && otherPendingCount === 0,
+    nextAction: active
       ? "No action needed."
       : pendingApproval
         ? "Review this plan in Decisions."
         : approvedPending
           ? activationNeedsAttention
-            ? "Jarvis must inspect and safely resume the approved activation."
-            : "No action needed while Jarvis applies the approved plan."
+            ? "A developer review is needed before Pantheon can safely resume the approved activation."
+            : "No action needed while Pantheon applies the approved plan."
         : terminalApproval
-          ? "Jarvis must prepare a revised policy version before asking you again."
+          ? "Pantheon needs a revised policy version before asking you again."
         : otherPendingCount
-          ? "Finish the current decision first; Jarvis will keep this plan ready."
+          ? "Finish the current decision first; Pantheon will keep this plan ready."
           : "Make this the next decision when you are ready.",
   };
 }
@@ -293,7 +309,7 @@ function prepareRetentionPolicyDecision(db) {
          updated_at = excluded.updated_at`,
       [
         workflowId,
-        "Approve the Jarvis data protection plan",
+        "Approve the Pantheon data protection plan",
         "Waiting for Daniel to review the plain-language retention plan",
         toJson({ policyId: policy.id, policyHash: policy.policy_hash }),
         ts,
@@ -334,19 +350,19 @@ function prepareRetentionPolicyDecision(db) {
       `INSERT INTO approvals
        (id, workflow_id, venture_id, task_id, scope, title, status, risk_level,
         requested_by, requested_at, payload, expected_effects)
-       VALUES (?, ?, NULL, ?, ?, ?, 'pending', 'medium', 'jarvis', ?, ?, ?)`,
+       VALUES (?, ?, NULL, ?, ?, ?, 'pending', 'medium', 'pantheon', ?, ?, ?)`,
       [
         approvalId,
         workflowId,
         taskId,
         RETENTION_APPROVAL_SCOPE,
-        "Approve the Jarvis data protection plan",
+        "Approve the Pantheon data protection plan",
         ts,
         toJson({
           policyId: policy.id,
           policyHash: policy.policy_hash,
           policyVersion: policy.version,
-          reason: "Approve one clear rule for how Jarvis keeps business evidence, minimises personal data, and removes short-lived clutter before sensitive AI work expands.",
+          reason: "Approve one clear rule for how Pantheon keeps business evidence, minimises personal data, and removes short-lived clutter before sensitive AI work expands.",
           expectedMetric: "Future sensitive and live-web tasks are automatically checked against one approved plan.",
           expectedUpside: "Workers can use the records they genuinely need while provider storage stays controlled and the dashboard remains uncluttered.",
           policySummary: policy.policy.schedule.map((item) => ({
@@ -385,7 +401,7 @@ function prepareRetentionPolicyDecision(db) {
       ],
     );
     insertEvent(db, {
-      actor: "jarvis",
+      actor: "pantheon",
       type: "retention_policy.decision_prepared",
       entityType: "data_retention_policy",
       entityId: policy.id,
@@ -448,6 +464,43 @@ function activateRetentionPolicy(db, task, approval) {
   }
   const activatedAt = now();
   const preview = retentionMaintenancePreview(db);
+  const activationProof = {
+    policyId: policy.id,
+    policyHash: policy.policy_hash,
+    approvalId: approval.id,
+    activatedAt,
+    source: "approved-runtime-activation",
+  };
+  const proofHash = hash(activationProof);
+  run(
+    db,
+    `INSERT OR IGNORE INTO data_retention_policy_activations
+     (id, policy_id, policy_hash, approval_id, proof_hash, activated_at,
+      activated_by, metadata, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'operator', ?, ?)`,
+    [
+      `retention_activation_${policy.policy_hash.slice(0, 24)}`,
+      policy.id,
+      policy.policy_hash,
+      approval.id,
+      proofHash,
+      activatedAt,
+      toJson({
+        source: "approved-runtime-activation",
+        decisionNote: approval.decision_note || "",
+        policyVersion: policy.version,
+      }),
+      activatedAt,
+    ],
+  );
+  const activation = get(
+    db,
+    "SELECT * FROM data_retention_policy_activations WHERE policy_id = ? AND policy_hash = ?",
+    [policy.id, policy.policy_hash],
+  );
+  if (!activation || activation.proof_hash !== proofHash) {
+    throw new Error("The approved data protection plan could not be recorded durably.");
+  }
   insertEvent(db, {
     actor: "runtime-monitor",
     type: "retention_policy.activated",
@@ -543,7 +596,7 @@ function retentionRequirementsForTask(db, task) {
   return [{
     kind: "policy",
     name: "data_retention_policy",
-    message: "Approve the Jarvis data protection plan before this work uses sensitive records, live web research, or provider-side storage.",
+    message: "Approve the Pantheon data protection plan before this work uses sensitive records, live web research, or provider-side storage.",
   }];
 }
 

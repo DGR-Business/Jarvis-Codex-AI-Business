@@ -86,7 +86,7 @@ function prepareRequiredQualityReview(db, input = {}) {
     },
   });
   insertEvent(db, {
-    actor: "jarvis",
+    actor: "pantheon",
     type: "quality.review_prepared",
     entityType: "task",
     entityId: review.task.id,

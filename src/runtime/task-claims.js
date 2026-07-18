@@ -1,4 +1,5 @@
 const { all, fromJson, get, now, randomId, run, toJson } = require("../db");
+const { environmentValue } = require("../adapters/pantheon-environment");
 
 const DEFAULT_CLAIM_LEASE_MS = 10 * 60 * 1000;
 const RUNNABLE_WORKFLOW_STATUSES = new Set(["planned", "ready", "agent_running", "agent_retrying"]);
@@ -9,7 +10,7 @@ function hydrateTask(task) {
 }
 
 function claimLeaseMs(options = {}) {
-  const configured = Number(options.leaseMs || process.env.JARVIS_TASK_CLAIM_LEASE_MS || DEFAULT_CLAIM_LEASE_MS);
+  const configured = Number(options.leaseMs || environmentValue("taskClaimLeaseMs") || DEFAULT_CLAIM_LEASE_MS);
   return Math.min(60 * 60 * 1000, Math.max(5_000, Number.isFinite(configured) ? configured : DEFAULT_CLAIM_LEASE_MS));
 }
 
@@ -71,7 +72,7 @@ function recoverStaleTaskClaims(db, options = {}) {
       const errorKind = providerOutcomeUnknown ? "stale_provider_attempt" : "stale_claim_recovered";
       const error = providerOutcomeUnknown
         ? "The worker stopped responding after a provider request may have started. Review the provider outcome before retrying."
-        : "The worker stopped before provider dispatch. Jarvis recovered the task for a safe retry.";
+        : "The worker stopped before provider dispatch. Pantheon recovered the task for a safe retry.";
       const metadata = {
         ...fromJson(attempt?.metadata, {}),
         recovery: { recoveredAt, leaseMs, staleBefore, providerOutcomeUnknown },

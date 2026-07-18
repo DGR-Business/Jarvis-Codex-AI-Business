@@ -15,6 +15,8 @@ const { unsafeTaskReason } = require("./scheduler");
 const { spendCostId } = require("./stable-id");
 const { canPrepareReviewedRetry } = require("./live-ai-retry-policy");
 const { supersededRetryTaskIds } = require("./monitor");
+const { getOpportunityState } = require("./pantheon-opportunities");
+const { getProductionState } = require("./pantheon-production");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -76,12 +78,18 @@ function decisionCard(approval) {
   const tools = scope.tools || liveRequest.tools || [];
   const demandResearch = workerId === "demand_validator" && tools.includes("research_adapter");
   const controlledDemandCheck = workerId === "demand_validator" && Boolean(fixture);
+  const production = liveRequest.parameters?.pantheonProduction || null;
+  const productBuildSpec = liveRequest.parameters?.productBuildSpec || null;
+  const catalogueBuild = production?.stage === "product_build"
+    && production.operatorChoiceRequired === true;
   const maxCostCents = Number(payload.estimatedCostCents || payload.maxCostCents || 0);
   return {
     id: approval.id,
     type: "decision",
     decisionKind: "approval",
-    title: demandResearch
+    title: catalogueBuild
+      ? `Build the ${productBuildSpec?.catalogueItems?.length || "planned"}-product catalogue?`
+      : demandResearch
       ? `Decide whether to run live market research${maxCostCents > 0 ? ` (up to A$${(maxCostCents / 100).toFixed(2)})` : ""}`
       : controlledDemandCheck
         ? "Start the Demand Validator check?"
@@ -90,12 +98,16 @@ function decisionCard(approval) {
     requestedAt: approval.requested_at,
     scopeHash: approval.scope_hash,
     expiresAt: approval.expires_at,
-    recommendation: demandResearch
+    recommendation: catalogueBuild
+      ? "Pantheon will create the complete local product files, retain them in the venture record, and send them through an independent quality review. Nothing will be published or sent."
+      : demandResearch
       ? "Demand Validator will search the web for current buyer language, competing products, price signals, and one suitable free audience channel."
       : controlledDemandCheck
         ? "Demand Validator will assess the supplied test evidence and return one recommendation for your review."
         : payload.reason || payload.commercialPurpose || "Review the evidence and choose whether this exact action should continue.",
-    expectedUpside: demandResearch
+    expectedUpside: catalogueBuild
+      ? "Turns the validated offer into customer-usable files so the real launch decision can be based on an actual product rather than a plan."
+      : demandResearch
       ? "The result should tell us whether this buyer can be reached and give us one measurable free test with a clear stop rule."
       : controlledDemandCheck
         ? "This checks whether the AI can produce a useful business recommendation while staying inside its exact limits."
@@ -130,9 +142,19 @@ function decisionCard(approval) {
     tracePolicy: payload.tracePolicy || null,
     policySummary: Array.isArray(payload.policySummary) ? payload.policySummary : null,
     noDeletion: payload.noDeletion === true,
-    attentionLabel: demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
-    primaryActionLabel: demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
-    decisionPrompt: demandResearch
+    attentionLabel: catalogueBuild ? "Product build ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
+    primaryActionLabel: catalogueBuild ? "Review catalogue build" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
+    approveLabel: catalogueBuild ? "Build this catalogue" : null,
+    decisionActionKind: catalogueBuild ? "catalogue_build" : null,
+    productBuild: catalogueBuild ? {
+      productCount: Number(productBuildSpec?.catalogueItems?.length || 0),
+      profile: productBuildSpec?.profile || null,
+      formats: productBuildSpec?.allowedFormats || [],
+      qualityBar: productBuildSpec?.qualityBar || null,
+    } : null,
+    decisionPrompt: catalogueBuild
+      ? "Review what Pantheon will create, the cost ceiling, and what remains locked."
+      : demandResearch
       ? "See what the AI will research, the maximum cost, and what it cannot do."
       : controlledDemandCheck
         ? "See the evidence, limit, and exact action before starting the AI."
@@ -175,16 +197,19 @@ function handoffCard(handoff) {
     && liveRequest.tools.some((toolId) => ["research_adapter", "live_web_with_approval"].includes(toolId));
   const demandResult = taskKind === "live_ai_worker_execution"
     && String(handoff.from_agent_id || "").toLowerCase() === "demand_validator";
+  const launchDecision = handoff.metadata?.pantheonProduction?.action === "authorize_launch_preparation";
   const demandRecommendation = controlledEvidence
     ? "Demand Validator found a plausible recurring problem in the controlled evidence, but it did not prove real buyer demand. It recommends a free interest check before anything is built."
     : liveResearch && researchSources.length
       ? `Demand Validator completed live research with ${researchSources.length} attributable source${researchSources.length === 1 ? "" : "s"}. It recommends a small interest test; the research does not itself prove demand or willingness to pay.`
-      : handoff.summary || businessDecision.evidenceSummary || "Review the recorded evidence before deciding whether Jarvis should prepare a small interest test.";
+      : handoff.summary || businessDecision.evidenceSummary || "Review the recorded evidence before deciding whether Pantheon should prepare a small interest test.";
   return {
     id: handoff.id,
     type: "decision",
     decisionKind: "handoff",
-    title: demandResult
+    title: launchDecision
+      ? "Decide whether this product should move to publish-ready"
+      : demandResult
       ? "Decide whether to prepare the interest test"
       : handoff.decision_needed || `Choose the next step for ${handoff.workflow_title || "this work"}`,
     risk: demandResult
@@ -193,10 +218,14 @@ function handoffCard(handoff) {
           : "medium")
       : handoff.risk_level || "medium",
     requestedAt: handoff.updated_at || handoff.created_at,
-    recommendation: demandResult
+    recommendation: launchDecision
+      ? handoff.summary || "The finished product files, quality review, listing copy, and first market test are ready. Nothing has been published."
+      : demandResult
       ? demandRecommendation
       : handoff.summary || handoff.reason || "Review the completed work and choose whether the team should continue.",
-    expectedUpside: demandResult
+    expectedUpside: launchDecision
+      ? "Moves the complete launch package to the separate Gumroad publishing step without making any public change automatically."
+      : demandResult
       ? "A small interest check can show whether the idea deserves more work without spending money."
       : Number(handoff.expected_profit_cents || 0) > 0
         ? "Advances a bounded commercial step with the expected return shown in the work record."
@@ -205,11 +234,15 @@ function handoffCard(handoff) {
     worker: handoff.from_agent_name || handoff.from_agent_id || null,
     workflowId: handoff.workflow_id || null,
     runId: handoff.from_run_id || null,
-    attentionLabel: demandResult ? "AI result ready" : "Decision ready",
-    primaryActionLabel: demandResult ? "Review result" : "Review and decide",
-    decisionPrompt: demandResult
-      ? "Read the result, rate the analysis, then choose whether Jarvis should prepare the test."
-      : handoff.decision_needed || "Choose what Jarvis should do next.",
+    attentionLabel: launchDecision ? "Launch package ready" : demandResult ? "AI result ready" : "Decision ready",
+    primaryActionLabel: launchDecision ? "Review launch package" : demandResult ? "Review result" : "Review and decide",
+    approveLabel: launchDecision ? "Move to publish-ready" : null,
+    decisionActionKind: launchDecision ? "launch_readiness" : null,
+    decisionPrompt: launchDecision
+      ? "Review the finished package and choose whether to prepare the separate real publishing action."
+      : demandResult
+      ? "Read the result, rate the analysis, then choose whether Pantheon should prepare the test."
+      : handoff.decision_needed || "Choose what Pantheon should do next.",
     actions: ["approve", "changes", "reject"],
   };
 }
@@ -284,10 +317,10 @@ function importantWork(db) {
     const reviewedRetryAvailable = knownDemandRetry
       && canPrepareReviewedRetry(task, latestAttempt?.error_kind);
     const issueSummary = /provider tool activity was missing/i.test(String(task.error || ""))
-      ? "Jarvis did not recognise the web-research record returned by OpenAI."
+      ? "Pantheon did not recognise the web-research record returned by OpenAI."
       : /invalid output|unterminated string/i.test(String(task.error || ""))
-        ? "OpenAI returned an incomplete structured answer that Jarvis could not safely use."
-        : "The AI call finished, but Jarvis could not safely accept the local result.";
+        ? "OpenAI returned an incomplete structured answer that Pantheon could not safely use."
+        : "The AI call finished, but Pantheon could not safely accept the local result.";
     items.push({
       id: task.id,
       type: knownDemandRetry ? "known_ai_result" : "unknown_outcome",
@@ -509,6 +542,8 @@ function spendState(db) {
 
 function getCockpitState(db) {
   const commercial = commercialFoundationState(db);
+  const opportunity = getOpportunityState(db);
+  const production = getProductionState(db);
   const team = teamState(db, commercial.venture.id);
   const work = importantWork(db);
   const test = currentTest(db, commercial.venture.id);
@@ -543,6 +578,15 @@ function getCockpitState(db) {
       proofMode: CONFIG.systemProofMode === true,
     },
     weeklyDigest: digestWithCurrentAttention(getLatestDigest(db, commercial.venture.id), work),
+    commercialDiscovery: {
+      activeRound: opportunity.activeRound,
+      latestRound: opportunity.latestRound,
+      currentTask: opportunity.currentTask,
+      topOpportunity: opportunity.topOpportunity,
+      cataloguePlan: opportunity.cataloguePlans[0] || null,
+      mandate: opportunity.mandate,
+      production,
+    },
   };
 }
 
@@ -594,6 +638,8 @@ function getDecisionsState(db) {
 
 function getBusinessTestsState(db) {
   const commercial = commercialFoundationState(db);
+  const opportunity = getOpportunityState(db);
+  const production = getProductionState(db);
   const experiments = parseRows(all(
     db,
     "SELECT * FROM commercial_experiments WHERE venture_id = ? ORDER BY updated_at DESC",
@@ -606,6 +652,11 @@ function getBusinessTestsState(db) {
     ventureCase: commercial.ventureCase,
     economics: commercial.economics,
     pilotPolicy: fromJson(get(db, "SELECT value FROM settings WHERE key = 'commercial.pilot'")?.value, {}),
+    opportunityRounds: opportunity.rounds,
+    opportunities: opportunity.opportunities,
+    cataloguePlans: opportunity.cataloguePlans,
+    catalogueItems: opportunity.catalogueItems,
+    production,
     tests,
     workPackages: parseRows(all(db, "SELECT * FROM work_packages WHERE venture_id = ? ORDER BY created_at DESC", [commercial.venture.id])),
     evidence: commercial.evidence,
@@ -1176,7 +1227,7 @@ function agentSystemChecks(db) {
     detail: [
       ...fromJson(row.missing_fields, []),
       ...fromJson(row.warnings, []),
-    ].join(" ") || "Jarvis retained the run and flagged it for review.",
+    ].join(" ") || "Pantheon retained the run and flagged it for review.",
     workerName: row.worker_name || null,
     runId: row.run_id,
     taskId: row.task_id,
@@ -1199,7 +1250,7 @@ function agentSystemChecks(db) {
     severity: "error",
     status: "incomplete",
     title: `Execution record missing: ${row.task_title || "AI work"}`,
-    detail: "The worker finished without an immutable local receipt. Jarvis will keep this visible until the record is repaired.",
+    detail: "The worker finished without an immutable local receipt. Pantheon will keep this visible until the record is repaired.",
     workerName: row.worker_name || null,
     runId: row.run_id,
     taskId: row.task_id,
@@ -1320,11 +1371,11 @@ function runtimeMonitoringHealth(db) {
 
   let status = "operating";
   let label = "Operating normally";
-  let summary = `Jarvis checks the system every ${Math.round(intervalSeconds / 60)} minutes.`;
+  let summary = `Pantheon checks the system every ${Math.round(intervalSeconds / 60)} minutes.`;
   if (!job) {
     status = "starting";
     label = "Starting";
-    summary = "Jarvis monitoring starts with the business runtime.";
+    summary = "Pantheon monitoring starts with the business runtime.";
   } else if (job.status !== "enabled") {
     status = "paused";
     label = "Needs attention";
@@ -1342,7 +1393,7 @@ function runtimeMonitoringHealth(db) {
   } else if (activeLock) {
     status = "operating";
     label = "Checking now";
-    summary = "Jarvis is checking the system now.";
+    summary = "Pantheon is checking the system now.";
   }
 
   return {
@@ -1494,7 +1545,7 @@ function getAgentRunDetail(db, id) {
         providerTraceContent: false,
         localReviewStored: true,
         dataClass: "legacy_controlled_input",
-        purpose: "The provider trace policy was not captured for this earlier run. Jarvis retained the local structured record.",
+        purpose: "The provider trace policy was not captured for this earlier run. Pantheon retained the local structured record.",
       };
   const suppliedEvidence = fixture?.sources?.length
     ? fixture.sources.map((source) => ({

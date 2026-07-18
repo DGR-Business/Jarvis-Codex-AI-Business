@@ -2,6 +2,7 @@ const CONFIG = require("../config");
 const { runMonitorCycle } = require("./monitor");
 const { runOnce } = require("./orchestrator");
 const { generateWeeklyDigest } = require("./executive-digest");
+const { runPantheonSupervisorCycle } = require("./pantheon-supervisor");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 
 const DEFAULT_LEASE_SECONDS = 30 * 60;
@@ -31,12 +32,26 @@ const DEFAULT_JOBS = [
     },
   },
   {
+    id: "job-pantheon-supervisor",
+    name: "Pantheon commercial supervisor",
+    kind: "pantheon_supervisor",
+    status: "enabled",
+    intervalSeconds: 5 * 60,
+    priority: 2,
+    metadata: {
+      purpose: "Continue exact internal commercial work, incorporate worker results and stop at genuine operator or setup boundaries.",
+      maxSteps: 4,
+      autoStartDiscovery: false,
+      leaseSeconds: 30 * 60,
+    },
+  },
+  {
     id: "job-weekly-executive-digest",
     name: "Weekly executive brief",
     kind: "weekly_executive_digest",
     status: "enabled",
     intervalSeconds: 7 * 24 * 60 * 60,
-    priority: 2,
+    priority: 3,
     metadata: {
       purpose: "Refresh one concise weekly business brief without creating an operator interruption.",
       internalOnly: true,
@@ -49,7 +64,7 @@ const DEFAULT_JOBS = [
     kind: "safe_work_loop",
     status: "disabled",
     intervalSeconds: 5 * 60,
-    priority: 3,
+    priority: 4,
     metadata: {
       purpose: "Run queued protected internal work until blocked, ready for review, idle, or the step limit.",
       maxSteps: 5,
@@ -425,6 +440,25 @@ async function executeSchedulerJob(db, job, options = {}) {
       stoppedBy: result.stoppedBy,
       stepsRun: result.stepsRun,
       safetyReason: result.safetyReason || null,
+    };
+  }
+
+  if (job.kind === "pantheon_supervisor") {
+    const result = await runPantheonSupervisorCycle(db, {
+      triggerType: options.manual ? "manual" : "scheduled",
+      triggerId: options.schedulerRunId || job.id,
+      startedBy: "scheduler",
+      maxSteps: options.maxSteps || job.metadata.maxSteps || 4,
+      allowDiscoveryStart: options.allowDiscoveryStart === true || job.metadata.autoStartDiscovery === true,
+      prompt: options.prompt,
+    });
+    return {
+      kind: job.kind,
+      status: result.status,
+      supervisorCycleId: result.cycle?.id || null,
+      actionCount: result.actions?.length || 0,
+      nextActionType: result.cycle?.next_action_type || null,
+      summary: result.cycle?.summary || "",
     };
   }
 

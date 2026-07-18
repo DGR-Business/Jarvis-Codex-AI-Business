@@ -1,23 +1,23 @@
-# Jarvis-Codex Runtime Instructions
+# Pantheon Runtime Instructions
 
 ## Mission
 
-This repository is now a Codex-led AI business operating system. Codex is the
-engineer and administrator of the system, but the business runtime must be real
-software: persistent state, queueable work, approvals, monitoring, cost controls,
-retry paths, and human escalation.
+Pantheon is Daniel's AI business operating system. Jarvis is the Codex-based
+developer, IT engineer, monitor, maintainer, and continuous-improvement owner.
+Pantheon itself must remain real software: persistent state, queueable work,
+approvals, monitoring, cost controls, recovery paths, and human escalation.
 
 Prompts are guidance, not architecture. Do not claim autonomy unless the
 capability is backed by runtime state, code, logs, and tests.
 
 ## Master Plan
 
-Use `docs/Jarvis-Codex Master Plan.md` as the living source of truth before
+Use `docs/Pantheon Master Plan.md` as the living source of truth before
 choosing substantial next work. New implementation should map to a roadmap stage,
 system layer, decision gate, risk, or backlog item in that plan. If testing or
 operator direction changes the roadmap, update the plan in the same session.
 
-Use `docs/Jarvis-Codex Build Log.md` as the durable running memory of decisions,
+Use `docs/Pantheon Build Log.md` as the durable running memory of decisions,
 implementation progress, proof results, and next actions. Update it after
 meaningful foundation changes so future sessions do not depend on chat history.
 
@@ -37,23 +37,49 @@ meaningful foundation changes so future sessions do not depend on chat history.
   next money move, and kill/revise criteria. Work that does not improve demand,
   offer, distribution, conversion, fulfilment, feedback, or unit economics is
   support work, not the goal.
+- Net cash contribution in AUD is the primary financial truth. It includes
+  revenue, refunds, platform fees, fulfilment, advertising, paid tools, model
+  usage, and other attributable costs. Estimates must never be presented as
+  settled costs.
+- Opportunity work must move from broad discovery to evidence-backed diligence.
+  It may cover digital products, POD, marketplace products, affiliate models,
+  white-label products, and other lawful online ventures. A proposed venture
+  must not be rejected merely because it is outside the first proof path.
+- A venture is tested as a credible commercial offer, not as an arbitrary single
+  item. Catalogue breadth, variants, geography, and language must be justified
+  by demand, competitors, economics, and channel norms.
+- Before pausing a venture, diagnose reach, audience, creative, listing, value,
+  catalogue, price, checkout, fulfilment, and underlying demand. A failed result
+  is evidence to investigate, not permission to invent a success or kill blindly.
 - The system must continuously improve. For every meaningful commercial action,
   state the hypothesis, smallest useful action, expected metric, actual result,
   learning, and improvement. When metrics or real-world results contradict the
-  plan, Codex should surface the issue, recommend a correction, and consult the
-  operator on important or risky changes.
+  plan, Pantheon should surface the issue and recommend a correction. Jarvis may
+  repair tested, reversible, low-risk technical faults and report them afterward;
+  material policy and business changes remain visible to Daniel.
 - The operator experience should be simple. Agents and runtime processes do the
   heavy processing; the dashboard should surface the money move, evidence,
   expected upside, risk, and decision controls without making the operator hunt
   through documents or tabs.
-- Default to dry-run for all external actions until an operator explicitly
-  approves live execution.
-- Publishing, account creation, paid tools, money movement, legal agreements,
-  customer disputes, and compliance determinations are hard-stop items.
+- Internal analysis, research, drafting, and quality review may run within the
+  recorded A$100 monthly operating mandate. The ChatGPT subscription is tracked
+  separately and does not consume that mandate.
+- Public publishing, first-stage customer contact, account creation, KYC, OAuth
+  or MFA, paid advertising activation, money movement, legal agreements, and
+  consequential disputes remain protected actions.
+- Public-data collection may use normal browsing and documented public
+  endpoints. Never bypass authentication, CAPTCHAs, paywalls, robots controls,
+  rate limits, private endpoints, or technical access controls.
 - Every external action adapter must expose a dry-run path and a health/status
   surface before live credentials are used.
 - Every workflow must record events, costs or cost estimates, retries, and any
   approval requirement in the database.
+- One venture remains active until it reaches three independent paying buyers
+  and positive net cash contribution. Pantheon may then propose up to three
+  concurrent ventures. Thirty percent of realised post-proof profit may be
+  proposed for reinvestment, subject to recorded financial policy.
+- Daniel may submit a specific venture idea at any time. It enters the same
+  evidence, economics, risk, and readiness process as discovered opportunities.
 - Do not store secrets in this repo. Use environment variables or the relevant
   app/connector OAuth store.
 - Keep the user interface accessible and operational. No marketing pages, no
@@ -77,6 +103,6 @@ Legacy Claude-era files now belong under `archive/historical/` as reference
 material only. New durable behavior belongs in `src/`, `public/`, `test/`,
 `.codex/`, current `config/`, or current docs under `docs/`.
 
-The first commercial pilot direction is digital products before POD/Gelato.
-POD, supplier-push publishing, and marketplace automation remain later guarded
-paths unless the master plan is updated.
+Historical plans and proof records retain their original names and conclusions.
+Active product language is Pantheon. "Jarvis" means the Codex-based technical
+steward, not a runtime worker or the product itself.

@@ -55,4 +55,4 @@ $temporaryPath = "$credentialPath.tmp"
 $profile | ConvertTo-Json | Set-Content -LiteralPath $temporaryPath -Encoding utf8
 Move-Item -LiteralPath $temporaryPath -Destination $credentialPath -Force
 
-Write-Host "OpenAI is securely connected for this Windows account. Paid work still requires an exact Jarvis approval."
+Write-Host "OpenAI is securely connected for Pantheon on this Windows account. Internal AI work remains budget-controlled and consequential outside actions stay protected."

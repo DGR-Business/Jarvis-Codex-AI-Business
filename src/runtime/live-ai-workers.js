@@ -26,15 +26,22 @@ const { spendCostId, stableIdSegment } = require("./stable-id");
 const {
   canPrepareReviewedRetry,
 } = require("./live-ai-retry-policy");
+const { configuredEnvironmentName } = require("../adapters/pantheon-environment");
 
 const MIN_LIVE_AI_WORKER_BUDGET_CENTS = 40;
 const MAX_LIVE_AI_WORKER_BUDGET_CENTS = 5000;
 const DEMAND_VALIDATOR_FIXTURE_CAPABILITY = "demand_validator.reasoning_on_supplied_evidence";
 const SUPPLIED_EVIDENCE_CONTEXT_EXCEPTION = Object.freeze({
-  schema: "jarvis.agent-context-exception.v1",
+  schema: "pantheon.agent-context-exception.v1",
   id: "demand-validator-versioned-supplied-evidence",
   policyVersion: "2026-07-17.1",
 });
+// Earlier Chief assignment records keep their original schema so in-flight
+// work remains resumable after the Pantheon rename.
+const CHIEF_ASSIGNMENT_SCHEMAS = new Set([
+  "pantheon.chief-specialist-assignment.v1",
+  "jarvis.chief-specialist-assignment.v1",
+]);
 const SUPPLIED_EVIDENCE_EXPECTED_OUTPUT = "A structured recommendation with evidence, counterevidence, assumptions, price/channel hypothesis, smallest test, metric, stop rule, confidence and risks.";
 const SUPPLIED_EVIDENCE_EXPECTED_METRIC = "Deterministic scope, source, structure and cost checks pass; Daniel separately judges commercial usefulness.";
 const SUPPLIED_EVIDENCE_TRACE_PURPOSE = "Make the supplied fixture and structured recommendation reviewable in OpenAI traces while retaining the local audit record.";
@@ -105,9 +112,9 @@ function requestedToolControls(options = {}) {
   const tools = [...new Set(Array.isArray(options.tools) ? options.tools.filter(Boolean).map(String) : [])];
   const hasSearch = tools.some((toolId) => ["research_adapter", "live_web_with_approval"].includes(toolId));
   const hasImageGeneration = tools.includes("image_generation_spend");
-  const flags = ["JARVIS_ENABLE_LIVE_MODELS"];
-  if (hasSearch) flags.push("JARVIS_ENABLE_LIVE_RESEARCH");
-  if (hasImageGeneration) flags.push("JARVIS_ENABLE_IMAGE_GENERATION");
+  const flags = [configuredEnvironmentName("enableLiveModels")];
+  if (hasSearch) flags.push(configuredEnvironmentName("enableLiveResearch"));
+  if (hasImageGeneration) flags.push(configuredEnvironmentName("enableImageGeneration"));
   return {
     tools,
     flags,
@@ -319,7 +326,7 @@ function modelCapabilityKey(options, workerDefinition, contextException, proofMo
   if (!capabilityKey && workerDefinition.id === "quality_reviewer" && options.parameters?.reviewOfTaskId) {
     capabilityKey = "quality_reviewer.exact_deliverable_review";
   }
-  if (!capabilityKey && options.parameters?.chiefAssignment?.schema === "jarvis.chief-specialist-assignment.v1") {
+  if (!capabilityKey && CHIEF_ASSIGNMENT_SCHEMAS.has(options.parameters?.chiefAssignment?.schema)) {
     capabilityKey = `${workerDefinition.id}.chief_bounded_specialist`;
   }
   if (!capabilityKey) capabilityKey = `${workerDefinition.id}.live_assignment`;
@@ -504,7 +511,7 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
       || attempt.outcome_status !== "known_provider_result_needs_review"
       || !providerResultKnown
     ) {
-      throw new Error("Jarvis cannot prove that the prior provider outcome is known. Reconcile it before retrying.");
+      throw new Error("Pantheon cannot prove that the prior provider outcome is known. Reconcile it before retrying.");
     }
     const errorKind = attempt.error_kind || modelCall.error_kind || modelMetadata.errorKind;
     if (!canPrepareReviewedRetry(task, errorKind)) {
@@ -525,12 +532,12 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
       || receipt?.status !== "complete"
       || receipt?.outcome_status !== "known"
     ) {
-      throw new Error("Jarvis cannot prove a completed provider result and local evidence check for this retry.");
+      throw new Error("Pantheon cannot prove a completed provider result and local evidence check for this retry.");
     }
     const findings = fromJson(evaluation.findings, []);
     retryReason = findings.length
-      ? `Jarvis evidence check: ${findings.join(" ")}`
-      : `Jarvis evidence check status: ${evaluation.status}.`;
+      ? `Pantheon evidence check: ${findings.join(" ")}`
+      : `Pantheon evidence check status: ${evaluation.status}.`;
   }
 
   const workflowTasks = all(
@@ -708,7 +715,7 @@ function refreshOutdatedLiveAiWorkerApproval(db, approvalId, options = {}) {
       ],
     );
     if (superseded.changes !== 1) {
-      throw new Error("The outdated decision changed while Jarvis was refreshing it.");
+      throw new Error("The outdated decision changed while Pantheon was refreshing it.");
     }
     run(
       db,
@@ -832,7 +839,7 @@ function refreshOutdatedLiveAiWorkerApprovals(db, options = {}) {
         type: "approval.refresh_failed",
         entityType: "approval",
         entityId: row.id,
-        message: "Jarvis could not safely refresh an outdated AI-work decision. It remains blocked for review.",
+        message: "Pantheon could not safely refresh an outdated AI-work decision. It remains blocked for review.",
         metadata: { approvalId: row.id, reason: error.message, noSpendOccurred: true },
       });
     }
@@ -910,7 +917,10 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const proofMode = options.proofMode === true || CONFIG.systemProofMode === true;
   const toolArguments = JSON.parse(JSON.stringify(options.toolArguments || {}));
   const workBrief = cleanWorkBrief(options.workBrief);
-  const qualityReviewedWorker = ["product_builder", "copy_conversion_agent", "distribution_operator"].includes(workerDefinition.id);
+  const pantheonSupervisorOwned = options.parameters?.pantheonCommercial?.supervisorOwned === true
+    || options.parameters?.pantheonProduction?.supervisorOwned === true;
+  const qualityReviewedWorker = !pantheonSupervisorOwned
+    && ["product_builder", "copy_conversion_agent", "distribution_operator"].includes(workerDefinition.id);
   const requestParameters = {
     ...(options.parameters || {}),
     ...(qualityReviewedWorker ? { requiredReviewer: "quality_reviewer" } : {}),

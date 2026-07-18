@@ -5,6 +5,10 @@ const { createExecutionDescriptor, scopeHash } = require("./approval-scope");
 const { worstCaseExecutionCostAud } = require("./model-pricing");
 const { ensureSpendApproval } = require("./spend-gate");
 const { createCommandPlan } = require("./planner");
+const {
+  configuredEnvironmentName,
+  environmentValue,
+} = require("../adapters/pantheon-environment");
 
 const MIN_LIVE_RESEARCH_BUDGET_CENTS = 60;
 const MAX_LIVE_RESEARCH_BUDGET_CENTS = 5000;
@@ -91,7 +95,8 @@ function requestLiveResearch(db, workflowId, options = {}) {
   if (options.provider && options.provider !== provider) {
     throw new Error(`Live research is blocked because ${options.provider} is not the configured outbound provider ${provider}.`);
   }
-  const model = process.env.JARVIS_LIVE_RESEARCH_MODEL || CONFIG.liveResearchModel;
+  const model = environmentValue("liveResearchModel", CONFIG.liveResearchModel);
+  const liveResearchFlag = configuredEnvironmentName("enableLiveResearch");
   const maxOutputTokens = Number(CONFIG.liveResearchMaxOutputTokens);
   if (options.maxOutputTokens && Number(options.maxOutputTokens) !== maxOutputTokens) {
     throw new Error("Live research is blocked because the requested output limit does not match the outbound adapter limit.");
@@ -134,7 +139,7 @@ function requestLiveResearch(db, workflowId, options = {}) {
       maxCostCents: amountCents,
       effects: [],
       requiresProviderEnv: "OPENAI_API_KEY",
-      requiresLiveFlag: "JARVIS_ENABLE_LIVE_RESEARCH",
+      requiresLiveFlag: liveResearchFlag,
       requiresRuntimeCapability: "live_research_adapter",
     },
   };
@@ -189,7 +194,7 @@ function requestLiveResearch(db, workflowId, options = {}) {
     tracePolicy,
     preflightRequirements: {
       providerEnv: ["OPENAI_API_KEY"],
-      liveFlags: ["JARVIS_ENABLE_LIVE_RESEARCH"],
+      liveFlags: [liveResearchFlag],
       runtimeCapabilities: ["live_research_adapter"],
     },
     externalEffects: [],

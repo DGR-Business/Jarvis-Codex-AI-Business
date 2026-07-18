@@ -77,7 +77,7 @@ function generateWeeklyDigest(db, options = {}) {
   const nextActions = [
     commercial.ventureCase.next_money_move,
     ...(unknownOutcomes ? ["Reconcile unknown provider outcomes and costs; do not repeat affected work automatically."] : []),
-    ...(operatingIssues ? ["Review the operating issue Jarvis found before relying on the affected AI work."] : []),
+    ...(operatingIssues ? ["Review the operating issue Pantheon found before relying on the affected AI work."] : []),
     ...(openDecisions ? ["Review the waiting consequential decisions."] : []),
   ].filter(Boolean);
   const summary = [

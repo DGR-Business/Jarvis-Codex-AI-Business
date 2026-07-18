@@ -12,4 +12,4 @@ Use one file per meaningful decision. Keep each record plain:
 
 The steering document remains:
 
-`docs/Jarvis-Codex Master Plan.md`
+`docs/Pantheon Master Plan.md`

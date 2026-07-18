@@ -14,6 +14,12 @@ const {
   runLiveAiWorkerTask,
 } = require("../adapters/live-ai-worker");
 const {
+  environmentDisabled,
+  environmentEnabled,
+  environmentValue,
+  preferredEnvironmentName,
+} = require("../adapters/pantheon-environment");
+const {
   demandValidatorPilotOutputSchema: demandValidatorPilotSchema,
   normalizeWorkerOutput,
   workerOutputZodSchema,
@@ -22,6 +28,7 @@ const {
   buildAgentsSdkModelInput,
   buildAgentsSdkCapabilityPlan,
   extractAgentsSdkToolActivity,
+  extractContainerFileCitations,
   extractGeneratedImages,
   materializeAgentsSdkTools,
   sdkInterruptionDetails,
@@ -33,20 +40,52 @@ const {
   requestAgentToolUse,
 } = require("./agent-tool-gate");
 const { persistAgentsSdkResearchEvidence } = require("./agent-execution-evidence");
-const { estimateModelUsageAud } = require("./model-pricing");
+const { estimateModelUsageAud, estimateObservedHostedToolUsageAud } = require("./model-pricing");
 const { markTaskAttemptProviderDispatched } = require("./task-claims");
 
 const AGENTS_SDK_PROVIDER = "openai-agents-sdk";
 
 let testSdkRunner = null;
 let defaultSdkRunner = null;
+let testContainerFileDownloader = null;
+
+const PRODUCT_FILE_LIMIT_BYTES = 50 * 1024 * 1024;
+const PRODUCT_FILE_TOTAL_LIMIT_BYTES = 150 * 1024 * 1024;
+const PRODUCT_ARCHIVE_TOTAL_LIMIT_BYTES = 250 * 1024 * 1024;
+const PRODUCT_MANIFEST_SCHEMA = "pantheon.product-manifest.v1";
+const PRODUCT_FILE_EXTENSIONS = new Set([
+  ".csv",
+  ".docx",
+  ".html",
+  ".jpeg",
+  ".jpg",
+  ".json",
+  ".md",
+  ".pdf",
+  ".png",
+  ".pptx",
+  ".txt",
+  ".webp",
+  ".xlsx",
+  ".zip",
+]);
+const BLOCKED_ARCHIVE_EXTENSIONS = new Set([
+  ".bat",
+  ".cmd",
+  ".com",
+  ".dll",
+  ".exe",
+  ".msi",
+  ".ps1",
+  ".scr",
+]);
 
 function safeId(value) {
   return String(value || "asset").replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80);
 }
 
 function stableSafetyIdentifier(task) {
-  return `jarvis_${crypto.createHash("sha256").update(String(task.venture_id || task.workflow_id || "local-operator")).digest("hex").slice(0, 32)}`;
+  return `pantheon_${crypto.createHash("sha256").update(String(task.venture_id || task.workflow_id || "local-operator")).digest("hex").slice(0, 32)}`;
 }
 
 function isSdkInvalidFinalOutput(error) {
@@ -58,6 +97,20 @@ function isSdkInvalidFinalOutput(error) {
     || /^Invalid output type:/i.test(message);
 }
 
+function sdkHttpStatus(error) {
+  for (const candidate of [
+    error?.status,
+    error?.statusCode,
+    error?.httpStatus,
+    error?.response?.status,
+    error?.cause?.status,
+  ]) {
+    const status = Number(candidate);
+    if (Number.isInteger(status) && status >= 100 && status <= 599) return status;
+  }
+  return null;
+}
+
 function classifySdkRunError(error, dispatchStarted, traceId) {
   error.agentSdkTraceId = traceId;
   if (dispatchStarted && isSdkInvalidFinalOutput(error)) {
@@ -67,6 +120,20 @@ function classifySdkRunError(error, dispatchStarted, traceId) {
     error.needsAttention = true;
     error.providerDispatchStatus = "response_received_invalid_output";
     error.errorKind = "provider_output_invalid";
+    return error;
+  }
+  const httpStatus = sdkHttpStatus(error);
+  if (dispatchStarted && httpStatus >= 400 && httpStatus < 500) {
+    error.httpStatus = httpStatus;
+    error.providerCallOccurred = true;
+    error.providerResponseReceived = true;
+    error.definiteProviderRejection = true;
+    error.outcomeUnknown = false;
+    error.needsAttention = false;
+    error.providerDispatchStatus = "definite_rejection";
+    error.errorKind = "provider_rejected";
+    error.providerRequestId = error.requestID || error.requestId || null;
+    error.incurredEstimateCents = 0;
     return error;
   }
   if (error.providerCallOccurred === undefined) error.providerCallOccurred = dispatchStarted;
@@ -121,13 +188,41 @@ function getApprovedSdkResumeState(db, task) {
   return getApprovedSdkResumeSelection(db, task)?.serializedState || null;
 }
 
-function sdkPricingEstimate(model, usage, approvedCapCents, toolActivity) {
+function sdkPricingEstimate(model, usage, approvedCapCents, toolActivity, capabilityPlan) {
+  const tokenEstimate = estimateModelUsageAud(model, usage, { fallbackCents: approvedCapCents });
+  const hostedToolEstimate = estimateObservedHostedToolUsageAud(toolActivity, capabilityPlan, {
+    audPerUsd: tokenEstimate.audPerUsd,
+  });
+  const publishedEstimateReady = Number.isFinite(tokenEstimate.usdAmount)
+    && Number.isFinite(hostedToolEstimate.usdAmount)
+    && Number.isFinite(tokenEstimate.audPerUsd);
+  const combinedUsd = publishedEstimateReady
+    ? Number(tokenEstimate.usdAmount) + Number(hostedToolEstimate.usdAmount)
+    : null;
+  const combinedAud = publishedEstimateReady ? combinedUsd * Number(tokenEstimate.audPerUsd) : null;
+  const combinedCents = publishedEstimateReady
+    ? Math.max(1, Math.ceil(combinedAud * 100))
+    : Math.min(
+      approvedCapCents,
+      Math.max(0, Number(tokenEstimate.amountCents || 0))
+        + Math.max(0, Number(hostedToolEstimate.amountCents || 0)),
+    );
   return {
-    ...estimateModelUsageAud(model, usage, { fallbackCents: approvedCapCents }),
+    ...tokenEstimate,
+    amountCents: Math.min(approvedCapCents, combinedCents),
+    usdAmount: combinedUsd === null ? tokenEstimate.usdAmount : Number(combinedUsd.toFixed(8)),
+    audAmount: combinedAud === null ? tokenEstimate.audAmount : Number(combinedAud.toFixed(8)),
+    tokenAmountCents: tokenEstimate.amountCents,
+    tokenUsdAmount: tokenEstimate.usdAmount ?? null,
+    tokenAudAmount: tokenEstimate.audAmount ?? null,
     hostedToolCalls: toolActivity.length,
-    hostedToolCostStatus: toolActivity.length ? "pending_provider_reconciliation" : "not_applicable",
+    hostedToolAmountCents: hostedToolEstimate.amountCents,
+    hostedToolUsdAmount: hostedToolEstimate.usdAmount,
+    hostedToolAudAmount: hostedToolEstimate.audAmount,
+    hostedToolCostStatus: hostedToolEstimate.status,
+    hostedToolPricing: hostedToolEstimate.details,
     note: toolActivity.length
-      ? "The token estimate is recorded now; hosted-tool charges remain pending until provider usage is reconciled."
+      ? "Token and observed hosted-tool charges are included using current published prices; exact provider billing remains pending reconciliation."
       : "No hosted-tool charge applies to this run.",
   };
 }
@@ -264,6 +359,288 @@ function persistGeneratedAssets(db, task, capabilityPlan, result) {
   });
 }
 
+function safeProductFilename(value, fallback) {
+  const base = path.basename(String(value || fallback || "product-file"))
+    .replace(/[^a-zA-Z0-9._ -]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 140);
+  return base || fallback || "product-file";
+}
+
+function productMediaType(extension) {
+  return {
+    ".csv": "text/csv",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".html": "text/html",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".json": "application/json",
+    ".md": "text/markdown",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".txt": "text/plain",
+    ".webp": "image/webp",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".zip": "application/zip",
+  }[extension] || "application/octet-stream";
+}
+
+function validateArchive(bytes, extension) {
+  const AdmZip = require("adm-zip");
+  let archive;
+  try {
+    archive = new AdmZip(bytes);
+  } catch {
+    throw new Error(`OpenAI returned an invalid ${extension.slice(1).toUpperCase()} archive.`);
+  }
+  const entries = archive.getEntries();
+  if (!entries.length || entries.length > 300) {
+    throw new Error("The generated product archive must contain between 1 and 300 entries.");
+  }
+  let expandedBytes = 0;
+  const names = [];
+  for (const entry of entries) {
+    const normalized = String(entry.entryName || "").replace(/\\/g, "/");
+    if (!normalized || normalized.startsWith("/") || /^[a-z]:/i.test(normalized)
+        || normalized.split("/").includes("..")) {
+      throw new Error("The generated product archive contains an unsafe path.");
+    }
+    const entryExtension = path.extname(normalized).toLowerCase();
+    if (BLOCKED_ARCHIVE_EXTENSIONS.has(entryExtension)) {
+      throw new Error(`The generated product archive contains a blocked executable file: ${normalized}.`);
+    }
+    expandedBytes += Number(entry.header?.size || 0);
+    if (expandedBytes > PRODUCT_ARCHIVE_TOTAL_LIMIT_BYTES) {
+      throw new Error("The generated product archive expands beyond Pantheon's 250 MB safety limit.");
+    }
+    if (!entry.isDirectory) names.push(normalized);
+  }
+  if (extension === ".xlsx" && !names.some((name) => name.startsWith("xl/"))) {
+    throw new Error("The generated XLSX file does not contain a valid workbook structure.");
+  }
+  if (extension === ".docx" && !names.some((name) => name.startsWith("word/"))) {
+    throw new Error("The generated DOCX file does not contain a valid document structure.");
+  }
+  if (extension === ".pptx" && !names.some((name) => name.startsWith("ppt/"))) {
+    throw new Error("The generated PPTX file does not contain a valid presentation structure.");
+  }
+  return { entries: names, expandedBytes };
+}
+
+function validateProductFile(bytes, filename) {
+  if (!Buffer.isBuffer(bytes) || !bytes.length) throw new Error(`Generated product file ${filename} is empty.`);
+  if (bytes.length > PRODUCT_FILE_LIMIT_BYTES) {
+    throw new Error(`Generated product file ${filename} exceeds Pantheon's 50 MB per-file limit.`);
+  }
+  const extension = path.extname(filename).toLowerCase();
+  if (!PRODUCT_FILE_EXTENSIONS.has(extension)) {
+    throw new Error(`Generated product file ${filename} uses an unsupported file type.`);
+  }
+  if (extension === ".pdf" && bytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
+    throw new Error(`Generated product file ${filename} is not a valid PDF.`);
+  }
+  if ([".zip", ".xlsx", ".docx", ".pptx"].includes(extension)) {
+    if (bytes.subarray(0, 2).toString("ascii") !== "PK") {
+      throw new Error(`Generated product file ${filename} is not a valid ZIP-based file.`);
+    }
+    return { extension, archive: validateArchive(bytes, extension) };
+  }
+  if (extension === ".json") {
+    try {
+      return { extension, json: JSON.parse(bytes.toString("utf8")) };
+    } catch {
+      throw new Error(`Generated product file ${filename} is not valid JSON.`);
+    }
+  }
+  if ([".csv", ".html", ".md", ".txt"].includes(extension) && bytes.includes(0)) {
+    throw new Error(`Generated product file ${filename} contains invalid binary text.`);
+  }
+  const imageType = detectedImageMediaType(bytes);
+  if ([".png", ".jpeg", ".jpg", ".webp"].includes(extension) && !imageType) {
+    throw new Error(`Generated product file ${filename} is not a valid image.`);
+  }
+  return { extension };
+}
+
+async function defaultContainerFileDownloader(citation) {
+  const OpenAIModule = require("openai");
+  const OpenAI = OpenAIModule.default || OpenAIModule;
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const [metadata, response] = await Promise.all([
+    client.containers.files.retrieve(citation.fileId, { container_id: citation.containerId }),
+    client.containers.files.content.retrieve(citation.fileId, { container_id: citation.containerId }),
+  ]);
+  return {
+    filename: metadata?.path ? path.basename(metadata.path) : citation.filename,
+    bytes: Buffer.from(await response.arrayBuffer()),
+    metadata,
+  };
+}
+
+function normalizedArchiveName(value) {
+  return String(value || "").replace(/\\/g, "/").replace(/^\.?\//, "").toLowerCase();
+}
+
+function validateProductManifest(downloads, task) {
+  const spec = task.payload?.liveSpendRequest?.parameters?.productBuildSpec || {};
+  const manifestName = String(spec.manifestFilename || "pantheon-product-manifest.json").toLowerCase();
+  const manifestFile = downloads.find((file) => file.filename.toLowerCase() === manifestName)
+    || downloads.find((file) => file.validation.json?.schema === PRODUCT_MANIFEST_SCHEMA);
+  if (!manifestFile) {
+    throw new Error(`Product Builder did not return the required ${manifestName} file.`);
+  }
+  const manifest = manifestFile.validation.json;
+  if (!manifest || manifest.schema !== PRODUCT_MANIFEST_SCHEMA) {
+    throw new Error("Product Builder returned a manifest with the wrong schema.");
+  }
+  if (String(manifest.planId || "") !== String(spec.planId || "")) {
+    throw new Error("The generated product manifest does not match the approved catalogue plan.");
+  }
+  if (String(manifest.opportunityId || "") !== String(spec.opportunityId || "")) {
+    throw new Error("The generated product manifest does not match the approved opportunity.");
+  }
+  const expectedItemIds = Array.isArray(spec.catalogueItems)
+    ? spec.catalogueItems.map((item) => String(item.id))
+    : [];
+  const manifestItems = Array.isArray(manifest.catalogueItems) ? manifest.catalogueItems : [];
+  const actualItemIds = manifestItems.map((item) => String(item.id || item.catalogueItemId || ""));
+  if (!expectedItemIds.length || expectedItemIds.some((id) => !actualItemIds.includes(id))) {
+    throw new Error("The generated product manifest does not cover every approved catalogue item.");
+  }
+  if (new Set(actualItemIds).size !== actualItemIds.length) {
+    throw new Error("The generated product manifest contains duplicate catalogue item identifiers.");
+  }
+  const availableNames = new Set();
+  for (const file of downloads) {
+    availableNames.add(normalizedArchiveName(file.filename));
+    for (const entry of file.validation.archive?.entries || []) availableNames.add(normalizedArchiveName(entry));
+  }
+  for (const item of manifestItems) {
+    const files = Array.isArray(item.files) ? item.files.filter(Boolean).map(normalizedArchiveName) : [];
+    if (!files.length) throw new Error(`Catalogue item ${item.id || item.catalogueItemId || "unknown"} has no product file in the manifest.`);
+    if (files.some((filename) => !availableNames.has(filename))) {
+      throw new Error(`Catalogue item ${item.id || item.catalogueItemId || "unknown"} references a product file that Pantheon did not receive.`);
+    }
+  }
+  if (downloads.length < Math.max(2, Number(spec.minimumReturnedFiles || 2))) {
+    throw new Error("Product Builder returned too few files for the approved product package.");
+  }
+  return { manifest, manifestFile };
+}
+
+async function persistGeneratedProductFiles(db, task, capabilityPlan, result) {
+  const codeSpec = capabilityPlan.specs.find((spec) => spec.sdkName === "code_interpreter");
+  if (!codeSpec) return [];
+  const citations = extractContainerFileCitations(result);
+  if (!citations.length) {
+    throw new Error("Product Builder used Code Interpreter but returned no downloadable product files.");
+  }
+  const downloader = testContainerFileDownloader || defaultContainerFileDownloader;
+  const downloads = [];
+  let totalBytes = 0;
+  for (let index = 0; index < citations.length; index += 1) {
+    const citation = citations[index];
+    const downloaded = await downloader(citation, { task, capabilityPlan });
+    const filename = safeProductFilename(downloaded.filename || citation.filename, `product-file-${index + 1}`);
+    const bytes = Buffer.isBuffer(downloaded.bytes) ? downloaded.bytes : Buffer.from(downloaded.bytes || []);
+    totalBytes += bytes.length;
+    if (totalBytes > PRODUCT_FILE_TOTAL_LIMIT_BYTES) {
+      throw new Error("Generated product files exceed Pantheon's 150 MB total download limit.");
+    }
+    downloads.push({
+      citation,
+      filename,
+      bytes,
+      validation: validateProductFile(bytes, filename),
+      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+    });
+  }
+  const { manifest, manifestFile } = validateProductManifest(downloads, task);
+  const outputDir = path.join(CONFIG.artifactRoot, "workflows", safeId(task.workflow_id), "product-files");
+  fs.mkdirSync(outputDir, { recursive: true });
+  const ts = now();
+  const persisted = [];
+  for (let index = 0; index < downloads.length; index += 1) {
+    const file = downloads[index];
+    const extension = path.extname(file.filename).toLowerCase();
+    const deliverableId = `deliv_product_${safeId(task.id)}_${index + 1}`;
+    const outputName = `${String(index + 1).padStart(2, "0")}-${file.filename}`;
+    const outputPath = path.join(outputDir, outputName);
+    if (fs.existsSync(outputPath)) {
+      const existingHash = crypto.createHash("sha256").update(fs.readFileSync(outputPath)).digest("hex");
+      if (existingHash !== file.sha256) throw new Error(`Product file path ${outputName} already contains different bytes.`);
+    } else {
+      const temporaryPath = `${outputPath}.${process.pid}.${randomId().slice(0, 8)}.tmp`;
+      fs.writeFileSync(temporaryPath, file.bytes, { flag: "wx" });
+      fs.renameSync(temporaryPath, outputPath);
+    }
+    const relativePath = path.relative(CONFIG.rootDir, outputPath).replace(/\\/g, "/");
+    const mediaType = productMediaType(extension);
+    run(
+      db,
+      `INSERT INTO deliverables
+       (id, workflow_id, command_id, task_id, venture_id, title, human_name, audience,
+        format, status, file_path, summary, metadata, content_hash, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'operator', ?, 'built_pending_quality_review', ?, ?, ?, ?, 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         human_name = excluded.human_name,
+         status = excluded.status,
+         file_path = excluded.file_path,
+         summary = excluded.summary,
+         metadata = excluded.metadata,
+         content_hash = excluded.content_hash,
+         version = CASE WHEN deliverables.content_hash IS NOT excluded.content_hash THEN deliverables.version + 1 ELSE deliverables.version END,
+         updated_at = excluded.updated_at`,
+      [
+        deliverableId,
+        task.workflow_id,
+        task.payload?.commandId || null,
+        task.id,
+        task.venture_id,
+        file === manifestFile ? "Product Manifest" : "Generated Product File",
+        file.filename,
+        mediaType,
+        relativePath,
+        file === manifestFile
+          ? "Machine-readable catalogue manifest used by Pantheon to verify product coverage."
+          : "Product file generated in an isolated Code Interpreter workspace and retained locally for quality review.",
+        toJson({
+          provider: AGENTS_SDK_PROVIDER,
+          containerId: file.citation.containerId,
+          providerFileId: file.citation.fileId,
+          sha256: file.sha256,
+          bytes: file.bytes.length,
+          validation: {
+            extension: file.validation.extension,
+            archiveEntries: file.validation.archive?.entries?.length || 0,
+            expandedBytes: file.validation.archive?.expandedBytes || 0,
+          },
+          productManifest: file === manifestFile ? manifest : undefined,
+          approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
+        }),
+        file.sha256,
+        ts,
+        ts,
+      ],
+    );
+    persisted.push({
+      id: deliverableId,
+      humanName: file.filename,
+      filePath: relativePath,
+      format: mediaType,
+      status: "built_pending_quality_review",
+      bytes: file.bytes.length,
+      sha256: file.sha256,
+      containerId: file.citation.containerId,
+      providerFileId: file.citation.fileId,
+      manifest: file === manifestFile,
+    });
+  }
+  return { files: persisted, manifest };
+}
+
 function packageAvailable(name) {
   try {
     require.resolve(name);
@@ -274,30 +651,44 @@ function packageAvailable(name) {
 }
 
 function isAgentRuntimeSdkAvailable() {
-  return packageAvailable("@openai/agents")
-    && packageAvailable("zod")
-    && process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK !== "1"
-    && process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER !== "1";
+  return getAgentRuntimeReadiness().primaryReady;
 }
 
 function getAgentRuntimeReadiness() {
   const sdkInstalled = packageAvailable("@openai/agents");
   const zodInstalled = packageAvailable("zod");
-  const sdkDisabled = process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK === "1";
-  const liveWorkerDisabled = process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER === "1";
-  const sdkReady = sdkInstalled && zodInstalled && !sdkDisabled && !liveWorkerDisabled;
+  const sdkDisabled = environmentDisabled("disableAgentsSdk");
+  const liveWorkerDisabled = environmentDisabled("disableLiveAiWorkerAdapter");
+  const hostedTools = {
+    webSearch: false,
+    imageGeneration: false,
+    codeInterpreter: false,
+  };
+  if (sdkInstalled) {
+    const sdk = require("@openai/agents");
+    hostedTools.webSearch = typeof sdk.webSearchTool === "function";
+    hostedTools.imageGeneration = typeof sdk.imageGenerationTool === "function";
+    hostedTools.codeInterpreter = typeof sdk.codeInterpreterTool === "function";
+  }
+  const hostedToolsReady = Object.values(hostedTools).every(Boolean);
+  const sdkReady = sdkInstalled && zodInstalled && hostedToolsReady && !sdkDisabled && !liveWorkerDisabled;
   const responsesFallbackReady = !liveWorkerDisabled;
   const blockers = [];
   if (!sdkInstalled) blockers.push("@openai/agents is not installed.");
   if (!zodInstalled) blockers.push("zod is not installed.");
-  if (sdkDisabled) blockers.push("OpenAI Agents SDK runner is disabled by JARVIS_DISABLE_OPENAI_AGENTS_SDK.");
-  if (liveWorkerDisabled) blockers.push("Live AI worker adapter is disabled by JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER.");
+  if (sdkInstalled && !hostedTools.webSearch) blockers.push("The installed Agents SDK does not expose web search.");
+  if (sdkInstalled && !hostedTools.imageGeneration) blockers.push("The installed Agents SDK does not expose image generation.");
+  if (sdkInstalled && !hostedTools.codeInterpreter) blockers.push("The installed Agents SDK does not expose Code Interpreter.");
+  if (sdkDisabled) blockers.push(`OpenAI Agents SDK runner is disabled by ${preferredEnvironmentName("disableAgentsSdk")}.`);
+  if (liveWorkerDisabled) blockers.push(`Live AI worker adapter is disabled by ${preferredEnvironmentName("disableLiveAiWorkerAdapter")}.`);
 
   return {
     primaryProvider: AGENTS_SDK_PROVIDER,
     primaryReady: sdkReady,
     sdkInstalled,
     zodInstalled,
+    hostedTools,
+    hostedToolsReady,
     sdkDisabled,
     liveWorkerDisabled,
     fallbackProvider: LIVE_AI_WORKER_PROVIDER,
@@ -314,6 +705,7 @@ function loadAgentsSdk() {
     Agent: sdk.Agent,
     Runner: sdk.Runner,
     RunState: sdk.RunState,
+    codeInterpreterTool: sdk.codeInterpreterTool,
     generateTraceId: sdk.generateTraceId,
     imageGenerationTool: sdk.imageGenerationTool,
     webSearchTool: sdk.webSearchTool,
@@ -484,7 +876,7 @@ function attachSdkLifecycleHooks(runner, task, callback) {
     ["agent_end", (context, agent) => emit(context, {
       type: "sdk_agent_finished",
       title: "OpenAI worker finished",
-      detail: `${agent?.name || "The approved worker"} finished its model work; Jarvis is checking and storing the result.`,
+      detail: `${agent?.name || "The approved worker"} finished its model work; Pantheon is checking and storing the result.`,
       metadata: { agentName: agent?.name || null },
     })],
     ["agent_handoff", (context, fromAgent, toAgent) => emit(context, {
@@ -563,7 +955,7 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
           ? ["web_search_call.action.sources"]
           : undefined,
         safety_identifier: stableSafetyIdentifier(task),
-        prompt_cache_key: `jarvis_${agentDefinition.id}_${requestBody.metadata.packet_schema}`,
+        prompt_cache_key: `pantheon_${agentDefinition.id}_${requestBody.metadata.packet_schema}`,
       },
     },
   });
@@ -594,7 +986,7 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     const result = await runner.run(agent, sdkInput, {
       maxTurns: capabilityPlan.maxTurns,
       traceId,
-      workflowName: `Jarvis ${agentDefinition.name} controlled run`,
+      workflowName: `Pantheon ${agentDefinition.name} controlled run`,
       traceIncludeSensitiveData: tracePolicy.providerTraceContent,
       signal,
       traceMetadata: {
@@ -625,8 +1017,8 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
 }
 
 async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options = {}) {
-  if (process.env.JARVIS_ENABLE_LIVE_MODELS !== "1") {
-    throw new Error("JARVIS_ENABLE_LIVE_MODELS must be set to 1 for live AI worker execution.");
+  if (!environmentEnabled("enableLiveModels")) {
+    throw new Error(`${preferredEnvironmentName("enableLiveModels")} must be set to 1 for live AI worker execution.`);
   }
   if (!isAgentRuntimeSdkAvailable()) {
     throw new Error(`OpenAI Agents SDK runner is not ready: ${getAgentRuntimeReadiness().blockers.join(" ")}`);
@@ -664,7 +1056,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   }));
   const blockedTool = toolInvocations.find((item) => !item.gate.allowed);
   if (blockedTool) {
-    throw new Error(`${blockedTool.spec.toolId} did not pass the Jarvis worker tool gate: ${blockedTool.gate.reason || blockedTool.gate.decision || "blocked"}.`);
+    throw new Error(`${blockedTool.spec.toolId} did not pass the Pantheon worker tool gate: ${blockedTool.gate.reason || blockedTool.gate.decision || "blocked"}.`);
   }
   let dispatchCall = null;
   let result;
@@ -721,6 +1113,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     if (error.providerCallOccurred === undefined) error.providerCallOccurred = dispatched;
     if (!error.providerDispatchStatus) error.providerDispatchStatus = error.outcomeUnknown ? "outcome_unknown" : "not_dispatched";
     const providerResponseReceived = error.providerResponseReceived === true;
+    const definiteProviderRejection = error.definiteProviderRejection === true;
     const pricedWorstCaseCents = Math.min(
       approvedCapCents,
       Math.max(
@@ -732,7 +1125,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         ),
       ),
     );
-    if (providerResponseReceived) {
+    if (providerResponseReceived && !definiteProviderRejection) {
       error.outcomeUnknown = false;
       error.needsAttention = true;
       error.errorKind = error.errorKind || "provider_output_invalid";
@@ -745,11 +1138,13 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     for (const invocation of toolInvocations) {
       recordAgentToolObservation(db, invocation.gate.id, {
         attemptId: options.taskClaim?.attemptId || null,
-        status: error.outcomeUnknown === true ? "unknown" : "missing",
+        status: definiteProviderRejection ? "failed" : error.outcomeUnknown === true ? "unknown" : "missing",
         toolName: invocation.spec.sdkName,
         toolId: invocation.spec.toolId,
         activity: null,
-        outputSummary: error.outcomeUnknown === true
+        outputSummary: definiteProviderRejection
+          ? `${invocation.spec.sdkName} did not run because OpenAI definitively rejected the request before model or tool execution.`
+          : error.outcomeUnknown === true
           ? `${invocation.spec.sdkName} was approved, but provider activity is unknown because the provider outcome is unresolved.`
           : `${invocation.spec.sdkName} was approved, but no matching provider activity was observed before the run failed.`,
       });
@@ -759,7 +1154,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       db,
       task,
       null,
-      providerResponseReceived ? pricedWorstCaseCents : approvedCapCents,
+      definiteProviderRejection ? 0 : providerResponseReceived ? pricedWorstCaseCents : approvedCapCents,
       requestBody.model,
       "failed",
       {
@@ -773,6 +1168,9 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       error: error.message,
       outcomeUnknown: error.outcomeUnknown === true,
       providerResponseReceived,
+      definiteProviderRejection,
+      providerRequestId: error.providerRequestId || error.requestID || null,
+      httpStatus: error.httpStatus || error.status || null,
       errorKind: error.errorKind
         || (error.outcomeUnknown === true ? "provider_outcome_unknown" : "failed_before_provider_dispatch"),
       providerDispatchStatus: error.providerDispatchStatus,
@@ -783,7 +1181,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     error.modelCallId = failedCall.id;
     error.providerReceipt = {
       modelCallId: failedCall.id,
-      providerRequestId: null,
+      providerRequestId: error.providerRequestId || error.requestID || null,
       provider: AGENTS_SDK_PROVIDER,
       status: error.providerDispatchStatus,
       traceId,
@@ -816,7 +1214,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const responseId = sdkResponseId(result) || `agents_sdk_${randomId()}`;
   const cumulativeUsage = sdkUsage(result);
   const usage = sdkUsageDelta(db, cumulativeUsage, resumeSelection);
-  const pricingEstimate = sdkPricingEstimate(requestBody.model, usage, approvedCapCents, toolActivity);
+  const pricingEstimate = sdkPricingEstimate(requestBody.model, usage, approvedCapCents, toolActivity, capabilityPlan);
   const estimateCents = pricingEstimate.amountCents;
   const providerCall = recordLiveWorkerModelCall(db, task, { id: responseId, usage, output: [] }, estimateCents, requestBody.model, "provider_completed", {
     modelCallId: dispatchCall.id,
@@ -948,7 +1346,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       },
     });
     if (!gate.approvalRequired) {
-      const error = new Error(`The paused SDK tool ${toolId} did not produce a Jarvis approval interruption.`);
+      const error = new Error(`The paused SDK tool ${toolId} did not produce a Pantheon approval interruption.`);
       error.agentSdkTraceId = traceId;
       error.outcomeUnknown = false;
       throw error;
@@ -1031,6 +1429,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   );
   const output = normalizeOutput(roleOutput, rawText);
   output.roleOutput = roleOutput?.roleOutput || null;
+  const generatedFiles = await persistGeneratedProductFiles(db, task, capabilityPlan, result);
   const responseLike = {
     id: responseId,
     usage,
@@ -1055,6 +1454,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     toolActivity,
     inputAssets,
     generatedAssets,
+    generatedFiles,
     sdkResearch,
     reason: capabilityPlan.requestedTools.length
       ? "Live AI worker used only the exact approved SDK capability; no publishing, contact, account action, legal decision, or money movement was exposed."
@@ -1082,6 +1482,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       sdkResearch,
       inputAssets,
       generatedAssets,
+      generatedFiles,
     },
   });
 
@@ -1124,6 +1525,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       sdkResearch,
       inputAssets,
       generatedAssets,
+      generatedFiles,
       pilotRecommendation: {
         evidence: output.evidence,
         counterevidence: output.counterevidence,
@@ -1196,7 +1598,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         type: "live_ai_worker.local_processing_needs_attention",
         entityType: "task",
         entityId: task.id,
-        message: "The provider call completed, but Jarvis could not finish local processing. The receipt and incurred estimate were retained.",
+        message: "The provider call completed, but Pantheon could not finish local processing. The receipt and incurred estimate were retained.",
         metadata: { ...providerReceipt, error: error.message },
       });
     }
@@ -1206,7 +1608,11 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
 
 async function runAgentRuntimeTask(db, task, agentDefinition, policy, options = {}) {
   const approvedProvider = task.payload?.liveSpendRequest?.provider || null;
-  const provider = options.provider || approvedProvider || process.env.JARVIS_AGENT_RUNTIME_PROVIDER || CONFIG.liveModelProvider || AGENTS_SDK_PROVIDER;
+  const provider = options.provider
+    || approvedProvider
+    || environmentValue("agentRuntimeProvider")
+    || CONFIG.liveModelProvider
+    || AGENTS_SDK_PROVIDER;
   if (approvedProvider && options.provider && options.provider !== approvedProvider) {
     throw new Error(`The requested runtime provider does not match the approved provider ${approvedProvider}.`);
   }
@@ -1228,9 +1634,15 @@ function __setAgentRuntimeSdkRunnerForTests(runner) {
   testSdkRunner = runner;
 }
 
+function __setContainerFileDownloaderForTests(downloader) {
+  testContainerFileDownloader = downloader;
+}
+
 module.exports = {
   AGENTS_SDK_PROVIDER,
+  PRODUCT_MANIFEST_SCHEMA,
   __setAgentRuntimeSdkRunnerForTests,
+  __setContainerFileDownloaderForTests,
   approveSelectedSdkInterruption,
   demandValidatorPilotOutputSchema,
   getApprovedSdkResumeState,

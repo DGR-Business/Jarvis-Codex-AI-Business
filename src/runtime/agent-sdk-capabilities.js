@@ -22,16 +22,16 @@ const CAPABILITIES = {
   research_adapter: {
     kind: "hosted_tool",
     sdkName: "web_search",
-    workerId: "demand_validator",
-    maxCostCents: 200,
-    maxToolCalls: 3,
-    maxTurns: 4,
+    workerIds: ["opportunity_scout", "demand_validator"],
+    maxCostCents: 500,
+    maxToolCalls: 6,
+    maxTurns: 6,
     maxDeadlineMs: 120_000,
   },
   live_web_with_approval: {
     kind: "hosted_tool",
     sdkName: "web_search",
-    workerId: "demand_validator",
+    workerIds: ["demand_validator"],
     maxCostCents: 200,
     maxToolCalls: 3,
     maxTurns: 4,
@@ -40,16 +40,25 @@ const CAPABILITIES = {
   image_generation_spend: {
     kind: "hosted_tool",
     sdkName: "image_generation",
-    workerId: "product_builder",
+    workerIds: ["product_builder"],
     maxCostCents: 100,
     maxToolCalls: 1,
     maxTurns: 2,
     maxDeadlineMs: 180_000,
   },
+  product_file_factory: {
+    kind: "hosted_tool",
+    sdkName: "code_interpreter",
+    workerIds: ["product_builder"],
+    maxCostCents: 1000,
+    maxToolCalls: 8,
+    maxTurns: 8,
+    maxDeadlineMs: 300_000,
+  },
   visual_asset_review: {
     kind: "model_input",
     sdkName: "image_understanding",
-    workerId: "quality_reviewer",
+    workerIds: ["quality_reviewer"],
     maxCostCents: 100,
     maxToolCalls: 0,
     maxTurns: 1,
@@ -65,6 +74,33 @@ function integer(value, fallback, min, max) {
 
 function uniqueList(value) {
   return [...new Set(Array.isArray(value) ? value.filter(Boolean).map(String) : [])];
+}
+
+function normalizeUserLocation(value) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Web-search user location must be an approximate location object.");
+  }
+  if (value.type !== undefined && value.type !== "approximate") {
+    throw new Error("Web-search user location type must be approximate.");
+  }
+  const location = { type: "approximate" };
+  for (const field of ["city", "region", "timezone"]) {
+    if (value[field] === undefined || value[field] === null || value[field] === "") continue;
+    const normalized = String(value[field]).trim();
+    if (!normalized || normalized.length > 100) {
+      throw new Error(`Web-search user location ${field} must be a non-empty string of 100 characters or fewer.`);
+    }
+    location[field] = normalized;
+  }
+  if (value.country !== undefined && value.country !== null && value.country !== "") {
+    const country = String(value.country).trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(country)) {
+      throw new Error("Web-search user location country must be a two-letter ISO country code.");
+    }
+    location.country = country;
+  }
+  return location;
 }
 
 function requestFor(task) {
@@ -89,7 +125,7 @@ function capabilityOptions(toolId, request) {
       searchContextSize: "low",
       externalWebAccess: true,
       allowedDomains,
-      userLocation: args.userLocation || undefined,
+      userLocation: normalizeUserLocation(args.userLocation),
     };
   }
   if (toolId === "image_generation_spend") {
@@ -103,6 +139,16 @@ function capabilityOptions(toolId, request) {
       background: "auto",
       moderation: "auto",
       partialImages: 0,
+    };
+  }
+  if (toolId === "product_file_factory") {
+    const memoryLimit = ["1g", "4g"].includes(args.memoryLimit) ? args.memoryLimit : "1g";
+    return {
+      includeOutputs: true,
+      container: {
+        type: "auto",
+        memory_limit: memoryLimit,
+      },
     };
   }
   if (toolId === "visual_asset_review") {
@@ -126,8 +172,8 @@ function buildAgentsSdkCapabilityPlan(task, agentDefinition) {
   const specs = requestedTools.map((toolId) => {
     const capability = CAPABILITIES[toolId];
     if (!capability) throw new Error(`Agents SDK tool ${toolId} is not implemented by the runtime capability bridge.`);
-    if (capability.workerId !== agentDefinition.id) {
-      throw new Error(`${toolId} is restricted to ${capability.workerId}; it cannot be attached to ${agentDefinition.id}.`);
+    if (!capability.workerIds.includes(agentDefinition.id)) {
+      throw new Error(`${toolId} is restricted to ${capability.workerIds.join(" or ")}; it cannot be attached to ${agentDefinition.id}.`);
     }
     if (!(agentDefinition.tools || []).includes(toolId)) {
       throw new Error(`${toolId} is not assigned to ${agentDefinition.name}.`);
@@ -186,7 +232,7 @@ function approvedAssetPath(filePath) {
     .filter((root) => fs.existsSync(root))
     .map((root) => fs.realpathSync(root));
   if (!allowedRoots.some((root) => pathWithin(root, realCandidate))) {
-    throw new Error("An approved visual asset is outside the Jarvis workspace and cannot be sent to the model.");
+    throw new Error("An approved visual asset is outside the Pantheon workspace and cannot be sent to the model.");
   }
   return realCandidate;
 }
@@ -313,6 +359,9 @@ function materializeAgentsSdkTools(sdk, plan) {
       }
       if (spec.sdkName === "image_generation") {
         return sdk.imageGenerationTool(spec.options);
+      }
+      if (spec.sdkName === "code_interpreter") {
+        return sdk.codeInterpreterTool(spec.options);
       }
       throw new Error(`SDK hosted tool ${spec.sdkName} is not materialized.`);
     });
@@ -500,6 +549,33 @@ function extractGeneratedImages(result) {
   return images;
 }
 
+function extractContainerFileCitations(result) {
+  const files = [];
+  const seen = new Set();
+  for (const item of collectOutputItems(result)) {
+    const raw = item?.rawItem || item;
+    const content = Array.isArray(raw?.content) ? raw.content : [];
+    for (const part of content) {
+      for (const annotation of part?.annotations || []) {
+        const type = String(annotation?.type || "");
+        if (type !== "container_file_citation") continue;
+        const containerId = annotation.container_id || annotation.containerId || null;
+        const fileId = annotation.file_id || annotation.fileId || null;
+        if (!containerId || !fileId) continue;
+        const key = `${containerId}:${fileId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        files.push({
+          containerId,
+          fileId,
+          filename: annotation.filename || annotation.name || fileId,
+        });
+      }
+    }
+  }
+  return files;
+}
+
 function serializeSdkRunState(result) {
   if (!result?.state || typeof result.state.toString !== "function") return null;
   return result.state.toString({ includeTracingApiKey: false });
@@ -527,6 +603,7 @@ module.exports = {
   buildAgentsSdkCapabilityPlan,
   buildVisualAssetApprovalBinding,
   extractAgentsSdkToolActivity,
+  extractContainerFileCitations,
   extractGeneratedImages,
   materializeAgentsSdkTools,
   sdkInterruptionDetails,

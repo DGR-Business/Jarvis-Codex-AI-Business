@@ -100,7 +100,9 @@ def status_colors(value):
 
 
 def money(cents, currency="AUD"):
-    return f"{currency} ${max(0, int(cents or 0)) / 100:,.2f}"
+    labels = {"AUD": "A$", "USD": "US$", "NZD": "NZ$", "CAD": "CA$"}
+    prefix = labels.get(clean(currency).upper(), f"{clean(currency).upper()} ")
+    return f"{prefix}{max(0, int(cents or 0)) / 100:,.2f}"
 
 
 def friendly_date(value):
@@ -173,7 +175,7 @@ def page_footer(canvas, doc):
     canvas.line(17 * mm, 14 * mm, A4[0] - 17 * mm, 14 * mm)
     canvas.setFont("Helvetica-Bold", 7.5)
     canvas.setFillColor(NAVY)
-    canvas.drawString(17 * mm, 9 * mm, "JARVIS  /  DECISION BRIEF")
+    canvas.drawString(17 * mm, 9 * mm, "PANTHEON  /  DECISION BRIEF")
     canvas.setFont("Helvetica", 7.5)
     canvas.setFillColor(MUTED)
     canvas.drawRightString(A4[0] - 17 * mm, 9 * mm, f"Page {doc.page}")
@@ -193,12 +195,12 @@ def cover_header(payload, styles):
     accent, soft = status_colors(header.get("status"))
     status = display_label(header.get("status"))
     top = Table(
-        [[para("JARVIS  /  OPERATOR DECISION BRIEF", styles["brand"]), para(status.upper(), ParagraphStyle("CoverStatus", parent=styles["brand"], textColor=accent, alignment=TA_RIGHT))]],
+        [[para("PANTHEON  /  OPERATOR DECISION BRIEF", styles["brand"]), para(status.upper(), ParagraphStyle("CoverStatus", parent=styles["brand"], textColor=accent, alignment=TA_RIGHT))]],
         colWidths=[128 * mm, 38 * mm],
     )
     top.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
     title = para(payload.get("humanName", "Decision Brief"), styles["cover_title"])
-    meta = para(f"Prepared by {header.get('preparedBy', 'Jarvis AI Team')}  |  {friendly_date(payload.get('generatedAt'))}", styles["cover_sub"])
+    meta = para(f"Prepared by {header.get('preparedBy', 'Pantheon AI Team')}  |  {friendly_date(payload.get('generatedAt'))}", styles["cover_sub"])
     band = Table([[top], [Spacer(1, 7)], [title], [meta]], colWidths=[176 * mm])
     band.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), NAVY),
@@ -442,8 +444,8 @@ def build_pdf(payload, output_path):
         leftMargin=17 * mm,
         topMargin=16 * mm,
         bottomMargin=19 * mm,
-        title=clean(payload.get("humanName", "Jarvis Decision Brief")),
-        author="Jarvis-Codex",
+        title=clean(payload.get("humanName", "Pantheon Decision Brief")),
+        author="Pantheon",
         subject="Operator decision brief",
     )
 
@@ -492,7 +494,7 @@ def build_pdf(payload, output_path):
         section_title("Work completed by the AI team", styles, "Accountability record"),
         team_work(payload, styles),
         Spacer(1, 7 * mm),
-        section_title("Review outputs", styles, "Documents available in Jarvis"),
+        section_title("Review outputs", styles, "Documents available in Pantheon"),
         output_list(payload, styles),
         Spacer(1, 7 * mm),
         KeepTogether([

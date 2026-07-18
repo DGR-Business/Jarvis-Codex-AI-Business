@@ -33,9 +33,24 @@ function parseRows(rows, fields = ["metadata", "payload", "result"]) {
 
 function readExcerpt(filePath) {
   if (!filePath) return "";
-  const absolute = path.join(CONFIG.rootDir, filePath);
-  if (!absolute.startsWith(CONFIG.rootDir) || !fs.existsSync(absolute)) return "";
-  return fs.readFileSync(absolute, "utf8").replace(/\s+/g, " ").trim().slice(0, 1800);
+  const absolute = path.resolve(CONFIG.rootDir, filePath);
+  const relative = path.relative(path.resolve(CONFIG.rootDir), absolute);
+  const extension = path.extname(absolute).toLowerCase();
+  if (
+    relative.startsWith("..")
+    || path.isAbsolute(relative)
+    || !new Set([".csv", ".html", ".json", ".md", ".txt"]).has(extension)
+    || !fs.existsSync(absolute)
+    || !fs.statSync(absolute).isFile()
+  ) return "";
+  const handle = fs.openSync(absolute, "r");
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    const bytesRead = fs.readSync(handle, buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8").replace(/\s+/g, " ").trim().slice(0, 1800);
+  } finally {
+    fs.closeSync(handle);
+  }
 }
 
 function approvalPackName(workflow, deliverables) {
@@ -48,6 +63,10 @@ function approvalPackName(workflow, deliverables) {
 
 function compact(value, max = 800) {
   const text = String(value || "")
+    .replace(/\bdemand_validator\b/gi, "Demand Validator")
+    .replace(/\bchief_of_staff\b/gi, "Chief of Staff")
+    .replace(/\bquality_reviewer\b/gi, "Quality Reviewer")
+    .replace(/\bproduct_builder\b/gi, "Product Builder")
     .replace(/\bdry[- ]run\b/gi, "protected practice")
     .replace(/\bapproval pack\b/gi, "decision brief")
     .replace(/\boperator pack\b/gi, "decision brief")
@@ -58,6 +77,12 @@ function compact(value, max = 800) {
     .replace(/\s+/g, " ")
     .trim();
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function humanChannel(value) {
+  const channel = compact(value, 300);
+  if (!channel || /agent.?sdk|fixture|controlled.?test|pilot/i.test(channel)) return "Not selected yet";
+  return channel.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function items(value, max = 6) {
@@ -127,9 +152,14 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
     .filter((cost) => cost.status === "reconciled")
     .reduce((sum, cost) => sum + Number(cost.amount_cents || 0), 0);
 
-  const work = tasks
+  const distinctWork = new Map();
+  for (const task of tasks
     .filter((task) => task.status === "completed" || task.status === "needs_attention")
-    .slice(0, 6)
+  ) {
+    distinctWork.set(`${task.agent || "team"}:${task.title || task.kind}`, task);
+  }
+  const work = [...distinctWork.values()]
+    .slice(-6)
     .map((task) => {
       const taskResult = taskOutput(task);
       return {
@@ -160,7 +190,7 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
       workflow: compact(workflow.title, 300),
       status: workflow.status,
       mode: packMode(tasks),
-      preparedBy: leadTask ? humanWorker(leadTask.agent) : "Jarvis AI Team",
+      preparedBy: leadTask ? humanWorker(leadTask.agent) : "Pantheon AI Team",
     },
     decision: {
       headline: moneyMove,
@@ -170,13 +200,13 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
       whyNow: compact(output.details?.["Expected upside"] || business.evidenceSummary || scorecard?.recommendation, 700),
       expectedUpside: compact(output.details?.["Expected upside"] || output.expectedUpside || "Upside is not yet quantified.", 500),
       costRisk: compact(output.details?.["Cost/risk"] || output.costRisk || (totalEstimatedCents ? "Provider cost is still an estimate pending reconciliation." : "No new paid execution is proposed in this brief."), 500),
-      approvalQuestion: `Should Jarvis ${moneyMove.charAt(0).toLowerCase()}${moneyMove.slice(1)}`.replace(/[.?]*$/, "?"),
+      approvalQuestion: "Should Pantheon proceed with this exact next step?",
     },
     commercialCase: {
       buyer: compact(business.buyer || workflow.metadata?.buyer || "Buyer still needs confirmation.", 500),
       problem: compact(business.problem || workflow.metadata?.problem || "Problem evidence is still being established.", 500),
       offer: compact(business.offer || workflow.metadata?.offer || workflow.metadata?.subject || workflow.title, 500),
-      channel: compact(business.channel || workflow.metadata?.channel || "One evidence-selected channel", 300),
+      channel: humanChannel(business.channel || workflow.metadata?.channel || ""),
       priceChannelHypothesis: compact(output.pilotRecommendation?.priceChannelHypothesis || output.priceChannelHypothesis || "Price and channel need a bounded market test.", 600),
       smallestTest: compact(output.pilotRecommendation?.smallestTest || output.smallestTest || moneyMove, 600),
       successMetric: compact(output.pilotRecommendation?.metric || output.metric || business.successMetric || "Record a measurable buyer signal.", 500),
@@ -209,7 +239,7 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
     nextActions,
     originalInstruction: compact(command.raw_text || workflow.metadata?.originalInstruction || "", 1800),
     actions: [
-      { id: "approve", label: "Approve this next step", effect: "Jarvis may queue only the exact safe step described in this brief." },
+      { id: "approve", label: "Approve this next step", effect: "Pantheon may queue only the exact safe step described in this brief." },
       { id: "changes", label: "Request changes", effect: "Return the work with your direction; no outside action occurs." },
       { id: "deny", label: "Stop this direction", effect: "Pause or close this direction without external action." },
     ],
@@ -217,6 +247,7 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
 }
 
 function resolvePython() {
+  if (process.env.PANTHEON_PYTHON) return process.env.PANTHEON_PYTHON;
   if (process.env.JARVIS_PYTHON) return process.env.JARVIS_PYTHON;
   const candidates = [];
   const dependencyRoot = path.resolve(path.dirname(process.execPath), "..", "..");
@@ -231,7 +262,10 @@ function resolvePython() {
 }
 
 function outputDirectory(options = {}) {
-  return options.outputDir || process.env.JARVIS_APPROVAL_PACK_DIR || path.join(CONFIG.rootDir, "output", "pdf");
+  return options.outputDir
+    || process.env.PANTHEON_APPROVAL_PACK_DIR
+    || process.env.JARVIS_APPROVAL_PACK_DIR
+    || path.join(CONFIG.rootDir, "output", "pdf");
 }
 
 function relativeToRootOrAbsolute(filePath) {

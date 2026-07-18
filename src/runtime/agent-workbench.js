@@ -560,13 +560,17 @@ function buildTeamProofSummary(workflow, proofTasks, liveReadiness, chiefRun = n
   };
 }
 
-function recordAgentWorkbenchTeamSummary(db, workflowId) {
+function recordAgentWorkbenchTeamSummary(db, workflowId, options = {}) {
   ensureAgentWorkbench(db);
   const workflow = workflowForTeamSummary(db, workflowId);
   if (!workflow || workflow.type !== "agent_workbench_team_proof") return null;
   if (workflow.metadata?.teamProofSummary?.chiefRunId) return workflow.metadata.teamProofSummary;
 
-  const proofTasks = proofTaskRows(db, workflowId);
+  const proofTasks = proofTaskRows(db, workflowId).map((task) => (
+    task.id === options.completingTaskId && task.status === "running"
+      ? { ...task, status: "completed" }
+      : task
+  ));
   if (!proofTasks.length || proofTasks.some((task) => task.status !== "completed")) return null;
 
   const liveReadiness = getLiveAiWorkerReadiness(db);

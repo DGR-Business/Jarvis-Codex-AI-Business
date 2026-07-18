@@ -54,7 +54,7 @@ const AGENT_POLICIES = {
   },
   live_ai_worker_execution: {
     modelClass: "reasoning-high",
-    maxCostCents: 100,
+    maxCostCents: 1000,
     allowedTools: ["runtime_state", "agent_traces", "approval_pack"],
     blockedTools: ["external_action", "publishing", "payments"],
   },
@@ -852,7 +852,7 @@ function startTaskClaimHeartbeat(db, claim, agentRunId) {
         agentRunId,
         "claim_heartbeat_warning",
         "Worker lease update delayed",
-        "Jarvis could not refresh the local worker lease. The provider call will not be retried automatically if its outcome is uncertain.",
+        "Pantheon could not refresh the local worker lease. The provider call will not be retried automatically if its outcome is uncertain.",
         { error: error.message },
       );
     }
@@ -1017,8 +1017,26 @@ async function runAgentTask(db, task, options = {}) {
           }
           : null,
       });
-      const requiredReviewer = task.payload?.liveSpendRequest?.parameters?.requiredReviewer || null;
-      const automaticHandoffTo = agentDefinition.id === "chief_of_staff"
+      if (evalResult.status !== "passed") {
+        const qualityError = new Error(
+          `${agentDefinition.name} returned a provider result, but Pantheon's local quality check scored it ${evalResult.score}/100 (${evalResult.status}).`,
+        );
+        qualityError.errorKind = "worker_evaluation_failed";
+        qualityError.needsAttention = true;
+        qualityError.providerCallOccurred = true;
+        qualityError.outcomeUnknown = false;
+        qualityError.providerReceipt = providerReceipt;
+        qualityError.providerRequestId = liveWorker.raw.responseId || null;
+        qualityError.modelCallId = liveWorker.modelCall?.id || null;
+        qualityError.incurredEstimateCents = Number(liveWorker.incurredEstimateCents || 0);
+        throw qualityError;
+      }
+      const liveParameters = task.payload?.liveSpendRequest?.parameters || {};
+      const requiredReviewer = liveParameters.requiredReviewer || null;
+      const pantheonSupervisorOwned = liveParameters.pantheonCommercial?.supervisorOwned === true
+        || liveParameters.pantheonProduction?.supervisorOwned === true;
+      const automaticHandoffTo = pantheonSupervisorOwned
+        || agentDefinition.id === "chief_of_staff"
         || agentDefinition.id === "quality_reviewer"
         || requiredReviewer === "quality_reviewer"
         ? null
@@ -1132,11 +1150,11 @@ async function runAgentTask(db, task, options = {}) {
         );
         insertEvent(db, {
           level: "warn",
-          actor: "jarvis",
+          actor: "pantheon",
           type: "quality.review_gate_needs_attention",
           entityType: "agent_run",
           entityId: agentRun.id,
-          message: `The provider result was retained, but Jarvis could not complete the local quality gate: ${error.message}`,
+          message: `The provider result was retained, but Pantheon could not complete the local quality gate: ${error.message}`,
           metadata: { taskId: task.id, workflowId: task.workflow_id, noProviderRetry: true },
           });
       }
@@ -1152,7 +1170,7 @@ async function runAgentTask(db, task, options = {}) {
       } else if (qualityGate?.status === "needs_attention") {
         chiefAssignmentLifecycle = updateChiefAssignmentLifecycle(db, task, {
           status: "specialist_quality_review_pending",
-          note: "The specialist finished, but Jarvis needs to repair or review the local quality-check handoff.",
+          note: "The specialist finished, but the local quality-check handoff needs developer review.",
           childTaskStatus: "completed",
           resolved: false,
         });

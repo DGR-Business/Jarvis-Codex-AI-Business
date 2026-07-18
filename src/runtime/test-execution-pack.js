@@ -969,9 +969,11 @@ function recordExecutionPackOutcome(db, packId, input = {}) {
       summary: asText(input.summary || input.notes, "Buyer reply recorded from the execution pack."),
       objection: input.objection || (outcomeType === "objection" ? asText(input.notes, "") : ""),
       request: input.request || "",
+      verified: input.verified === true,
+      verificationNote: input.verificationNote || input.verification_note || "",
       metadata,
     });
-    nextStatus = "feedback_recorded";
+    nextStatus = recorded.learning ? "feedback_recorded" : "awaiting_verification";
   } else {
     const noResponse = outcomeType === "no_response";
     recorded = recordCommercialResult(db, {
@@ -985,8 +987,17 @@ function recordExecutionPackOutcome(db, packId, input = {}) {
       sales: noResponse ? 0 : asInt(input.sales),
       refunds: noResponse ? 0 : asInt(input.refunds),
       revenueCents: noResponse ? 0 : asInt(input.revenueCents ?? input.revenue_cents),
+      refundAmountCents: noResponse ? 0 : asInt(input.refundAmountCents ?? input.refund_amount_cents),
       spendCents: noResponse ? 0 : asInt(input.spendCents ?? input.spend_cents),
+      platformFeeCents: noResponse ? 0 : asInt(input.platformFeeCents ?? input.platform_fee_cents),
+      fulfilmentCostCents: noResponse ? 0 : asInt(input.fulfilmentCostCents ?? input.fulfilment_cost_cents),
+      productCostCents: noResponse ? 0 : asInt(input.productCostCents ?? input.product_cost_cents),
+      toolCostCents: noResponse ? 0 : asInt(input.toolCostCents ?? input.tool_cost_cents),
+      attributedAiCostCents: noResponse ? 0 : asInt(input.attributedAiCostCents ?? input.attributed_ai_cost_cents),
+      otherCostCents: noResponse ? 0 : asInt(input.otherCostCents ?? input.other_cost_cents),
       timeSpentMinutes: asInt(input.timeSpentMinutes ?? input.time_spent_minutes),
+      verified: input.verified === true,
+      verificationNote: input.verificationNote || input.verification_note || "",
       notes: asText(
         input.notes,
         noResponse
@@ -995,10 +1006,14 @@ function recordExecutionPackOutcome(db, packId, input = {}) {
       ),
       metadata,
     });
-    nextStatus = noResponse ? "waiting_for_signal" : "result_recorded";
+    nextStatus = recorded.learning
+      ? (noResponse ? "waiting_for_signal" : "result_recorded")
+      : "awaiting_verification";
   }
 
-  const outcomeDecision = recordOutcomeDecisionPacket(db, { pack, outcomeType, recorded });
+  const outcomeDecision = recorded.learning
+    ? recordOutcomeDecisionPacket(db, { pack, outcomeType, recorded })
+    : null;
   run(db, "UPDATE commercial_execution_packs SET status = ?, updated_at = ? WHERE id = ?", [nextStatus, now(), pack.id]);
   insertEvent(db, {
     actor: "commercial-engine",

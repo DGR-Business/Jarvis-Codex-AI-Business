@@ -34,6 +34,7 @@ const {
   verifyFirstUseDatabase,
 } = require("../src/runtime/first-use-reset");
 const { importGumroadCsv } = require("../src/runtime/gumroad-import");
+const { ensureRetentionPolicy } = require("../src/runtime/retention-policy");
 const { commercialFoundationState } = require("../src/runtime/venture-case");
 
 function testRuntime(name, options = {}) {
@@ -311,10 +312,11 @@ test("first-use builder preserves exact accounting and usage while removing ever
         `INSERT INTO costs
          (id, workflow_id, category, source, status, amount_cents, currency, occurred_at,
           metadata, venture_id, run_id, task_id, model_call_id)
-         VALUES (?, NULL, 'live_ai_worker', 'openai-agents-sdk', 'reconciled', ?, 'AUD',
+         VALUES (?, NULL, 'live_ai_worker', 'openai-agents-sdk', ?, ?, 'AUD',
           '2026-07-16T05:39:06.519Z', ?, 'venture-digital-products', ?, ?, ?)`,
         [
           `cost-survivor-${index + 1}`,
+          usage.status,
           usage.amountCents,
           toJson({ provider: "openai", allocation: index + 1 }),
           usage.runId,
@@ -323,7 +325,28 @@ test("first-use builder preserves exact accounting and usage while removing ever
         ],
       );
     }
+    const retentionPolicy = ensureRetentionPolicy(runtime.db);
+    run(
+      runtime.db,
+      `INSERT INTO data_retention_policy_activations
+       (id, policy_id, policy_hash, approval_id, proof_hash, activated_at,
+        activated_by, metadata, created_at)
+       VALUES ('retention-activation-reset-proof', ?, ?, 'approval-reset-proof', ?, ?,
+               'operator', ?, ?)`,
+      [
+        retentionPolicy.id,
+        retentionPolicy.policy_hash,
+        "a".repeat(64),
+        "2026-07-17T00:00:00.000Z",
+        toJson({ source: "test-approved-activation" }),
+        "2026-07-17T00:00:00.000Z",
+      ],
+    );
     const sourceAccounting = all(runtime.db, "SELECT * FROM accounting_entries ORDER BY id");
+    const sourceRetentionActivations = all(
+      runtime.db,
+      "SELECT * FROM data_retention_policy_activations ORDER BY id",
+    );
     runtime.db.close();
     runtime.db = null;
 
@@ -344,8 +367,12 @@ test("first-use builder preserves exact accounting and usage while removing ever
         assert.equal(get(candidate, `SELECT COUNT(*) AS count FROM ${table}`).count, 0, table);
       }
       assert.deepEqual(all(candidate, "SELECT * FROM accounting_entries ORDER BY id"), sourceAccounting);
-      assert.equal(get(candidate, "SELECT SUM(amount_cents) AS amount FROM costs").amount, 5);
-      assert.equal(get(candidate, "SELECT COUNT(DISTINCT model_call_id) AS count FROM costs").count, 2);
+      assert.deepEqual(
+        all(candidate, "SELECT * FROM data_retention_policy_activations ORDER BY id"),
+        sourceRetentionActivations,
+      );
+      assert.equal(get(candidate, "SELECT SUM(amount_cents) AS amount FROM costs").amount, 118);
+      assert.equal(get(candidate, "SELECT COUNT(DISTINCT model_call_id) AS count FROM costs").count, 3);
       assert.equal(get(candidate, "SELECT COUNT(*) AS count FROM runtime_resets WHERE status = 'built'").count, 1);
     } finally {
       candidate.close();

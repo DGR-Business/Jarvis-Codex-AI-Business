@@ -1,13 +1,13 @@
-# Jarvis-Codex Master Plan
+# Pantheon Master Plan
 
 Last updated: 2026-07-18
 Status: active source of truth
 Owner: Daniel
-Technical steward: Codex
+Technical steward: Jarvis (Codex)
 
 ## Purpose
 
-Jarvis is a local, desktop-first AI business operating system. Its purpose is
+Pantheon is a local, desktop-first AI business operating system. Its purpose is
 to let a supervised team of specialist AI workers investigate, build, launch,
 measure, and improve online ventures while Daniel remains the owner and final
 decision-maker for consequential actions.
@@ -56,7 +56,7 @@ purpose is support work and must not crowd the operator view.
 
 ## System Boundaries
 
-Jarvis keeps responsibility for:
+Pantheon keeps responsibility for:
 
 - venture and workflow state;
 - exact approvals and autonomy levels;
@@ -66,14 +66,14 @@ Jarvis keeps responsibility for:
 - evaluation records and durable audit history.
 
 The OpenAI Agents SDK is the first-class live worker runner. It manages the
-specialist agent loop inside Jarvis's boundaries. The Responses API remains a
+specialist agent loop inside Pantheon's boundaries. The Responses API remains a
 lower-level provider path where direct calls or read-only research are simpler.
-Neither provider layer may bypass Jarvis approvals, limits, persistence, or
+Neither provider layer may bypass Pantheon approvals, limits, persistence, or
 evaluation.
 
 Autonomous Agent Operations Foundation Phase 1 adds a common assignment,
 receipt, audit, monitoring, and review contract around those provider paths. It
-does not replace Jarvis state with model memory or make a visible worker live by
+does not replace Pantheon state with model memory or make a visible worker live by
 default.
 
 Task-scoped context snapshots now bind each live worker to the exact venture,
@@ -85,13 +85,14 @@ operator use.
 
 Task-scoped does not mean information-starved. A worker may receive the
 venture's relevant finance, production, legal, customer, evidence, and operating
-records when its exact assignment needs them. Jarvis records which classes were
+records when its exact assignment needs them. Pantheon records which classes were
 supplied and withholds unrelated records, credentials, raw identity documents,
 and direct identifiers unless the assignment has a recorded need and the
 applicable approval and retention rules permit them.
 
-Jarvis monitoring is part of the runtime, not a feature that depends on this
-Codex conversation being open. Dashboard actions, assignments, provider calls,
+Pantheon monitoring is part of the runtime, not a feature that depends on this
+Codex conversation being open. Jarvis can inspect those durable records whenever
+needed. Dashboard actions, assignments, provider calls,
 tools, approvals, outputs, costs, evaluations, and failures write durable
 records for scheduler-backed checks and later engineering review. Chief of
 Staff may coordinate the fixed team one bounded specialist assignment at a
@@ -119,13 +120,14 @@ The fixed roster is not eleven simultaneous provider processes. Workers cannot
 create workers, change the roster, inherit another worker's approval, or widen
 their own tools. Dynamic agents require a later decision and release gate.
 
-The active commercial worker is the Demand Validator. Its job is to determine
-whether evidence justifies a small market test, identify counterevidence and
-assumptions, and recommend the smallest useful next step. It does not invent a
-finished product or publish anything. It must first work from supplied evidence.
-Read-only live web research is a separate capability with a fresh, single-use
-A$2 approval, a three-search limit, and a 120-second deadline. Validated findings
-flow through the Chief of Staff only when the venture stage requires them.
+The active commercial starting pair is Opportunity Scout followed by Demand
+Validator. Scout searches broadly and ranks attributable opportunities.
+Validator determines whether evidence justifies a small market test, identifies
+counterevidence and assumptions, and recommends the smallest useful next step.
+Neither invents a finished product or publishes anything. Read-only web research
+is a separate bounded capability. Validated findings flow through Pantheon's
+commercial supervisor and Chief of Staff only when the venture stage requires
+them.
 
 Product Builder and Quality Reviewer remain supervised in Phase 1. Product
 Builder cannot publish or approve its own output; Quality Reviewer can inspect
@@ -195,15 +197,13 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
 - No publishing, customer contact, account action, legal decision, or money
   movement is authorised by a general dashboard instruction.
 - Remote/mobile operation and runtime-created workers remain deferred.
-- Provider-side storage for business or personal data and ongoing sensitive
-  worker operations remain blocked until Daniel approves the prepared retention
-  and privacy schedule. The proposal keeps finance, tax, contract, money,
-  compliance, and linked audit evidence for seven years; accepted venture work
-  while active plus three years; routine drafts and diagnostics for ninety days;
-  and encrypted backups on the existing seven-daily/four-weekly rotation.
-  Provider response and trace-content storage remain off by default, sensitive
-  provider storage is forbidden, and approval activates checks without deleting
-  anything. Destructive cleanup always remains a separate, previewed action.
+- The approved data-protection schedule is active. It keeps finance, tax,
+  contract, money, compliance, and linked audit evidence for seven years;
+  accepted venture work while active plus three years; routine drafts and
+  diagnostics for ninety days; and encrypted backups on the existing
+  seven-daily/four-weekly rotation. Provider response and trace-content storage
+  remain off by default, sensitive provider storage is forbidden, and
+  destructive cleanup always remains a separate previewed action.
 
 ## Financial Truth
 
@@ -222,52 +222,47 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
 
 ### Now
 
-- Maintain the recoverable, clean first-use baseline.
-- Operate against the fixed 11-worker Phase 1 contract. Its bounded assignment,
-  receipt, audit, task-scoped context, Chief assignment, Quality Reviewer,
-  monitoring, model-routing, retention-enforcement, exact attempt binding, and
-  startup-readiness foundation passed locally on 2026-07-18 with schema 18,
-  175 automated tests, encrypted restore proof, and authenticated real-browser
-  proof at all supported desktop sizes. Approval lifecycle recovery also proved
-  that an outdated decision can be replaced with zero task attempts, model
-  calls, agent runs, receipts, or spend.
-- Treat the completed Luna-only Demand Validator sequence as proof of the
-  dashboard, approval, Agents SDK, hosted-search, evidence, evaluation, cost,
-  retry, receipt, and Chief handoff path. The final attempt returned 41
-  attributable URLs and passed local structural checks, but the mixed source
-  quality and cheap proof model do not establish market demand or willingness
-  to pay.
-- Complete the deterministic Chief-to-Test-Pack handoff against a protected
-  copy of the proven run. Materialise one bounded Test Pack with buyer, message,
-  channel, metric, seven-day or 50-view limit, five-signal threshold, and stop
-  rule without another model call. This closes an implementation gap; it does
-  not convert the Luna systems proof into real market evidence.
-- Keep the active business position clean: rank three digital-product
-  opportunities, present one evidence-backed selection, and run a fresh
-  approved validation path for the selected opportunity. Do not publish,
-  contact buyers, create an account, or spend from a Test Pack preparation.
-- Present the prepared plain-language retention and privacy decision before
-  wider provider storage, personal-data work, or sensitive worker access.
-- Resume ranking three digital-product opportunities if the Test Pack or real
-  buyer evidence does not justify continuing the weekly cash-control concept.
+- Maintain the recoverable, clean schema-20 production baseline.
+- Start the first real broad opportunity scan from Command Center. Opportunity
+  Scout should rank three commercially plausible online opportunities, then
+  Demand Validator should challenge all three before Pantheon asks Daniel to
+  choose.
+- Keep the first selection focused on digital products unless evidence shows a
+  materially better low-risk first proof. Other lawful venture models remain in
+  discovery scope and are not permanently excluded.
+- Treat the completed four-call Luna release proof as engineering evidence only.
+  It proved the Agents SDK, web search, supervisor, approvals, handoffs, traces,
+  evaluations, costs, source persistence, dashboard, and stop logic. It did not
+  prove Pantheon's own buyer demand, conversion, margin, or revenue.
+- Keep July AI and tool exposure truthful at A$1.18: A$0.05 reconciled and
+  A$1.13 pending provider reconciliation. Reconcile against OpenAI billing when
+  the provider total becomes available.
+- Preserve one simple operator boundary: Daniel selects the venture and later
+  approves protected account, publication, customer-contact, advertising, and
+  spend actions. Pantheon performs the internal research, economics, product,
+  quality, copy, distribution, and learning work.
 
 ### Next
 
-- Turn the selected opportunity into the smallest useful product and Publish
-  Pack through the implemented supervised Product Builder and Quality Reviewer
-  path. Its first paid live use remains a separate approval and proof.
-- Daniel completes any required private Gumroad account and KYC action and
-  approves initial publication.
-- Run no more than three organic posts across two evidence-selected channels.
-- Measure for 14 days or 50 qualified product views.
-- Continue, revise once, or stop according to buyer evidence and contribution.
+- Turn the selected opportunity into a venture-specific minimum credible
+  catalogue, economics case, offer, and smallest valid market test.
+- Run the first paid Product Builder assignment and independent Quality Reviewer
+  check. Accept only real, inspectable product files that pass functional,
+  evidence, claim, and format checks.
+- Prepare one concise Publish Pack. Daniel completes any required private
+  Gumroad account and KYC action and approves the first publication.
+- Run no more than three organic posts across two evidence-selected channels,
+  then measure for 14 days or 50 qualified product views.
+- Continue on three independent paid buyers and positive cash contribution;
+  otherwise diagnose reach, offer, price, catalogue, conversion, and demand
+  before revising once or pausing.
 
 ### Later
 
 - Promote only exact capabilities that earn five reviewed successes.
-- Use the prepared one-asset image capability only when the accepted product
-  needs it. Add video, audio, broader media generation, or paid media only when
-  a proven commercial bottleneck requires it.
+- Use image generation, Code Interpreter, video, audio, external production
+  services, or paid media when the accepted venture and quality standard
+  require them, not as decorative capability demonstrations.
 - Add a second venture only after repeatable first-venture results.
 - Expand fulfilment and customer operations after demand is proven.
 - Consider remote/mobile operation or dynamic workers only through separate
@@ -275,15 +270,15 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
 
 ## Release Gates
 
-Status: satisfied for the clean first-use foundation and the bounded-worker
-engineering foundation on 2026-07-17. The live Autonomous Agent Operations
-proof now covers Demand Validator and one capped read-only web-search path.
-The 2026-07-18 independent release audit also proved exact dashboard recovery,
-retry-chain identity, resumed usage accounting, immutable receipt handling,
-accepted-research provenance, and resolved-history presentation.
-Promotion, supervised paid build/review, market action, and retention gates
-remain active and require their separate evidence and operator decisions.
-Future changes that affect either boundary must repeat proportionate proof.
+Status: satisfied for the clean first-use and fixed-team engineering foundation
+on 2026-07-18. The current release passed schema 20, 201 automated tests after a
+clean install, npm advisory review, encrypted coherent-set recovery, operations
+doctor, genuine four-call Agents SDK proof, real-browser desktop proof, and
+in-dashboard PDF proof. The production cockpit is clean and ready for its first
+real discovery run. Commercial demand, Product Builder's first paid production
+assignment, Gumroad publication, buyer results, capability promotion, and every
+external action retain their separate gates. Future changes must repeat proof in
+proportion to their risk.
 
 Foundation is releasable only when:
 
@@ -300,7 +295,11 @@ Foundation is releasable only when:
 
 ## Durable Records
 
-- `docs/Jarvis-Codex Build Log.md`: current decisions, proof, and next work.
+- `docs/Pantheon Build Log.md`: current decisions, proof, and next work.
+- `docs/proofs/2026-07-18-pantheon-release-proof.md`: exact release evidence,
+  costs, commercial result, and honest limitations.
+- `docs/plans/PANTHEON-COMMERCIAL-OPERATING-SYSTEM-EXECUTION-PLAN-2026-07-18.md`:
+  completed foundation execution directive and first-use gates.
 - `docs/operating-procedures.md`: operating and recovery procedures.
 - `docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md`: active worker
   operations scope, gates, receipt contract, and implementation boundary.

@@ -1,13 +1,13 @@
 # Autonomous Agent Operations Foundation - Phase 1
 
 Date: 2026-07-17
-Status: active implementation contract; gates are not yet all satisfied
+Status: completed and integrated into the Pantheon foundation on 2026-07-18
 Owner: Daniel
-Maintainer: Codex
+Maintainer: Jarvis (Codex)
 
 ## Purpose
 
-This phase turns Jarvis's visible AI Team into a supervised operating system for
+This phase turns Pantheon's visible AI Team into a supervised operating system for
 real business work. It fixes the first worker roster, the order in which live
 capabilities may be proved, the records every run must leave, and the conditions
 that stop work or return it to Daniel.
@@ -17,14 +17,14 @@ runs. The current runtime has useful parts of the foundation, listed under
 `Current Implementation Boundary`. Each remaining gate needs code, tests, and
 operator proof before its status can change.
 
-This plan sits under `docs/Jarvis-Codex Master Plan.md` and alongside
+This plan sits under `docs/Pantheon Master Plan.md` and alongside
 `docs/plans/FOUNDATION-TO-FIRST-REVENUE-EXECUTION-PLAN-2026-07-14.md`. It does
 not replace the one-venture commercial plan or loosen any approval, spend,
 publishing, account, legal, or money-movement rule.
 
 ## Phase 1 Outcome
 
-Phase 1 is complete only when Jarvis can repeatedly assign bounded work to the
+Phase 1 is complete only when Pantheon can repeatedly assign bounded work to the
 fixed 11-worker team, show what happened, preserve a usable receipt and audit
 trail, detect stalled or unsafe work, and return one clear decision or next
 money move to Daniel.
@@ -102,7 +102,7 @@ Every assignment has one plain status:
 - **Waiting for Daniel:** the work cannot continue without a decision, changed
   scope, or hard-stop action.
 - **Locked:** no implemented and approved path exists. The task must not run.
-- **Unknown outcome:** a request may have reached a provider, but Jarvis cannot
+- **Unknown outcome:** a request may have reached a provider, but Pantheon cannot
   prove the result. It is reviewed before any retry.
 
 No screen may use `autonomous`, `live`, `complete`, or `successful` when the
@@ -353,7 +353,7 @@ and hash over full-page copies.
 Approval of this proposal activates future checks and deletes nothing. Any
 destructive maintenance remains a separate operator action and produces a
 preview first. A decline or request for changes makes the proposal revision
-required; Jarvis cannot recreate the same approval.
+required; Pantheon cannot recreate the same approval.
 
 Until Daniel records the exact decision, only the existing controlled,
 non-personal, no-tool Demand Validator fixture may pass the pre-policy
@@ -399,5 +399,6 @@ versioned, how authority is bounded, and how cost and context growth are capped.
 ## Phase 1 Exit Rule
 
 Phase 1 may be marked complete only after all seven gates have dated evidence in
-`docs/Jarvis-Codex Build Log.md`. Until then, the honest status is `active,
-supervised, and incomplete`.
+`docs/Pantheon Build Log.md`. The 2026-07-18 Pantheon commercial foundation
+release records that evidence, so this phase is complete and retained as its
+implementation contract.

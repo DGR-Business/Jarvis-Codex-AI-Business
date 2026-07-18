@@ -364,7 +364,7 @@ function getDashboardState(db) {
   return {
     generatedAt: new Date().toISOString(),
     runtime: {
-      name: "Jarvis-Codex Control",
+      name: "Pantheon Control",
       stage: settings.autonomy?.stage || CONFIG.autonomyStage,
       currency: budget.currency || CONFIG.currency,
       health,

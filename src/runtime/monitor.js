@@ -331,7 +331,7 @@ function collectRuntimeOversightFindings(db, findings, options = {}) {
       category: "runtime_oversight",
       entityType: "scheduler_job",
       entityId: monitorJob.id,
-      title: "Jarvis monitoring is paused",
+      title: "Pantheon monitoring is paused",
       detail: "Independent system checks are disabled. Restart them before relying on unattended work.",
       metadata: { status: monitorJob.status },
     });
@@ -353,7 +353,7 @@ function collectRuntimeOversightFindings(db, findings, options = {}) {
       category: "runtime_oversight",
       entityType: "scheduler_run",
       entityId: latestRun.id,
-      title: "Jarvis monitoring needs recovery",
+      title: "Pantheon monitoring needs recovery",
       detail: latestRun.error || "The latest independent system check did not finish cleanly.",
       metadata: {
         jobId: monitorJob.id,
@@ -377,7 +377,7 @@ function collectRuntimeOversightFindings(db, findings, options = {}) {
         category: "runtime_oversight",
         entityType: "scheduler_job",
         entityId: monitorJob.id,
-        title: "Jarvis monitoring appears stuck",
+        title: "Pantheon monitoring appears stuck",
         detail: "The scheduled check has held its execution lease longer than its allowed window.",
         metadata: {
           lockOwner: monitorJob.lock_owner,
@@ -398,7 +398,7 @@ function collectRuntimeOversightFindings(db, findings, options = {}) {
       category: "runtime_oversight",
       entityType: "scheduler_job",
       entityId: monitorJob.id,
-      title: "Jarvis monitoring has not completed its first check",
+      title: "Pantheon monitoring has not completed its first check",
       detail: "The schedule is enabled, but no independent system check has completed yet.",
       metadata: { nextRunAt: monitorJob.next_run_at },
     });
@@ -412,7 +412,7 @@ function collectRuntimeOversightFindings(db, findings, options = {}) {
       category: "runtime_oversight",
       entityType: "scheduler_job",
       entityId: monitorJob.id,
-      title: "Jarvis monitoring is overdue",
+      title: "Pantheon monitoring is overdue",
       detail: "The next independent system check did not start within its expected window.",
       metadata: {
         lastRunAt: monitorJob.last_run_at,
@@ -697,7 +697,7 @@ function collectFindings(db, options = {}) {
       entityType: "agent_run",
       entityId: agentRun.id,
       title: `AI work may be stuck: ${agentRun.title || agentRun.agent_id}`,
-      detail: "The worker has not recorded progress within the expected window. Jarvis will not assume the provider call is safe to repeat.",
+      detail: "The worker has not recorded progress within the expected window. Pantheon will not assume the provider call is safe to repeat.",
       metadata: { taskId: agentRun.task_id, startedAt: agentRun.started_at, staleRunCutoff },
     });
   }

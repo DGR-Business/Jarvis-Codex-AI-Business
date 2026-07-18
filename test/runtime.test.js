@@ -113,7 +113,7 @@ test("seedDatabase creates durable runtime state", () => {
   const db = seededDb("seed");
   const state = getDashboardState(db);
 
-  assert.equal(state.runtime.name, "Jarvis-Codex Control");
+  assert.equal(state.runtime.name, "Pantheon Control");
   assert.equal(state.runtime.stage, 1);
   assert.equal(state.workflows.length, 1);
   assert.equal(state.approvals.length, 1);
@@ -545,7 +545,10 @@ test("agent tool policy registers worker permissions and hard stops", () => {
   assert.equal(demandValidator.externalActionsRequireApproval, true);
   assert.equal(demandValidator.spendRequiresApproval, true);
   assert.equal(productBuilder.status, "approval_gated");
-  assert.deepEqual(productBuilder.approvalRequired.map((item) => item.tool_id).sort(), ["digital_product_adapter", "image_generation_spend"]);
+  assert.deepEqual(
+    productBuilder.approvalRequired.map((item) => item.tool_id).sort(),
+    ["digital_product_adapter", "image_generation_spend", "product_file_factory"],
+  );
   assert.deepEqual(policy.byAgent.quality_reviewer.approvalRequired.map((item) => item.tool_id), ["visual_asset_review"]);
   assert.equal(marketplacePublish.status, "blocked");
   assert.equal(marketplacePublish.hard_stop, true);
@@ -609,7 +612,13 @@ test("Agents SDK capability bridge exposes only exact capped worker skills", () 
         maxToolCalls: 3,
         deadlineMs: 120000,
         effects: [],
-        toolArguments: { research_adapter: { searchContextSize: "low", allowedDomains: ["example.com"] } },
+        toolArguments: {
+          research_adapter: {
+            searchContextSize: "low",
+            allowedDomains: ["example.com"],
+            userLocation: { country: "au", timezone: "Australia/Brisbane" },
+          },
+        },
       },
     },
   };
@@ -622,10 +631,18 @@ test("Agents SDK capability bridge exposes only exact capped worker skills", () 
   assert.equal(searchTools[0].providerData.type, "web_search");
   assert.equal(searchTools[0].providerData.search_context_size, "low");
   assert.deepEqual(searchTools[0].providerData.filters.allowed_domains, ["example.com"]);
+  assert.deepEqual(searchTools[0].providerData.user_location, {
+    type: "approximate",
+    country: "AU",
+    timezone: "Australia/Brisbane",
+  });
   const widerSearchTask = JSON.parse(JSON.stringify(task));
   widerSearchTask.payload.liveSpendRequest.toolArguments.research_adapter.searchContextSize = "medium";
   assert.throws(() => buildAgentsSdkCapabilityPlan(widerSearchTask, demandValidator), /restricted to low search context/);
-  assert.throws(() => buildAgentsSdkCapabilityPlan(task, productBuilder), /restricted to demand_validator/);
+  const invalidLocationTask = JSON.parse(JSON.stringify(task));
+  invalidLocationTask.payload.liveSpendRequest.toolArguments.research_adapter.userLocation.type = "precise";
+  assert.throws(() => buildAgentsSdkCapabilityPlan(invalidLocationTask, demandValidator), /type must be approximate/);
+  assert.throws(() => buildAgentsSdkCapabilityPlan(task, productBuilder), /restricted to opportunity_scout or demand_validator/);
 
   const imageTask = {
     id: "task-sdk-image",
@@ -797,6 +814,7 @@ test("operator decision brief payload excludes raw paths and machine-facing reco
   const serialized = JSON.stringify(payload);
   assert.equal(payload.schema, "jarvis_operator_decision_brief_v2");
   assert.equal(payload.decision.headline, "Run a 20-view interest test.");
+  assert.equal(payload.decision.approvalQuestion, "Should Pantheon proceed with this exact next step?");
   assert.equal(payload.outputs[0].name, "Evidence Brief");
   assert.equal(serialized.includes("private/secret/path.md"), false);
   assert.equal(serialized.includes("modelPolicy"), false);
@@ -1780,6 +1798,8 @@ test("execution pack outcomes feed results, feedback, and learning without live 
   const noResponse = recordExecutionPackOutcome(db, generated.pack.id, {
     outcomeType: "no_response",
     notes: "No replies after a small manual audience post.",
+    verified: true,
+    verificationNote: "Operator confirmed the controlled post produced no replies.",
   });
   assert.equal(noResponse.outcomeType, "no_response");
   assert.equal(noResponse.recorded.result.spend_cents, 0);
@@ -1806,6 +1826,8 @@ test("execution pack outcomes feed results, feedback, and learning without live 
   const reply = recordExecutionPackOutcome(db, generated.pack.id, {
     outcomeType: "reply",
     summary: "One buyer said the format was useful but wanted examples.",
+    verified: true,
+    verificationNote: "Operator confirmed this buyer reply from the controlled test.",
   });
   const state = getDashboardState(db);
 
@@ -1861,6 +1883,8 @@ test("learning cycles can generate revised test options without model calls", ()
     revenueCents: 2900,
     spendCents: 0,
     notes: "One buyer paid and two asked for a more agency-specific version.",
+    verified: true,
+    verificationNote: "Operator confirmed these measured results from the controlled test.",
   });
 
   const revision = createRevisionPlanFromLearning(db, outcome.recorded.learning.id, { createdBy: "test" });
@@ -2573,11 +2597,13 @@ test("scheduler seeds maintenance jobs and runs monitor job", async () => {
 
   let state = getDashboardState(db);
   const monitorJob = state.schedulerJobs.find((job) => job.id === "job-monitor-cycle");
+  const supervisorJob = state.schedulerJobs.find((job) => job.id === "job-pantheon-supervisor");
   const safeWorkJob = state.schedulerJobs.find((job) => job.id === "job-safe-work-loop");
-  assert.equal(state.schedulerJobs.length, 3);
+  assert.equal(state.schedulerJobs.length, 4);
   assert.equal(monitorJob.status, "enabled");
+  assert.equal(supervisorJob.status, "enabled");
   assert.equal(safeWorkJob.status, "disabled");
-  assert.equal(state.metrics.scheduler.enabled, 2);
+  assert.equal(state.metrics.scheduler.enabled, 3);
 
   const result = await runSchedulerJob(db, "job-monitor-cycle", { manual: true });
   assert.equal(result.status, "completed");
@@ -2601,9 +2627,11 @@ test("scheduler keeps safe work disabled until explicitly enabled", async () => 
 
   try {
     const due = await runDueSchedulerJobs(db, { limit: 5 });
-    assert.equal(due.dueCount, 2);
+    assert.equal(due.dueCount, 3);
     assert.equal(due.runs[0].jobId, "job-monitor-cycle");
-    assert.equal(due.runs[1].jobId, "job-weekly-executive-digest");
+    assert.equal(due.runs[1].jobId, "job-pantheon-supervisor");
+    assert.equal(due.runs[1].result.status, "idle");
+    assert.equal(due.runs[2].jobId, "job-weekly-executive-digest");
 
     const skipped = await runSchedulerJob(db, "job-safe-work-loop", { manual: true });
     assert.equal(skipped.status, "skipped");
@@ -2834,7 +2862,7 @@ test("live AI worker readiness and smoke test create approval-gated work without
     assert.equal(task.cost_budget_cents, 100);
     assert.equal(approval.payload.estimatedCostCents, 100);
     assert.deepEqual(approval.payload.providerRequirements.env, ["OPENAI_API_KEY"]);
-    assert.ok(approval.payload.providerRequirements.flags.includes("JARVIS_ENABLE_LIVE_MODELS"));
+    assert.ok(approval.payload.providerRequirements.flags.includes("PANTHEON_ENABLE_LIVE_MODELS"));
     assert.ok(approval.payload.providerRequirements.capabilities.includes("openai_agents_sdk_runner"));
     assert.equal(approval.payload.tracePolicy.providerResponseStored, false);
     assert.equal(approval.payload.tracePolicy.providerTraceContent, false);
@@ -2899,7 +2927,7 @@ test("live research request creates approval gate and blocks until provider is r
     assert.equal(liveTask.result.spendApprovalRequired, true);
     assert.equal(approval.payload.provider, "openai-web-search");
     assert.deepEqual(approval.payload.providerRequirements.env, ["OPENAI_API_KEY"]);
-    assert.ok(approval.payload.providerRequirements.flags.includes("JARVIS_ENABLE_LIVE_RESEARCH"));
+    assert.ok(approval.payload.providerRequirements.flags.includes("PANTHEON_ENABLE_LIVE_RESEARCH"));
     assert.ok(approval.payload.providerRequirements.capabilities.includes("live_research_adapter"));
     assert.equal(notice.status, "queued_dry_run");
     assert.equal(cost.amount_cents, 0);
@@ -2913,7 +2941,7 @@ test("live research request creates approval gate and blocks until provider is r
     assert.equal(providerBlocked.spendGate.providerBlocked, true);
     assert.equal(providerBlocked.spendGate.noSpendOccurred, true);
     assert.ok(providerBlocked.spendGate.missingRequirements.some((requirement) => requirement.name === "OPENAI_API_KEY"));
-    assert.ok(providerBlocked.spendGate.missingRequirements.some((requirement) => requirement.name === "JARVIS_ENABLE_LIVE_RESEARCH"));
+    assert.ok(providerBlocked.spendGate.missingRequirements.some((requirement) => requirement.name === "PANTHEON_ENABLE_LIVE_RESEARCH"));
 
     state = getDashboardState(db);
     const blockedTask = state.tasks.find((task) => task.id === liveTask.id);
@@ -2984,7 +3012,7 @@ test("live AI worker request creates approval gate and blocks until provider is 
     assert.equal(approval.payload.worker.id, "demand_validator");
     assert.equal(approval.payload.worker.name, "Demand Validator");
     assert.deepEqual(approval.payload.providerRequirements.env, ["OPENAI_API_KEY"]);
-    assert.ok(approval.payload.providerRequirements.flags.includes("JARVIS_ENABLE_LIVE_MODELS"));
+    assert.ok(approval.payload.providerRequirements.flags.includes("PANTHEON_ENABLE_LIVE_MODELS"));
     assert.ok(approval.payload.providerRequirements.capabilities.includes("openai_agents_sdk_runner"));
     assert.equal(notice.status, "queued_dry_run");
     assert.equal(cost.amount_cents, 0);
@@ -2998,7 +3026,7 @@ test("live AI worker request creates approval gate and blocks until provider is 
     assert.equal(providerBlocked.spendGate.providerBlocked, true);
     assert.equal(providerBlocked.spendGate.noSpendOccurred, true);
     assert.ok(providerBlocked.spendGate.missingRequirements.some((requirement) => requirement.name === "OPENAI_API_KEY"));
-    assert.ok(providerBlocked.spendGate.missingRequirements.some((requirement) => requirement.name === "JARVIS_ENABLE_LIVE_MODELS"));
+    assert.ok(providerBlocked.spendGate.missingRequirements.some((requirement) => requirement.name === "PANTHEON_ENABLE_LIVE_MODELS"));
 
     state = getDashboardState(db);
     const blockedTask = state.tasks.find((task) => task.id === liveTask.id);
@@ -3601,6 +3629,119 @@ test("live AI worker provider failure records failed run and no-spend evidence",
   }
 });
 
+test("Agents SDK definite HTTP rejection releases the reservation and records zero spend", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousLiveModels = process.env.PANTHEON_ENABLE_LIVE_MODELS;
+  const previousLegacyLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
+  const previousLiveResearch = process.env.PANTHEON_ENABLE_LIVE_RESEARCH;
+  const previousLegacyLiveResearch = process.env.JARVIS_ENABLE_LIVE_RESEARCH;
+  const previousDisabledAdapter = process.env.PANTHEON_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  const previousLegacyDisabledAdapter = process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  const previousDisabledSdk = process.env.PANTHEON_DISABLE_OPENAI_AGENTS_SDK;
+  const previousLegacyDisabledSdk = process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+  process.env.OPENAI_API_KEY = "test-sdk-rejection-key";
+  process.env.PANTHEON_ENABLE_LIVE_MODELS = "1";
+  process.env.PANTHEON_ENABLE_LIVE_RESEARCH = "1";
+  process.env.JARVIS_ENABLE_LIVE_RESEARCH = "1";
+  delete process.env.PANTHEON_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+  delete process.env.PANTHEON_DISABLE_OPENAI_AGENTS_SDK;
+  delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+  __setAgentRuntimeSdkRunnerForTests(async () => {
+    const rejection = new Error("400 Missing required parameter: tools[0].user_location.type.");
+    rejection.status = 400;
+    rejection.requestID = "req_definite_rejection";
+    throw rejection;
+  });
+
+  const db = seededDb("sdk-definite-rejection");
+  try {
+    await activateRetentionPolicyForTest(db);
+    const planned = createCommandPlan(db, {
+      text: "Evaluate a premium Notion finance dashboard template and prepare a decision pack",
+      source: "test",
+      createFiles: false,
+    });
+    const workflowId = planned.workflow.id;
+    await runUntilBlocked(db, { workflowId, maxSteps: 12 });
+
+    const requested = requestLiveAiWorker(db, workflowId, {
+      estimatedCostCents: 140,
+      worker: "demand_validator",
+      tools: ["research_adapter"],
+      toolArguments: {
+        research_adapter: {
+          searchContextSize: "low",
+          userLocation: { type: "approximate", country: "AU" },
+        },
+      },
+    });
+    decideApproval(db, requested.approval.id, "approved", "approve definite rejection proof");
+    const failed = await runOnce(db, { workflowId });
+
+    assert.equal(failed.status, "failed");
+    assert.match(failed.error, /Missing required parameter/);
+
+    const state = getDashboardState(db);
+    const liveTask = state.tasks.find((task) => task.workflow_id === workflowId && task.kind === "live_ai_worker_execution");
+    const liveRun = state.aiTeam.runs.find((runRecord) => runRecord.task_id === liveTask.id);
+    const modelCall = state.modelCalls.find((call) => call.task_id === liveTask.id && call.mode === "live");
+    const cost = state.costs.find((item) => item.id === `cost_spend_${liveTask.id}`);
+    const attempt = get(db, "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC LIMIT 1", [liveTask.id]);
+    const receipt = get(db, "SELECT * FROM agent_run_receipts WHERE attempt_id = ? ORDER BY sequence DESC LIMIT 1", [attempt.id]);
+    const toolInvocation = get(
+      db,
+      "SELECT * FROM agent_tool_invocations WHERE task_id = ? AND observed_attempt_id = ? ORDER BY requested_at DESC LIMIT 1",
+      [liveTask.id, attempt.id],
+    );
+
+    assert.equal(liveTask.status, "failed");
+    assert.equal(liveTask.cost_actual_cents, 0);
+    assert.equal(liveRun.status, "failed");
+    assert.equal(liveRun.actual_cost_cents, 0);
+    assert.equal(modelCall.status, "failed");
+    assert.equal(modelCall.outcome_status, "failed_before_effect");
+    assert.equal(modelCall.cost_status, "released");
+    assert.equal(modelCall.error_kind, "provider_rejected");
+    assert.equal(modelCall.provider_request_id, "req_definite_rejection");
+    assert.equal(modelCall.estimated_cost_cents, 0);
+    assert.equal(modelCall.reserved_cost_cents, 140);
+    assert.equal(modelCall.metadata.outcomeUnknown, false);
+    assert.equal(modelCall.metadata.definiteProviderRejection, true);
+    assert.equal(modelCall.metadata.httpStatus, 400);
+    assert.equal(cost.status, "released");
+    assert.equal(cost.amount_cents, 0);
+    assert.equal(cost.metadata.noSpendOccurred, true);
+    assert.equal(cost.metadata.definiteProviderRejection, true);
+    assert.equal(attempt.outcome_status, "failed_before_effect");
+    assert.equal(receipt.status, "needs_review");
+    assert.deepEqual(JSON.parse(receipt.missing_fields), []);
+    assert.equal(toolInvocation.status, "blocked");
+    assert.equal(toolInvocation.decision, "provider_execution_failed");
+  } finally {
+    db.close();
+    __setAgentRuntimeSdkRunnerForTests(null);
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+    if (previousLiveModels === undefined) delete process.env.PANTHEON_ENABLE_LIVE_MODELS;
+    else process.env.PANTHEON_ENABLE_LIVE_MODELS = previousLiveModels;
+    if (previousLegacyLiveModels === undefined) delete process.env.JARVIS_ENABLE_LIVE_MODELS;
+    else process.env.JARVIS_ENABLE_LIVE_MODELS = previousLegacyLiveModels;
+    if (previousLiveResearch === undefined) delete process.env.PANTHEON_ENABLE_LIVE_RESEARCH;
+    else process.env.PANTHEON_ENABLE_LIVE_RESEARCH = previousLiveResearch;
+    if (previousLegacyLiveResearch === undefined) delete process.env.JARVIS_ENABLE_LIVE_RESEARCH;
+    else process.env.JARVIS_ENABLE_LIVE_RESEARCH = previousLegacyLiveResearch;
+    if (previousDisabledAdapter === undefined) delete process.env.PANTHEON_DISABLE_LIVE_AI_WORKER_ADAPTER;
+    else process.env.PANTHEON_DISABLE_LIVE_AI_WORKER_ADAPTER = previousDisabledAdapter;
+    if (previousLegacyDisabledAdapter === undefined) delete process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
+    else process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER = previousLegacyDisabledAdapter;
+    if (previousDisabledSdk === undefined) delete process.env.PANTHEON_DISABLE_OPENAI_AGENTS_SDK;
+    else process.env.PANTHEON_DISABLE_OPENAI_AGENTS_SDK = previousDisabledSdk;
+    if (previousLegacyDisabledSdk === undefined) delete process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK;
+    else process.env.JARVIS_DISABLE_OPENAI_AGENTS_SDK = previousLegacyDisabledSdk;
+  }
+});
+
 test("Agents SDK invalid structured output is recorded as a known provider response needing review", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
@@ -4048,6 +4189,8 @@ test("approved live research uses provider adapter, records sources, cost, and s
     assert.equal(toolInvocation.observed_attempt_id, attempt.id);
     assert.equal(scorecard.metadata.hasLiveResearch, true);
     assert.equal(scorecard.confidence, "medium_with_live_research");
+    assert.ok(scorecard.dimensions.demand_signal.score <= 40);
+    assert.match(scorecard.dimensions.demand_signal.note, /no buyer action/i);
     assert.notEqual(scorecard.verdict, "research_required");
     assert.equal(state.metrics.research.providerReady, true);
     assert.ok(bridgeBrief);
@@ -4928,7 +5071,12 @@ test("HTTP API creates execution packs and records pack outcomes safely", async 
     const outcomeResponse = await fetch(`${baseUrl}/api/execution-packs/${encodeURIComponent(packPayload.result.pack.id)}/outcomes`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ outcomeType: "no_response", notes: "No response after a controlled manual post." }),
+      body: JSON.stringify({
+        outcomeType: "no_response",
+        notes: "No response after a controlled manual post.",
+        verified: true,
+        verificationNote: "Operator confirmed the controlled post produced no response.",
+      }),
     });
     assert.equal(outcomeResponse.status, 201);
     const outcomePayload = await outcomeResponse.json();

@@ -1,19 +1,27 @@
 const { run, now, toJson } = require("../db");
 const { isAgentRuntimeSdkAvailable } = require("../runtime/agent-runtime");
+const {
+  environmentDisabled,
+  environmentEnabled,
+} = require("./pantheon-environment");
 
 function integrationDefinitions() {
   const openaiReady = Boolean(process.env.OPENAI_API_KEY);
-  const liveResearchReady = openaiReady && process.env.JARVIS_ENABLE_LIVE_RESEARCH === "1" && process.env.JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER !== "1";
-  const liveAiWorkersReady = openaiReady && process.env.JARVIS_ENABLE_LIVE_MODELS === "1" && isAgentRuntimeSdkAvailable();
+  const liveResearchReady = openaiReady
+    && environmentEnabled("enableLiveResearch")
+    && !environmentDisabled("disableLiveResearchAdapter");
+  const liveAiWorkersReady = openaiReady
+    && environmentEnabled("enableLiveModels")
+    && isAgentRuntimeSdkAvailable();
   return [
     {
       id: "codex",
-      name: "Codex",
+      name: "Pantheon Engineering & Monitoring",
       kind: "engineering",
       status: "ready",
       mode: "local",
       health: "ok",
-      metadata: { role: "engineering/admin runtime maintainer" },
+      metadata: { role: "Pantheon engineering, monitoring, maintenance, and improvement" },
     },
     {
       id: "openai",
@@ -22,11 +30,11 @@ function integrationDefinitions() {
       status: openaiReady ? "configured" : "needs_credentials",
       mode: "api",
       health: openaiReady ? "ok" : "not_configured",
-      metadata: { use: "future agent workflows, tracing, image/API scale" },
+      metadata: { use: "Pantheon agent work, research, tracing, and approved asset generation" },
     },
     {
       id: "live_research",
-      name: "Live Research Adapter",
+      name: "OpenAI Live Research",
       kind: "research",
       status: liveResearchReady ? "configured" : "planned",
       mode: "openai-web-search",
@@ -35,7 +43,7 @@ function integrationDefinitions() {
     },
     {
       id: "ai_workers",
-      name: "AI Worker Execution",
+      name: "OpenAI Agent Workers",
       kind: "ai",
       status: liveAiWorkersReady ? "configured" : "planned",
       mode: "openai-agents-sdk",

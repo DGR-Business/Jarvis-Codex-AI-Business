@@ -4,8 +4,8 @@ Date: 2026-07-05
 
 ## Decision
 
-Use `docs/Jarvis-Codex Master Plan.md` as the living steering document for the
-Jarvis-Codex build.
+Use `docs/Pantheon Master Plan.md` as the living steering document for the
+Pantheon build. The earlier filename is historical.
 
 ## Context
 

@@ -10,11 +10,27 @@ const CONFIG = require("../config");
 const MAGIC = Buffer.from("JARVISBK1", "ascii");
 const AUTH_TAG_BYTES = 16;
 const MAX_HEADER_BYTES = 64 * 1024;
-const BACKUP_KINDS = new Set(["source", "database", "artifacts", "file"]);
+const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
+const RECOVERY_SET_FORMAT = "pantheon-recovery-set";
+const RECOVERY_SET_VERSION = 1;
+const RECOVERY_METADATA_DIR = ".pantheon-recovery";
+const RECOVERY_MANIFEST_PATH = `${RECOVERY_METADATA_DIR}/manifest.json`;
+const RECOVERY_VERIFICATION_PATH = `${RECOVERY_METADATA_DIR}/restore-verification.json`;
+const BACKUP_KINDS = new Set(["source", "database", "artifacts", "set", "file"]);
 
-function requiredPassphrase(value = process.env.JARVIS_BACKUP_PASSPHRASE) {
+function preferredEnvironment(suffix) {
+  const preferred = process.env[`PANTHEON_${suffix}`];
+  if (preferred !== undefined && preferred !== "") return preferred;
+  const legacy = process.env[`JARVIS_${suffix}`];
+  return legacy !== undefined && legacy !== "" ? legacy : undefined;
+}
+
+function requiredPassphrase(value = preferredEnvironment("BACKUP_PASSPHRASE")) {
   if (!value || value.length < 16) {
-    throw new Error("JARVIS_BACKUP_PASSPHRASE must contain at least 16 characters.");
+    throw new Error(
+      "PANTHEON_BACKUP_PASSPHRASE must contain at least 16 characters "
+      + "(JARVIS_BACKUP_PASSPHRASE remains supported as a compatibility alias).",
+    );
   }
   return value;
 }
@@ -56,6 +72,12 @@ function validateHeader(header) {
   const salt = Buffer.from(String(header.salt || ""), "base64");
   const iv = Buffer.from(String(header.iv || ""), "base64");
   if (salt.length !== 16 || iv.length !== 12) throw new Error("Invalid backup encryption parameters.");
+  if (header.kind === "set" && !/^[a-f0-9-]{32,64}$/i.test(String(header.setId || ""))) {
+    throw new Error("Invalid recovery-set identifier.");
+  }
+  if (header.kind === "set" && !/^[a-f0-9]{64}$/i.test(String(header.manifestSha256 || ""))) {
+    throw new Error("Invalid recovery-set manifest hash.");
+  }
   return header;
 }
 
@@ -156,6 +178,8 @@ async function encryptFile(sourcePath, destinationPath, options = {}) {
     payloadSha256: sha256File(sourcePath),
     salt: salt.toString("base64"),
     iv: iv.toString("base64"),
+    ...(options.setId ? { setId: options.setId } : {}),
+    ...(options.manifestSha256 ? { manifestSha256: options.manifestSha256 } : {}),
   };
   validateHeader(header);
   const headerBytes = Buffer.from(JSON.stringify(header), "utf8");
@@ -236,7 +260,7 @@ function createSourceArchive(sourceRoot, archivePath, options = {}) {
   const root = path.resolve(sourceRoot);
   const excludes = new Set([
     ".git", "*/.git", "node_modules", "*/node_modules", ".playwright-cli",
-    "tmp", "output", "backups", "data", "private", "*/private",
+    "tmp", "output", "backups", "data", "private", "*/private", RECOVERY_METADATA_DIR,
   ]);
   for (const candidate of [options.artifactRoot, options.dbPath, options.backupDestination].filter(Boolean)) {
     const relative = relativePathWithin(root, candidate);
@@ -256,6 +280,9 @@ function createSourceArchive(sourceRoot, archivePath, options = {}) {
 function copyDirectoryContents(source, destination) {
   fs.mkdirSync(destination, { recursive: true });
   for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Managed backup data cannot contain symbolic links: ${path.join(source, entry.name)}`);
+    }
     fs.cpSync(path.join(source, entry.name), path.join(destination, entry.name), {
       recursive: true,
       dereference: false,
@@ -276,10 +303,10 @@ function createArtifactArchive(sourceRoot, archivePath, options = {}) {
   const artifactRoot = path.resolve(options.artifactRoot || defaultArtifactRoot(root));
   const approvalPackRoot = path.resolve(
     options.approvalPackRoot
-      || process.env.JARVIS_APPROVAL_PACK_DIR
+      || preferredEnvironment("APPROVAL_PACK_DIR")
       || path.join(root, "output", "pdf"),
   );
-  const stageRoot = fs.mkdtempSync(path.join(path.dirname(path.resolve(archivePath)), "jarvis-artifacts-stage-"));
+  const stageRoot = fs.mkdtempSync(path.join(path.dirname(path.resolve(archivePath)), "pantheon-artifacts-stage-"));
   const included = [];
   try {
     if (fs.existsSync(artifactRoot)) {
@@ -364,11 +391,359 @@ async function createDatabaseSnapshot(dbPath, snapshotPath) {
   return snapshotPath;
 }
 
+function isSafeRelativeArchivePath(value) {
+  const normalized = String(value || "").replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!normalized || normalized === ".") return false;
+  const parts = normalized.split("/").filter(Boolean);
+  return !path.posix.isAbsolute(normalized)
+    && !/^[a-zA-Z]:/.test(normalized)
+    && !parts.includes("..");
+}
+
+function recoveryComponentForPath(relativePath) {
+  const normalized = toArchivePath(relativePath);
+  if (normalized === "data/runtime.sqlite") return "database";
+  if (normalized.startsWith("data/artifacts/")) return "runtimeArtifacts";
+  if (normalized.startsWith("output/pdf/")) return "approvalPacks";
+  if (normalized.startsWith("private/")) return "privateOperatorReferences";
+  return "source";
+}
+
+function inventoryDirectory(root, options = {}) {
+  const base = path.resolve(root);
+  const excludedPrefixes = new Set(
+    (options.excludePrefixes || [RECOVERY_METADATA_DIR])
+      .map((value) => String(value).replace(/\\/g, "/").replace(/\/+$/, "")),
+  );
+  const inventory = [];
+
+  function visit(directory) {
+    const entries = fs.readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const absolutePath = path.join(directory, entry.name);
+      const relativePath = toArchivePath(path.relative(base, absolutePath));
+      if ([...excludedPrefixes].some((prefix) => relativePath === prefix || relativePath.startsWith(`${prefix}/`))) {
+        continue;
+      }
+      const stats = fs.lstatSync(absolutePath);
+      if (stats.isSymbolicLink()) {
+        throw new Error(`Recovery data cannot contain symbolic links: ${relativePath}`);
+      }
+      if (stats.isDirectory()) {
+        visit(absolutePath);
+        continue;
+      }
+      if (!stats.isFile()) {
+        throw new Error(`Recovery data contains an unsupported filesystem entry: ${relativePath}`);
+      }
+      inventory.push({
+        path: relativePath,
+        bytes: stats.size,
+        sha256: sha256File(absolutePath),
+        component: recoveryComponentForPath(relativePath),
+      });
+    }
+  }
+
+  visit(base);
+  return inventory.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function summarizeInventory(inventory, component) {
+  const records = inventory.filter((item) => item.component === component);
+  const digest = crypto.createHash("sha256");
+  for (const item of records) {
+    digest.update(`${item.path}\0${item.bytes}\0${item.sha256}\n`, "utf8");
+  }
+  return {
+    fileCount: records.length,
+    bytes: records.reduce((sum, item) => sum + item.bytes, 0),
+    inventorySha256: digest.digest("hex"),
+  };
+}
+
+function defaultPrivateOperatorRoot(sourceRoot) {
+  return path.resolve(
+    preferredEnvironment("PRIVATE_OPERATOR_DIR")
+      || path.join(path.resolve(sourceRoot), "private"),
+  );
+}
+
+async function createRecoverySetArchive(sourceRoot, archivePath, options = {}) {
+  const root = path.resolve(sourceRoot);
+  const dbPath = path.resolve(options.dbPath || CONFIG.dbPath);
+  const artifactRoot = path.resolve(options.artifactRoot || defaultArtifactRoot(root));
+  const approvalPackRoot = path.resolve(
+    options.approvalPackRoot
+      || preferredEnvironment("APPROVAL_PACK_DIR")
+      || path.join(root, "output", "pdf"),
+  );
+  const privateOperatorRoot = path.resolve(
+    options.privateOperatorRoot || defaultPrivateOperatorRoot(root),
+  );
+  const setId = options.setId || crypto.randomUUID();
+  const createdAt = options.createdAt || new Date().toISOString();
+  const stageRoot = fs.mkdtempSync(path.join(path.dirname(path.resolve(archivePath)), "pantheon-set-stage-"));
+  const sourceArchive = path.join(path.dirname(stageRoot), `${path.basename(stageRoot)}-source.tar`);
+  try {
+    createSourceArchive(root, sourceArchive, {
+      artifactRoot,
+      dbPath,
+      backupDestination: options.backupDestination,
+    });
+    validateArchiveEntries(sourceArchive, "source");
+    runTar(["-xf", sourceArchive, "-C", stageRoot]);
+
+    const restoredDbPath = path.join(stageRoot, "data", "runtime.sqlite");
+    await createDatabaseSnapshot(dbPath, restoredDbPath);
+
+    const restoredArtifactRoot = path.join(stageRoot, "data", "artifacts");
+    fs.mkdirSync(restoredArtifactRoot, { recursive: true });
+    const artifactsPresent = fs.existsSync(artifactRoot);
+    if (artifactsPresent) copyDirectoryContents(artifactRoot, restoredArtifactRoot);
+
+    const restoredPackRoot = path.join(stageRoot, "output", "pdf");
+    fs.mkdirSync(restoredPackRoot, { recursive: true });
+    const packsInsideArtifacts = pathsOverlap(artifactRoot, approvalPackRoot)
+      && relativePathWithin(artifactRoot, approvalPackRoot) !== null;
+    const approvalPacksPresent = fs.existsSync(approvalPackRoot) && !packsInsideArtifacts;
+    if (approvalPacksPresent) copyDirectoryContents(approvalPackRoot, restoredPackRoot);
+
+    const restoredPrivateRoot = path.join(stageRoot, "private");
+    fs.mkdirSync(restoredPrivateRoot, { recursive: true });
+    const privateOperatorReferencesPresent = fs.existsSync(privateOperatorRoot);
+    if (privateOperatorReferencesPresent) copyDirectoryContents(privateOperatorRoot, restoredPrivateRoot);
+
+    const inventory = inventoryDirectory(stageRoot);
+    const components = {
+      source: {
+        required: true,
+        present: true,
+        restorePath: ".",
+        ...summarizeInventory(inventory, "source"),
+      },
+      database: {
+        required: true,
+        present: true,
+        restorePath: "data/runtime.sqlite",
+        ...summarizeInventory(inventory, "database"),
+        sqlite: validateSqliteDatabase(restoredDbPath),
+      },
+      runtimeArtifacts: {
+        required: false,
+        present: artifactsPresent,
+        restorePath: "data/artifacts",
+        ...summarizeInventory(inventory, "runtimeArtifacts"),
+      },
+      approvalPacks: {
+        required: false,
+        present: approvalPacksPresent,
+        restorePath: "output/pdf",
+        ...summarizeInventory(inventory, "approvalPacks"),
+      },
+      privateOperatorReferences: {
+        required: false,
+        present: privateOperatorReferencesPresent,
+        restorePath: "private",
+        ...summarizeInventory(inventory, "privateOperatorReferences"),
+      },
+    };
+    const manifest = {
+      format: RECOVERY_SET_FORMAT,
+      version: RECOVERY_SET_VERSION,
+      setId,
+      createdAt,
+      product: "Pantheon",
+      restoreLayout: "ready-workspace",
+      components,
+      inventory,
+    };
+    const metadataRoot = path.join(stageRoot, RECOVERY_METADATA_DIR);
+    fs.mkdirSync(metadataRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(stageRoot, RECOVERY_MANIFEST_PATH),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
+    runTar(["-cf", archivePath, "-C", stageRoot, "."]);
+    return {
+      archivePath,
+      manifest,
+      manifestSha256: sha256File(path.join(stageRoot, RECOVERY_MANIFEST_PATH)),
+    };
+  } finally {
+    fs.rmSync(sourceArchive, { force: true });
+    fs.rmSync(stageRoot, { recursive: true, force: true });
+  }
+}
+
+function parseRecoveryManifest(restoredRoot) {
+  const manifestPath = path.join(path.resolve(restoredRoot), RECOVERY_MANIFEST_PATH);
+  if (!fs.existsSync(manifestPath)) throw new Error("Recovery set is missing its manifest.");
+  const stats = fs.statSync(manifestPath);
+  if (!stats.isFile() || stats.size < 2 || stats.size > MAX_MANIFEST_BYTES) {
+    throw new Error("Recovery-set manifest size is invalid.");
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch {
+    throw new Error("Recovery-set manifest is not valid JSON.");
+  }
+  if (manifest?.format !== RECOVERY_SET_FORMAT || manifest?.version !== RECOVERY_SET_VERSION) {
+    throw new Error("Unsupported recovery-set manifest.");
+  }
+  if (!/^[a-f0-9-]{32,64}$/i.test(String(manifest.setId || ""))) {
+    throw new Error("Recovery-set manifest has an invalid identifier.");
+  }
+  if (!Number.isFinite(Date.parse(manifest.createdAt))) {
+    throw new Error("Recovery-set manifest has an invalid creation time.");
+  }
+  if (!manifest.components || typeof manifest.components !== "object" || !Array.isArray(manifest.inventory)) {
+    throw new Error("Recovery-set manifest is incomplete.");
+  }
+  return manifest;
+}
+
+function validateRecoverySetDirectory(restoredRoot, options = {}) {
+  const root = path.resolve(restoredRoot);
+  const manifest = parseRecoveryManifest(root);
+  if (options.header?.setId && options.header.setId !== manifest.setId) {
+    throw new Error("Recovery-set header and manifest identifiers do not match.");
+  }
+  if (options.header?.createdAt && options.header.createdAt !== manifest.createdAt) {
+    throw new Error("Recovery-set header and manifest creation times do not match.");
+  }
+  if (
+    options.header?.manifestSha256
+    && options.header.manifestSha256 !== sha256File(path.join(root, RECOVERY_MANIFEST_PATH))
+  ) {
+    throw new Error("Recovery-set header and manifest hashes do not match.");
+  }
+
+  const expectedInventory = manifest.inventory;
+  const seen = new Set();
+  for (const item of expectedInventory) {
+    if (!item || !isSafeRelativeArchivePath(item.path) || seen.has(item.path)) {
+      throw new Error("Recovery-set manifest contains an invalid or duplicate file path.");
+    }
+    seen.add(item.path);
+    if (!Number.isSafeInteger(item.bytes) || item.bytes < 0 || !/^[a-f0-9]{64}$/i.test(String(item.sha256 || ""))) {
+      throw new Error(`Recovery-set manifest has invalid file metadata: ${item.path}`);
+    }
+    if (item.component !== recoveryComponentForPath(item.path)) {
+      throw new Error(`Recovery-set manifest assigns a file to the wrong component: ${item.path}`);
+    }
+  }
+
+  const actualInventory = inventoryDirectory(root);
+  if (actualInventory.length !== expectedInventory.length) {
+    throw new Error(
+      `Recovery-set inventory does not match (expected ${expectedInventory.length} files, found ${actualInventory.length}).`,
+    );
+  }
+  for (let index = 0; index < expectedInventory.length; index += 1) {
+    const expected = expectedInventory[index];
+    const actual = actualInventory[index];
+    if (
+      expected.path !== actual.path
+      || expected.bytes !== actual.bytes
+      || expected.sha256 !== actual.sha256
+      || expected.component !== actual.component
+    ) {
+      throw new Error(`Recovery-set file verification failed: ${expected.path || actual.path}`);
+    }
+  }
+
+  const componentNames = [
+    "source",
+    "database",
+    "runtimeArtifacts",
+    "approvalPacks",
+    "privateOperatorReferences",
+  ];
+  const componentDefinitions = {
+    source: { required: true, restorePath: "." },
+    database: { required: true, restorePath: "data/runtime.sqlite" },
+    runtimeArtifacts: { required: false, restorePath: "data/artifacts" },
+    approvalPacks: { required: false, restorePath: "output/pdf" },
+    privateOperatorReferences: { required: false, restorePath: "private" },
+  };
+  const unexpectedComponents = Object.keys(manifest.components)
+    .filter((name) => !componentNames.includes(name));
+  if (unexpectedComponents.length) {
+    throw new Error(`Recovery-set manifest contains unexpected components: ${unexpectedComponents.join(", ")}`);
+  }
+  for (const componentName of componentNames) {
+    const expected = manifest.components[componentName];
+    if (!expected || typeof expected !== "object") {
+      throw new Error(`Recovery-set manifest is missing component: ${componentName}`);
+    }
+    const definition = componentDefinitions[componentName];
+    if (
+      expected.required !== definition.required
+      || expected.restorePath !== definition.restorePath
+      || typeof expected.present !== "boolean"
+      || (expected.required && !expected.present)
+    ) {
+      throw new Error(`Recovery-set manifest has invalid component policy: ${componentName}`);
+    }
+    const actual = summarizeInventory(actualInventory, componentName);
+    if (
+      expected.fileCount !== actual.fileCount
+      || expected.bytes !== actual.bytes
+      || expected.inventorySha256 !== actual.inventorySha256
+    ) {
+      throw new Error(`Recovery-set component verification failed: ${componentName}`);
+    }
+  }
+  if (manifest.components.database.fileCount !== 1) {
+    throw new Error("Recovery set must contain exactly one runtime database snapshot.");
+  }
+  const databaseInventory = actualInventory.filter((item) => item.component === "database");
+  if (databaseInventory[0]?.path !== "data/runtime.sqlite") {
+    throw new Error("Recovery set does not contain the runtime database at its canonical restore path.");
+  }
+  for (const requiredDirectory of ["data/artifacts", "output/pdf", "private", RECOVERY_METADATA_DIR]) {
+    const directoryPath = path.join(root, requiredDirectory);
+    if (!fs.existsSync(directoryPath) || !fs.statSync(directoryPath).isDirectory()) {
+      throw new Error(`Recovery set is missing its canonical directory: ${requiredDirectory}`);
+    }
+  }
+  const sqlite = validateSqliteDatabase(path.join(root, "data", "runtime.sqlite"));
+  return {
+    format: manifest.format,
+    version: manifest.version,
+    setId: manifest.setId,
+    createdAt: manifest.createdAt,
+    fileCount: actualInventory.length,
+    bytes: actualInventory.reduce((sum, item) => sum + item.bytes, 0),
+    components: manifest.components,
+    sqlite,
+    manifest,
+  };
+}
+
 function listArchiveEntries(archivePath) {
   return runTar(["-tf", archivePath])
     .split(/\r?\n/)
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function validateArchiveEntryTypes(archivePath) {
+  const lines = runTar(["-tvf", archivePath])
+    .split(/\r?\n/)
+    .map((line) => line.trimStart())
+    .filter(Boolean);
+  for (const line of lines) {
+    const type = line[0];
+    if (type !== "-" && type !== "d") {
+      throw new Error("Archive contains a symbolic link, hard link, or unsupported filesystem entry.");
+    }
+  }
+  return lines.length;
 }
 
 function validateArchiveEntries(archivePath, kind) {
@@ -384,6 +759,7 @@ function validateArchiveEntries(archivePath, kind) {
       throw new Error(`Artifact backup unexpectedly contains a database file: ${entry}`);
     }
   }
+  validateArchiveEntryTypes(archivePath);
   return entries;
 }
 
@@ -404,12 +780,18 @@ async function createBackup(options = {}) {
   const destinationRoot = path.resolve(options.destinationRoot || CONFIG.backupDestination);
   const dbPath = path.resolve(options.dbPath || CONFIG.dbPath);
   const artifactRoot = path.resolve(options.artifactRoot || defaultArtifactRoot(sourceRoot));
-  const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-backup-"));
+  const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-backup-"));
   const stampDate = options.createdAt ? new Date(options.createdAt) : new Date();
   if (!Number.isFinite(stampDate.getTime())) throw new Error("Backup creation time is invalid.");
   const stamp = timestampForFile(stampDate);
   const rawPath = path.join(workRoot, kind === "database" ? "runtime.sqlite" : `${kind}.tar`);
-  const encryptedPath = path.join(destinationRoot, `jarvis-${kind}-${stamp}.jbackup`);
+  const encryptedPath = path.join(
+    destinationRoot,
+    kind === "set"
+      ? `pantheon-recovery-set-${stamp}.jbackup`
+      : `pantheon-${kind}-${stamp}.jbackup`,
+  );
+  let recoverySet;
   try {
     if (kind === "database") {
       await createDatabaseSnapshot(dbPath, rawPath);
@@ -424,6 +806,16 @@ async function createBackup(options = {}) {
         artifactRoot,
         approvalPackRoot: options.approvalPackRoot,
       });
+    } else if (kind === "set") {
+      recoverySet = await createRecoverySetArchive(sourceRoot, rawPath, {
+        setId: options.setId,
+        createdAt: stampDate.toISOString(),
+        dbPath,
+        artifactRoot,
+        approvalPackRoot: options.approvalPackRoot,
+        privateOperatorRoot: options.privateOperatorRoot,
+        backupDestination: destinationRoot,
+      });
     } else {
       throw new Error(`Unsupported backup kind: ${kind}`);
     }
@@ -431,8 +823,22 @@ async function createBackup(options = {}) {
       kind,
       passphrase: options.passphrase,
       createdAt: stampDate.toISOString(),
+      setId: recoverySet?.manifest.setId,
+      manifestSha256: recoverySet?.manifestSha256,
     });
-    return { ...result, kind, sourceRoot, artifactRoot: kind === "artifacts" ? artifactRoot : undefined };
+    return {
+      ...result,
+      kind,
+      sourceRoot,
+      artifactRoot: ["artifacts", "set"].includes(kind) ? artifactRoot : undefined,
+      ...(recoverySet
+        ? {
+          setId: recoverySet.manifest.setId,
+          manifestSha256: recoverySet.manifestSha256,
+          components: recoverySet.manifest.components,
+        }
+        : {}),
+    };
   } finally {
     fs.rmSync(workRoot, { recursive: true, force: true });
   }
@@ -454,13 +860,16 @@ function pathsOverlap(left, right) {
 function assertRestoreDestinationIsInactive(kind, destinationPath) {
   const destination = path.resolve(destinationPath);
   if (kind === "database" && pathsOverlap(destination, CONFIG.dbPath)) {
-    throw new Error("Restore refused: destination is the active runtime database. Restore to a separate location, verify it, stop Jarvis, then perform a controlled swap.");
+    throw new Error("Restore refused: destination is the active runtime database. Restore to a separate location, verify it, stop Pantheon, then perform a controlled swap.");
   }
   if (kind === "source" && pathsOverlap(destination, CONFIG.rootDir)) {
     throw new Error("Restore refused: destination overlaps the active source workspace.");
   }
+  if (kind === "set" && pathsOverlap(destination, CONFIG.rootDir)) {
+    throw new Error("Restore refused: recovery-set destination overlaps the active Pantheon workspace.");
+  }
   if (kind === "artifacts") {
-    const activePackRoot = process.env.JARVIS_APPROVAL_PACK_DIR || path.join(CONFIG.rootDir, "output", "pdf");
+    const activePackRoot = preferredEnvironment("APPROVAL_PACK_DIR") || path.join(CONFIG.rootDir, "output", "pdf");
     if (pathsOverlap(destination, CONFIG.artifactRoot) || pathsOverlap(destination, activePackRoot)) {
       throw new Error("Restore refused: destination overlaps active runtime artifacts.");
     }
@@ -499,16 +908,21 @@ function commitStagedRestore(stagedPath, destinationPath, options = {}) {
 }
 
 async function restoreBackup(sourcePath, destinationPath, options = {}) {
-  const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-restore-"));
+  const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-restore-"));
   const rawPath = path.join(workRoot, "payload");
   let stagedPath = null;
   try {
-    const proof = await decryptFile(path.resolve(sourcePath), rawPath, options);
+    const resolvedSource = path.resolve(sourcePath);
+    const resolvedDestination = path.resolve(destinationPath);
+    if (pathsOverlap(resolvedSource, resolvedDestination)) {
+      throw new Error("Restore refused: destination overlaps the encrypted backup file.");
+    }
+    const proof = await decryptFile(resolvedSource, rawPath, options);
     const kind = proof.kind;
-    if (!["source", "artifacts", "database"].includes(kind)) throw new Error(`Unsupported backup kind: ${kind}`);
-    assertRestoreDestinationIsInactive(kind, destinationPath);
+    if (!["source", "artifacts", "database", "set"].includes(kind)) throw new Error(`Unsupported backup kind: ${kind}`);
+    assertRestoreDestinationIsInactive(kind, resolvedDestination);
 
-    const destination = path.resolve(destinationPath);
+    const destination = resolvedDestination;
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     stagedPath = path.join(
       path.dirname(destination),
@@ -529,11 +943,75 @@ async function restoreBackup(sourcePath, destinationPath, options = {}) {
     validateArchiveEntries(rawPath, kind);
     fs.mkdirSync(stagedPath, { recursive: false });
     runTar(["-xf", rawPath, "-C", stagedPath]);
+    if (kind === "set") {
+      const verification = validateRecoverySetDirectory(stagedPath, { header: proof });
+      const verificationRecord = {
+        format: "pantheon-restore-verification",
+        version: 1,
+        verifiedAt: new Date().toISOString(),
+        setId: verification.setId,
+        createdAt: verification.createdAt,
+        encryptedBackupSha256: sha256File(path.resolve(sourcePath)),
+        payloadSha256: proof.payloadSha256,
+        restoredFileCount: verification.fileCount,
+        restoredBytes: verification.bytes,
+        sqlite: verification.sqlite,
+      };
+      fs.writeFileSync(
+        path.join(stagedPath, RECOVERY_VERIFICATION_PATH),
+        `${JSON.stringify(verificationRecord, null, 2)}\n`,
+        { encoding: "utf8", flag: "wx" },
+      );
+      const committedVerification = commitStagedRestore(stagedPath, destination, {
+        ...options,
+        verifyCommitted: (committedPath) => validateRecoverySetDirectory(committedPath, { header: proof }),
+      });
+      stagedPath = null;
+      return {
+        ...proof,
+        destinationPath: destination,
+        recoverySet: committedVerification,
+        verificationRecord,
+      };
+    }
     commitStagedRestore(stagedPath, destination, options);
     stagedPath = null;
     return { ...proof, destinationPath: destination };
   } finally {
     if (stagedPath) fs.rmSync(stagedPath, { recursive: true, force: true });
+    fs.rmSync(workRoot, { recursive: true, force: true });
+  }
+}
+
+async function verifyBackup(sourcePath, options = {}) {
+  const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-verify-"));
+  const rawPath = path.join(workRoot, "payload");
+  const extractedPath = path.join(workRoot, "extracted");
+  try {
+    const proof = await decryptFile(path.resolve(sourcePath), rawPath, options);
+    if (proof.kind === "database") {
+      return { ...proof, sqlite: validateSqliteDatabase(rawPath), verified: true };
+    }
+    if (proof.kind === "file") {
+      return { ...proof, verified: true };
+    }
+    if (!["source", "artifacts", "set"].includes(proof.kind)) {
+      throw new Error(`Unsupported backup kind: ${proof.kind}`);
+    }
+    const entries = validateArchiveEntries(rawPath, proof.kind);
+    fs.mkdirSync(extractedPath, { recursive: false });
+    runTar(["-xf", rawPath, "-C", extractedPath]);
+    if (proof.kind === "set") {
+      return {
+        ...proof,
+        verified: true,
+        archiveEntries: entries.length,
+        recoverySet: validateRecoverySetDirectory(extractedPath, { header: proof }),
+      };
+    }
+    inventoryDirectory(extractedPath, { excludePrefixes: [] });
+    return { ...proof, verified: true, archiveEntries: entries.length };
+  } finally {
     fs.rmSync(workRoot, { recursive: true, force: true });
   }
 }
@@ -608,16 +1086,22 @@ module.exports = {
   createBackup,
   createArtifactArchive,
   createDatabaseSnapshot,
+  createRecoverySetArchive,
   createSourceArchive,
   decryptFile,
   encryptFile,
   extractArchive,
+  inventoryDirectory,
   listArchiveEntries,
+  parseRecoveryManifest,
+  preferredEnvironment,
   pruneBackups,
   readEncryptedHeader,
   requiredPassphrase,
   restoreBackup,
   sha256File,
   validateArchiveEntries,
+  validateRecoverySetDirectory,
   validateSqliteDatabase,
+  verifyBackup,
 };

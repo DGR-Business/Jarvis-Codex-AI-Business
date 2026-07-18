@@ -34,26 +34,40 @@ const USAGE_SURVIVORS = Object.freeze([
     taskId: "task_live_worker_wf_demand_validator_pilot_d49d9642",
     runId: "agent_run_20e97804-f6cb-4b49-9af3-49f71b6b89d6",
     amountCents: 3,
+    status: "reconciled",
   },
   {
     modelCallId: "model_39fa5d59-bef8-4b97-b958-c3f26f75e1b5",
     taskId: "task_live_worker_wf_demand_validator_pilot_11493dc5",
     runId: "agent_run_977b9be7-9868-4150-89ac-f1e5f355470b",
     amountCents: 2,
+    status: "reconciled",
+  },
+  {
+    modelCallId: "model_pantheon_release_proof_2026_07_18",
+    taskId: "task_pantheon_release_proof_2026_07_18",
+    runId: "agent_run_pantheon_release_proof_2026_07_18",
+    amountCents: 113,
+    status: "incurred_estimate",
   },
 ]);
+
+const USAGE_TOTAL_CENTS = USAGE_SURVIVORS.reduce(
+  (total, item) => total + item.amountCents,
+  0,
+);
 
 const STATIC_COUNTS = Object.freeze({
   ventures: 1,
   venture_cases: 1,
   accounting_entries: 3,
-  costs: 2,
+  costs: 3,
   agent_definitions: 11,
-  agent_tools: 40,
-  agent_tool_assignments: 36,
+  agent_tools: 41,
+  agent_tool_assignments: 38,
   agent_eval_datasets: 11,
   agent_eval_cases: 11,
-  scheduler_jobs: 3,
+  scheduler_jobs: 4,
   integrations: 11,
   capability_autonomy: 2,
 });
@@ -80,6 +94,12 @@ const EMPTY_OPERATIONAL_TABLES = Object.freeze([
   "commercial_learning_cycles",
   "commercial_evidence",
   "commercial_execution_packs",
+  "opportunity_rounds",
+  "opportunities",
+  "catalogue_plans",
+  "catalogue_items",
+  "commercial_diagnoses",
+  "supervisor_cycles",
   "platform_sales",
   "revenue",
   "work_packages",
@@ -171,14 +191,14 @@ function sourceSurvivors(db) {
     const row = get(
       db,
       `SELECT * FROM costs
-       WHERE model_call_id = ? AND status = 'reconciled' AND currency = 'AUD' AND amount_cents = ?`,
-      [expected.modelCallId, expected.amountCents],
+       WHERE model_call_id = ? AND status = ? AND currency = 'AUD' AND amount_cents = ?`,
+      [expected.modelCallId, expected.status, expected.amountCents],
     );
-    if (!row) throw new Error(`Reconciled provider usage is missing for ${expected.modelCallId}.`);
+    if (!row) throw new Error(`Preserved provider usage is missing for ${expected.modelCallId}.`);
     return { ...row, run_id: expected.runId, task_id: expected.taskId, model_call_id: expected.modelCallId };
   });
-  if (usage.reduce((sum, row) => sum + Number(row.amount_cents), 0) !== 5) {
-    throw new Error("Approved provider usage survivors must total exactly A$0.05.");
+  if (usage.reduce((sum, row) => sum + Number(row.amount_cents), 0) !== USAGE_TOTAL_CENTS) {
+    throw new Error(`Approved provider usage survivors must total exactly A$${(USAGE_TOTAL_CENTS / 100).toFixed(2)}.`);
   }
 
   const venture = get(db, "SELECT * FROM ventures WHERE id = 'venture-digital-products'");
@@ -192,7 +212,31 @@ function sourceSurvivors(db) {
   if (settings.length !== SETTINGS_TO_PRESERVE.length) {
     throw new Error("The source database is missing one or more approved operator settings.");
   }
-  return { accounting, usage, venture, settings };
+  const retentionActivations = all(
+    db,
+    "SELECT * FROM data_retention_policy_activations ORDER BY activated_at, id",
+  );
+  const retentionPolicyIds = [...new Set(retentionActivations.map((row) => row.policy_id))];
+  const retentionPolicies = retentionPolicyIds.length
+    ? all(
+        db,
+        `SELECT * FROM data_retention_policies
+         WHERE id IN (${retentionPolicyIds.map(() => "?").join(", ")})
+         ORDER BY version, id`,
+        retentionPolicyIds,
+      )
+    : [];
+  if (retentionPolicies.length !== retentionPolicyIds.length) {
+    throw new Error("A retained data-policy activation is missing its immutable policy record.");
+  }
+  return {
+    accounting,
+    usage,
+    venture,
+    settings,
+    retentionPolicies,
+    retentionActivations,
+  };
 }
 
 function copyAccountingRows(db, rows) {
@@ -254,6 +298,41 @@ function copyUsageRows(db, rows) {
   }
 }
 
+function copyRetentionPolicyRows(db, rows) {
+  for (const row of rows) {
+    run(
+      db,
+      `INSERT INTO data_retention_policies
+       (id, version, title, policy, policy_hash, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [row.id, row.version, row.title, row.policy, row.policy_hash, row.created_at],
+    );
+  }
+}
+
+function copyRetentionActivationRows(db, rows) {
+  for (const row of rows) {
+    run(
+      db,
+      `INSERT INTO data_retention_policy_activations
+       (id, policy_id, policy_hash, approval_id, proof_hash, activated_at,
+        activated_by, metadata, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.id,
+        row.policy_id,
+        row.policy_hash,
+        row.approval_id,
+        row.proof_hash,
+        row.activated_at,
+        row.activated_by,
+        row.metadata,
+        row.created_at,
+      ],
+    );
+  }
+}
+
 function verifyFirstUseDatabase(db, options = {}) {
   const integrity = verifyDatabase(db);
   const counts = {};
@@ -276,12 +355,18 @@ function verifyFirstUseDatabase(db, options = {}) {
     }
   }
   const usage = all(db, "SELECT model_call_id, amount_cents, status, currency FROM costs ORDER BY model_call_id");
-  if (usage.reduce((sum, row) => sum + Number(row.amount_cents), 0) !== 5
-    || usage.some((row) => row.status !== "reconciled" || row.currency !== "AUD")) {
-    throw new Error("The first-use runtime must preserve exactly A$0.05 of reconciled provider usage.");
+  if (
+    usage.reduce((sum, row) => sum + Number(row.amount_cents), 0) !== USAGE_TOTAL_CENTS
+    || usage.some((row) => row.currency !== "AUD")
+  ) {
+    throw new Error(`The first-use runtime must preserve exactly A$${(USAGE_TOTAL_CENTS / 100).toFixed(2)} of provider usage.`);
   }
   for (const expected of USAGE_SURVIVORS) {
-    if (!usage.some((row) => row.model_call_id === expected.modelCallId && Number(row.amount_cents) === expected.amountCents)) {
+    if (!usage.some((row) => (
+      row.model_call_id === expected.modelCallId
+      && Number(row.amount_cents) === expected.amountCents
+      && row.status === expected.status
+    ))) {
       throw new Error(`Provider usage attribution is missing for ${expected.modelCallId}.`);
     }
   }
@@ -294,6 +379,15 @@ function verifyFirstUseDatabase(db, options = {}) {
   }
   if (countRows(db, "capability_autonomy WHERE required_passes = 5 AND consecutive_passes = 0 AND status = 'supervised'") !== 2) {
     throw new Error("All first-use capabilities must start supervised at zero of five reviews.");
+  }
+  const activationCount = countRows(db, "data_retention_policy_activations");
+  if (
+    options.expectedRetentionActivationCount !== undefined
+    && activationCount !== Number(options.expectedRetentionActivationCount)
+  ) {
+    throw new Error(
+      `The first-use runtime retained ${activationCount} data-policy activation record(s); expected ${options.expectedRetentionActivationCount}.`,
+    );
   }
   const resetRows = countRows(db, "runtime_resets");
   if (options.resetId) {
@@ -394,9 +488,13 @@ function buildFirstUseDatabase(sourceDbPath, options = {}) {
     );
     copyAccountingRows(targetDb, survivors.accounting);
     copyUsageRows(targetDb, survivors.usage);
+    copyRetentionPolicyRows(targetDb, survivors.retentionPolicies);
+    copyRetentionActivationRows(targetDb, survivors.retentionActivations);
     run(targetDb, "DELETE FROM events");
 
-    const verification = verifyFirstUseDatabase(targetDb);
+    const verification = verifyFirstUseDatabase(targetDb, {
+      expectedRetentionActivationCount: survivors.retentionActivations.length,
+    });
     const manifest = {
       manifestVersion: 1,
       resetId,
@@ -407,8 +505,11 @@ function buildFirstUseDatabase(sourceDbPath, options = {}) {
       preservedProviderUsage: USAGE_SURVIVORS.map((item) => ({
         modelCallId: item.modelCallId,
         amountCents: item.amountCents,
+        status: item.status,
       })),
-      providerUsageTotalCents: 5,
+      providerUsageTotalCents: USAGE_TOTAL_CENTS,
+      preservedRetentionPolicyIds: survivors.retentionPolicies.map((row) => row.id),
+      preservedRetentionActivationIds: survivors.retentionActivations.map((row) => row.id),
       survivorCounts: STATIC_COUNTS,
       emptyOperationalTables: EMPTY_OPERATIONAL_TABLES,
       sourceOperationalCounts,
@@ -457,11 +558,13 @@ function processIsAlive(pid) {
 }
 
 function assertRuntimeStopped(sourceDbPath, options = {}) {
-  const pidPath = path.resolve(options.pidPath || path.join(CONFIG.rootDir, "tmp", "jarvis-server.pid"));
+  const preferredPidPath = path.resolve(options.pidPath || path.join(CONFIG.rootDir, "tmp", "pantheon-server.pid"));
+  const legacyPidPath = path.join(CONFIG.rootDir, "tmp", "jarvis-server.pid");
+  const pidPath = fs.existsSync(preferredPidPath) ? preferredPidPath : legacyPidPath;
   if (fs.existsSync(pidPath)) {
     const pid = Number(fs.readFileSync(pidPath, "utf8").trim());
     if (Number.isInteger(pid) && pid > 0 && processIsAlive(pid)) {
-      throw new Error(`Jarvis is still running as process ${pid}. Stop it before applying the reset.`);
+      throw new Error(`Pantheon is still running as process ${pid}. Stop it before applying the reset.`);
     }
     throw new Error(`A stale server marker exists at ${pidPath}. Resolve it before applying the reset.`);
   }
@@ -473,7 +576,7 @@ function assertRuntimeStopped(sourceDbPath, options = {}) {
     db.exec("COMMIT;");
   } catch (error) {
     try { db.exec("ROLLBACK;"); } catch {}
-    throw new Error(`The runtime database is busy; stop Jarvis before applying the reset. ${error.message}`);
+    throw new Error(`The runtime database is busy; stop Pantheon before applying the reset. ${error.message}`);
   } finally {
     db.close();
   }

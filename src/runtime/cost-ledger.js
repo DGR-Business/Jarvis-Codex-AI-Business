@@ -25,7 +25,14 @@ function monthlyBudgetExposure(db, options = {}) {
   const month = String(options.month || new Date().toISOString().slice(0, 7));
   const costs = all(
     db,
-    "SELECT * FROM costs WHERE substr(occurred_at, 1, 7) = ? ORDER BY occurred_at, id",
+    `SELECT * FROM costs
+     WHERE substr(occurred_at, 1, 7) = ?
+       AND category <> 'subscription'
+       AND COALESCE(
+         json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.outsideOperatingMandate'),
+         0
+       ) <> 1
+     ORDER BY occurred_at, id`,
     [month],
   );
   const reservations = all(

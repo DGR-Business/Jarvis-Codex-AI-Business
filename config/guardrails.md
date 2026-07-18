@@ -1,6 +1,8 @@
 # Guardrails
 
-This file defines what Jarvis-Codex may do without asking first. The runtime
+This file defines what Pantheon may do without asking first. Jarvis, the
+Codex-based technical steward, may make tested and reversible low-risk repairs
+within these boundaries. The runtime
 database, dashboard, tests, and logs are the authority; prompts only guide work.
 
 ## Current Autonomy Stage

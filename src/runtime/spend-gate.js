@@ -1,6 +1,11 @@
 const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { queueApprovalEscalation } = require("../adapters/notifications");
+const {
+  ENVIRONMENT_ALIASES,
+  environmentDisabled,
+  environmentResolution,
+} = require("../adapters/pantheon-environment");
 const { isAgentRuntimeSdkAvailable } = require("./agent-runtime");
 const {
   ensureApprovalScope,
@@ -48,10 +53,17 @@ function asArray(value) {
 }
 
 const RUNTIME_CAPABILITY_CHECKS = {
-  live_research_adapter: () => process.env.JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER !== "1",
-  live_ai_worker_adapter: () => process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER !== "1",
+  live_research_adapter: () => !environmentDisabled("disableLiveResearchAdapter"),
+  live_ai_worker_adapter: () => !environmentDisabled("disableLiveAiWorkerAdapter"),
   openai_agents_sdk_runner: () => isAgentRuntimeSdkAvailable(),
 };
+
+function configuredEnvironmentValue(name) {
+  const match = Object.entries(ENVIRONMENT_ALIASES).find(
+    ([, alias]) => alias.preferred === name || alias.legacy === name,
+  );
+  return match ? environmentResolution(match[0]).value : process.env[name];
+}
 
 function missingPreflightRequirements(request = {}) {
   const missing = [];
@@ -67,13 +79,13 @@ function missingPreflightRequirements(request = {}) {
   }
 
   for (const name of asArray(request.requiresProviderEnv)) {
-    if (!process.env[name]) {
+    if (!configuredEnvironmentValue(name)) {
       missing.push({ kind: "env", name, message: `${name} is not configured.` });
     }
   }
 
   for (const name of asArray(request.requiresLiveFlag)) {
-    if (process.env[name] !== "1") {
+    if (configuredEnvironmentValue(name) !== "1") {
       missing.push({ kind: "flag", name, expected: "1", message: `${name} must be set to 1.` });
     }
   }
@@ -264,7 +276,7 @@ function blockForProviderReadiness(db, task, approval, request, amountCents, mis
         !approval
           ? policyBlocked
             ? "This work has not been offered for paid approval or run. Review the data protection plan first."
-            : `Jarvis stopped before asking for paid approval. Correct this issue first: ${labels.join(", ")}.`
+            : `Pantheon stopped before asking for paid approval. Correct this issue first: ${labels.join(", ")}.`
           : policyBlocked
             ? "The task approval is recorded, but no live spend occurred. Review the data protection plan before this work uses sensitive records, live web research, or provider-side storage."
             : `The spend approval is approved, but no live spend occurred. Missing: ${labels.join(", ")}.`,

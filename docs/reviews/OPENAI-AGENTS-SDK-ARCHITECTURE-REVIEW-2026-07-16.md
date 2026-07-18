@@ -1,8 +1,8 @@
 # OpenAI Agents SDK Architecture Review
 
 Date: 2026-07-16
-Status: reviewed against current official TypeScript SDK guidance
-Maintainer: Codex
+Status: historical review; incorporated into the 2026-07-18 Pantheon release
+Maintainer: Jarvis (Codex)
 
 ## Sources
 
@@ -21,7 +21,7 @@ started before installation.
 
 ## Overall Finding
 
-The foundation is directionally correct. Jarvis should continue to own business
+The foundation is directionally correct. Pantheon should continue to own business
 state, approvals, costs, evidence, audit records, dashboard truth and
 deterministic workflow boundaries. The Agents SDK should own specialist model
 loops, tools, handoffs, interruptions and provider traces only inside those
@@ -48,9 +48,9 @@ before this capability proves useful over distinct fixtures.
    Codex through the focused local API.
 4. **Approval hashing accepts both stored JSON and hydrated runtime objects.**
    Trace policy is part of the single-use scope and cannot change silently.
-5. **Operator startup is independent of Codex.** `START JARVIS.cmd` starts the
+5. **Operator startup is independent of Codex.** `START PANTHEON.cmd` starts the
    runtime and scheduler in protected mode, verifies health and opens the
-   dashboard. `STOP JARVIS.cmd` stops only its recorded process.
+   dashboard. `STOP PANTHEON.cmd` stops only its recorded process.
 
 ## What To Keep
 

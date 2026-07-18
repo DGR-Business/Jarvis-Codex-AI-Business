@@ -23,7 +23,7 @@ const { ensureAiTeam } = require("../src/runtime/ai-team");
 const { recordAiPilotReviewDecision } = require("../src/runtime/ai-pilot-review");
 const { getAccountingSummary, recordAccountingEntry } = require("../src/runtime/accounting-ledger");
 const { reconcileProviderUsageBatch, reserveBudget, reservedThisMonth, resolveReservation } = require("../src/runtime/cost-ledger");
-const { estimateModelUsageAud } = require("../src/runtime/model-pricing");
+const { estimateModelUsageAud, estimateObservedHostedToolUsageAud } = require("../src/runtime/model-pricing");
 const { renderDeliverable, upsertDeliverableSection } = require("../src/runtime/deliverables");
 const { generateWeeklyDigest } = require("../src/runtime/executive-digest");
 const { collectFindings } = require("../src/runtime/monitor");
@@ -159,6 +159,34 @@ test("Terra token pricing remains an AUD estimate separate from the approved cap
   assert.equal(estimateModelUsageAud("unknown-model", { input_tokens: 1 }, { fallbackCents: 100 }).amountCents, 100);
 });
 
+test("observed hosted-tool costs use published prices and the runtime AUD conversion", () => {
+  const web = estimateObservedHostedToolUsageAud(
+    [{ id: "search-one", type: "web_search" }],
+    {},
+    { audPerUsd: 1.579 },
+  );
+  assert.equal(web.status, "published_price_estimate");
+  assert.equal(web.usdAmount, 0.01);
+  assert.equal(web.audAmount, 0.01579);
+  assert.equal(web.amountCents, 2);
+
+  const code = estimateObservedHostedToolUsageAud(
+    [{ id: "container-one", type: "code_interpreter" }],
+    { specs: [{ sdkName: "code_interpreter", options: { container: { memory_limit: "4g" } } }] },
+    { audPerUsd: 1.579 },
+  );
+  assert.equal(code.usdAmount, 0.12);
+  assert.equal(code.amountCents, 19);
+
+  const image = estimateObservedHostedToolUsageAud(
+    [{ id: "image-one", type: "image_generation" }],
+    { specs: [{ sdkName: "image_generation", options: { size: "1024x1024", quality: "low" } }] },
+    { audPerUsd: 1.579 },
+  );
+  assert.equal(image.usdAmount, 0.006);
+  assert.equal(image.amountCents, 1);
+});
+
 test("Demand Validator pilot output stays lean enough for the approved response cap", () => {
   const { z } = require("zod");
   const parsed = demandValidatorPilotOutputSchema(z).safeParse({
@@ -277,7 +305,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -314,7 +342,7 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 18);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 20);
   } finally {
     closeRuntime(runtime);
   }
@@ -413,10 +441,15 @@ test("approved data protection plan activates exact checks without deleting reco
     const active = getRetentionPolicyState(db);
     assert.equal(active.status, "active");
     assert.ok(active.activeAt);
+    assert.equal(get(db, "SELECT COUNT(*) AS count FROM data_retention_policy_activations").count, 1);
     assert.equal(get(db, "SELECT COUNT(*) AS count FROM retention_tombstones").count, 0);
     assert.equal(get(db, "SELECT COUNT(*) AS count FROM events").count > originalEventCount, true);
     assert.throws(
       () => run(db, "UPDATE data_retention_policies SET title = 'Changed' WHERE id = ?", [active.id]),
+      /immutable/i,
+    );
+    assert.throws(
+      () => run(db, "DELETE FROM data_retention_policy_activations"),
       /immutable/i,
     );
   } finally {
@@ -1494,7 +1527,7 @@ test("monitor reports a genuinely overdue independent check and ignores an activ
       [overdueAt, overdueAt],
     );
     assert.ok(collectFindings(runtime.db).some(
-      (finding) => finding.category === "runtime_oversight" && finding.title === "Jarvis monitoring is overdue",
+      (finding) => finding.category === "runtime_oversight" && finding.title === "Pantheon monitoring is overdue",
     ));
 
     run(
@@ -1572,12 +1605,14 @@ test("commercial tests only become running after a confirmed real-world start", 
       ventureId: "venture-digital-products",
       sourceType: "test_fixture",
       title: "Evaluation-only fixture",
+      claim: "This evaluation-only fixture must never count as real business evidence.",
       isDemo: true,
     });
     recordEvidence(runtime.db, {
       ventureId: "venture-digital-products",
       sourceType: "operator_observation",
       title: "Real operator observation",
+      claim: "The operator observed a real-world commercial signal.",
     });
     const foundation = commercialFoundationState(runtime.db);
     assert.deepEqual(foundation.evidence.map((item) => item.title), ["Real operator observation"]);

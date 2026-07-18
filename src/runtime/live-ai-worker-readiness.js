@@ -3,6 +3,10 @@ const { all, fromJson, get } = require("../db");
 const { getAgentRuntimeReadiness } = require("./agent-runtime");
 const { monthlyBudgetExposure } = require("./cost-ledger");
 const { modelPricing } = require("./model-pricing");
+const {
+  environmentEnabled,
+  preferredEnvironmentName,
+} = require("../adapters/pantheon-environment");
 
 function parseRows(rows, fields = ["metadata", "payload", "result"]) {
   return rows.map((row) => {
@@ -30,6 +34,17 @@ function checklistItem(id, label, ok, detail, action = null) {
   };
 }
 
+function userFacingRuntimeBlocker(blocker) {
+  const value = String(blocker || "");
+  if (value.includes("JARVIS_DISABLE_OPENAI_AGENTS_SDK")) {
+    return `Pantheon's Agents SDK runner is disabled by ${preferredEnvironmentName("disableAgentsSdk")}.`;
+  }
+  if (value.includes("JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER")) {
+    return `Pantheon's OpenAI worker connection is disabled by ${preferredEnvironmentName("disableLiveAiWorkerAdapter")}.`;
+  }
+  return value.replaceAll("Jarvis", "Pantheon").replaceAll("JARVIS_", "PANTHEON_");
+}
+
 function getLiveAiWorkerReadiness(db) {
   const integrations = parseRows(all(db, "SELECT * FROM integrations ORDER BY name ASC"));
   const approvals = parseRows(all(db, "SELECT * FROM approvals ORDER BY requested_at DESC"), ["payload"]);
@@ -48,7 +63,13 @@ function getLiveAiWorkerReadiness(db) {
        ON assignments.tool_id = tools.id AND assignments.agent_id = 'product_builder'
      WHERE tools.id = 'image_generation_spend'`,
   );
-  const agentRuntime = getAgentRuntimeReadiness();
+  const liveFlagEnabled = environmentEnabled("enableLiveModels");
+  const imageGenerationEnabled = environmentEnabled("enableImageGeneration");
+  const rawAgentRuntime = getAgentRuntimeReadiness();
+  const agentRuntime = {
+    ...rawAgentRuntime,
+    blockers: (rawAgentRuntime.blockers || []).map(userFacingRuntimeBlocker),
+  };
   const liveWorkerTasks = tasks.filter((task) => task.kind === "live_ai_worker_execution");
   const pendingApprovals = approvals.filter((approval) => approval.scope === "live_ai_worker_spend" && approval.status === "pending");
   const approvedApprovals = approvals.filter((approval) => approval.scope === "live_ai_worker_spend"
@@ -65,12 +86,10 @@ function getLiveAiWorkerReadiness(db) {
   )[0]?.count || 0;
 
   const credentialsConfigured = Boolean(process.env.OPENAI_API_KEY) && openaiIntegration?.health === "ok";
-  const liveFlagEnabled = process.env.JARVIS_ENABLE_LIVE_MODELS === "1";
   const adapterReady = agentRuntime.ready;
   const pricingReady = Boolean(modelPricing(CONFIG.liveModel));
   const budgetReady = remainingBudgetCents >= Number(CONFIG.liveModelDefaultBudgetCents || 0);
   const ready = credentialsConfigured && liveFlagEnabled && adapterReady && pricingReady && budgetReady;
-  const imageGenerationEnabled = process.env.JARVIS_ENABLE_IMAGE_GENERATION === "1";
   const imageToolReady = imageTool?.status === "pilot_ready"
     && imageTool?.permission === "requires_approval"
     && Number(imageTool?.requires_approval) === 1;
@@ -83,8 +102,8 @@ function getLiveAiWorkerReadiness(db) {
   if (!imageToolReady) imageGenerationBlockers.push("Product Builder does not have the required approval-controlled image tool.");
 
   const blockers = [];
-  if (!credentialsConfigured) blockers.push("OpenAI API key is not configured for this runtime process.");
-  if (!liveFlagEnabled) blockers.push("JARVIS_ENABLE_LIVE_MODELS is not enabled.");
+  if (!credentialsConfigured) blockers.push("Pantheon is not connected to an OpenAI API key in this running session.");
+  if (!liveFlagEnabled) blockers.push("Live AI workers are turned off for this Pantheon runtime.");
   if (!adapterReady) blockers.push(...agentRuntime.blockers);
   if (!pricingReady) blockers.push("The selected model has no registered AUD safety pricing.");
   if (!budgetReady) blockers.push("Monthly budget remaining is below the default live AI worker cap.");
@@ -135,24 +154,24 @@ function getLiveAiWorkerReadiness(db) {
     checklist: [
       checklistItem(
         "openai_key",
-        "OpenAI API key",
+        "OpenAI connection",
         credentialsConfigured,
-        credentialsConfigured ? "Configured in the runtime environment." : "Missing from this runtime process.",
-        "Set OPENAI_API_KEY outside the repo.",
+        credentialsConfigured ? "Pantheon can authenticate with OpenAI." : "Pantheon has no OpenAI API key in this running session.",
+        "Connect OPENAI_API_KEY outside the repository, then restart Pantheon.",
       ),
       checklistItem(
         "live_model_flag",
-        "Live worker flag",
+        "AI workers enabled",
         liveFlagEnabled,
-        liveFlagEnabled ? "JARVIS_ENABLE_LIVE_MODELS=1." : "Live AI workers are deliberately disabled.",
-        "Set JARVIS_ENABLE_LIVE_MODELS=1 only after approval controls are accepted.",
+        liveFlagEnabled ? "Approved AI worker calls are enabled." : "Live AI workers are turned off.",
+        `Set ${preferredEnvironmentName("enableLiveModels")}=1 only when approved AI work should be allowed.`,
       ),
       checklistItem(
         "agent_runtime",
-        "Agents SDK runner",
+        "OpenAI agent runner",
         adapterReady,
         adapterReady ? "The OpenAI Agents SDK runner is available for review-controlled worker tests." : agentRuntime.blockers.join(" "),
-        "Install @openai/agents and zod, then keep JARVIS_DISABLE_OPENAI_AGENTS_SDK and JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER unset.",
+        `Install @openai/agents and zod, then leave ${preferredEnvironmentName("disableAgentsSdk")} and ${preferredEnvironmentName("disableLiveAiWorkerAdapter")} unset.`,
       ),
       checklistItem(
         "pricing",

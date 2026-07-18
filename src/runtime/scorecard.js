@@ -67,11 +67,19 @@ function recommendationFor(verdict) {
   }[verdict];
 }
 
+function isGroundedLiveResearch(runRecord) {
+  const metadata = runRecord?.metadata || {};
+  const sourceCount = Number(metadata.sourceCount || metadata.groundedSourceCount || 0);
+  const providerGrounded = metadata.grounded === true
+    || metadata.groundingStatus === "provider_grounded";
+  return runRecord?.status === "completed_live" && providerGrounded && sourceCount > 0;
+}
+
 function confidenceFor(evidenceQuality, researchRuns, commercialEvidence) {
   if (commercialEvidence.sales > 0) return "medium_with_sales_signal";
   if (commercialEvidence.resultCount > 0 || commercialEvidence.feedbackCount > 0) return "medium_with_market_results";
   if (evidenceQuality < 45) return "low_until_live_evidence";
-  if (researchRuns.some((runRecord) => runRecord.status === "completed_live")) return "medium_with_live_research";
+  if (researchRuns.some(isGroundedLiveResearch)) return "medium_with_live_research";
   return "medium";
 }
 
@@ -120,7 +128,7 @@ function calculateScorecard(db, workflowId) {
   const subject = inferSubject(workflow, command);
   const profile = CHANNEL_PROFILES[channel] || CHANNEL_PROFILES["Business Idea"];
   const completedKinds = completedTaskKinds(tasks);
-  const hasLiveResearch = researchRuns.some((runRecord) => runRecord.status === "completed_live");
+  const hasLiveResearch = researchRuns.some(isGroundedLiveResearch);
   const needsLiveResearch = researchRuns.some((runRecord) => runRecord.status === "needs_live_research") || completedKinds.has("market_research");
   const allAgentTasksComplete = tasks.length > 0 && tasks.every((task) => ["completed", "cancelled"].includes(task.status));
   const commercialEvidence = summarizeCommercialEvidence(db, { workflowId });
@@ -130,7 +138,7 @@ function calculateScorecard(db, workflowId) {
   const hasProfit = commercialEvidence.profitCents > 0;
   const hasNegativeCustomerSignal = commercialEvidence.refundRate > 15 || commercialEvidence.sentiment.negative > commercialEvidence.sentiment.positive + 1;
 
-  const demandSignal = hasSales ? 84 : hasBuyerAction ? 62 : hasCommercialResults ? 38 : hasLiveResearch ? 72 : needsLiveResearch ? 34 : 22;
+  const demandSignal = hasSales ? 84 : hasBuyerAction ? 62 : hasCommercialResults ? 38 : hasLiveResearch ? 36 : needsLiveResearch ? 30 : 22;
   const monetisationPath = profile.monetisationPath
     + (completedKinds.has("commercial_analysis") ? 8 : -10)
     + (hasSales ? 12 : 0)
@@ -140,7 +148,7 @@ function calculateScorecard(db, workflowId) {
   const riskControl = (completedKinds.has("risk_screen") ? 61 : 35)
     - (hasNegativeCustomerSignal ? 14 : 0)
     + (commercialEvidence.resultCount > 0 && commercialEvidence.spendCents === 0 ? 5 : 0);
-  const evidenceQuality = hasSales ? 84 : hasCommercialResults ? 58 : hasLiveResearch ? 72 : needsLiveResearch ? 28 : 20;
+  const evidenceQuality = hasSales ? 84 : hasCommercialResults ? 58 : hasLiveResearch ? 68 : needsLiveResearch ? 28 : 20;
   const automationReadiness = completedKinds.has("operator_pack_qc") ? 70 : allAgentTasksComplete ? 60 : 38;
 
   const dimensions = {
@@ -153,13 +161,15 @@ function calculateScorecard(db, workflowId) {
           ? "The workflow has recorded buyer interest, but not enough paid demand yet."
           : hasCommercialResults
             ? "A market contact result exists, but buyer action is weak."
-            : hasLiveResearch ? "Live demand evidence is present." : "Live market/search evidence is still required.",
+            : hasLiveResearch
+              ? "Current attributable market research is present, but no buyer action has been observed."
+              : "Current market research and buyer evidence are still required.",
     ),
     monetisation_path: dimension(
       "Monetisation path",
       monetisationPath,
       hasCommercialResults
-        ? `Recorded ${commercialEvidence.sales} sale(s), ${commercialEvidence.refunds} refund(s), and ${commercialEvidence.profitCents} cents profit.`
+        ? `Recorded ${commercialEvidence.sales} sale(s), ${commercialEvidence.refunds} refund(s), and ${commercialEvidence.cashContributionCents} cents net cash contribution.`
         : `Channel profile: ${profile.distribution}. Costs and pricing still need live validation.`,
     ),
     execution_fit: dimension(
@@ -181,7 +191,7 @@ function calculateScorecard(db, workflowId) {
         ? "Evidence includes actual buyer payment signal."
         : hasCommercialResults
           ? "Evidence includes recorded market results."
-          : hasLiveResearch ? "Evidence includes live research." : "Evidence is process proof and dry-run research only.",
+          : hasLiveResearch ? "Evidence includes attributable current research, not observed buyer demand." : "Evidence is process proof and protected research only.",
     ),
     automation_readiness: dimension(
       "Automation readiness",

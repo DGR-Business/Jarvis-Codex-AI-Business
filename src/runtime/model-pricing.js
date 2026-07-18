@@ -1,3 +1,5 @@
+const { environmentValue } = require("../adapters/pantheon-environment");
+
 const MODEL_PRICING_USD_PER_MILLION = {
   "gpt-5.6-luna": {
     input: 1,
@@ -59,6 +61,12 @@ const TOOL_PRICING_USD_PER_THOUSAND_CALLS = {
     source: "https://developers.openai.com/api/docs/pricing",
     checkedAt: "2026-07-17",
   },
+  code_interpreter: {
+    usd: 30,
+    source: "https://developers.openai.com/api/docs/pricing#container-usage-pricing",
+    checkedAt: "2026-07-18",
+    note: "Conservative 1 GB container-session allowance expressed per 1,000 calls.",
+  },
 };
 
 const IMAGE_GENERATION_USD_PER_OUTPUT = {
@@ -74,6 +82,12 @@ const IMAGE_GENERATION_PRICING = {
 };
 
 const CONSERVATIVE_AUD_PER_USD = 2;
+const CONTAINER_SESSION_USD = Object.freeze({
+  "1g": 0.03,
+  "4g": 0.12,
+  "16g": 0.48,
+  "64g": 1.92,
+});
 
 function positiveNumber(value) {
   const number = Number(value);
@@ -106,6 +120,8 @@ function normalizedTools(tools) {
     web_search: "web_search",
     image_generation_spend: "image_generation",
     image_generation: "image_generation",
+    product_file_factory: "code_interpreter",
+    code_interpreter: "code_interpreter",
     visual_asset_review: "",
   };
   return [...new Set((Array.isArray(tools) ? tools : []).map((tool) => {
@@ -138,6 +154,95 @@ function imageGenerationPrice(input = {}) {
     size,
     quality,
     ...IMAGE_GENERATION_PRICING,
+  };
+}
+
+function runtimeAudPerUsd() {
+  return positiveNumber(environmentValue("apiCreditAudPerUsd"));
+}
+
+function estimateObservedHostedToolUsageAud(activity = [], capabilityPlan = {}, options = {}) {
+  const items = Array.isArray(activity) ? activity : [];
+  const audPerUsd = positiveNumber(options.audPerUsd) || runtimeAudPerUsd();
+  if (!items.length) {
+    return {
+      amountCents: 0,
+      usdAmount: 0,
+      audAmount: 0,
+      callCount: 0,
+      status: "not_applicable",
+      exactBillingPending: false,
+      details: [],
+    };
+  }
+
+  const specs = Array.isArray(capabilityPlan?.specs) ? capabilityPlan.specs : [];
+  const details = [];
+  let usdAmount = 0;
+  for (const item of items) {
+    if (item?.type === "web_search") {
+      const usd = TOOL_PRICING_USD_PER_THOUSAND_CALLS.web_search.usd / 1000;
+      usdAmount += usd;
+      details.push({ type: item.type, id: item.id || null, usd, pricingUnit: "call" });
+      continue;
+    }
+    if (item?.type === "code_interpreter") {
+      const spec = specs.find((candidate) => candidate.sdkName === "code_interpreter");
+      const memoryLimit = String(spec?.options?.container?.memory_limit || "1g").toLowerCase();
+      const usd = CONTAINER_SESSION_USD[memoryLimit];
+      if (!Number.isFinite(usd)) {
+        throw new Error(`Observed Code Interpreter cost cannot be priced for memory limit ${memoryLimit}.`);
+      }
+      usdAmount += usd;
+      details.push({ type: item.type, id: item.id || null, usd, memoryLimit, pricingUnit: "container_session" });
+      continue;
+    }
+    if (item?.type === "image_generation") {
+      const spec = specs.find((candidate) => candidate.sdkName === "image_generation");
+      const price = imageGenerationPrice({
+        toolArguments: {
+          image_generation: {
+            size: spec?.options?.size,
+            quality: spec?.options?.quality,
+          },
+        },
+      });
+      usdAmount += price.usd;
+      details.push({
+        type: item.type,
+        id: item.id || null,
+        usd: price.usd,
+        size: price.size,
+        quality: price.quality,
+        pricingUnit: "output",
+      });
+      continue;
+    }
+    throw new Error(`Observed hosted tool cost is not registered: ${item?.type || "unknown"}.`);
+  }
+
+  if (!audPerUsd) {
+    return {
+      amountCents: null,
+      usdAmount: Number(usdAmount.toFixed(8)),
+      audAmount: null,
+      audPerUsd: null,
+      callCount: items.length,
+      status: "exchange_rate_missing",
+      exactBillingPending: true,
+      details,
+    };
+  }
+  const audAmount = usdAmount * audPerUsd;
+  return {
+    amountCents: Math.ceil(audAmount * 100),
+    usdAmount: Number(usdAmount.toFixed(8)),
+    audAmount: Number(audAmount.toFixed(8)),
+    audPerUsd,
+    callCount: items.length,
+    status: "published_price_estimate",
+    exactBillingPending: true,
+    details,
   };
 }
 
@@ -178,7 +283,7 @@ function worstCaseExecutionCostAud(input = {}) {
   }
 
   const audPerUsd = positiveNumber(input.audPerUsd)
-    || positiveNumber(process.env.JARVIS_API_CREDIT_AUD_PER_USD)
+    || runtimeAudPerUsd()
     || CONSERVATIVE_AUD_PER_USD;
   const totalInputTokens = maxInputTokensPerTurn * maxTurns;
   const totalOutputTokens = maxOutputTokensPerTurn * maxTurns;
@@ -214,7 +319,7 @@ function worstCaseExecutionCostAud(input = {}) {
     audPerUsd,
     exchangeRateSource: positiveNumber(input.audPerUsd)
       ? "request"
-      : positiveNumber(process.env.JARVIS_API_CREDIT_AUD_PER_USD)
+      : runtimeAudPerUsd()
         ? "runtime_accounting_rate"
         : "conservative_safety_bound",
     longContext,
@@ -229,7 +334,7 @@ function estimateModelUsageAud(model, usage = {}, options = {}) {
   const pricing = priced?.pricing;
   const fallbackCents = Math.max(0, Number(options.fallbackCents || 0));
   const audPerUsd = positiveNumber(options.audPerUsd)
-    || positiveNumber(process.env.JARVIS_API_CREDIT_AUD_PER_USD);
+    || runtimeAudPerUsd();
   const inputTokens = Math.max(0, Number(usage.input_tokens || 0));
   const outputTokens = Math.max(0, Number(usage.output_tokens || 0));
   const cachedInputTokens = Math.min(inputTokens, Math.max(0, Number(usage.cached_input_tokens || 0)));
@@ -271,6 +376,7 @@ module.exports = {
   MODEL_PRICING_USD_PER_MILLION,
   TOOL_PRICING_USD_PER_THOUSAND_CALLS,
   estimateModelUsageAud,
+  estimateObservedHostedToolUsageAud,
   estimateInputTokensUpperBound,
   modelPricing,
   worstCaseExecutionCostAud,

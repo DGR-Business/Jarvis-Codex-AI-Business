@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 
-const COOKIE_NAME = "jarvis_session";
+const COOKIE_NAME = "pantheon_session";
+const LEGACY_COOKIE_NAME = "jarvis_session";
 const DEFAULT_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 function parseCookies(header = "") {
@@ -27,6 +28,7 @@ function createLocalSecurity(options = {}) {
   const secret = options.secret || crypto.randomBytes(32);
   const bootstrapSecret = String(
     options.bootstrapSecret
+      || process.env.PANTHEON_OPERATOR_BOOTSTRAP
       || process.env.JARVIS_OPERATOR_BOOTSTRAP
       || crypto.randomBytes(32).toString("base64url"),
   );
@@ -62,7 +64,7 @@ function createLocalSecurity(options = {}) {
       throw new Error("Invalid Host header.");
     }
     if (!["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsed.hostname.toLowerCase())) {
-      throw new Error("Jarvis only accepts loopback requests.");
+      throw new Error("Pantheon only accepts loopback requests.");
     }
     return `http://${host}`;
   }
@@ -74,7 +76,8 @@ function createLocalSecurity(options = {}) {
 
   function sessionForRequest(req) {
     if (!enabled) return { id: "security-disabled", csrfToken: "security-disabled", expiresAt: null };
-    const sessionId = decodeSession(parseCookies(req.headers.cookie)[COOKIE_NAME]);
+    const cookies = parseCookies(req.headers.cookie);
+    const sessionId = decodeSession(cookies[COOKIE_NAME] || cookies[LEGACY_COOKIE_NAME]);
     if (!sessionId) return null;
     const record = sessions.get(sessionId);
     if (!record || record.expiresAt <= Date.now()) {
@@ -89,15 +92,16 @@ function createLocalSecurity(options = {}) {
     if (!enabled) return true;
     const expected = requestOrigin(req);
     const origin = String(req.headers.origin || "").toLowerCase();
-    if (!origin || origin !== expected) throw new Error("Request origin does not match this Jarvis session.");
+    if (!origin || origin !== expected) throw new Error("Request origin does not match this Pantheon session.");
     return expected;
   }
 
   function createSession(req, res) {
     if (!enabled) return sessionForRequest(req);
     assertOrigin(req);
-    if (!sameText(req.headers["x-jarvis-bootstrap"], bootstrapSecret)) {
-      throw new Error("Start Jarvis with the local launcher to authorise this browser.");
+    const providedBootstrap = req.headers["x-pantheon-bootstrap"] || req.headers["x-jarvis-bootstrap"];
+    if (!sameText(providedBootstrap, bootstrapSecret)) {
+      throw new Error("Start Pantheon with the local launcher to authorise this browser.");
     }
     const sessionId = crypto.randomBytes(24).toString("base64url");
     const expiresAt = Date.now() + sessionTtlMs;
@@ -111,7 +115,7 @@ function createLocalSecurity(options = {}) {
 
   function requireSession(req) {
     const session = sessionForRequest(req);
-    if (!session) throw new Error("A valid Jarvis operator session is required.");
+    if (!session) throw new Error("A valid Pantheon operator session is required.");
     return session;
   }
 
@@ -121,8 +125,9 @@ function createLocalSecurity(options = {}) {
     if (!String(req.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
       throw new Error("State-changing requests must use JSON.");
     }
-    if (!session?.id || !sameText(req.headers["x-jarvis-csrf"], csrfToken(session.id))) {
-      throw new Error("This action needs a fresh Jarvis session token.");
+    const providedCsrf = req.headers["x-pantheon-csrf"] || req.headers["x-jarvis-csrf"];
+    if (!session?.id || !sameText(providedCsrf, csrfToken(session.id))) {
+      throw new Error("This action needs a fresh Pantheon session token.");
     }
   }
 
@@ -135,7 +140,8 @@ function createLocalSecurity(options = {}) {
   }
 
   function revokeSession(req) {
-    const sessionId = decodeSession(parseCookies(req.headers.cookie)[COOKIE_NAME]);
+    const cookies = parseCookies(req.headers.cookie);
+    const sessionId = decodeSession(cookies[COOKIE_NAME] || cookies[LEGACY_COOKIE_NAME]);
     if (sessionId) sessions.delete(sessionId);
   }
 

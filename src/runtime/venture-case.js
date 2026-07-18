@@ -44,8 +44,25 @@ function ensureActiveVentureCase(db) {
   putSettingIfMissing(db, "budget", {
     monthlyBudgetCents: CONFIG.monthlyBudgetCents,
     currency: CONFIG.currency,
-    spendRequiresApproval: true,
-    notes: "Pre-revenue cap: A$100/month. Each live AI run and market test also has its own explicit cap.",
+    internalMandateEnabled: true,
+    protectedExternalSpend: true,
+    notes: "Pantheon may perform internal AI analysis and read-only research within A$100/month. External spend and consequential actions remain protected.",
+  });
+  putSettingIfMissing(db, "commercial.constitution", {
+    opportunityMode: "broad_to_deep",
+    acceptsOperatorIdeas: true,
+    activeVentureLimitBeforeProof: 1,
+    activeVentureLimitAfterProof: 3,
+    proofBuyers: 3,
+    proofRequiresPositiveCashContribution: true,
+    catalogueRule: "minimum_credible_catalogue_for_venture",
+    reinvestmentRate: 0.30,
+    monthlyDiscretionaryBudgetCents: CONFIG.monthlyBudgetCents,
+    publicIdentity: "faceless_and_voiceless",
+    defaultLanguage: "English",
+    defaultMarket: "global",
+    b2bQualityRule: "production_ready_only",
+    failureRule: "diagnose_before_pause",
   });
   run(
     db,
@@ -155,14 +172,21 @@ function setExperimentState(db, experimentId, status, options = {}) {
 function recordEvidence(db, input) {
   if (!EVIDENCE_TYPES.has(input.sourceType)) throw new Error(`Unsupported evidence source: ${input.sourceType}`);
   if (!input.ventureId || !input.title) throw new Error("Evidence needs a venture and title.");
+  if (input.sourceType === "source_link" && !input.sourceUrl) {
+    throw new Error("Source-linked evidence needs the exact public URL.");
+  }
+  const claim = String(input.claim || input.summary || "").trim();
+  if (!claim) throw new Error("Evidence needs the exact commercial claim it supports or challenges.");
   const id = input.id || `evidence_${randomId()}`;
   const ts = now();
   run(
     db,
     `INSERT INTO commercial_evidence
      (id, venture_id, experiment_id, source_type, source_id, source_url, title, summary,
-      captured_at, verified_at, is_demo, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      captured_at, verified_at, is_demo, metadata, created_at, claim, metric, measured_value,
+      measured_unit, market, geography, observed_at, sample_size, publisher,
+      extraction_method, confidence)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.ventureId,
@@ -177,6 +201,17 @@ function recordEvidence(db, input) {
       input.isDemo ? 1 : 0,
       toJson(input.metadata),
       ts,
+      claim,
+      input.metric || "",
+      input.measuredValue ?? input.measured_value ?? null,
+      input.measuredUnit || input.measured_unit || "",
+      input.market || "",
+      input.geography || "",
+      input.observedAt || input.observed_at || null,
+      input.sampleSize ?? input.sample_size ?? null,
+      input.publisher || "",
+      input.extractionMethod || input.extraction_method || "",
+      input.confidence || "unknown",
     ],
   );
   return get(db, "SELECT * FROM commercial_evidence WHERE id = ?", [id]);
@@ -189,6 +224,7 @@ function ventureEconomics(db, ventureId) {
             COALESCE(SUM(aud_platform_fee_cents), 0) AS fees,
             COALESCE(SUM(aud_refunded_cents), 0) AS refunds,
             COUNT(CASE WHEN aud_gross_cents IS NULL THEN 1 END) AS unconverted_count,
+            COUNT(*) AS sale_rows,
             GROUP_CONCAT(DISTINCT currency) AS source_currencies,
             COUNT(DISTINCT CASE
               WHEN status = 'paid' AND buyer_hash IS NOT NULL AND refunded_cents < gross_cents
@@ -198,9 +234,15 @@ function ventureEconomics(db, ventureId) {
   );
   const resultCosts = get(
     db,
-    `SELECT COALESCE(SUM(spend_cents), 0) AS spend,
+    `SELECT COALESCE(SUM(revenue_cents), 0) AS revenue,
+            COALESCE(SUM(refund_amount_cents), 0) AS refunds,
+            COALESCE(SUM(platform_fee_cents), 0) AS platform_fees,
+            COALESCE(SUM(spend_cents), 0) AS spend,
+            COALESCE(SUM(fulfilment_cost_cents), 0) AS fulfilment,
             COALESCE(SUM(product_cost_cents), 0) AS product,
             COALESCE(SUM(tool_cost_cents), 0) AS tools,
+            COALESCE(SUM(attributed_ai_cost_cents), 0) AS attributed_ai,
+            COALESCE(SUM(other_cost_cents), 0) AS other_costs,
             COALESCE(SUM(time_spent_minutes), 0) AS minutes
      FROM commercial_results WHERE venture_id = ? AND verified = 1`,
     [ventureId],
@@ -214,24 +256,40 @@ function ventureEconomics(db, ventureId) {
     [ventureId],
   );
   const workload = fromJson(get(db, "SELECT value FROM settings WHERE key = 'operator.workload'")?.value, {});
+  const aiCostsCents = Math.max(
+    Number(resultCosts?.attributed_ai || 0),
+    Number(providerCosts?.provider_costs || 0),
+  );
   const operatingCostsCents = Number(resultCosts?.spend || 0)
+    + Number(resultCosts?.fulfilment || 0)
     + Number(resultCosts?.product || 0)
     + Number(resultCosts?.tools || 0)
-    + Number(providerCosts?.provider_costs || 0);
+    + Number(resultCosts?.other_costs || 0)
+    + aiCostsCents;
   const currencyMismatch = Number(sales?.unconverted_count || 0) > 0;
-  const platformContributionCents = Number(sales?.gross || 0)
-    - Number(sales?.fees || 0)
-    - Number(sales?.refunds || 0);
+  const importedSalesExist = Number(sales?.sale_rows || 0) > 0;
+  const grossRevenueCents = importedSalesExist
+    ? Number(sales?.gross || 0)
+    : Number(resultCosts?.revenue || 0);
+  const platformFeesCents = importedSalesExist
+    ? Number(sales?.fees || 0)
+    : Number(resultCosts?.platform_fees || 0);
+  const refundsCents = importedSalesExist
+    ? Number(sales?.refunds || 0)
+    : Number(resultCosts?.refunds || 0);
+  const platformContributionCents = grossRevenueCents - platformFeesCents - refundsCents;
   const cashContributionCents = currencyMismatch ? null : platformContributionCents - operatingCostsCents;
   const timeValueCents = Math.round((Number(resultCosts?.minutes || 0) / 60) * Number(workload.timeValueCentsPerHour || 5000));
   return {
-    grossRevenueCents: Number(sales?.gross || 0),
-    platformFeesCents: Number(sales?.fees || 0),
-    refundsCents: Number(sales?.refunds || 0),
+    grossRevenueCents,
+    platformFeesCents,
+    refundsCents,
     externalSpendCents: Number(resultCosts?.spend || 0),
     productCostsCents: Number(resultCosts?.product || 0),
+    fulfilmentCostsCents: Number(resultCosts?.fulfilment || 0),
     toolCostsCents: Number(resultCosts?.tools || 0),
-    providerCostsCents: Number(providerCosts?.provider_costs || 0),
+    providerCostsCents: aiCostsCents,
+    otherCostsCents: Number(resultCosts?.other_costs || 0),
     cashContributionCents,
     salesCurrency: "AUD",
     sourceCurrencies: String(sales?.source_currencies || "").split(",").filter(Boolean),

@@ -8,7 +8,7 @@ const CONFIG = require("./config");
 const { decideApproval } = require("./runtime/approvals");
 const { refreshIntegrationHealth } = require("./adapters/registry");
 const { getDashboardState } = require("./runtime/state");
-const { all, get, insertEvent, now, openDatabase, run, seedDatabase, toJson } = require("./db");
+const { all, fromJson, get, insertEvent, now, openDatabase, run, seedDatabase, toJson } = require("./db");
 const { createCommandPlan } = require("./runtime/planner");
 const { runOnce, runUntilBlocked } = require("./runtime/orchestrator");
 const { generateApprovalPack } = require("./runtime/approval-pack");
@@ -22,7 +22,7 @@ const {
 } = require("./runtime/live-ai-workers");
 const { prepareProductBuilderAsset } = require("./runtime/product-builder-workspace");
 const { createLiveResearchSmokeTest, requestLiveResearch } = require("./runtime/live-research");
-const { decideAgentHandoff, ensureAiTeam } = require("./runtime/ai-team");
+const { decideAgentHandoff, ensureAiTeam, getAgentHandoff } = require("./runtime/ai-team");
 const { ensureWorkflowScorecards, upsertWorkflowScorecard } = require("./runtime/scorecard");
 const { createCommercialExperiment, recordCommercialFeedback, recordCommercialResult } = require("./runtime/commercial-results");
 const { createResearchToExperimentPlan, createRevisionPlanFromLearning, promoteCandidateToExperiment } = require("./runtime/research-to-experiment");
@@ -84,6 +84,9 @@ const {
   startSchedulerLoop,
   unsafeTaskReason,
 } = require("./runtime/scheduler");
+const { getOpportunityState, startOpportunityRound } = require("./runtime/pantheon-opportunities");
+const { getPantheonSupervisorState, runPantheonSupervisorCycle } = require("./runtime/pantheon-supervisor");
+const { applyPantheonHandoffDecision, getProductionState } = require("./runtime/pantheon-production");
 
 const PUBLIC_DIR = path.join(CONFIG.rootDir, "public");
 const MONITOR_JOB_ID = "job-monitor-cycle";
@@ -100,6 +103,12 @@ const CONTENT_TYPES = {
   ".webp": "image/webp",
   ".gif": "image/gif",
   ".svg": "image/svg+xml",
+  ".csv": "text/csv; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".zip": "application/zip",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 };
 
 const MAX_REQUEST_BODY_BYTES = 1_000_000;
@@ -205,7 +214,14 @@ function resolveWorkspaceFile(filePath) {
   const root = path.resolve(CONFIG.rootDir);
   const candidate = path.isAbsolute(filePath) ? filePath : path.join(root, filePath);
   const resolved = path.resolve(candidate);
-  const allowedRoots = [path.resolve(CONFIG.artifactRoot), path.resolve(CONFIG.rootDir, "output", "pdf")];
+  const configuredPackRoot = process.env.PANTHEON_APPROVAL_PACK_DIR
+    || process.env.JARVIS_APPROVAL_PACK_DIR
+    || null;
+  const allowedRoots = [
+    path.resolve(CONFIG.artifactRoot),
+    path.resolve(CONFIG.rootDir, "output", "pdf"),
+    ...(configuredPackRoot ? [path.resolve(configuredPackRoot)] : []),
+  ];
   return allowedRoots.some((allowedRoot) => {
     const relative = path.relative(allowedRoot, resolved);
     return !relative.startsWith("..") && !path.isAbsolute(relative);
@@ -449,9 +465,19 @@ function routeMatch(pathname, pattern) {
 function createApp(options = {}) {
   const db = options.db || createRuntime(options);
   if (options.db) ensureRuntimeFoundation(db);
-  const instanceId = String(options.instanceId || process.env.JARVIS_RUNTIME_INSTANCE_ID || crypto.randomUUID());
+  const instanceId = String(
+    options.instanceId
+      || process.env.PANTHEON_RUNTIME_INSTANCE_ID
+      || process.env.JARVIS_RUNTIME_INSTANCE_ID
+      || crypto.randomUUID(),
+  );
   const workspaceId = crypto.createHash("sha256").update(path.resolve(CONFIG.rootDir)).digest("hex").slice(0, 20);
-  const controlToken = String(options.controlToken || process.env.JARVIS_CONTROL_TOKEN || crypto.randomBytes(32).toString("base64url"));
+  const controlToken = String(
+    options.controlToken
+      || process.env.PANTHEON_CONTROL_TOKEN
+      || process.env.JARVIS_CONTROL_TOKEN
+      || crypto.randomBytes(32).toString("base64url"),
+  );
   const schedulerEnabled = Boolean(options.schedulerEnabled ?? CONFIG.schedulerEnabled);
   const runtimeState = {
     startedAt: now(),
@@ -473,9 +499,9 @@ function createApp(options = {}) {
     const url = new URL(req.url, "http://localhost");
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("referrer-policy", "no-referrer");
-    res.setHeader("x-frame-options", "DENY");
+    res.setHeader("x-frame-options", "SAMEORIGIN");
     res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()");
-    res.setHeader("content-security-policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; frame-src 'self'; form-action 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*");
+    res.setHeader("content-security-policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; frame-src 'self'; form-action 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*");
     try {
       try {
         security.assertRequestHost(req);
@@ -567,7 +593,12 @@ function createApp(options = {}) {
           monitoring: monitoringReadiness.monitoring,
           externalActionsMode: CONFIG.dryRun ? "locked" : "enabled",
           paidAiArmed: Boolean(process.env.OPENAI_API_KEY)
-            && (process.env.JARVIS_ENABLE_LIVE_MODELS === "1" || process.env.JARVIS_ENABLE_LIVE_RESEARCH === "1"),
+            && (
+              process.env.PANTHEON_ENABLE_LIVE_MODELS === "1"
+              || process.env.PANTHEON_ENABLE_LIVE_RESEARCH === "1"
+              || process.env.JARVIS_ENABLE_LIVE_MODELS === "1"
+              || process.env.JARVIS_ENABLE_LIVE_RESEARCH === "1"
+            ),
           proofMode: CONFIG.systemProofMode === true,
           providerProof: {
             completedCalls: Number(providerProof.completed_calls || 0),
@@ -586,7 +617,9 @@ function createApp(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/api/runtime/shutdown") {
-        const providedControlToken = String(req.headers["x-jarvis-control"] || "");
+        const providedControlToken = String(
+          req.headers["x-pantheon-control"] || req.headers["x-jarvis-control"] || "",
+        );
         if (
           !controlToken
           || providedControlToken.length !== controlToken.length
@@ -616,6 +649,21 @@ function createApp(options = {}) {
 
       if (req.method === "GET" && url.pathname === "/api/cockpit") {
         jsonResponse(res, 200, getCockpitState(db));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/opportunities") {
+        jsonResponse(res, 200, getOpportunityState(db));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/pantheon") {
+        jsonResponse(res, 200, getPantheonSupervisorState(db));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/production") {
+        jsonResponse(res, 200, getProductionState(db));
         return;
       }
 
@@ -1031,6 +1079,43 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "POST" && url.pathname === "/api/pantheon/discovery") {
+        const body = await readBody(req);
+        const result = startOpportunityRound(db, {
+          prompt: body.prompt,
+          idea: body.idea,
+          geography: body.geography,
+          language: body.language,
+          maxCandidates: body.maxCandidates,
+          source: "dashboard",
+          createdBy: "Daniel",
+        });
+        const supervisor = body.runNow === true
+          ? await runPantheonSupervisorCycle(db, {
+            triggerType: "manual",
+            startedBy: "dashboard",
+            maxSteps: 1,
+          })
+          : null;
+        broadcastState();
+        jsonResponse(res, result.alreadyRunning ? 200 : 202, { result, supervisor });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/pantheon/run") {
+        const body = await readBody(req);
+        const result = await runPantheonSupervisorCycle(db, {
+          triggerType: "manual",
+          startedBy: "dashboard",
+          maxSteps: body.maxSteps || 4,
+          allowDiscoveryStart: body.startDiscovery === true,
+          prompt: body.prompt,
+        });
+        broadcastState();
+        jsonResponse(res, 200, { result });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/runtime/tick") {
         const selection = selectSafeRuntimeTickTask(db);
         const result = selection.task
@@ -1228,7 +1313,7 @@ function createApp(options = {}) {
       const approvalAction = routeMatch(url.pathname, "/api/approval-actions/:token");
       if (approvalAction && ["GET", "POST"].includes(req.method)) {
         jsonResponse(res, 410, {
-          error: "Email action links are disabled until a signed provider webhook is connected. Use Decisions in Jarvis.",
+          error: "Email action links are disabled until a signed provider webhook is connected. Use Decisions in Pantheon.",
         });
         return;
       }
@@ -1261,7 +1346,7 @@ function createApp(options = {}) {
             broadcastState();
             jsonResponse(res, 409, {
               code: "approval_refreshed",
-              error: "The AI check details changed before work began, so Jarvis prepared a fresh decision. Nothing ran and there was no cost. Review the updated details, then choose whether to start it.",
+              error: "The AI check details changed before work began, so Pantheon prepared a fresh decision. Nothing ran and there was no cost. Review the updated details, then choose whether to start it.",
               result: refreshed,
             });
             return;
@@ -1271,11 +1356,29 @@ function createApp(options = {}) {
         const execution = decision === "approved" && result.changed && result.approvedTaskIds?.length
           ? await runOnce(db, { taskId: result.approvedTaskIds[0], claimant: "dashboard_approval" })
           : null;
+        const approvedTask = result.approvedTaskIds?.length
+          ? get(db, "SELECT payload FROM tasks WHERE id = ?", [result.approvedTaskIds[0]])
+          : null;
+        const approvedPayload = fromJson(approvedTask?.payload, {});
+        const isPantheonWork = Boolean(
+          approvedPayload.liveSpendRequest?.parameters?.pantheonCommercial
+          || approvedPayload.liveSpendRequest?.parameters?.pantheonProduction,
+        );
+        const pantheonContinuation = decision === "approved"
+          && execution?.status === "completed"
+          && isPantheonWork
+          ? await runPantheonSupervisorCycle(db, {
+            triggerType: "operator_approval",
+            triggerId: approvalDecision.id,
+            startedBy: "dashboard",
+            maxSteps: 10,
+          })
+          : null;
         const recovery = decision === "approved" && execution?.status === "completed"
           ? recoverSetupBlockedTasks(db)
           : null;
         broadcastState();
-        jsonResponse(res, 200, { result, execution, recovery });
+        jsonResponse(res, 200, { result, execution, pantheonContinuation, recovery });
         return;
       }
 
@@ -1292,14 +1395,20 @@ function createApp(options = {}) {
           jsonResponse(res, 400, { error: "Decision must be approve, reject, or changes." });
           return;
         }
+        const existingHandoff = getAgentHandoff(db, handoffDecision.id);
+        const pantheonAction = existingHandoff?.metadata?.pantheonProduction?.action || null;
         const result = decideAgentHandoff(db, handoffDecision.id, decision, body.note || "", {
           decidedBy: body.decidedBy || "operator",
+          skipFollowupTask: Boolean(pantheonAction),
         });
+        const pantheonDecision = pantheonAction
+          ? applyPantheonHandoffDecision(db, result.handoff, decision, body.note || "")
+          : null;
         const execution = decision === "approve" && result.followupTask?.id
           ? await runOnce(db, { taskId: result.followupTask.id, claimant: "dashboard_handoff_approval" })
           : null;
         broadcastState();
-        jsonResponse(res, 200, { result, execution });
+        jsonResponse(res, 200, { result, pantheonDecision, execution });
         return;
       }
 
@@ -1370,7 +1479,7 @@ function createApp(options = {}) {
         message: error.message,
         metadata: { path: url.pathname },
       });
-      jsonResponse(res, 500, { error: "Jarvis could not complete that request. Check System activity for the recorded error.", requestId });
+      jsonResponse(res, 500, { error: "Pantheon could not complete that request. Check System activity for the recorded error.", requestId });
     }
   });
 
@@ -1393,7 +1502,7 @@ function createApp(options = {}) {
   server.broadcastState = () => {
     const payload = JSON.stringify({
       type: "invalidate",
-      sections: ["cockpit", "decisions", "tests", "ai-team", "system"],
+      sections: ["cockpit", "opportunities", "decisions", "tests", "ai-team", "system"],
       at: now(),
     });
     for (const client of wss.clients) {
@@ -1454,12 +1563,12 @@ function startServer(options = {}) {
           app.runtimeState.schedulerPollMs = schedulerLoop.pollMs;
         } catch (error) {
           app.runtimeState.schedulerRunning = false;
-          console.error(`Jarvis-Codex scheduler could not start: ${error.message}`);
+          console.error(`Pantheon scheduler could not start: ${error.message}`);
         }
       }
       app.server.schedulerLoop = schedulerLoop;
-      console.log(`Jarvis-Codex Control running at ${url}`);
-      if (schedulerLoop) console.log(`Jarvis-Codex scheduler polling every ${schedulerLoop.pollMs}ms`);
+      console.log(`Pantheon Control running at ${url}`);
+      if (schedulerLoop) console.log(`Pantheon scheduler polling every ${schedulerLoop.pollMs}ms`);
 
       if (app.runtimeState.schedulerEnabled) {
         const monitorJob = get(app.db, "SELECT status FROM scheduler_jobs WHERE id = ?", [MONITOR_JOB_ID]);
@@ -1469,7 +1578,7 @@ function startServer(options = {}) {
             reason: monitorJob ? "monitor_job_disabled" : "monitor_job_missing",
             completedAt: now(),
           };
-          console.error("Jarvis-Codex independent monitoring is disabled; operations readiness is not satisfied.");
+          console.error("Pantheon independent monitoring is disabled; operations readiness is not satisfied.");
         } else {
           app.runtimeState.startupMonitoring = { status: "running", reason: null };
           try {
@@ -1487,9 +1596,9 @@ function startServer(options = {}) {
               completedAt: now(),
             };
             if (startupRun.status === "completed") {
-              console.log("Jarvis-Codex startup monitor cycle completed.");
+              console.log("Pantheon startup monitor cycle completed.");
             } else {
-              console.error(`Jarvis-Codex startup monitor did not complete: ${app.runtimeState.startupMonitoring.reason}`);
+              console.error(`Pantheon startup monitor did not complete: ${app.runtimeState.startupMonitoring.reason}`);
             }
           } catch (error) {
             app.runtimeState.startupMonitoring = {
@@ -1497,7 +1606,7 @@ function startServer(options = {}) {
               reason: "monitor_startup_failed",
               completedAt: now(),
             };
-            console.error(`Jarvis-Codex startup monitor failed: ${error.message}`);
+            console.error(`Pantheon startup monitor failed: ${error.message}`);
           }
         }
       }
@@ -1507,7 +1616,10 @@ function startServer(options = {}) {
 }
 
 if (require.main === module) {
-  const bootstrapSecret = process.env.JARVIS_OPERATOR_BOOTSTRAP || crypto.randomBytes(32).toString("base64url");
+  const bootstrapSecret = process.env.PANTHEON_OPERATOR_BOOTSTRAP
+    || process.env.JARVIS_OPERATOR_BOOTSTRAP
+    || crypto.randomBytes(32).toString("base64url");
+  process.env.PANTHEON_OPERATOR_BOOTSTRAP = bootstrapSecret;
   process.env.JARVIS_OPERATOR_BOOTSTRAP = bootstrapSecret;
   startServer({ bootstrapSecret }).then(({ url }) => {
     console.log(`Open ${url}/#bootstrap=${bootstrapSecret}`);

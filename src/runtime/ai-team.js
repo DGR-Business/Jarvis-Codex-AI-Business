@@ -66,12 +66,12 @@ const AI_TEAM_DEFINITIONS = [
     modelClass: "research-high",
     aliases: ["scout"],
     taskKinds: ["opportunity_scan"],
-    instructions: "Find buyer problems, visible demand, niche language, marketplace gaps, and underserved audiences before product building starts.",
-    tools: ["runtime_state", "local_deliverables", "approved_research"],
-    guardrails: ["Label unverified assumptions.", "Do not invent demand.", "Live web research requires readiness and approval."],
+    instructions: "Run broad-to-deep commercial discovery. Find buyer problems, visible purchase behaviour, search or marketplace demand, competitor supply, pricing, channel norms, economics hypotheses, execution fit and underserved audiences before product building starts.",
+    tools: ["runtime_state", "local_deliverables", "approved_research", "research_adapter"],
+    guardrails: ["Label unverified assumptions.", "Do not invent demand, sales or unit volumes.", "Use normal public access only; never bypass authentication, CAPTCHAs, paywalls, rate limits or access controls.", "Live web research requires provider readiness and room in the recorded operating mandate."],
     handoffTargets: ["demand_validator", "offer_architect"],
     inputContract: { required: ["business_direction", "target_channel_or_market"] },
-    outputContract: { required: ["buyer", "problem", "demand_signal", "evidence_gap", "recommended_next_test"] },
+    outputContract: { required: ["ranked_opportunities", "demand_evidence", "competition_evidence", "economics_hypothesis", "recommended_next_test"] },
     approvalPolicy: { canApprove: false, mustPauseFor: ["live research spend", ...HARD_STOPS] },
     evalCriteria: ["buyer specificity", "demand evidence", "testability", "source honesty"],
   },
@@ -116,13 +116,13 @@ const AI_TEAM_DEFINITIONS = [
     mode: "protected",
     modelClass: "creative-vision",
     aliases: ["designer", "publisher"],
-    taskKinds: ["product_action_plan", "mockup_direction", "publish_digital_product_dry_run", "publish_gelato_dry_run"],
-    instructions: "Prepare the smallest sellable product asset, mockup direction, or publishing package needed for the next safe test.",
-    tools: ["local_deliverables", "digital_product_adapter", "approval_pack", "image_generation_spend"],
-    guardrails: ["Protected mode by default.", "No live upload, supplier order, or paid generation without approval.", "Keep product output tied to the test hypothesis."],
+    taskKinds: ["product_action_plan", "product_file_build", "mockup_direction", "publish_digital_product_dry_run", "publish_gelato_dry_run"],
+    instructions: "Create the exact approved product files and catalogue package needed for the commercial test. A plan is not a finished product: every claimed output must be returned as a local, reviewable file.",
+    tools: ["local_deliverables", "digital_product_adapter", "approval_pack", "product_file_factory", "image_generation_spend"],
+    guardrails: ["Protected mode by default.", "No live upload, supplier order, or paid generation without approval.", "Keep product output tied to the test hypothesis.", "Never claim a product is built unless Pantheon stores and validates the generated files."],
     handoffTargets: ["quality_reviewer", "chief_of_staff"],
     inputContract: { required: ["offer", "product_format", "quality_bar", "channel_requirements"] },
-    outputContract: { required: ["asset_plan", "mockup_or_listing_draft", "quality_risks", "approval_needed"] },
+    outputContract: { required: ["asset_plan", "produced_files", "catalogue_coverage", "quality_checks", "quality_risks", "approval_needed"] },
     approvalPolicy: { canApprove: false, mustPauseFor: ["paid asset generation", "publishing", ...HARD_STOPS] },
     evalCriteria: ["smallest sellable asset", "channel fit", "approval safety", "quality risk visibility"],
   },
@@ -284,13 +284,16 @@ function contractFieldValue(field, task = {}, workflow = {}, output = {}) {
     confidence: output.confidence || "medium",
     cost_cap: `${Number(task.cost_budget_cents || 0)} cents`,
     cta: details.CTA || output.nextAction || "Ask for a clear buyer decision.",
+    competition_evidence: details["Competition evidence"] || evidenceSummary || "Comparable offers and their positioning still need attributable evidence.",
     demand_signal: output.confidence?.includes("live") ? "Live evidence captured." : "Demand signal still needs live buyer evidence.",
+    demand_evidence: details["Demand evidence"] || evidenceSummary || "Buyer demand still needs attributable evidence.",
     demand_verdict: output.verdict || output.confidence || "Evidence still developing.",
     decision_signal: output.nextAction || "Review the next safest commercial action.",
     description: details.Description || output.summary,
     evidence_gap: evidenceSummary || "Evidence gap not captured.",
     evidence_summary: evidenceSummary || "No evidence summary captured.",
     evidence_to_capture: details.Track || "Views, clicks, replies, leads, sales, objections, refunds, spend, and time.",
+    economics_hypothesis: details.Economics || details["Cost/risk"] || "Estimate price, fulfilment, fees, acquisition cost, refunds, AI/tool cost, and contribution before launch.",
     financial_risk: details["Do not build yet"] || output.costRisk || "Do not spend before buyer and margin evidence improve.",
     headline: details.Headline || output.heading,
     improvement: priorLearning.improvement || "Improve the offer, channel, proof, or stop rule after the next measured result.",
@@ -313,6 +316,7 @@ function contractFieldValue(field, task = {}, workflow = {}, output = {}) {
     promise: details.Promise || offer,
     quality_risks: details["Do not build yet"] || "Quality risk must stay visible before review.",
     quality_score: output.qualityScore || details["Quality score"] || "Quality score needs review evidence.",
+    ranked_opportunities: details["Ranked opportunities"] || offer || output.summary,
     recommended_next_test: output.nextAction || "Prepare the next measured test.",
     recommended_revision: output.nextAction || "Revise from buyer evidence before scaling.",
     requested_improvements: details.Request || details["Requested improvements"] || output.nextAction || "Use the next buyer signal to decide the improvement.",
@@ -597,14 +601,14 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
     findings.push("Dry-run research confidence should stay clearly qualified.");
     score -= 10;
   }
-  if (definition.id === "demand_validator" && context.research?.mode === "live") {
+  if (["opportunity_scout", "demand_validator"].includes(definition.id) && context.research?.mode === "live") {
     const groundedSources = (context.research.sources || []).filter((source) => /^https?:\/\//i.test(source?.url || ""));
     if (groundedSources.length === 0) {
-      findings.push("Live demand research returned no provider-grounded source URLs.");
+      findings.push("Live commercial research returned no provider-grounded source URLs.");
       score -= 35;
     }
     if (context.research.status && context.research.status !== "completed_live") {
-      findings.push("Live demand research did not complete with grounded evidence.");
+      findings.push("Live commercial research did not complete with grounded evidence.");
       score -= 20;
     }
   }
@@ -830,10 +834,10 @@ function finishAgentRun(db, runId, payload) {
       ? "Worker paused"
       : "Worker completed";
   addAgentTrace(db, runId, traceType, traceTitle, payload.outputSummary || "", payload.metadata || {});
-  if (payload.handoffTo && !["failed", "waiting_approval"].includes(status)) {
-    recordAgentHandoff(db, currentRun, payload);
-  }
-  return { completedAt };
+  const handoff = payload.handoffTo && !["failed", "waiting_approval"].includes(status)
+    ? recordAgentHandoff(db, currentRun, payload)
+    : null;
+  return { completedAt, handoff };
 }
 
 function handoffStatus(payload) {
@@ -858,11 +862,11 @@ function handoffDecisionNeeded(payload, sourceRun) {
   if (payload.handoffDecisionNeeded) return payload.handoffDecisionNeeded;
   const metadata = payload.metadata || {};
   const taskKind = String(metadata.taskKind || sourceRun?.metadata?.taskKind || "").toLowerCase();
-  if (taskKind === "live_ai_worker_execution") return "Decide whether Jarvis should prepare the recommended next step.";
+  if (taskKind === "live_ai_worker_execution") return "Decide whether Pantheon should prepare the recommended next step.";
   if (taskKind === "live_market_research") return "Decide whether this evidence is strong enough to continue.";
   if (taskKind === "operator_pack_qc") return "Decide whether this review is ready to use.";
-  if (taskKind === "risk_screen") return "Decide how Jarvis should respond to the identified risks.";
-  return "Choose what Jarvis should do with this result.";
+  if (taskKind === "risk_screen") return "Decide how Pantheon should respond to the identified risks.";
+  return "Choose what Pantheon should do with this result.";
 }
 
 function recordAgentHandoff(db, sourceRun, payload) {
@@ -1022,7 +1026,7 @@ function recordProtectedWorkerOutcome(db, taskLike = {}, output = {}, options = 
     research: options.research || null,
     deliverables: options.deliverables || [],
   });
-  finishAgentRun(db, runRecord.id, {
+  const finished = finishAgentRun(db, runRecord.id, {
     status: options.status || "completed",
     outputSummary: output.summary || output.heading || "",
     modelCallId: options.modelCallId || null,
@@ -1052,6 +1056,7 @@ function recordProtectedWorkerOutcome(db, taskLike = {}, output = {}, options = 
     evalId: evalResult.id,
     evalStatus: evalResult.status,
     evalScore: evalResult.score,
+    handoff: finished.handoff,
   };
 }
 
@@ -1243,7 +1248,9 @@ function decideAgentHandoff(db, handoffId, decision, note = "", options = {}) {
 
   const ts = now();
   const status = handoffDecisionStatus(normalizedDecision);
-  const followupTask = normalizedDecision === "approve" ? createHandoffFollowupTask(db, handoff, note, ts) : null;
+  const followupTask = normalizedDecision === "approve" && options.skipFollowupTask !== true
+    ? createHandoffFollowupTask(db, handoff, note, ts)
+    : null;
   const metadata = {
     ...(handoff.metadata || {}),
     operatorDecision: {
@@ -1400,6 +1407,7 @@ module.exports = {
   findAgentDefinition,
   finishAgentRun,
   getAiTeamState,
+  getAgentHandoff,
   listAgentDefinitions,
   listAgentHandoffs,
   recordAgentHandoff,

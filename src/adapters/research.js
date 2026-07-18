@@ -1,4 +1,9 @@
 const CONFIG = require("../config");
+const {
+  environmentDisabled,
+  environmentEnabled,
+  environmentValue,
+} = require("./pantheon-environment");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { bindModelCallToAttempt } = require("../runtime/agent-execution-evidence");
 const { recordAgentToolObservation } = require("../runtime/agent-tool-gate");
@@ -72,7 +77,9 @@ function requiredSourceTemplates(subject, channel) {
 }
 
 function liveResearchEnabled(options = {}) {
-  return options.live === true && process.env.JARVIS_ENABLE_LIVE_RESEARCH === "1";
+  return options.live === true
+    && environmentEnabled("enableLiveResearch")
+    && !environmentDisabled("disableLiveResearchAdapter");
 }
 
 function insertResearchSources(db, runId, templates) {
@@ -246,7 +253,7 @@ function collectLiveSources(response, parsed) {
     if (action.query && !action.sources && !action.results) {
       add({
         title: `Web search query: ${action.query}`,
-        url: `jarvis://web-search-query/${encodeURIComponent(action.query)}`,
+        url: `pantheon://web-search-query/${encodeURIComponent(action.query)}`,
         publisher: "openai-web-search",
         relevance: "Search query executed by the hosted web search tool.",
         confidence: "query_executed",
@@ -550,7 +557,7 @@ function buildOpenAIRequest(task, workflow, command, query) {
   const tracePolicy = task.payload?.liveSpendRequest?.tracePolicy || {};
   const maxToolCalls = Number(task.payload?.liveSpendRequest?.maxToolCalls || 1);
   return {
-    model: process.env.JARVIS_LIVE_RESEARCH_MODEL || CONFIG.liveResearchModel,
+    model: environmentValue("liveResearchModel", CONFIG.liveResearchModel),
     store: tracePolicy.providerResponseStored === true,
     tools: [{ type: "web_search", external_web_access: true, search_context_size: "low" }],
     tool_choice: "required",
@@ -885,6 +892,7 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
         exactBillingPending: true,
         groundingStatus: status === "completed_live" ? "provider_grounded" : "insufficient_provider_grounding",
         groundedSourceCount: sources.length,
+        grounded: status === "completed_live" && sources.length > 0,
         providerReceipt,
         request: { tool: "web_search", toolChoice: "required" },
       }),
@@ -950,7 +958,7 @@ function runDryResearchTask(db, task, workflow, command) {
       task.workflow_id,
       task.id,
       query,
-      "jarvis-research-adapter",
+      "pantheon-research-adapter",
       "dry-run",
       "needs_live_research",
       budgetCents,
@@ -986,7 +994,7 @@ function runDryResearchTask(db, task, workflow, command) {
     id: runId,
     mode: "dry-run",
     status: "needs_live_research",
-    provider: "jarvis-research-adapter",
+    provider: "pantheon-research-adapter",
     query,
     budgetCents,
     actualCents: 0,

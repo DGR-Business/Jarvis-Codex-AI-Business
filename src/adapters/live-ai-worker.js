@@ -1,4 +1,10 @@
 const CONFIG = require("../config");
+const {
+  environmentDisabled,
+  environmentEnabled,
+  environmentValue,
+  preferredEnvironmentName,
+} = require("./pantheon-environment");
 const { fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const {
   buildWorkerModelPacket,
@@ -310,7 +316,7 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
   const tracePolicy = approvedRequest.tracePolicy || {};
 
   return {
-    model: approvedRequest.model || process.env.JARVIS_LIVE_MODEL || CONFIG.liveModel,
+    model: approvedRequest.model || environmentValue("liveModel", CONFIG.liveModel),
     store: tracePolicy.providerResponseStored === true,
     max_output_tokens: Math.max(1, Number(approvedRequest.maxOutputTokens || CONFIG.liveModelMaxOutputTokens)),
     input: [
@@ -401,14 +407,26 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
   const reservedCostCents = Math.max(0, Number(metadata.reservedCostCents ?? estimateCents));
   const callId = metadata.modelCallId || `model_${randomId()}`;
   const providerResponseReceived = metadata.providerResponseReceived === true;
-  const providerCompleted = providerResponseReceived
-    || ["completed", "provider_completed", "waiting_approval", "needs_attention"].includes(status);
+  const definiteProviderRejection = metadata.definiteProviderRejection === true;
+  const providerCompleted = !definiteProviderRejection && (
+    providerResponseReceived
+    || ["completed", "provider_completed", "waiting_approval", "needs_attention"].includes(status)
+  );
   const outcomeUnknown = metadata.outcomeUnknown === true;
   const dispatching = status === "dispatching";
   const costStatus = providerCompleted ? "incurred_estimate" : outcomeUnknown ? "unknown" : dispatching ? "reserved" : "released";
-  const outcomeStatus = providerCompleted ? "known" : outcomeUnknown ? "unknown" : dispatching ? "provider_dispatched" : "failed_before_effect";
+  const outcomeStatus = definiteProviderRejection
+    ? "failed_before_effect"
+    : providerCompleted
+      ? "known"
+      : outcomeUnknown
+        ? "unknown"
+        : dispatching
+          ? "provider_dispatched"
+          : "failed_before_effect";
   const errorKind = metadata.errorKind
     || (outcomeUnknown ? "provider_outcome_unknown" : status === "failed" ? "provider_rejected" : null);
+  const providerRequestId = response?.id || metadata.providerRequestId || null;
   run(
     db,
     `INSERT INTO model_calls (id, workflow_id, task_id, venture_id, provider, model_class, selected_model, mode, status,
@@ -453,7 +471,7 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
         modelCallId: undefined,
       }),
       now(),
-      response?.id || null,
+      providerRequestId,
       costStatus,
       reservedCostCents,
       providerCompleted ? estimateCents : 0,
@@ -550,7 +568,11 @@ function recordLiveWorkerFailureCost(db, task, error) {
     : null;
   const agentRunId = error.agentRunId || boundAttempt?.agent_run_id || null;
   const modelCallId = error.modelCallId || null;
-  if (error.providerResponseReceived === true && error.outcomeUnknown !== true) {
+  if (
+    error.providerResponseReceived === true
+    && error.outcomeUnknown !== true
+    && error.definiteProviderRejection !== true
+  ) {
     const approvedCapCents = approvedEstimateCents(task);
     const amountCents = Math.min(
       approvedCapCents,
@@ -616,6 +638,9 @@ function recordLiveWorkerFailureCost(db, task, error) {
             noSpendOccurred: true,
             providerFailed: true,
             outcomeUnknown: false,
+            definiteProviderRejection: error.definiteProviderRejection === true,
+            httpStatus: error.httpStatus || error.status || null,
+            providerRequestId: error.providerRequestId || error.requestID || null,
             providerDispatchStatus: error.providerDispatchStatus || "not_dispatched",
             error: error.message,
           }),
@@ -733,11 +758,11 @@ function normalizeOutput(parsed, rawText) {
 }
 
 async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = {}) {
-  if (process.env.JARVIS_ENABLE_LIVE_MODELS !== "1") {
-    throw new Error("JARVIS_ENABLE_LIVE_MODELS must be set to 1 for live AI worker execution.");
+  if (!environmentEnabled("enableLiveModels")) {
+    throw new Error(`Pantheon AI workers are disabled. Set ${preferredEnvironmentName("enableLiveModels")}=1 before approved live work.`);
   }
-  if (process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER === "1") {
-    throw new Error("Live AI worker adapter is disabled.");
+  if (environmentDisabled("disableLiveAiWorkerAdapter")) {
+    throw new Error("Pantheon's OpenAI worker connection is disabled in the runtime configuration.");
   }
 
   const requestBody = buildOpenAIRequest(db, task, agentDefinition, policy);

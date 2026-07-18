@@ -147,19 +147,52 @@ function aggregateCommercialResults(results = []) {
       sales: acc.sales + Number(result.sales || 0),
       refunds: acc.refunds + Number(result.refunds || 0),
       revenueCents: acc.revenueCents + Number(result.revenue_cents || 0),
+      refundAmountCents: acc.refundAmountCents + Number(result.refund_amount_cents || 0),
       spendCents: acc.spendCents + Number(result.spend_cents || 0),
+      platformFeeCents: acc.platformFeeCents + Number(result.platform_fee_cents || 0),
+      fulfilmentCostCents: acc.fulfilmentCostCents + Number(result.fulfilment_cost_cents || 0),
+      productCostCents: acc.productCostCents + Number(result.product_cost_cents || 0),
+      toolCostCents: acc.toolCostCents + Number(result.tool_cost_cents || 0),
+      attributedAiCostCents: acc.attributedAiCostCents + Number(result.attributed_ai_cost_cents || 0),
+      otherCostCents: acc.otherCostCents + Number(result.other_cost_cents || 0),
       timeSpentMinutes: acc.timeSpentMinutes + Number(result.time_spent_minutes || 0),
     }),
-    { views: 0, clicks: 0, leads: 0, sales: 0, refunds: 0, revenueCents: 0, spendCents: 0, timeSpentMinutes: 0 },
+    {
+      views: 0,
+      clicks: 0,
+      leads: 0,
+      sales: 0,
+      refunds: 0,
+      revenueCents: 0,
+      refundAmountCents: 0,
+      spendCents: 0,
+      platformFeeCents: 0,
+      fulfilmentCostCents: 0,
+      productCostCents: 0,
+      toolCostCents: 0,
+      attributedAiCostCents: 0,
+      otherCostCents: 0,
+      timeSpentMinutes: 0,
+    },
   );
-  const profitCents = totals.revenueCents - totals.spendCents;
+  const totalCostCents = totals.refundAmountCents
+    + totals.spendCents
+    + totals.platformFeeCents
+    + totals.fulfilmentCostCents
+    + totals.productCostCents
+    + totals.toolCostCents
+    + totals.attributedAiCostCents
+    + totals.otherCostCents;
+  const cashContributionCents = totals.revenueCents - totalCostCents;
   return {
     ...totals,
-    profitCents,
+    totalCostCents,
+    cashContributionCents,
+    profitCents: cashContributionCents,
     clickRate: percent(totals.clicks, totals.views),
     salesRate: percent(totals.sales, totals.clicks || totals.views),
     refundRate: percent(totals.refunds, totals.sales),
-    roi: totals.spendCents > 0 ? Number((profitCents / totals.spendCents).toFixed(2)) : null,
+    roi: totalCostCents > 0 ? Number((cashContributionCents / totalCostCents).toFixed(2)) : null,
   };
 }
 
@@ -543,9 +576,9 @@ function buildImprovementLoop(metrics, moves, commercialLearningCycles = []) {
   const latestLearning = commercialLearningCycles[0] || null;
   const actualResult = latestLearning?.actual_result
     || (metrics.commercialResults > 0
-      ? `${metrics.commercial.views} views, ${metrics.commercial.clicks} clicks, ${metrics.commercial.sales} sales, ${moneyLabel(metrics.commercial.revenueCents)} revenue, ${moneyLabel(metrics.commercial.profitCents)} profit recorded.`
+      ? `${metrics.commercial.views} views, ${metrics.commercial.clicks} clicks, ${metrics.commercial.sales} sales, ${moneyLabel(metrics.commercial.revenueCents)} revenue, ${moneyLabel(metrics.commercial.cashContributionCents)} net cash contribution recorded.`
       : metrics.revenueCents > 0
-        ? `${moneyLabel(metrics.revenueCents)} revenue and ${moneyLabel(metrics.profitCents)} profit recorded.`
+        ? `${moneyLabel(metrics.revenueCents)} revenue and ${moneyLabel(metrics.profitCents)} net cash contribution recorded.`
         : "No revenue is recorded yet; the system is still in evidence-building mode.");
   return {
     model: "hypothesis_action_result_improvement",
