@@ -324,6 +324,33 @@ function validateSqliteDatabase(dbPath) {
   }
 }
 
+function removeSqliteSidecars(dbPath) {
+  for (const suffix of ["-wal", "-shm"]) {
+    const sidecar = `${dbPath}${suffix}`;
+    if (fs.existsSync(sidecar)) fs.rmSync(sidecar, { force: true });
+  }
+}
+
+function normalizeStandaloneSqliteDatabase(dbPath) {
+  let db;
+  try {
+    db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA busy_timeout = 5000;");
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    const row = db.prepare("PRAGMA journal_mode = DELETE").get();
+    const mode = String(Object.values(row || {})[0] || "").toLowerCase();
+    if (mode !== "delete") {
+      throw new Error(`SQLite journal mode remained ${mode || "unknown"}.`);
+    }
+  } catch (error) {
+    throw new Error(`Database backup could not be made standalone: ${error.message}`);
+  } finally {
+    if (db) db.close();
+  }
+  removeSqliteSidecars(dbPath);
+  return validateSqliteDatabase(dbPath);
+}
+
 async function createDatabaseSnapshot(dbPath, snapshotPath) {
   if (!fs.existsSync(dbPath)) throw new Error(`Runtime database does not exist: ${dbPath}`);
   fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
@@ -333,7 +360,7 @@ async function createDatabaseSnapshot(dbPath, snapshotPath) {
   } finally {
     db.close();
   }
-  validateSqliteDatabase(snapshotPath);
+  normalizeStandaloneSqliteDatabase(snapshotPath);
   return snapshotPath;
 }
 
@@ -447,15 +474,24 @@ function commitStagedRestore(stagedPath, destinationPath, options = {}) {
   }
   const previousPath = `${destination}.previous-${process.pid}-${crypto.randomBytes(5).toString("hex")}`;
   let movedPrevious = false;
+  let movedStaged = false;
   try {
     if (fs.existsSync(destination)) {
       fs.renameSync(destination, previousPath);
       movedPrevious = true;
     }
     fs.renameSync(stagedPath, destination);
+    movedStaged = true;
+    const verification = typeof options.verifyCommitted === "function"
+      ? options.verifyCommitted(destination)
+      : null;
     if (movedPrevious) fs.rmSync(previousPath, { recursive: true, force: true });
+    return verification;
   } catch (error) {
-    if (movedPrevious && !fs.existsSync(destination) && fs.existsSync(previousPath)) {
+    if (movedStaged && fs.existsSync(destination)) {
+      fs.rmSync(destination, { recursive: true, force: true });
+    }
+    if (movedPrevious && fs.existsSync(previousPath)) {
       fs.renameSync(previousPath, destination);
     }
     throw error;
@@ -479,10 +515,13 @@ async function restoreBackup(sourcePath, destinationPath, options = {}) {
       `.${path.basename(destination)}.restore-${process.pid}-${crypto.randomBytes(6).toString("hex")}`,
     );
     if (kind === "database") {
-      const sqliteProof = validateSqliteDatabase(rawPath);
+      validateSqliteDatabase(rawPath);
       fs.copyFileSync(rawPath, stagedPath, fs.constants.COPYFILE_EXCL);
-      validateSqliteDatabase(stagedPath);
-      commitStagedRestore(stagedPath, destination, options);
+      normalizeStandaloneSqliteDatabase(stagedPath);
+      const sqliteProof = commitStagedRestore(stagedPath, destination, {
+        ...options,
+        verifyCommitted: validateSqliteDatabase,
+      });
       stagedPath = null;
       return { ...proof, destinationPath: destination, sqlite: sqliteProof };
     }

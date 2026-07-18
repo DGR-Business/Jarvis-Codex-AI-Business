@@ -909,7 +909,7 @@ async function runAgentTask(db, task, options = {}) {
       reason: "Read local runtime state before worker execution.",
     })));
 
-    spendApproval = getSpendApprovalState(db, task);
+    spendApproval = options.spendApprovalState || getSpendApprovalState(db, task);
     addAgentTrace(db, agentRun.id, "guardrails_checked", "Guardrails checked", "Spend, tool, and approval rules were checked before work continued.", {
       spendApproval,
       humanReviewRequired,
@@ -1155,6 +1155,8 @@ async function runAgentTask(db, task, options = {}) {
 
       return {
         mode: liveWorker.mode || "openai-agents-sdk",
+        providerRequestId: liveWorker.raw.responseId || null,
+        agentSdkTraceId: liveWorker.raw.traceId || null,
         agent: task.agent,
         taskKind: task.kind,
         aiTeam: {
@@ -1178,6 +1180,8 @@ async function runAgentTask(db, task, options = {}) {
           estimatedCostCents: effectiveModelCall.estimatedCostCents,
           actualCostCents: effectiveModelCall.actualCostCents,
           exactBillingPending: Boolean(effectiveModelCall.exactBillingPending),
+          providerRequestId: liveWorker.raw.responseId || null,
+          agentSdkTraceId: liveWorker.raw.traceId || null,
           reason: liveWorker.provider === "openai-agents-sdk"
             ? "Live AI worker used the approved OpenAI Agents SDK runner. No external tools or side effects were exposed."
             : "Live AI worker used the preserved approved OpenAI Responses API fallback path. No external tools or side effects were exposed.",

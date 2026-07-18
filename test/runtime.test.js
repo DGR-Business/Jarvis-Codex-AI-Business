@@ -2036,7 +2036,7 @@ test("dry-run agent runner executes planned workflow steps with guardrails", asy
   assert.ok(handoffs.length >= 1);
   assert.equal(finalHandoff.to_agent_id, "chief_of_staff");
   assert.equal(finalHandoff.status, "needs_operator_decision");
-  assert.match(finalHandoff.decision_needed, /approved|denied|changes/i);
+  assert.match(finalHandoff.decision_needed, /ready to use/i);
   assert.equal(state.metrics.aiTeam.activeHandoffs >= handoffs.length, true);
   assert.ok(state.metrics.aiTeam.completed >= tasks.length);
 
@@ -3069,8 +3069,11 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(handoff.from_agent_id, "demand_validator");
     assert.equal(handoff.to_agent_id, "chief_of_staff");
     assert.equal(handoff.status, "needs_operator_decision");
-    assert.equal(handoff.risk_level, "high");
-    assert.match(handoff.decision_needed, /live worker recommendation/i);
+    assert.equal(handoff.risk_level, "medium");
+    assert.match(handoff.decision_needed, /recommended next step/i);
+    assert.equal(completed.result.spendApproval.approved, true);
+    assert.equal(completed.result.spendApproval.approvalValid, true);
+    assert.equal(completed.result.spendApproval.providerReady, true);
     assert.equal(modelCall.mode, "live");
     assert.equal(modelCall.status, "completed");
     assert.equal(modelCall.input_tokens, 900);
@@ -3087,6 +3090,7 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(cost.model_call_id, modelCall.id);
     assert.ok(attempt.provider_dispatched_at);
     assert.equal(attempt.provider_dispatch_model_call_id, modelCall.id);
+    assert.equal(attempt.provider_request_id, "resp_live_worker_test");
     assert.equal(receipt.status, "complete");
     assert.equal(receipt.run_id, liveRun.id);
     assert.equal(state.runtime.liveAiWorkers.ready, true);
@@ -3116,8 +3120,14 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(runDetail.execution.traceId, capturedRequest.traceId);
     assert.equal(runDetail.execution.inputTokens, 900);
     assert.equal(runDetail.execution.outputTokens, 420);
+    assert.equal(runDetail.execution.runtimeHandoffs[0].decisionNeeded, handoff.decision_needed);
+    assert.equal(runDetail.execution.runtimeHandoffs[0].riskLevel, "medium");
     assert.ok(runDetail.developer.traceEvents.some((trace) => trace.type === "model_call_completed"));
     assert.equal(state.aiTeam.workbench.metrics.liveTested >= 1, true);
+    const resultDecision = getDecisionsState(db).approvals.find((item) => item.runId === liveRun.id);
+    assert.equal(resultDecision.title, "Decide whether to prepare the interest test");
+    assert.equal(resultDecision.primaryActionLabel, "Review result");
+    assert.match(resultDecision.recommendation, /did not prove real buyer demand/i);
 
     assert.equal(state.aiPilotReview.status, "live_output_ready_for_review");
     assert.equal(state.aiPilotReview.contract.status, "passed");

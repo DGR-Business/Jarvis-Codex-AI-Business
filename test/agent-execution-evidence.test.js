@@ -30,11 +30,12 @@ const {
 
 function makeRuntime() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-agent-evidence-"));
-  const db = openDatabase(path.join(root, "runtime.sqlite"));
+  const dbPath = path.join(root, "runtime.sqlite");
+  const db = openDatabase(dbPath);
   seedDatabase(db);
   ensureAiTeam(db);
   ensureAgentTools(db);
-  return { root, db };
+  return { root, dbPath, db };
 }
 
 function closeRuntime(runtime) {
@@ -282,12 +283,13 @@ test("stale recovery never retries an attempt after provider dispatch was record
   }
 });
 
-test("migration 16 installs receipt immutability and exact attempt bindings", () => {
+test("migrations install receipt immutability, exact attempt bindings, and provider receipt repair", () => {
   const runtime = makeRuntime();
   try {
-    assert.equal(get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version, 16);
+    assert.equal(get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version, 17);
     assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 12").name, "agent-operations-evidence-and-receipts");
     assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 16").name, "exact-agent-execution-evidence-bindings");
+    assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 17").name, "provider-request-attempt-receipt-backfill");
     const tables = all(
       runtime.db,
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('agent_run_receipts', 'agent_run_provenance') ORDER BY name",
@@ -299,6 +301,49 @@ test("migration 16 installs receipt immutability and exact attempt bindings", ()
     assert.ok(attemptColumns.includes("agent_run_id"));
     assert.ok(attemptColumns.includes("model_call_id"));
     assert.ok(attemptColumns.includes("evidence_binding_status"));
+
+    const ts = "2026-07-17T00:00:00.000Z";
+    insertWorkflow(runtime.db, "wf-provider-repair", "completed");
+    run(
+      runtime.db,
+      `INSERT INTO tasks
+       (id, workflow_id, venture_id, title, kind, agent, status, priority, payload, result,
+        created_at, updated_at)
+       VALUES ('task-provider-repair', 'wf-provider-repair', 'venture-digital-products',
+        'Repair provider evidence', 'live_ai_worker_execution', 'demand_validator', 'completed',
+        1, '{}', '{}', ?, ?)`,
+      [ts, ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO model_calls
+       (id, workflow_id, task_id, venture_id, provider, model_class, selected_model, mode,
+        status, approval_required, metadata, created_at, provider_request_id)
+       VALUES ('model-provider-repair', 'wf-provider-repair', 'task-provider-repair',
+        'venture-digital-products', 'openai', 'reasoning', 'gpt-test', 'live', 'completed',
+        1, '{}', ?, 'resp_provider_repair')`,
+      [ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO task_attempts
+       (id, task_id, workflow_id, venture_id, claim_token, status, outcome_status,
+        started_at, completed_at, metadata, model_call_id)
+       VALUES ('attempt-provider-repair', 'task-provider-repair', 'wf-provider-repair',
+        'venture-digital-products', 'claim-provider-repair', 'completed', 'known',
+        ?, ?, '{}', 'model-provider-repair')`,
+      [ts, ts],
+    );
+    run(runtime.db, "DELETE FROM schema_migrations WHERE version = 17");
+    runtime.db.close();
+    runtime.db = openDatabase(runtime.dbPath);
+
+    const repairedAttempt = get(
+      runtime.db,
+      "SELECT provider_request_id, metadata FROM task_attempts WHERE id = 'attempt-provider-repair'",
+    );
+    assert.equal(repairedAttempt.provider_request_id, "resp_provider_repair");
+    assert.equal(JSON.parse(repairedAttempt.metadata).providerRequestIdBackfill.source, "exact_model_call_binding");
   } finally {
     closeRuntime(runtime);
   }

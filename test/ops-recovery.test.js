@@ -131,7 +131,7 @@ test("database restore is staged, integrity checked and refused for the active r
   try {
     const sourceDbPath = path.join(root, "source.sqlite");
     const sourceDb = new DatabaseSync(sourceDbPath);
-    sourceDb.exec("PRAGMA foreign_keys = ON; CREATE TABLE proof (value TEXT NOT NULL); INSERT INTO proof VALUES ('restored');");
+    sourceDb.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; CREATE TABLE proof (value TEXT NOT NULL); INSERT INTO proof VALUES ('restored');");
     sourceDb.close();
     const backup = await createBackup({
       kind: "database",
@@ -144,7 +144,14 @@ test("database restore is staged, integrity checked and refused for the active r
     assert.equal(restored.sqlite.quickCheck, "ok");
     const restoredDb = new DatabaseSync(restoredPath, { readOnly: true });
     assert.equal(restoredDb.prepare("SELECT value FROM proof").get().value, "restored");
+    assert.equal(Object.values(restoredDb.prepare("PRAGMA journal_mode").get())[0], "delete");
     restoredDb.close();
+    assert.equal(fs.existsSync(`${restoredPath}-wal`), false);
+    assert.equal(fs.existsSync(`${restoredPath}-shm`), false);
+    assert.deepEqual(
+      fs.readdirSync(path.dirname(restoredPath)).filter((name) => name.startsWith(".runtime.sqlite.restore-")),
+      [],
+    );
     await assert.rejects(
       restoreBackup(backup.destinationPath, CONFIG.dbPath, { passphrase: PASSPHRASE, replace: true }),
       /active runtime database/,

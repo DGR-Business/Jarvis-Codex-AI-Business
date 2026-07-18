@@ -69,18 +69,35 @@ function decisionCard(approval) {
   const fixture = approval.taskPayload?.pilotFixture || null;
   const contextSnapshot = approval.taskPayload?.contextSnapshot || null;
   const scope = approval.executionScope || {};
+  const workerId = payload.worker?.id || liveRequest.worker?.id || approval.taskPayload?.requestedWorker || null;
+  const tools = scope.tools || liveRequest.tools || [];
+  const demandResearch = workerId === "demand_validator" && tools.includes("research_adapter");
+  const controlledDemandCheck = workerId === "demand_validator" && Boolean(fixture);
+  const maxCostCents = Number(payload.estimatedCostCents || payload.maxCostCents || 0);
   return {
     id: approval.id,
     type: "decision",
     decisionKind: "approval",
-    title: approval.title,
+    title: demandResearch
+      ? `Decide whether to run live market research${maxCostCents > 0 ? ` (up to A$${(maxCostCents / 100).toFixed(2)})` : ""}`
+      : controlledDemandCheck
+        ? "Start the Demand Validator check?"
+        : approval.title,
     risk: approval.risk_level,
     requestedAt: approval.requested_at,
     scopeHash: approval.scope_hash,
     expiresAt: approval.expires_at,
-    recommendation: payload.reason || payload.commercialPurpose || "Review the evidence and choose whether this exact action should continue.",
-    expectedUpside: payload.expectedMetric || payload.expectedUpside || "The expected benefit has not been quantified yet.",
-    maxCostCents: Number(payload.estimatedCostCents || payload.maxCostCents || 0),
+    recommendation: demandResearch
+      ? "Demand Validator will search the web for current buyer language, competing products, price signals, and one suitable free audience channel."
+      : controlledDemandCheck
+        ? "Demand Validator will assess the supplied test evidence and return one recommendation for your review."
+        : payload.reason || payload.commercialPurpose || "Review the evidence and choose whether this exact action should continue.",
+    expectedUpside: demandResearch
+      ? "The result should tell us whether this buyer can be reached and give us one measurable free test with a clear stop rule."
+      : controlledDemandCheck
+        ? "This checks whether the AI can produce a useful business recommendation while staying inside its exact limits."
+        : payload.expectedMetric || payload.expectedUpside || "The expected benefit has not been quantified yet.",
+    maxCostCents,
     pricedWorstCaseCostCents: Number(
       liveRequest.pricedWorstCaseCostCents
       || liveRequest.executionDescriptor?.worstCaseCost?.amountCents
@@ -89,9 +106,9 @@ function decisionCard(approval) {
     provider: payload.provider || null,
     model: liveRequest.model || scope.model || payload.model || null,
     modelRoute,
-    worker: payload.worker?.name || payload.requestedWorker || null,
+    worker: payload.worker?.name || liveRequest.worker?.name || payload.requestedWorker || null,
     effects: approval.expectedEffects,
-    tools: scope.tools || liveRequest.tools || [],
+    tools,
     maxTurns: Number(scope.maxTurns || liveRequest.maxTurns || 0),
     maxOutputTokens: Number(scope.maxOutputTokens || liveRequest.maxOutputTokens || 0),
     assignment: fixture ? {
@@ -110,6 +127,13 @@ function decisionCard(approval) {
     tracePolicy: payload.tracePolicy || null,
     policySummary: Array.isArray(payload.policySummary) ? payload.policySummary : null,
     noDeletion: payload.noDeletion === true,
+    attentionLabel: demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
+    primaryActionLabel: demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
+    decisionPrompt: demandResearch
+      ? "See what the AI will research, the maximum cost, and what it cannot do."
+      : controlledDemandCheck
+        ? "See the evidence, limit, and exact action before starting the AI."
+        : "Review what will happen before you choose.",
     actions: ["approve", "changes", "reject"],
   };
 }
@@ -130,20 +154,40 @@ function pendingHandoffs(db) {
 }
 
 function handoffCard(handoff) {
+  const taskKind = String(handoff.metadata?.taskKind || "").toLowerCase();
+  const businessDecision = handoff.metadata?.businessDecision || {};
+  const demandResult = taskKind === "live_ai_worker_execution"
+    && String(handoff.from_agent_id || "").toLowerCase() === "demand_validator";
   return {
     id: handoff.id,
     type: "decision",
     decisionKind: "handoff",
-    title: handoff.decision_needed || `Choose the next step for ${handoff.workflow_title || "this work"}`,
-    risk: handoff.risk_level || "medium",
+    title: demandResult
+      ? "Decide whether to prepare the interest test"
+      : handoff.decision_needed || `Choose the next step for ${handoff.workflow_title || "this work"}`,
+    risk: demandResult
+      ? (["high", "medium", "low"].includes(String(businessDecision.risk || "").toLowerCase())
+          ? String(businessDecision.risk).toLowerCase()
+          : "medium")
+      : handoff.risk_level || "medium",
     requestedAt: handoff.updated_at || handoff.created_at,
-    recommendation: handoff.summary || handoff.reason || "Review the completed work and choose whether the team should continue.",
-    expectedUpside: Number(handoff.expected_profit_cents || 0) > 0
-      ? "Advances a bounded commercial step with the expected return shown in the work record."
-      : "Keeps the venture moving without allowing an external action automatically.",
+    recommendation: demandResult
+      ? "Demand Validator recommends a free interest check before the checklist is built. The controlled test found a plausible recurring problem, but it did not prove real buyer demand."
+      : handoff.summary || handoff.reason || "Review the completed work and choose whether the team should continue.",
+    expectedUpside: demandResult
+      ? "A small interest check can show whether the idea deserves more work without spending money."
+      : Number(handoff.expected_profit_cents || 0) > 0
+        ? "Advances a bounded commercial step with the expected return shown in the work record."
+        : "Keeps the venture moving without allowing an external action automatically.",
     maxCostCents: Number(handoff.cost_estimate_cents || 0),
     worker: handoff.from_agent_name || handoff.from_agent_id || null,
     workflowId: handoff.workflow_id || null,
+    runId: handoff.from_run_id || null,
+    attentionLabel: demandResult ? "AI result ready" : "Decision ready",
+    primaryActionLabel: demandResult ? "Review result" : "Review and decide",
+    decisionPrompt: demandResult
+      ? "Read the result, rate the analysis, then choose whether Jarvis should prepare the test."
+      : handoff.decision_needed || "Choose what Jarvis should do next.",
     actions: ["approve", "changes", "reject"],
   };
 }
@@ -1491,6 +1535,9 @@ function getAgentRunDetail(db, id) {
         to: handoff.to_agent_id,
         status: handoff.status,
         summary: handoff.summary,
+        decisionNeeded: handoff.decision_needed,
+        riskLevel: handoff.risk_level,
+        resolvedAt: handoff.resolved_at,
       })),
       externalEffects: task?.payload?.liveSpendRequest?.effects || [],
       tracePolicy: {

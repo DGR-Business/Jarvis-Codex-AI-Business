@@ -266,15 +266,23 @@ function approvalButtons(item, compactButtons = false) {
   const sizeClass = compactButtons ? "" : "";
   const action = item.decisionKind === "handoff" ? "handoff-decision" : "approval";
   const approvalLabel = item.decisionKind === "handoff"
-    ? "Approve next step"
+    ? "Prepare next step"
     : Number(item.maxCostCents || 0) > 0 || item.provider
-      ? `Approve & start${Number(item.maxCostCents || 0) > 0 ? ` · up to ${money(item.maxCostCents)}` : ""}`
+      ? "Start this AI check"
       : "Approve";
   return `<div class="work-actions ${sizeClass}">
     <button class="primary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="approve" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("check")}${escapeHtml(approvalLabel)}</button>
-    <button class="secondary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="changes" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("pencil-line")}Changes</button>
-    <button class="danger-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="reject" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("x")}Decline</button>
+    <button class="secondary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="changes" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("pencil-line")}Ask for changes</button>
+    <button class="danger-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="reject" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("x")}Do not continue</button>
   </div>`;
+}
+
+function decisionReviewButton(item, className = "primary-button") {
+  const runResult = item.decisionKind === "handoff" && item.runId;
+  const kind = runResult ? "agent-run" : "decision";
+  const id = runResult ? item.runId : item.id;
+  const label = item.primaryActionLabel || (runResult ? "Review result" : "Review and decide");
+  return `<button class="${className}" data-action="open-drawer" data-kind="${kind}" data-id="${escapeHtml(id)}">${icon("arrow-right")}${escapeHtml(label)}</button>`;
 }
 
 function renderCommandBand(data) {
@@ -299,12 +307,12 @@ function renderImportantWork(items) {
   }
   const onlyWaitingToStart = items.every((item) => item.type === "queued_work");
   return `<section class="priority-panel">
-    <div class="priority-header"><div><span class="eyebrow">Important work</span><h2>${items.length} item${items.length === 1 ? " needs" : "s need"} a decision, check, or start</h2></div>${onlyWaitingToStart ? badge("Work waiting", "amber") : badge("Needs attention", "coral")}</div>
+    <div class="priority-header"><div><span class="eyebrow">Needs you now</span><h2>${items.length === 1 ? "One item needs you" : `${items.length} items need you`}</h2></div>${onlyWaitingToStart ? badge("Ready to start", "amber") : badge("Your decision", "coral")}</div>
     <div class="priority-list">${items.map((item) => `<article class="work-item">
       <span class="risk-bar ${escapeHtml(item.risk || "medium")}"></span>
-      <div class="work-copy"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(compact(item.recommendation, 260))}</p>${item.expectedUpside ? `<small>Why it matters: ${escapeHtml(compact(item.expectedUpside, 180))}</small>` : ""}${item.type === "decision" && (Number(item.maxCostCents || 0) > 0 || item.provider) ? `<small>What approval does: starts this one exact ${escapeHtml(item.worker || "AI")} action${Number(item.maxCostCents || 0) > 0 ? `, capped at ${money(item.maxCostCents)}` : ""}. No wider authority is granted.</small>` : ""}</div>
+      <div class="work-copy">${item.attentionLabel ? `<span class="work-state">${escapeHtml(item.attentionLabel)}</span>` : ""}<h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(compact(item.recommendation, 260))}</p>${item.expectedUpside ? `<small>${escapeHtml(compact(item.expectedUpside, 180))}</small>` : ""}</div>
       ${item.type === "decision"
-        ? approvalButtons(item, true)
+        ? decisionReviewButton(item)
         : ["queued_work", "approved_work"].includes(item.type)
           ? `<button class="primary-button" data-action="run-task" data-id="${escapeHtml(item.id)}" data-execution-kind="${escapeHtml(item.execution_kind || "internal")}">${icon("play")}${escapeHtml(item.run_label || "Run internal step")}${Number(item.max_cost_cents || 0) > 0 ? ` · up to ${money(item.max_cost_cents)}` : ""}</button>`
           : `<button class="secondary-button" data-action="open-drawer" data-kind="work" data-id="${escapeHtml(item.id)}">${icon("arrow-right")}Review</button>`}
@@ -388,10 +396,9 @@ function renderDecisions() {
   let body = "";
   if (store.decisionTab === "approvals") {
     body = data.approvals.length ? `<div class="card-grid">${data.approvals.map((item) => `<article class="item-card">
-      <header><div><span class="eyebrow">Decision</span><h3>${escapeHtml(item.title)}</h3></div>${badge(item.risk, item.risk === "high" ? "coral" : "amber")}</header>
+      <header><div><span class="eyebrow">${escapeHtml(item.attentionLabel || "Decision ready")}</span><h3>${escapeHtml(item.title)}</h3></div>${badge(item.risk, item.risk === "high" ? "coral" : "amber")}</header>
       <p>${escapeHtml(item.recommendation)}</p>
-      <div class="detail-grid"><div><span>Worker</span><strong>${escapeHtml(item.worker || "Runtime")}</strong></div><div><span>Maximum cost</span><strong>${money(item.maxCostCents)}</strong></div></div>
-      <footer><button class="text-button" data-action="open-drawer" data-kind="decision" data-id="${escapeHtml(item.id)}">Review details ${icon("arrow-right")}</button>${approvalButtons(item, true)}</footer>
+      <footer><span class="muted-text">${escapeHtml(item.decisionPrompt || item.expectedUpside || "Review the result before choosing what happens next.")}</span>${decisionReviewButton(item)}</footer>
     </article>`).join("")}</div>` : emptyState("No decisions waiting", "Reviews and suggestions remain separate so they do not compete with consequential choices.");
   } else if (store.decisionTab === "reviews") {
     body = data.reviews.length ? `<div class="plain-list">${data.reviews.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p></div><div class="work-actions">${canPreview(item.format, item.filePath) ? `<button class="secondary-button" data-action="open-pdf" data-id="${escapeHtml(item.id)}" data-title="${escapeHtml(item.title)}">${icon("file-search")}Preview</button>` : ""}<button class="text-button" data-action="open-drawer" data-kind="review" data-id="${escapeHtml(item.id)}">Details ${icon("arrow-right")}</button></div></article>`).join("")}</div>` : emptyState("No outputs need review", "Completed decision briefs and supporting outputs will appear here without competing with consequential choices.", "files");
@@ -749,14 +756,18 @@ function trapDialogFocus(event, root) {
 
 function openDrawer(title, kicker, body, options = {}) {
   const drawer = $("#drawer");
+  const footer = $("#drawer-footer");
   const wasOpen = drawer.classList.contains("open");
   if (!wasOpen && !options.preserveFocus) store.drawerReturnFocus = document.activeElement;
   if (options.state) store.drawerState = options.state;
   $("#drawer-title").textContent = title;
   $("#drawer-kicker").textContent = kicker;
   $("#drawer-body").innerHTML = body;
+  footer.innerHTML = options.footer || "";
+  footer.hidden = !options.footer;
   drawer.classList.add("open");
   drawer.classList.toggle("wide", options.wide === true);
+  drawer.classList.toggle("has-footer", Boolean(options.footer));
   drawer.setAttribute("aria-hidden", "false");
   $("#drawer-backdrop").classList.add("open");
   updateBackgroundInert();
@@ -772,7 +783,10 @@ function closeDrawer() {
   if (!drawer.classList.contains("open")) return;
   drawer.classList.remove("open");
   drawer.classList.remove("wide");
+  drawer.classList.remove("has-footer");
   drawer.setAttribute("aria-hidden", "true");
+  $("#drawer-footer").innerHTML = "";
+  $("#drawer-footer").hidden = true;
   $("#drawer-backdrop").classList.remove("open");
   store.drawerState = null;
   updateBackgroundInert();
@@ -785,10 +799,28 @@ function detailSection(title, content) {
   return `<section class="drawer-section"><h3>${escapeHtml(title)}</h3>${content}</section>`;
 }
 
+function detailDisclosure(title, content) {
+  return `<details class="detail-disclosure"><summary>${icon("chevron-right")}<span>${escapeHtml(title)}</span></summary><div>${content}</div></details>`;
+}
+
 function detailList(items, emptyMessage = "None recorded.") {
   return items?.length
     ? `<ul>${items.map((item) => `<li>${escapeHtml(typeof item === "string" ? item : item.summary || item.title || String(item))}</li>`).join("")}</ul>`
     : `<p>${escapeHtml(emptyMessage)}</p>`;
+}
+
+function plainAgentText(value) {
+  return String(value || "")
+    .replace(/All observations are evaluation fixtures, not real-business market evidence\./gi, "All observations came from a controlled test, not real market activity.")
+    .replace(/\bevaluation fixtures\b/gi, "controlled test examples")
+    .replace(/\bfixtures\b/gi, "controlled test examples")
+    .replace(/\bfixture\b/gi, "controlled test evidence");
+}
+
+function plainAgentList(items) {
+  return detailList((items || []).map((item) => (
+    typeof item === "string" ? plainAgentText(item) : item
+  )));
 }
 
 function reviewCriteria(criteria = {}) {
@@ -809,6 +841,32 @@ function reviewCriteria(criteria = {}) {
   }).join("")}</div>`;
 }
 
+const OPEN_HANDOFF_STATES = new Set(["needs_operator_decision", "waiting_for_review", "waiting_approval"]);
+
+function activeRunHandoff(data) {
+  return data.execution?.runtimeHandoffs?.find((handoff) => OPEN_HANDOFF_STATES.has(handoff.status)) || null;
+}
+
+function runReviewFooter(data) {
+  const handoff = activeRunHandoff(data);
+  const reviewPending = data.review?.operatorVerdict === "pending";
+  const demandResult = data.run.workerId === "demand_validator";
+  if (reviewPending) {
+    return `<div class="drawer-footer-copy"><strong>Is this analysis clear enough to use?</strong><span>Your answer helps Jarvis improve this exact AI skill.</span></div>
+      <div class="work-actions">
+        <button class="primary-button" data-action="review-agent-run" data-run-id="${escapeHtml(data.run.id)}" data-verdict="useful" data-score="4">${icon("check")}Analysis is clear</button>
+        <button class="secondary-button" data-action="review-agent-run" data-run-id="${escapeHtml(data.run.id)}" data-handoff-id="${escapeHtml(handoff?.id || "")}" data-verdict="changes_required" data-score="2">${icon("pencil-line")}Request a better analysis</button>
+      </div>`;
+  }
+  if (!handoff) return "";
+  return `<div class="drawer-footer-copy"><strong>What should Jarvis do next?</strong><span>No publishing, customer contact, account change, or spend will occur.</span></div>
+    <div class="work-actions">
+      <button class="primary-button" data-action="handoff-decision" data-id="${escapeHtml(handoff.id)}" data-decision="approve">${icon("arrow-right")}${demandResult ? "Prepare the interest test" : "Prepare the next step"}</button>
+      <button class="secondary-button" data-action="handoff-decision" data-id="${escapeHtml(handoff.id)}" data-decision="changes">${icon("pencil-line")}Ask for changes</button>
+      <button class="danger-button" data-action="handoff-decision" data-id="${escapeHtml(handoff.id)}" data-decision="reject">${icon("square")}Stop here</button>
+    </div>`;
+}
+
 function runReviewBody(data) {
   const process = data.process;
   const execution = data.execution;
@@ -816,33 +874,14 @@ function runReviewBody(data) {
   const protectedRun = execution.kind === "protected_rehearsal";
   const unknownOutcome = execution.kind === "provider_outcome_unknown";
   const visibility = execution.tracePolicy || {};
+  const handoff = activeRunHandoff(data);
+  const reviewPending = data.review?.operatorVerdict === "pending";
+  const controlledEvidence = process.suppliedEvidence?.some((item) => item.sourceType === "test_fixture");
+  const demandResult = data.run.workerId === "demand_validator";
+  const plainConclusion = demandResult
+    ? "Demand Validator recommends a small, free interest test before anything is built. The controlled evidence suggests a recurring problem, but it does not prove real demand or willingness to pay."
+    : plainAgentText(process.conclusion);
   const duration = durationLabel(data.run.durationMs);
-  const suppliedEvidence = process.suppliedEvidence?.length
-    ? `<div class="evidence-list">${process.suppliedEvidence.map((item) => {
-        const url = safeExternalUrl(item.url);
-        return `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(humanStatus(item.sourceType))}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
-      }).join("")}</div>`
-    : "<p>No supplied evidence was recorded.</p>";
-  const businessContext = process.businessContext;
-  const businessContextSection = businessContext
-    ? detailSection("Business records supplied", `<p>${escapeHtml(businessContext.purpose)}</p><div class="evidence-list">${businessContext.sections.map((section) => `<article><strong>${escapeHtml(humanStatus(section.name))}</strong><p>${section.recordCount ? escapeHtml(section.records.map((item) => item.title).join(", ")) : "No current records in this category."}</p><small>${section.recordCount} record${section.recordCount === 1 ? "" : "s"} supplied${section.withheldLocalOnly ? ` · ${section.withheldLocalOnly} local-only record${section.withheldLocalOnly === 1 ? "" : "s"} withheld` : ""}${section.truncated ? " · limited to the latest relevant records" : ""}</small></article>`).join("")}</div><p class="muted-text">Only this venture and these record categories were available to the worker. Credentials and direct customer identifiers were excluded by default.</p>`)
-    : "";
-  const traceEvents = data.developer.traceEvents?.length
-    ? `<ol class="trace-list">${data.developer.traceEvents.map((event) => `<li><strong>${escapeHtml(event.title)}</strong><span>${escapeHtml(event.detail || humanStatus(event.type))}</span><small>${escapeHtml(dateTime(event.ts))}</small></li>`).join("")}</ol>`
-    : "<p>No local trace events were recorded.</p>";
-  const handoffs = execution.runtimeHandoffs?.length
-    ? execution.runtimeHandoffs.map((handoff) => `${humanStatus(handoff.from)} to ${humanStatus(handoff.to)}: ${handoff.summary || handoff.status}`)
-    : [];
-  const providerVisibility = protectedRun
-    ? "No provider call was made. This record covers an internal rehearsal only."
-    : visibility.providerResponseStored && visibility.providerTraceContent
-      ? "Provider trace content was enabled for this approved non-personal run."
-      : "The provider trace policy did not make full input and output content available here. Jarvis retained the local structured output and execution events shown in this record.";
-  const verdictControls = data.review?.operatorVerdict === "pending" ? `<div class="run-review-form compact-form">
-      <select id="drawer-run-usefulness-score" aria-label="Commercial usefulness score"><option value="5">5 - Excellent</option><option value="4">4 - Useful</option><option value="3" selected>3 - Adequate</option><option value="2">2 - Weak</option><option value="1">1 - Not useful</option></select>
-      <input id="drawer-run-review-note" type="text" placeholder="Short review note" aria-label="Run review note">
-      <div class="work-actions"><button class="primary-button" data-action="review-agent-run" data-run-id="${escapeHtml(data.run.id)}" data-verdict="useful">${icon("check")}Useful</button><button class="secondary-button" data-action="review-agent-run" data-run-id="${escapeHtml(data.run.id)}" data-verdict="changes_required">${icon("pencil-line")}Needs changes</button></div>
-    </div>` : `<p>${escapeHtml(data.review?.note || `Verdict: ${humanStatus(data.review?.operatorVerdict || "not recorded")}.`)}</p>`;
   const actualTokens = execution.actualTokens?.total === null || execution.actualTokens?.total === undefined
     ? "Not captured"
     : `${tokenCount(execution.actualTokens.input)} in / ${tokenCount(execution.actualTokens.output)} out`;
@@ -851,48 +890,77 @@ function runReviewBody(data) {
     : `${execution.plannedTokens?.input === null ? "No input cap" : `${tokenCount(execution.plannedTokens.input)} input`} / ${execution.plannedTokens?.output === null ? "No output cap" : `${tokenCount(execution.plannedTokens.output)} output`}`;
   const providerCost = protectedRun
     ? "No provider charge"
-    : execution.cost.actualCents === null || execution.cost.actualCents === undefined
-      ? "Not captured"
-      : `${money(execution.cost.actualCents, execution.cost.currency)} · ${humanStatus(execution.cost.status)}`;
-  const requestedTools = execution.requestedTools?.length
-    ? detailList(execution.requestedTools)
-    : "<p>No provider tools were requested.</p>";
+    : execution.cost.status === "reconciled"
+      ? `${money(execution.cost.reconciledCents || 0, execution.cost.currency)} final`
+      : Number(execution.cost.estimatedCents || 0) > 0
+        ? `About ${money(execution.cost.estimatedCents, execution.cost.currency)}; final bill pending`
+        : "No charge recorded";
+  const providerVisibility = protectedRun
+    ? "No provider call was made. This was an internal rehearsal."
+    : visibility.providerResponseStored && visibility.providerTraceContent
+      ? "OpenAI trace content was enabled for this approved non-personal run."
+      : "Jarvis retained the structured result and local execution record; full provider trace content was not enabled.";
+  const suppliedEvidence = process.suppliedEvidence?.length
+    ? `<div class="evidence-list">${process.suppliedEvidence.map((item) => {
+        const url = safeExternalUrl(item.url);
+        const sourceLabel = item.sourceType === "test_fixture" ? "Controlled test evidence" : humanStatus(item.sourceType);
+        return `<article><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(sourceLabel)}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
+      }).join("")}</div>`
+    : "<p>No supplied evidence was recorded.</p>";
+  const traceEvents = data.developer.traceEvents?.length
+    ? `<ol class="trace-list">${data.developer.traceEvents.map((event) => `<li><strong>${escapeHtml(event.title)}</strong><span>${escapeHtml(event.detail || humanStatus(event.type))}</span><small>${escapeHtml(dateTime(event.ts))}</small></li>`).join("")}</ol>`
+    : "<p>No local timeline was recorded.</p>";
   const observedTools = execution.observedTools?.length
-    ? `<div class="evidence-list">${execution.observedTools.map((tool) => `<article><strong>${escapeHtml(tool.name)}</strong><p>${escapeHtml(tool.outputSummary || tool.inputSummary || "Tool activity was recorded.")}</p><small>${escapeHtml(humanStatus(tool.status))} · ${escapeHtml(humanStatus(tool.requestedMode))}</small></article>`).join("")}</div>`
-    : "<p>No tool invocation was observed.</p>";
+    ? `<div class="evidence-list">${execution.observedTools.map((tool) => `<article><strong>${escapeHtml(tool.name)}</strong><p>${escapeHtml(tool.outputSummary || tool.inputSummary || "Tool activity was recorded.")}</p><small>${escapeHtml(humanStatus(tool.status))}</small></article>`).join("")}</div>`
+    : "<p>No provider tool was used.</p>";
   const sources = execution.sources?.length
     ? `<div class="evidence-list">${execution.sources.map((source) => {
         const url = safeExternalUrl(source.url);
-        return `<article><strong>${escapeHtml(source.title)}</strong><p>${escapeHtml(source.relevance || source.publisher || "Source recorded by the research runtime.")}</p><small>${source.grounded ? "Grounded source" : "Not verified as grounded"}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
+        return `<article><strong>${escapeHtml(source.title)}</strong><p>${escapeHtml(source.relevance || source.publisher || "Research source recorded by Jarvis.")}</p><small>${source.grounded ? "Grounded source" : "Source not independently verified"}${url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a>` : ""}</small></article>`;
       }).join("")}</div>`
-    : "<p>No research sources were observed for this run.</p>";
-  const providerIds = protectedRun ? "" : detailSection("Provider record", `<p>${escapeHtml(providerVisibility)}</p><div class="technical-ids"><span>Trace ID</span><code>${escapeHtml(execution.traceId || "Not captured")}</code><span>Response ID</span><code>${escapeHtml(execution.responseId || "Not captured")}</code></div>`);
-  const errorSection = data.run.error || execution.error
-    ? detailSection("What went wrong", `<div class="error-callout"><strong>${unknownOutcome ? "Provider outcome needs review" : "Run failed"}</strong><p>${escapeHtml(data.run.error || execution.error)}</p></div>`)
+    : "<p>No web research was used for this run.</p>";
+  const businessContext = process.businessContext
+    ? detailSection("Business records supplied", `<p>${escapeHtml(process.businessContext.purpose)}</p><div class="evidence-list">${process.businessContext.sections.map((section) => `<article><strong>${escapeHtml(humanStatus(section.name))}</strong><p>${section.recordCount ? escapeHtml(section.records.map((item) => item.title).join(", ")) : "No current records in this category."}</p><small>${section.recordCount} record${section.recordCount === 1 ? "" : "s"} supplied</small></article>`).join("")}</div>`)
     : "";
-  const receiptSection = receipt
-    ? detailSection("Local execution record", `<div class="review-check"><span>${receipt.status === "complete" ? "Inputs, result, provider evidence, cost state and quality check were captured." : "Jarvis found an issue in the stored execution evidence."}</span>${badge(
-      receipt.status === "complete" ? "Evidence complete" : receipt.status === "paused" ? "Paused safely" : "Review needed",
-      receipt.status === "complete" ? "mint" : receipt.status === "paused" ? "sky" : "amber",
-    )}</div>${receipt.missingFields?.length ? `<h4>Missing record details</h4>${detailList(receipt.missingFields)}` : ""}${receipt.warnings?.length ? `<h4>Review notes</h4>${detailList(receipt.warnings)}` : ""}`)
-    : detailSection("Local execution record", `<div class="error-callout"><strong>${data.run.status === "running" ? "Evidence is being recorded" : "Execution record not finalized"}</strong><p>${data.run.status === "running" ? "Jarvis will seal the local receipt when this run finishes." : "The system monitor will keep this visible until the record is complete."}</p></div>`);
-
-  return [
-    `<div class="process-note"><strong>Readable process record</strong><p>${escapeHtml(process.explanation)}</p></div>`,
-    errorSection,
-    receiptSection,
-    detailSection("Assignment", `<div class="detail-grid"><div><span>Question</span><strong>${escapeHtml(process.question)}</strong></div><div><span>Buyer</span><strong>${escapeHtml(process.buyer)}</strong></div></div><p><strong>Hypothesis:</strong> ${escapeHtml(process.hypothesis)}</p>`),
-    businessContextSection,
-    detailSection("Evidence reviewed", suppliedEvidence),
-    detailSection("How the judgement was formed", `<h4>Evidence supporting action</h4>${detailList(process.supportingEvidence)}<h4>Evidence against or still missing</h4>${detailList(process.counterevidence)}<h4>Assumptions</h4>${detailList(process.assumptions)}`),
-    detailSection("Recommendation", `<p>${escapeHtml(process.conclusion)}</p><div class="review-facts"><div><span>Price and channel hypothesis</span><strong>${escapeHtml(process.priceChannelHypothesis)}</strong></div><div><span>Smallest proposed test</span><strong>${escapeHtml(process.smallestTest)}</strong></div><div><span>Success measure</span><strong>${escapeHtml(process.metric)}</strong></div><div><span>Stop rule</span><strong>${escapeHtml(process.stopRule)}</strong></div></div><p><strong>Confidence:</strong> ${escapeHtml(humanStatus(process.confidence))}<br><strong>Next action:</strong> ${escapeHtml(process.nextAction)}</p><h4>Risks</h4>${detailList(process.risks)}`),
-    detailSection("Quality checks", `${reviewCriteria(data.review?.criteria || {})}<p>Runtime evaluation: ${escapeHtml(String(data.quality?.score ?? "Not scored"))}${data.quality?.score !== undefined ? "/100" : ""}.</p>`),
-    detailSection("Execution facts", `<div class="review-facts"><div><span>Execution</span><strong>${escapeHtml(execution.label)}</strong></div><div><span>Status</span><strong>${escapeHtml(humanStatus(data.run.status))}</strong></div><div><span>Provider</span><strong>${escapeHtml(execution.provider || (protectedRun ? "No provider used" : execution.requestedProvider || "Not captured"))}</strong></div><div><span>Model</span><strong>${escapeHtml(execution.modelRoute?.label || execution.model || (protectedRun ? "No model called" : execution.requestedModel || "Not captured"))}</strong></div><div><span>Why this model</span><strong>${escapeHtml(execution.modelRoute?.reason || (protectedRun ? "Internal rehearsal" : "Not captured"))}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Actual tokens</span><strong>${escapeHtml(actualTokens)}</strong></div><div><span>Planned limits</span><strong>${escapeHtml(plannedTokens)}</strong></div><div><span>Provider cost</span><strong>${escapeHtml(providerCost)}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div></div><p>${escapeHtml(providerVisibility)}</p>${handoffs.length ? `<h4>Runtime handoff after completion</h4>${detailList(handoffs)}` : ""}`),
-    detailSection("Tools and sources", `<h4>Tools approved for the run</h4>${requestedTools}<h4>Tool activity Jarvis observed</h4>${observedTools}<h4>Research sources</h4>${sources}`),
-    providerIds,
-    detailSection("Local runtime timeline", `${traceEvents}<div class="technical-ids"><span>Run ID</span><code>${escapeHtml(data.run.id)}</code><span>Local model record</span><code>${escapeHtml(data.developer.modelCallId || "Not captured")}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || data.developer.contextSnapshotHash || "Not captured")}</code><span>Receipt fingerprint</span><code>${escapeHtml(receipt?.hash || (data.run.status === "running" ? "Recording" : "Not captured"))}</code></div>`),
-    detailSection("Your verdict", verdictControls),
+  const errorSection = data.run.error || execution.error
+    ? detailSection("What went wrong", `<div class="error-callout"><strong>${unknownOutcome ? "OpenAI outcome needs review" : "The run failed"}</strong><p>${escapeHtml(data.run.error || execution.error)}</p></div>`)
+    : "";
+  const reviewStatus = reviewPending
+    ? `<div class="decision-step"><span>1</span><div><strong>Check the analysis</strong><p>Read the result, then use the buttons below to say whether it is clear enough to guide a decision.</p></div></div>`
+    : `<div class="decision-step complete"><span>${icon("check")}</span><div><strong>Analysis reviewed</strong><p>${escapeHtml(data.review?.note || `You marked this analysis as ${humanStatus(data.review?.operatorVerdict || "reviewed")}.`)}</p></div></div>`;
+  const nextStepStatus = handoff
+    ? `<div class="decision-step${reviewPending ? " waiting" : ""}"><span>2</span><div><strong>Choose the business direction</strong><p>${reviewPending ? "This becomes available as soon as you finish step one." : demandResult ? "Choose whether Jarvis should prepare the free interest test, revise the work, or stop here." : escapeHtml(handoff.decisionNeeded || "Choose what Jarvis should do next.")}</p></div></div>`
+    : `<div class="decision-step complete"><span>${icon("check")}</span><div><strong>Next step recorded</strong><p>No further direction is waiting on this result.</p></div></div>`;
+  const receiptRecord = receipt
+    ? `<div class="review-check"><span>${receipt.status === "complete" ? "Inputs, output, provider evidence, cost state, and checks were captured." : "Jarvis found an issue in the stored run record."}</span>${badge(receipt.status === "complete" ? "Record complete" : "Review needed", receipt.status === "complete" ? "mint" : "amber")}</div>${receipt.missingFields?.length ? `<h4>Missing details</h4>${detailList(receipt.missingFields)}` : ""}${receipt.warnings?.length ? `<h4>Review notes</h4>${detailList(receipt.warnings)}` : ""}`
+    : `<div class="error-callout"><strong>Run record not finalized</strong><p>${data.run.status === "running" ? "Jarvis is still recording this run." : "The system monitor will keep this visible until the record is complete."}</p></div>`;
+  const technicalRecord = [
+    detailSection("Automated checks", `${reviewCriteria(data.review?.criteria || {})}<p>The ${escapeHtml(String(data.quality?.score ?? "unscored"))}${data.quality?.score !== undefined ? "/100" : ""} result checks structure and safety only. You decide whether the work is commercially useful.</p>`),
+    detailSection("Execution facts", `<div class="review-facts"><div><span>Run type</span><strong>${escapeHtml(execution.label)}</strong></div><div><span>Status</span><strong>${escapeHtml(humanStatus(data.run.status))}</strong></div><div><span>Provider</span><strong>${escapeHtml(execution.provider || (protectedRun ? "No provider used" : execution.requestedProvider || "Not captured"))}</strong></div><div><span>Model</span><strong>${escapeHtml(execution.modelRoute?.label || execution.model || (protectedRun ? "No model called" : execution.requestedModel || "Not captured"))}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Tokens</span><strong>${escapeHtml(actualTokens)}</strong></div><div><span>Planned limits</span><strong>${escapeHtml(plannedTokens)}</strong></div><div><span>Cost</span><strong>${escapeHtml(providerCost)}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div></div><p>${escapeHtml(providerVisibility)}</p>`),
+    detailSection("Tools and research", `<h4>Tool activity</h4>${observedTools}<h4>Research sources</h4>${sources}`),
+    detailSection("Stored run record", `${receiptRecord}<div class="technical-ids"><span>OpenAI trace</span><code>${escapeHtml(execution.traceId || "Not captured")}</code><span>OpenAI response</span><code>${escapeHtml(execution.responseId || "Not captured")}</code><span>Jarvis run</span><code>${escapeHtml(data.run.id)}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || data.developer.contextSnapshotHash || "Not captured")}</code><span>Receipt fingerprint</span><code>${escapeHtml(receipt?.hash || "Not captured")}</code></div>`),
+    detailSection("Run timeline", traceEvents),
   ].join("");
+
+  return `<div class="review-workspace">
+    <section class="result-hero">
+      <div><span class="eyebrow">AI recommendation</span><h3>${demandResult ? "Test interest before building" : escapeHtml(data.run.taskTitle)}</h3><p>${escapeHtml(plainConclusion)}</p></div>
+      <div class="result-badges">${badge(`Confidence: ${humanStatus(process.confidence)}`, "amber")}${controlledEvidence ? badge("Controlled test; not market proof", "sky") : badge(data.run.status, data.run.status === "completed" ? "mint" : "amber")}</div>
+    </section>
+    ${errorSection}
+    <section class="run-fact-strip">
+      <div><span>Evidence reviewed</span><strong>${process.suppliedEvidence?.length || 0} supplied item${process.suppliedEvidence?.length === 1 ? "" : "s"}</strong></div>
+      <div><span>Web research</span><strong>${execution.sources?.length ? `${execution.sources.length} source${execution.sources.length === 1 ? "" : "s"}` : "Not used"}</strong></div>
+      <div><span>External action</span><strong>${execution.externalEffects.length ? "Recorded" : "None"}</strong></div>
+      <div><span>Estimated cost</span><strong>${escapeHtml(providerCost)}</strong></div>
+    </section>
+    ${detailSection("What the AI was asked", `<p class="lead-copy">${escapeHtml(process.question)}</p><div class="review-facts simple"><div><span>Intended buyer</span><strong>${escapeHtml(process.buyer)}</strong></div><div><span>Idea being tested</span><strong>${escapeHtml(process.hypothesis)}</strong></div></div>`)}
+    ${businessContext}
+    ${detailSection("What it found", `<div class="finding-columns"><div><span class="finding-label positive">${icon("check")}Supports a test</span>${plainAgentList(process.supportingEvidence)}</div><div><span class="finding-label caution">${icon("circle-help")}Still missing</span>${plainAgentList(process.counterevidence)}</div></div>${detailDisclosure("Assumptions the AI made", plainAgentList(process.assumptions))}`)}
+    ${detailSection("The proposed interest test", `<p class="lead-copy">${escapeHtml(process.smallestTest)}</p><div class="test-plan"><div><span>Success looks like</span><strong>${escapeHtml(process.metric)}</strong></div><div><span>Stop or revise when</span><strong>${escapeHtml(process.stopRule)}</strong></div><div><span>Possible price and channel</span><strong>${escapeHtml(process.priceChannelHypothesis)}</strong></div></div><h4>Main risks</h4>${plainAgentList(process.risks)}`)}
+    ${detailSection("Your next steps", `<div class="decision-path">${reviewStatus}${nextStepStatus}</div>`)}
+    ${detailDisclosure("Technical run record", technicalRecord)}
+  </div>`;
 }
 
 async function showDetail(kind, id, options = {}) {
@@ -910,10 +978,14 @@ async function showDetail(kind, id, options = {}) {
   if (kind === "agent-run") {
     const data = await fetchJson(`/api/agent-runs/${encodeURIComponent(id)}`);
     if (options.preserveFocus && (store.drawerState?.kind !== kind || store.drawerState?.id !== id)) return;
-    openDrawer(data.run.taskTitle, `${data.run.workerName} · ${data.run.executionLabel}`, runReviewBody(data), {
+    const reviewTitle = data.run.workerId === "demand_validator" && data.run.status === "completed"
+      ? "Demand Validator result"
+      : data.run.taskTitle;
+    openDrawer(reviewTitle, `${data.run.workerName} · ${data.run.executionLabel}`, runReviewBody(data), {
       wide: true,
       state: { kind, id },
       preserveFocus: options.preserveFocus,
+      footer: runReviewFooter(data),
     });
     return;
   }
@@ -931,8 +1003,10 @@ async function showDetail(kind, id, options = {}) {
   }
   if (kind === "decision") {
     const item = await fetchJson(`/api/decisions/${encodeURIComponent(id)}`);
+    const aiCheck = Boolean(item.provider || item.model || item.worker);
+    const handoffDecision = item.decisionKind === "handoff";
     const assignment = item.assignment
-      ? detailSection("Assignment", `<p><strong>Question:</strong> ${escapeHtml(item.assignment.question || "Not stated")}<br><strong>Buyer:</strong> ${escapeHtml(item.assignment.buyer || "Not stated")}<br><strong>Hypothesis:</strong> ${escapeHtml(item.assignment.hypothesis || "Not stated")}<br><strong>Supplied evidence:</strong> ${escapeHtml(String(item.assignment.evidenceCount || 0))} item${Number(item.assignment.evidenceCount || 0) === 1 ? "" : "s"}</p>`)
+      ? detailSection("What the AI will review", `<p class="lead-copy">${escapeHtml(item.assignment.question || "The question was not stated.")}</p><div class="review-facts simple"><div><span>Intended buyer</span><strong>${escapeHtml(item.assignment.buyer || "Not stated")}</strong></div><div><span>Evidence supplied</span><strong>${escapeHtml(String(item.assignment.evidenceCount || 0))} item${Number(item.assignment.evidenceCount || 0) === 1 ? "" : "s"}</strong></div></div>`)
       : "";
     const route = item.modelRoute;
     const execution = item.model || item.tools?.length || item.maxTurns
@@ -945,18 +1019,33 @@ async function showDetail(kind, id, options = {}) {
       ? detailSection("Data protection plan", `<div class="plain-list">${item.policySummary.map((rule) => `<article class="plain-row"><div><h3>${escapeHtml(rule.label)}</h3><p>${escapeHtml(rule.rule)}</p></div>${badge(rule.duration)}</article>`).join("")}</div><p class="muted-text">${item.noDeletion ? "Approving this plan activates future checks. It does not delete any records." : ""}</p>`)
       : "";
     const pricedBound = item.pricedWorstCaseCostCents
-      ? `<br>Current priced upper-bound estimate: ${money(item.pricedWorstCaseCostCents)}. Actual provider usage is reconciled after the run.`
+      ? ` The current priced upper estimate is ${money(item.pricedWorstCaseCostCents)}; final usage is recorded after the run.`
       : "";
-    openDrawer(item.title, "Decision", [
-      detailSection("Recommendation", `<p>${escapeHtml(item.recommendation)}</p>`),
-      detailSection("Expected result", `<p>${escapeHtml(item.expectedUpside)}</p>`),
-      assignment,
-      businessContext,
-      policySummary,
-      execution,
-      detailSection("Boundaries", `<p>Hard maximum cost: ${money(item.maxCostCents)}.${pricedBound}<br>Risk: ${escapeHtml(humanStatus(item.risk))}.<br>External actions: ${item.effects?.length ? escapeHtml(item.effects.join(", ")) : "None"}.<br>This decision applies only to the exact work shown here. The model cannot switch automatically after approval.${item.tracePolicy?.providerTraceContent ? " Provider trace input and output will be available for this approved non-personal run." : ""}</p>`),
-      detailSection("Your decision", approvalButtons(item)),
-    ].join(""), { state: { kind, id }, preserveFocus: options.preserveFocus });
+    const whatHappens = handoffDecision
+      ? "Jarvis will turn the reviewed result into the next internal work step. Nothing will be published or sent outside the system."
+      : aiCheck
+        ? `${item.worker || "The AI worker"} will complete this one check and return the result for your review.`
+        : "Jarvis will carry out only the work described in this decision.";
+    const limits = item.effects?.length
+      ? `Only these approved effects are allowed: ${item.effects.join(", ")}.`
+      : "It cannot publish, contact anyone, change an account, sign anything, or move money.";
+    const costStatement = Number(item.maxCostCents || 0) > 0
+      ? `The absolute cost limit is ${money(item.maxCostCents)}.${pricedBound}`
+      : "No provider spend is approved by this decision.";
+    const technical = [businessContext, execution, detailSection("Exact limits", `<p>${escapeHtml(costStatement)}<br>Risk level: ${escapeHtml(humanStatus(item.risk))}.<br>${escapeHtml(limits)}${item.tracePolicy?.providerTraceContent ? "<br>The approved non-personal input and output will be available in the OpenAI trace." : ""}</p>`)].join("");
+    openDrawer(item.title, "Your decision", `<div class="review-workspace">
+      <section class="result-hero decision-hero"><div><span class="eyebrow">What Jarvis recommends</span><h3>${escapeHtml(item.recommendation)}</h3><p>${escapeHtml(item.expectedUpside)}</p></div>${badge(`${humanStatus(item.risk)} risk`, item.risk === "high" ? "coral" : "amber")}</section>
+      ${detailSection("What happens if you continue", `<p class="lead-copy">${escapeHtml(whatHappens)}</p><p>${escapeHtml(costStatement)}</p>`)}
+      ${detailSection("What will not happen", `<p>${escapeHtml(limits)}</p>`)}
+      ${assignment}
+      ${policySummary}
+      ${detailDisclosure("Technical details", technical)}
+    </div>`, {
+      wide: true,
+      state: { kind, id },
+      preserveFocus: options.preserveFocus,
+      footer: `<div class="drawer-footer-copy"><strong>Choose what happens next</strong><span>Your choice applies only to the work shown here.</span></div>${approvalButtons(item)}`,
+    });
     return;
   }
   const source = kind === "review" ? store.data.decisions?.reviews : store.data.cockpit?.importantWork;
@@ -1043,10 +1132,14 @@ async function handleAction(button) {
       note: `Dashboard decision: ${decisionLabels[button.dataset.decision]}.`,
     }));
     closeDrawer();
-    toast(payload.execution?.status === "completed"
-      ? "Approved. The Chief of Staff completed the next internal step."
-      : `Next step ${decisionLabels[button.dataset.decision]}.`);
-    return loadView(store.view, { silent: true });
+    toast(button.dataset.decision === "approve"
+      ? payload.execution?.status === "completed"
+        ? "Jarvis prepared the next internal step. Nothing was published or sent."
+        : "The next internal step is ready."
+      : button.dataset.decision === "changes"
+        ? "Changes requested. Jarvis will not continue until the result is revised."
+        : "This path was stopped. No external action occurred.");
+    return loadView("cockpit", { silent: true });
   }
   if (action === "submit-command") {
     const text = $("#command-text")?.value.trim();
@@ -1085,16 +1178,28 @@ async function handleAction(button) {
     return loadView(store.view, { silent: true });
   }
   if (action === "review-agent-run") {
-    const usefulnessScore = Number($("#drawer-run-usefulness-score")?.value || 3);
-    const note = $("#drawer-run-review-note")?.value.trim() || "";
+    const usefulnessScore = Number(button.dataset.score || 3);
+    const runId = button.dataset.runId;
+    const note = button.dataset.verdict === "useful"
+      ? "Clear enough to guide the next business decision."
+      : "A clearer or more useful analysis is required.";
     await postJson(`/api/agent-pilot/runs/${encodeURIComponent(button.dataset.runId)}/review`, {
       verdict: button.dataset.verdict,
       usefulnessScore,
       note,
     });
-    closeDrawer();
-    toast(button.dataset.verdict === "useful" ? "Usefulness verdict recorded." : "Changes requested and the success streak reset.");
-    return loadView("ai-team", { silent: true });
+    if (button.dataset.verdict === "changes_required" && button.dataset.handoffId) {
+      await postJson(`/api/agent-handoffs/${encodeURIComponent(button.dataset.handoffId)}/changes`, {
+        note: "The analysis needs to be clearer or more useful before Jarvis continues.",
+      });
+      closeDrawer();
+      toast("A better analysis was requested. Jarvis will not continue from this result.");
+      return loadView("cockpit", { silent: true });
+    }
+    await loadView(store.view, { silent: true });
+    await showDetail("agent-run", runId, { preserveFocus: true });
+    toast("Review recorded. Now choose what Jarvis should do next.");
+    return;
   }
   if (action === "import-gumroad") {
     const file = $("#gumroad-csv")?.files?.[0];

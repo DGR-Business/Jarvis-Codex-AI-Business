@@ -1,6 +1,6 @@
 # Jarvis-Codex Build Log
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 Status: active concise record
 
 The detailed pre-first-use development history is preserved at
@@ -16,6 +16,8 @@ commercial move.
 - Runtime: Node.js 24, CommonJS, built-in SQLite, local signed operator session.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
+- First live worker position: one Demand Validator call completed from
+  controlled supplied evidence; Daniel's usefulness review is pending.
 - External actions: locked by default.
 - Operator budget: eight hours per week in the build and first-proof phase.
 - Pre-revenue AI and tool cap: A$100 per month.
@@ -176,10 +178,10 @@ Three older 2026-07-14 backup files could not be authenticated with the current
 backup passphrase. They were left untouched. The new 2026-07-17 rollback set is
 independently verified and usable.
 
-### Prepared Demand Validator proof
+### Prepared Demand Validator proof (historical checkpoint)
 
-The first active supplied-evidence proof is prepared and waiting for Daniel's
-exact approval:
+The first active supplied-evidence proof was prepared for Daniel's exact
+approval:
 
 - question: whether a concise weekly cash-control checklist for solo service
   businesses should advance to a small interest test;
@@ -192,9 +194,10 @@ exact approval:
 - review: deterministic checks first, then Daniel's separate commercial
   usefulness verdict.
 
-The dashboard decision drawer shows the assignment, model reason, limits, costs,
-trace policy, and external-action boundary in ordinary language. No paid model
-call has occurred.
+At this checkpoint, the dashboard decision drawer showed the assignment, model
+reason, limits, costs, trace policy, and external-action boundary in ordinary
+language. No paid model call had occurred. The completed live-run record below
+supersedes this preparation status.
 
 ### Final Phase 1 engineering checkpoint
 
@@ -390,6 +393,84 @@ Verification at this checkpoint:
 - the task remains blocked before execution with zero active-runtime provider
   activity.
 
+### First live Demand Validator result and operator-flow correction
+
+Daniel approved the refreshed scope and Jarvis executed the first real
+OpenAI Agents SDK worker call on 2026-07-18. The authoritative local evidence
+shows:
+
+- task `task_live_worker_wf_demand_validator_pilot_b347222e`, run
+  `agent_run_a862490d-b5bd-4664-a36a-ca6823c0056b`, OpenAI response
+  `resp_0fe35d6402d24eae006a5aca19043c819bba294ae11fbb531e`, and trace
+  `trace_5589b2e134684a03b2560e3314ac7e46`;
+- OpenAI Agents SDK with Sol completed once in 13.629 seconds, using 1,248 input
+  tokens and 399 output tokens;
+- the approval was valid and consumed once; there was one provider attempt,
+  no retry, no web search, no provider tool, and no external effect;
+- the current incurred estimate is A$0.03. Exact provider billing remains
+  pending and is not represented as final spend;
+- the immutable receipt is complete and the local structural and safety
+  evaluation passed 100/100. This score does not establish commercial
+  usefulness, which remains Daniel's decision.
+
+The worker recommended a small free interest test before building the product.
+It found the controlled examples consistent with a recurring missed
+invoice/expense/cash-review problem, but explicitly reported that they do not
+prove a real buyer, reach, demand, or willingness to pay. Its proposed threshold
+is at least five opt-ins or 10% of qualified prospects, whichever is harder; it
+recommends stopping or revising below three opt-ins or 5% after 50 qualified
+exposures. The A$9-A$19 price range is a planning hypothesis, not evidence.
+
+Two misleading runtime records were corrected without changing the completed
+result:
+
+- the result now retains the valid pre-consumption approval snapshot instead of
+  recomputing it after the single-use approval was consumed;
+- live work now records a live Agents SDK completion event instead of a dry-run
+  label.
+
+Schema migration 17 also copies an exact OpenAI response ID from an already
+bound model call onto its task attempt when that attempt field is missing. It
+uses the immutable model-call relationship and never timestamp inference.
+Future completions write that ID directly.
+
+The dashboard decision journey was simplified around the real result:
+
+- Command Center presents one prominent `Review result` action;
+- the wide result surface separates recommendation, supporting evidence,
+  missing proof, proposed test, metric, stop rule, cost, and prohibited actions;
+- Daniel first chooses `Analysis is clear` or
+  `Request a better analysis`, then sees the business-direction choice without
+  hunting through another tab;
+- approving the internal handoff only prepares the next step. Live web research
+  appears as a fresh decision with its A$2 cap and explicit boundaries;
+- technical traces, tokens, receipt IDs, and automated checks remain available
+  under a collapsed technical record.
+
+Verification at this checkpoint:
+
+- all 162 automated tests passed, including the exact provider-ID write and
+  migration repair and the WAL-mode standalone restore regression;
+- an isolated database copy proved the complete review-to-next-decision flow
+  without changing production state or contacting OpenAI;
+- the wide review and decision surfaces passed at 1440x900, 1280x720, and
+  1024x768 with no horizontal overflow;
+- the signed production dashboard displayed the exact stored result and pending
+  review at all three desktop sizes with no Jarvis console error;
+- the production runtime restarted healthy on schema 17 with one completed,
+  zero failed provider calls and the repaired response ID on the exact attempt.
+
+The release backup proof exposed and corrected one separate recovery defect:
+SQLite validation had been performed while a restored WAL-mode database still
+had temporary sidecars, after which only the main file was moved. Restore now
+converts the staged copy to a standalone journal, removes sidecars, validates
+the final destination itself, and rolls back a replacement if final validation
+fails. A fresh encrypted source, database, and artifact set authenticated and
+restored into `C:\tmp\jarvis-dashboard-result-restore-20260718-0132`. The
+restored source hashes matched the current files; the final database opened
+read-only with `quick_check=ok`, schema 17, zero foreign-key violations, the
+exact provider response ID, and no WAL, SHM, or staging debris.
+
 ## Accounting Preserved At Reset
 
 - ChatGPT Pro active monthly commitment: A$100.00.
@@ -439,13 +520,13 @@ review.
 
 ## Next Best Work
 
-Daniel reviews and approves, changes, or declines the refreshed
-supplied-evidence Demand Validator run. The prior click did not approve this
-new policy-bound scope. After an approved run, Jarvis must inspect the immutable
-receipt, provider identifiers, tokens, cost state, deterministic evaluation, and
-structured result before Daniel records usefulness. Only an accepted result may
-lead to the separate A$2 read-only live-web decision. Once the current choice is
-resolved, Jarvis presents the prepared plain-language retention plan as the next
-separate decision. Until then, ongoing live research, provider storage,
-personal-data work, and sensitive worker use remain blocked. Do not create a
-Gumroad account, publish, spend beyond the exact approval, or contact buyers.
+Daniel reviews the completed Demand Validator result in the Command Center and
+records whether the analysis is clear enough to use. If it is accepted, Daniel
+then chooses whether Jarvis should prepare the free interest test. That internal
+handoff creates, but does not approve, the separate live market-research choice.
+Only Daniel's fresh `Start this AI check` decision may begin the capped A$2,
+three-search proof. Once the current result path is resolved, Jarvis presents
+the prepared plain-language retention plan as a separate decision. Until then,
+ongoing provider storage, personal-data work, and sensitive worker use remain
+blocked. Do not create a Gumroad account, publish, contact buyers, or initiate
+unapproved spend.

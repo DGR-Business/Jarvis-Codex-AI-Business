@@ -152,6 +152,13 @@ and diagnostics remain available on demand. Live Runs shows structured inputs,
 evidence, tools, sources, conclusions, timing, tokens, cost, errors, and evals;
 it never claims or exposes private chain-of-thought.
 
+The normal decision journey is sequential: show one item that needs Daniel,
+open one spacious review surface, record whether the result is clear enough,
+then reveal the next business choice. Cost limits, prohibited actions, and the
+effect of each button must be stated beside the decision. Internal terms such as
+approval gates, fixtures, dry runs, scheduler jobs, and runtime handoffs stay in
+technical details rather than the primary operator flow.
+
 All operator money is labelled explicitly in Australian dollars. Activity hides
 duplicate internal notification records and translates runtime actors into
 business language. Connections shows only the current first-revenue services:
@@ -219,17 +226,21 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
 - Operate against the fixed 11-worker Phase 1 contract. Its bounded assignment,
   receipt, audit, task-scoped context, Chief assignment, Quality Reviewer,
   monitoring, model-routing, retention-enforcement, exact attempt binding, and
-  startup-readiness foundation passed locally on 2026-07-18 with schema 16,
+  startup-readiness foundation passed locally on 2026-07-18 with schema 17,
   162 automated tests, encrypted restore proof, and authenticated real-browser
   proof at all supported desktop sizes. Approval lifecycle recovery also proved
   that an outdated decision can be replaced with zero task attempts, model
   calls, agent runs, receipts, or spend.
 - Use the cockpit to prepare one Evidence Brief that ranks three plausible
   digital-product opportunities.
-- Run the prepared Demand Validator supplied-evidence decision first. It is
-  waiting for Daniel's exact approval and remains no-tool, one-turn, and capped.
-- Only after that result is accepted, offer Daniel one separately approved,
-  capped live-web proof; do not treat the supplied-evidence approval as reusable.
+- Review the completed first Agents SDK Demand Validator result. The exact
+  no-tool, one-turn run used controlled supplied evidence, completed safely,
+  and recommended a small free interest test. It did not perform web research
+  or establish real demand. Daniel's commercial-usefulness verdict remains
+  pending.
+- Only after Daniel accepts that analysis and chooses to continue, offer one
+  separately approved A$2 live-web proof. The completed A$1 approval is consumed
+  and grants no authority to search, publish, contact buyers, or spend again.
 - After the current Demand Validator decision, present Daniel with the prepared
   plain-language retention and privacy decision. Keep ongoing live research,
   provider storage, personal-data work, and sensitive work blocked until it is

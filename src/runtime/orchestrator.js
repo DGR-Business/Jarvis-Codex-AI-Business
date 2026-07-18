@@ -151,7 +151,10 @@ async function executeTask(db, task, options = {}) {
     return result;
   }
 
-  return runAgentTask(db, task, { taskClaim: options.taskClaim || null });
+  return runAgentTask(db, task, {
+    taskClaim: options.taskClaim || null,
+    spendApprovalState: options.spendApprovalState || null,
+  });
 }
 
 function remainingWorkflowTasks(db, workflowId) {
@@ -444,7 +447,10 @@ async function runOnce(db, options = {}) {
     message: `${task.agent} started ${task.title}.`,
   });
 
-    const result = await executeTask(db, task, { taskClaim: claim });
+    const result = await executeTask(db, task, {
+      taskClaim: claim,
+      spendApprovalState: spendGate?.state || null,
+    });
     const done = now();
     const incurredEstimateCents = Number(
       result.incurredEstimateCents
@@ -457,10 +463,15 @@ async function runOnce(db, options = {}) {
     const reconciledCostCents = (result.costStatus === "reconciled" || result.cost?.status === "reconciled")
       ? Number(result.reconciledCostCents || result.cost?.reconciledCents || 0)
       : 0;
+    const providerRequestId = result.providerRequestId
+      || result.modelPolicy?.providerRequestId
+      || result.raw?.responseId
+      || result.id
+      || null;
     if (reservation) {
       resolveReservation(db, task.id, incurredEstimateCents > 0 ? "incurred_estimate" : "released", {
         amountCents: incurredEstimateCents,
-        metadata: { providerRequestId: result.raw?.responseId || result.id || null },
+        metadata: { providerRequestId },
       });
     }
     completeTaskClaim(db, claim, {
@@ -469,7 +480,7 @@ async function runOnce(db, options = {}) {
       completedAt: done,
       reconciledCostCents,
       outcomeStatus: "known",
-      providerRequestId: result.raw?.responseId || result.id || null,
+      providerRequestId,
       metadata: { costStatus: result.costStatus || (incurredEstimateCents > 0 ? "incurred_estimate" : "none") },
     });
     updateWorkflowAfterCompletion(db, task, result, done);
@@ -480,7 +491,11 @@ async function runOnce(db, options = {}) {
       entityId: task.id,
       message: ["publish_gelato_dry_run", "publish_digital_product_dry_run"].includes(task.kind)
         ? `${task.title} completed in dry-run mode. No external listing was created.`
-        : `${task.title} completed by the dry-run agent runner.`,
+        : task.kind === "live_ai_worker_execution"
+          ? `${task.title} completed using the approved OpenAI Agents SDK worker.`
+          : task.kind === "live_market_research"
+            ? `${task.title} completed using the approved OpenAI research service.`
+            : `${task.title} completed internally and is ready for review.`,
       metadata: result,
     });
     return { status: "completed", task: { ...task, result }, result };

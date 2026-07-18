@@ -4,7 +4,7 @@ const { randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 
-const LATEST_SCHEMA_VERSION = 16;
+const LATEST_SCHEMA_VERSION = 17;
 
 function now() {
   return new Date().toISOString();
@@ -1570,6 +1570,45 @@ function applyExecutionEvidenceBindingMigration(db) {
   }
 }
 
+function applyProviderAttemptReceiptBackfillMigration(db) {
+  if (migrationApplied(db, 17)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    run(
+      db,
+      `UPDATE task_attempts
+       SET provider_request_id = (
+         SELECT model_calls.provider_request_id
+         FROM model_calls
+         WHERE model_calls.id = task_attempts.model_call_id
+           AND model_calls.task_id = task_attempts.task_id
+       ),
+       metadata = json_set(
+         CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END,
+         '$.providerRequestIdBackfill',
+         json_object(
+           'schemaVersion', 17,
+           'source', 'exact_model_call_binding'
+         )
+       )
+       WHERE provider_request_id IS NULL
+         AND model_call_id IS NOT NULL
+         AND EXISTS (
+           SELECT 1
+           FROM model_calls
+           WHERE model_calls.id = task_attempts.model_call_id
+             AND model_calls.task_id = task_attempts.task_id
+             AND model_calls.provider_request_id IS NOT NULL
+         )`,
+    );
+    recordMigration(db, 17, "provider-request-attempt-receipt-backfill");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2380,6 +2419,7 @@ function migrate(db) {
   applyDeliverableQualityReviewMigration(db);
   applyDataRetentionPolicyMigration(db);
   applyExecutionEvidenceBindingMigration(db);
+  applyProviderAttemptReceiptBackfillMigration(db);
 }
 
 function putSetting(db, key, value) {

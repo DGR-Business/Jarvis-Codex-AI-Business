@@ -846,7 +846,10 @@ function handoffRisk(payload, sourceRun) {
   if (payload.handoffRiskLevel) return payload.handoffRiskLevel;
   const metadata = payload.metadata || {};
   const taskKind = String(metadata.taskKind || sourceRun?.metadata?.taskKind || "").toLowerCase();
-  if (taskKind.includes("live") || taskKind.includes("risk")) return "high";
+  const businessRisk = String(metadata.businessDecision?.risk || "").toLowerCase();
+  if (["high", "medium", "low"].includes(businessRisk)) return businessRisk;
+  if (taskKind.includes("risk")) return "high";
+  if (taskKind.includes("live")) return "medium";
   if (payload.approvalRequired) return "medium";
   return "low";
 }
@@ -855,11 +858,11 @@ function handoffDecisionNeeded(payload, sourceRun) {
   if (payload.handoffDecisionNeeded) return payload.handoffDecisionNeeded;
   const metadata = payload.metadata || {};
   const taskKind = String(metadata.taskKind || sourceRun?.metadata?.taskKind || "").toLowerCase();
-  if (taskKind === "live_ai_worker_execution") return "Review the live worker recommendation before any external action or follow-up work.";
-  if (taskKind === "live_market_research") return "Review the live research evidence before treating the opportunity as commercially proven.";
-  if (taskKind === "operator_pack_qc") return "Decide whether this review pack is approved, denied, or needs changes.";
-  if (taskKind === "risk_screen") return "Review the risk findings before the workflow can move toward publishing or external contact.";
-  return "Review the worker output and decide the next safe business move.";
+  if (taskKind === "live_ai_worker_execution") return "Decide whether Jarvis should prepare the recommended next step.";
+  if (taskKind === "live_market_research") return "Decide whether this evidence is strong enough to continue.";
+  if (taskKind === "operator_pack_qc") return "Decide whether this review is ready to use.";
+  if (taskKind === "risk_screen") return "Decide how Jarvis should respond to the identified risks.";
+  return "Choose what Jarvis should do with this result.";
 }
 
 function recordAgentHandoff(db, sourceRun, payload) {
