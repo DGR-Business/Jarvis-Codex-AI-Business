@@ -15,7 +15,10 @@ const {
   reserveBudget,
   resolveReservation,
 } = require("../src/runtime/cost-ledger");
-const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
+const {
+  refreshOutdatedLiveAiWorkerApproval,
+  requestLiveAiWorker,
+} = require("../src/runtime/live-ai-workers");
 const { getLiveAiWorkerReadiness } = require("../src/runtime/live-ai-worker-readiness");
 const { requestLiveResearch } = require("../src/runtime/live-research");
 const { worstCaseExecutionCostAud } = require("../src/runtime/model-pricing");
@@ -305,6 +308,19 @@ test("worker approval persists one descriptor and invalidates changed business i
     const invalid = validateApprovalScope(runtime.db, requested.approval.id, task);
     assert.equal(invalid.valid, false);
     assert.match(invalid.reason, /materialized model input changed/i);
+    run(runtime.db, "UPDATE approvals SET status = 'pending', decided_at = NULL WHERE id = ?", [requested.approval.id]);
+
+    const refreshed = refreshOutdatedLiveAiWorkerApproval(runtime.db, requested.approval.id, {
+      trigger: "finance-safety-test",
+    });
+    assert.equal(refreshed.refreshed, true);
+    assert.notEqual(refreshed.replacementApprovalId, requested.approval.id);
+    assert.equal(get(runtime.db, "SELECT status FROM approvals WHERE id = ?", [requested.approval.id]).status, "superseded");
+    const replacementTaskRow = get(runtime.db, "SELECT * FROM tasks WHERE id = ?", [task.id]);
+    const replacementTask = { ...replacementTaskRow, payload: fromJson(replacementTaskRow.payload, {}) };
+    assert.equal(validateApprovalScope(runtime.db, refreshed.replacementApprovalId, replacementTask).valid, true);
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM model_calls WHERE task_id = ?", [task.id]).count, 0);
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM task_attempts WHERE task_id = ?", [task.id]).count, 0);
   } finally {
     if (previousRate === undefined) delete process.env.JARVIS_API_CREDIT_AUD_PER_USD;
     else process.env.JARVIS_API_CREDIT_AUD_PER_USD = previousRate;

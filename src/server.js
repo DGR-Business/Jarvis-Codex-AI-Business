@@ -1223,7 +1223,7 @@ function createApp(options = {}) {
             broadcastState();
             jsonResponse(res, 409, {
               code: "approval_refreshed",
-              error: "This decision was created under an older safety policy. Jarvis safely refreshed it before any work or cost occurred. Review and decide on the updated decision.",
+              error: "The AI check details changed before work began, so Jarvis prepared a fresh decision. Nothing ran and there was no cost. Review the updated details, then choose whether to start it.",
               result: refreshed,
             });
             return;

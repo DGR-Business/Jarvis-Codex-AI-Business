@@ -235,12 +235,13 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
   digital-product opportunities.
 - Review the completed first Agents SDK Demand Validator result. The exact
   no-tool, one-turn run used controlled supplied evidence, completed safely,
-  and recommended a small free interest test. It did not perform web research
-  or establish real demand. Daniel's commercial-usefulness verdict remains
-  pending.
-- Only after Daniel accepts that analysis and chooses to continue, offer one
-  separately approved A$2 live-web proof. The completed A$1 approval is consumed
-  and grants no authority to search, publish, contact buyers, or spend again.
+  and recommended a small free interest test. Daniel accepted the analysis as
+  clear enough to use. It did not perform web research or establish real
+  demand.
+- Offer the one separately approved A$2 live-web proof now prepared in the
+  Command Center. Its current scope is valid and it has not run or incurred
+  spend. The completed A$1 approval is consumed and grants no authority to
+  search, publish, contact buyers, or spend again.
 - After the current Demand Validator decision, present Daniel with the prepared
   plain-language retention and privacy decision. Keep ongoing live research,
   provider storage, personal-data work, and sensitive work blocked until it is

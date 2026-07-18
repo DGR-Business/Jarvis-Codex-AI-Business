@@ -265,11 +265,14 @@ function emptyState(title, message, iconName = "check-circle-2") {
 function approvalButtons(item, compactButtons = false) {
   const sizeClass = compactButtons ? "" : "";
   const action = item.decisionKind === "handoff" ? "handoff-decision" : "approval";
+  const liveResearch = item.tools?.some((tool) => ["research_adapter", "live_web_with_approval"].includes(tool));
   const approvalLabel = item.decisionKind === "handoff"
     ? "Prepare next step"
-    : Number(item.maxCostCents || 0) > 0 || item.provider
-      ? "Start this AI check"
-      : "Approve";
+    : liveResearch
+      ? "Run this market research"
+      : Number(item.maxCostCents || 0) > 0 || item.provider
+        ? "Start this AI check"
+        : "Approve";
   return `<div class="work-actions ${sizeClass}">
     <button class="primary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="approve" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("check")}${escapeHtml(approvalLabel)}</button>
     <button class="secondary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="changes" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("pencil-line")}Ask for changes</button>
@@ -982,7 +985,7 @@ async function showDetail(kind, id, options = {}) {
     const reviewTitle = data.run.workerId === "demand_validator" && data.run.status === "completed"
       ? "Demand Validator result"
       : data.run.taskTitle;
-    openDrawer(reviewTitle, `${data.run.workerName} · ${data.run.executionLabel}`, runReviewBody(data), {
+    openDrawer(reviewTitle, `${data.run.workerName} / ${data.run.executionLabel}`, runReviewBody(data), {
       wide: true,
       state: { kind, id },
       preserveFocus: options.preserveFocus,
@@ -1005,6 +1008,7 @@ async function showDetail(kind, id, options = {}) {
   if (kind === "decision") {
     const item = await fetchJson(`/api/decisions/${encodeURIComponent(id)}`);
     const aiCheck = Boolean(item.provider || item.model || item.worker);
+    const liveResearch = item.tools?.some((tool) => ["research_adapter", "live_web_with_approval"].includes(tool));
     const handoffDecision = item.decisionKind === "handoff";
     const assignment = item.assignment
       ? detailSection("What the AI will review", `<p class="lead-copy">${escapeHtml(item.assignment.question || "The question was not stated.")}</p><div class="review-facts simple"><div><span>Intended buyer</span><strong>${escapeHtml(item.assignment.buyer || "Not stated")}</strong></div><div><span>Evidence supplied</span><strong>${escapeHtml(String(item.assignment.evidenceCount || 0))} item${Number(item.assignment.evidenceCount || 0) === 1 ? "" : "s"}</strong></div></div>`)
@@ -1024,9 +1028,11 @@ async function showDetail(kind, id, options = {}) {
       : "";
     const whatHappens = handoffDecision
       ? "Jarvis will turn the reviewed result into the next internal work step. Nothing will be published or sent outside the system."
-      : aiCheck
-        ? `${item.worker || "The AI worker"} will complete this one check and return the result for your review.`
-        : "Jarvis will carry out only the work described in this decision.";
+      : liveResearch
+        ? `${item.worker || "The Demand Validator"} will search current public sources for buyer demand, alternatives, pricing signals, and a suitable audience. It will return the evidence and recommendation here for your review.`
+        : aiCheck
+          ? `${item.worker || "The AI worker"} will complete this one check and return the result for your review.`
+          : "Jarvis will carry out only the work described in this decision.";
     const limits = item.effects?.length
       ? `Only these approved effects are allowed: ${item.effects.join(", ")}.`
       : "It cannot publish, contact anyone, change an account, sign anything, or move money.";
@@ -1113,9 +1119,11 @@ async function handleAction(button) {
       }));
     } catch (error) {
       if (error.code !== "approval_refreshed") throw error;
+      const replacementApprovalId = error.payload?.result?.replacementApprovalId;
       closeDrawer();
       await loadView("decisions", { silent: true });
-      toast(error.message);
+      if (replacementApprovalId) await showDetail("decision", replacementApprovalId);
+      toast("The research details were refreshed safely. Review them, then choose Run this market research once more.");
       return;
     }
     closeDrawer();

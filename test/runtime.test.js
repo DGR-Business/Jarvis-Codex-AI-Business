@@ -48,7 +48,11 @@ const { getAgentModelReadinessState, queueAgentModelComparisonPacket, storedComp
 const { recordAiPilotReviewDecision } = require("../src/runtime/ai-pilot-review");
 const { generateWeeklyDigest } = require("../src/runtime/executive-digest");
 const { runMonitorCycle } = require("../src/runtime/monitor");
-const { createLiveAiWorkerSmokeTest, requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
+const {
+  createLiveAiWorkerSmokeTest,
+  refreshOutdatedLiveAiWorkerApproval,
+  requestLiveAiWorker,
+} = require("../src/runtime/live-ai-workers");
 const { createLiveResearchSmokeTest, requestLiveResearch } = require("../src/runtime/live-research");
 const {
   getRetentionPolicyState,
@@ -2286,6 +2290,33 @@ test("approved Demand Validator interest handoff prepares one capped web-researc
     assert.deepEqual(JSON.parse(researchTask.payload).liveSpendRequest.tools, ["research_adapter"]);
     assert.equal(approval.status, "pending");
     assert.equal(approval.scope, "live_ai_worker_spend");
+    const approvalValidation = validateApprovalScope(db, approval.id, researchTask);
+    assert.equal(approvalValidation.valid, true, approvalValidation.reason);
+    const descriptor = JSON.parse(researchTask.payload).liveSpendRequest.executionDescriptor;
+    assert.equal(
+      descriptor.materializedInput.relevantCompletedWork.some((item) => item.title === "Chief of Staff handoff follow-up"),
+      false,
+    );
+
+    const command = get(db, "SELECT * FROM commands WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 1", [planned.workflow.id]);
+    run(db, "UPDATE commands SET raw_text = ? WHERE id = ?", [
+      `${command.raw_text} Focus the refreshed check on current public evidence.`,
+      command.id,
+    ]);
+    assert.match(
+      validateApprovalScope(db, approval.id, researchTask).reason,
+      /materialized model input changed/i,
+    );
+    const refreshed = refreshOutdatedLiveAiWorkerApproval(db, approval.id, {
+      trigger: "runtime-interest-test-refresh",
+    });
+    assert.equal(refreshed.refreshed, true);
+    assert.equal(refreshed.task.id, researchTask.id);
+    assert.notEqual(refreshed.replacementApprovalId, approval.id);
+    const replacementTaskRow = get(db, "SELECT * FROM tasks WHERE id = ?", [researchTask.id]);
+    const replacementTask = { ...replacementTaskRow, payload: JSON.parse(replacementTaskRow.payload) };
+    assert.equal(validateApprovalScope(db, refreshed.replacementApprovalId, replacementTask).valid, true);
+    assert.equal(get(db, "SELECT COUNT(*) AS count FROM model_calls WHERE task_id = ?", [researchTask.id]).count, 0);
   } finally {
     db.close();
   }

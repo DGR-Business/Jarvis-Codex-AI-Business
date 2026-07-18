@@ -17,7 +17,8 @@ commercial move.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
 - First live worker position: one Demand Validator call completed from
-  controlled supplied evidence; Daniel's usefulness review is pending.
+  controlled supplied evidence and Daniel accepted it as clear enough to use.
+  The separately capped live market-research decision is ready for Daniel.
 - External actions: locked by default.
 - Operator budget: eight hours per week in the build and first-proof phase.
 - Pre-revenue AI and tool cap: A$100 per month.
@@ -471,6 +472,46 @@ restored source hashes matched the current files; the final database opened
 read-only with `quick_check=ok`, schema 17, zero foreign-key violations, the
 exact provider response ID, and no WAL, SHM, or staging debris.
 
+### Stable live market-research approval
+
+Daniel accepted the first Demand Validator analysis and approved its internal
+Chief of Staff handoff. The system then prepared the separate A$2 live
+market-research decision. Daniel's first attempt to start that research was
+blocked before OpenAI was contacted because the materialized model input had
+changed after approval was requested.
+
+The investigation found two implementation defects:
+
+- the immutable research packet had included the currently running Chief of
+  Staff handoff, whose blank result changed milliseconds later when it
+  completed; and
+- the first recovery path could drop the interest-test request identity and
+  prepare a replacement against the earlier base pilot instead of the same
+  research task.
+
+The approval safety check behaved correctly by refusing changed scope, but the
+packet and recovery construction were wrong. The runtime now includes only
+completed prior work that existed when the request was created, persists the
+exact request identity, and refuses a refresh unless the replacement remains
+bound to the same task. Genuine input changes still require a fresh decision.
+The dashboard now explains this recovery without internal approval terminology,
+opens the replacement decision directly, and labels the action
+`Run this market research`.
+
+Verified production state at this checkpoint:
+
+- the corrected decision is pending and its current approval scope validates;
+- the exact research task remains blocked before execution;
+- it uses Demand Validator with Sol, up to three read-only web searches, and an
+  absolute A$2 cap;
+- the task has zero attempts, zero model calls, zero agent runs, and no spend;
+- all 162 automated tests passed;
+- the signed production dashboard showed the corrected decision and spacious
+  review surface with no Jarvis console errors.
+
+No OpenAI call or external action occurred from either blocked click or the
+repair.
+
 ## Accounting Preserved At Reset
 
 - ChatGPT Pro active monthly commitment: A$100.00.
@@ -520,13 +561,11 @@ review.
 
 ## Next Best Work
 
-Daniel reviews the completed Demand Validator result in the Command Center and
-records whether the analysis is clear enough to use. If it is accepted, Daniel
-then chooses whether Jarvis should prepare the free interest test. That internal
-handoff creates, but does not approve, the separate live market-research choice.
-Only Daniel's fresh `Start this AI check` decision may begin the capped A$2,
-three-search proof. Once the current result path is resolved, Jarvis presents
-the prepared plain-language retention plan as a separate decision. Until then,
-ongoing provider storage, personal-data work, and sensitive worker use remain
-blocked. Do not create a Gumroad account, publish, contact buyers, or initiate
-unapproved spend.
+Daniel reviews the one corrected market-research decision in the Command Center.
+Only Daniel's fresh `Run this market research` choice may begin the capped A$2,
+three-search proof. Jarvis then reviews the actual sources, recommendation,
+usage, cost state, trace, and evaluation before any business action is offered.
+After that result is resolved, Jarvis presents the prepared plain-language
+retention plan as a separate decision. Until then, ongoing provider storage,
+personal-data work, and sensitive worker use remain blocked. Do not create a
+Gumroad account, publish, contact buyers, or initiate unapproved spend.

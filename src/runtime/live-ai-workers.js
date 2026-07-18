@@ -329,6 +329,14 @@ function approvalIdForRequest(db, taskId, workflowId, requestedAt) {
   return `appr_live_worker_${safeId(workflowId)}_${safeId(requestedAt)}`;
 }
 
+function requestKeyForTask(task) {
+  const explicit = String(task?.payload?.requestKey || "").trim();
+  if (explicit) return explicit;
+  const prefix = `task_live_worker_${safeId(task?.workflow_id)}`;
+  const taskId = String(task?.id || "");
+  return taskId.startsWith(`${prefix}_`) ? taskId.slice(prefix.length + 1) : undefined;
+}
+
 function originalRequestParameters(parameters = {}) {
   const copy = JSON.parse(JSON.stringify(parameters || {}));
   delete copy.approvedAssetBinding;
@@ -365,6 +373,7 @@ function refreshOptionsForTask(task, trigger) {
     evidenceStandard: payload.evidenceStandard || "",
   };
   return {
+    requestKey: requestKeyForTask(task),
     worker: payload.requestedWorker || request.worker?.id || task.agent,
     estimatedCostCents: Number(request.maxCostCents || request.estimatedCostCents || task.cost_budget_cents),
     requestedBy: trigger || "runtime-policy-refresh",
@@ -407,6 +416,7 @@ function refreshableApprovalReason(reason) {
     /worker approval policy changed after approval was requested/i,
     /worker definition changed after approval was requested/i,
     /paid work request uses an unsupported execution descriptor/i,
+    /materialized model input changed after approval was requested/i,
   ].some((pattern) => pattern.test(String(reason || "")));
 }
 
@@ -493,6 +503,9 @@ function refreshOutdatedLiveAiWorkerApproval(db, approvalId, options = {}) {
     );
 
     const replacement = requestLiveAiWorker(db, task.workflow_id, refreshOptions);
+    if (replacement.task?.id !== task.id) {
+      throw new Error("The refreshed AI-work decision did not stay attached to the same work item.");
+    }
     const costId = `cost_spend_${safeId(task.id)}`;
     const cost = get(db, "SELECT * FROM costs WHERE id = ?", [costId]);
     if (cost && Number(cost.amount_cents || 0) === 0) {
@@ -692,6 +705,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     throw new Error("Live execution is blocked because the requested input ceiling exceeds the approved hosted-tool limit.");
   }
   const payload = {
+    requestKey: options.requestKey ? safeId(options.requestKey) : null,
     subject,
     channel,
     buyer: String(businessContext.buyer || ""),

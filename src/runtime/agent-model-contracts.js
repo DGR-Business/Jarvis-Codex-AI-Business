@@ -326,6 +326,9 @@ function buildWorkerModelPacket(db, task, agentDefinition) {
   const workerId = agentDefinition.id;
   const contract = contractFor(workerId);
   const payload = parsed(task.payload, {});
+  const requestedAt = Number.isFinite(Date.parse(payload.requestedAt))
+    ? new Date(payload.requestedAt).toISOString()
+    : null;
   const workflow = get(db, "SELECT * FROM workflows WHERE id = ?", [task.workflow_id]);
   const command = get(db, "SELECT * FROM commands WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 1", [task.workflow_id]);
   const scorecard = get(db, "SELECT * FROM venture_scorecards WHERE workflow_id = ?", [task.workflow_id]);
@@ -336,8 +339,10 @@ function buildWorkerModelPacket(db, task, agentDefinition) {
     `SELECT title, agent, status, result
      FROM tasks
      WHERE workflow_id = ? AND id <> ? AND kind <> 'live_ai_worker_execution'
+       AND status = 'completed'
+       AND (? IS NULL OR updated_at <= ?)
      ORDER BY updated_at DESC LIMIT 4`,
-    [task.workflow_id, task.id],
+    [task.workflow_id, task.id, requestedAt, requestedAt],
   ).map(safeTaskResult);
 
   const packet = {
