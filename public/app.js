@@ -814,7 +814,8 @@ function plainAgentText(value) {
     .replace(/All observations are evaluation fixtures, not real-business market evidence\./gi, "All observations came from a controlled test, not real market activity.")
     .replace(/\bevaluation fixtures\b/gi, "controlled test examples")
     .replace(/\bfixtures\b/gi, "controlled test examples")
-    .replace(/\bfixture\b/gi, "controlled test evidence");
+    .replace(/\bfixture\b/gi, "controlled test evidence")
+    .replace(/(?<![A-Za-z])\$(?=\d)/g, "A$");
 }
 
 function plainAgentList(items) {
@@ -957,7 +958,7 @@ function runReviewBody(data) {
     ${detailSection("What the AI was asked", `<p class="lead-copy">${escapeHtml(process.question)}</p><div class="review-facts simple"><div><span>Intended buyer</span><strong>${escapeHtml(process.buyer)}</strong></div><div><span>Idea being tested</span><strong>${escapeHtml(process.hypothesis)}</strong></div></div>`)}
     ${businessContext}
     ${detailSection("What it found", `<div class="finding-columns"><div><span class="finding-label positive">${icon("check")}Supports a test</span>${plainAgentList(process.supportingEvidence)}</div><div><span class="finding-label caution">${icon("circle-help")}Still missing</span>${plainAgentList(process.counterevidence)}</div></div>${detailDisclosure("Assumptions the AI made", plainAgentList(process.assumptions))}`)}
-    ${detailSection("The proposed interest test", `<p class="lead-copy">${escapeHtml(process.smallestTest)}</p><div class="test-plan"><div><span>Success looks like</span><strong>${escapeHtml(process.metric)}</strong></div><div><span>Stop or revise when</span><strong>${escapeHtml(process.stopRule)}</strong></div><div><span>Possible price and channel</span><strong>${escapeHtml(process.priceChannelHypothesis)}</strong></div></div><h4>Main risks</h4>${plainAgentList(process.risks)}`)}
+    ${detailSection("The proposed interest test", `<p class="lead-copy">${escapeHtml(plainAgentText(process.smallestTest))}</p><div class="test-plan"><div><span>Success looks like</span><strong>${escapeHtml(plainAgentText(process.metric))}</strong></div><div><span>Stop or revise when</span><strong>${escapeHtml(plainAgentText(process.stopRule))}</strong></div><div><span>Possible price and channel</span><strong>${escapeHtml(plainAgentText(process.priceChannelHypothesis))}</strong></div></div><h4>Main risks</h4>${plainAgentList(process.risks)}`)}
     ${detailSection("Your next steps", `<div class="decision-path">${reviewStatus}${nextStepStatus}</div>`)}
     ${detailDisclosure("Technical run record", technicalRecord)}
   </div>`;
