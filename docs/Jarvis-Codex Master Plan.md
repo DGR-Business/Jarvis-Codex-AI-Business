@@ -1,6 +1,6 @@
 # Jarvis-Codex Master Plan
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 Status: active source of truth
 Owner: Daniel
 Technical steward: Codex
@@ -164,6 +164,9 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
   worker, provider, model, input fingerprint, tools, parameters, limits, cost,
   and external effects.
 - Approvals are single-use, expire, and become invalid after scope changes.
+- Pending AI-work decisions created before a worker-policy update are
+  superseded and regenerated before execution. The replacement always requires
+  a fresh operator decision; an old click cannot approve the new scope.
 - Provider timeouts and ambiguous dispatches become unknown outcomes for review,
   never automatic retries.
 - Every worker attempt must leave a local receipt and linked audit events. Live
@@ -216,9 +219,11 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
 - Operate against the fixed 11-worker Phase 1 contract. Its bounded assignment,
   receipt, audit, task-scoped context, Chief assignment, Quality Reviewer,
   monitoring, model-routing, retention-enforcement, exact attempt binding, and
-  startup-readiness foundation passed locally on 2026-07-17 with schema 16,
-  161 automated tests, encrypted restore proof, and authenticated real-browser
-  proof at all supported desktop sizes.
+  startup-readiness foundation passed locally on 2026-07-18 with schema 16,
+  162 automated tests, encrypted restore proof, and authenticated real-browser
+  proof at all supported desktop sizes. Approval lifecycle recovery also proved
+  that an outdated decision can be replaced with zero task attempts, model
+  calls, agent runs, receipts, or spend.
 - Use the cockpit to prepare one Evidence Brief that ranks three plausible
   digital-product opportunities.
 - Run the prepared Demand Validator supplied-evidence decision first. It is

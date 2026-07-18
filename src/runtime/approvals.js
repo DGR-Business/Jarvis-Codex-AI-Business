@@ -8,6 +8,13 @@ const { ensureApprovalScope, persistApprovalScope, validateApprovalScope } = req
 
 const DECISIONS = new Set(["approved", "rejected", "needs_changes"]);
 
+function approvalConflict(reason) {
+  const error = new Error(reason);
+  error.statusCode = 409;
+  error.code = "approval_refresh_required";
+  return error;
+}
+
 function withSavepoint(db, prefix, operation) {
   const name = `${prefix}_${randomId().replace(/[^a-zA-Z0-9]/g, "")}`;
   db.exec(`SAVEPOINT ${name}`);
@@ -143,7 +150,7 @@ function decideApproval(db, approvalId, decision, note = "", options = {}) {
     let approval = parsedApproval(get(db, "SELECT * FROM approvals WHERE id = ?", [approvalId]));
     if (!approval) throw new Error(`Approval not found: ${approvalId}`);
     const validation = validateDecisionScope(db, approval, options);
-    if (!validation.valid) throw new Error(validation.reason);
+    if (!validation.valid) throw approvalConflict(validation.reason);
     approval = parsedApproval(get(db, "SELECT * FROM approvals WHERE id = ?", [approvalId]));
     if (approval.status !== "pending") return { approval, changed: false };
 

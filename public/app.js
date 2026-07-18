@@ -197,6 +197,8 @@ async function fetchJson(url, options = {}) {
       ? "Jarvis is not signed in. Start Jarvis with its launcher, then use the dashboard window it opens."
       : payload.error || `Request failed with status ${response.status}.`);
     error.status = response.status;
+    error.code = payload.code || null;
+    error.payload = payload;
     throw error;
   }
   return payload;
@@ -1013,10 +1015,19 @@ async function handleAction(button) {
   if (action === "open-pdf") return openPdf(button.dataset.id, button.dataset.title);
   if (action === "approval") {
     const decisionLabels = { approve: "approved", changes: "changes requested", reject: "declined" };
-    const payload = await withRunPolling(() => postJson(`/api/approvals/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`, {
-      scopeHash: button.dataset.scopeHash,
-      note: `Dashboard decision: ${decisionLabels[button.dataset.decision]}.`,
-    }));
+    let payload;
+    try {
+      payload = await withRunPolling(() => postJson(`/api/approvals/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`, {
+        scopeHash: button.dataset.scopeHash,
+        note: `Dashboard decision: ${decisionLabels[button.dataset.decision]}.`,
+      }));
+    } catch (error) {
+      if (error.code !== "approval_refreshed") throw error;
+      closeDrawer();
+      await loadView("decisions", { silent: true });
+      toast(error.message);
+      return;
+    }
     closeDrawer();
     const execution = payload.execution;
     toast(execution?.status === "completed"

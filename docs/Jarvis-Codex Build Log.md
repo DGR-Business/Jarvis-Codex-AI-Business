@@ -352,6 +352,44 @@ Verification at this checkpoint:
 No approval was clicked, no model or research call was made, and no external
 business action occurred during this hardening.
 
+### Outdated approval recovery before the first live proof
+
+Daniel clicked the prepared Demand Validator approval on 2026-07-18. The
+dashboard returned a system error before the decision was recorded. The
+authoritative runtime evidence showed:
+
+- the exact server error was `The execution descriptor has no exact worker
+  policy binding`;
+- the decision had been prepared before the latest worker-policy binding was
+  added, so it was incompatible with the strengthened execution contract;
+- the database transaction rolled back, leaving the old decision pending and
+  unconsumed;
+- the task remained `not_started`, with zero attempts, zero model calls, zero
+  agent runs, zero receipts, and A$0 actual spend;
+- OpenAI was not contacted.
+
+The runtime now checks pending live-worker decisions against the current worker
+definition and approval policy during startup and again if an approval action
+finds a compatible policy-version conflict. An outdated, unused decision is
+retained as `superseded`; Jarvis regenerates the exact descriptor and approval
+on the same work item, records the refresh, and requires Daniel to approve the
+new scope. It cannot refresh work after an attempt, provider call, agent run,
+unknown outcome, or cost exists. The dashboard explains the refresh in ordinary
+language instead of reporting a generic server failure.
+
+Verification at this checkpoint:
+
+- all 162 tests passed;
+- the new regression proves the refresh creates no attempt, model call, agent
+  run, receipt, or spend;
+- the owned production runtime restarted cleanly and reported operations ready;
+- the old approval is retained as superseded and unconsumed;
+- the replacement approval has a valid current descriptor and scope, uses Sol,
+  remains one turn with no tools, retains the 1,200-token output limit, has a
+  priced worst case of A$0.10 under the A$1 cap, and is pending;
+- the task remains blocked before execution with zero active-runtime provider
+  activity.
+
 ## Accounting Preserved At Reset
 
 - ChatGPT Pro active monthly commitment: A$100.00.
@@ -401,8 +439,9 @@ review.
 
 ## Next Best Work
 
-Daniel reviews and approves, changes, or declines the prepared supplied-evidence
-Demand Validator run. After an approved run, Jarvis must inspect the immutable
+Daniel reviews and approves, changes, or declines the refreshed
+supplied-evidence Demand Validator run. The prior click did not approve this
+new policy-bound scope. After an approved run, Jarvis must inspect the immutable
 receipt, provider identifiers, tokens, cost state, deterministic evaluation, and
 structured result before Daniel records usefulness. Only an accepted result may
 lead to the separate A$2 read-only live-web decision. Once the current choice is

@@ -12,6 +12,7 @@ const {
   toJson,
 } = require("../src/db");
 const {
+  buildApprovalScope,
   canonicalWorkerApprovalPolicy,
   scopeHash,
   validateApprovalScope,
@@ -19,7 +20,11 @@ const {
   verifyExecutionDescriptor,
   workerDefinitionHash,
 } = require("../src/runtime/approval-scope");
-const { createPilotFixture } = require("../src/runtime/agent-pilot");
+const {
+  createPilotFixture,
+  ensureDemandValidatorPilotFixture,
+  prepareDemandValidatorPilot,
+} = require("../src/runtime/agent-pilot");
 const { AI_TEAM_DEFINITIONS } = require("../src/runtime/ai-team");
 const {
   DEFAULT_ALLOWED_WORKERS,
@@ -27,7 +32,10 @@ const {
   prepareChiefSpecialistAssignment,
   requestChiefOrchestration,
 } = require("../src/runtime/chief-orchestration");
-const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
+const {
+  refreshOutdatedLiveAiWorkerApproval,
+  requestLiveAiWorker,
+} = require("../src/runtime/live-ai-workers");
 
 function makeRuntime(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `jarvis-policy-hardening-${name}-`));
@@ -224,6 +232,106 @@ test("live approval binds the canonical persisted worker approval policy", () =>
     const invalid = validateApprovalScope(runtime.db, requested.approval.id, task);
     assert.equal(invalid.valid, false);
     assert.match(invalid.reason, /worker approval policy changed/i);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("outdated pending worker decisions are replaced before any execution or spend", () => {
+  const runtime = makeRuntime("approval-policy-refresh");
+  try {
+    const fixture = ensureDemandValidatorPilotFixture(runtime.db);
+    const prepared = prepareDemandValidatorPilot(runtime.db, fixture.id, {
+      requestedBy: "test",
+      estimatedCostCents: 100,
+    });
+    const oldApprovalId = prepared.requested.approval.id;
+    const oldScopeHash = prepared.requested.approval.scope_hash;
+    const taskRow = get(runtime.db, "SELECT * FROM tasks WHERE id = ?", [prepared.requested.task.id]);
+    const taskPayload = fromJson(taskRow.payload, {});
+    const legacyDescriptor = JSON.parse(JSON.stringify(taskPayload.liveSpendRequest.executionDescriptor));
+    delete legacyDescriptor.workerApprovalPolicy;
+    delete legacyDescriptor.workerApprovalPolicyHash;
+    const { descriptorHash: ignoredDescriptorHash, ...legacyDescriptorBody } = legacyDescriptor;
+    legacyDescriptor.descriptorHash = scopeHash(legacyDescriptorBody);
+    taskPayload.liveSpendRequest.executionDescriptor = legacyDescriptor;
+    delete taskPayload.liveSpendRequest.worker.approvalPolicy;
+    delete taskPayload.liveSpendRequest.worker.approvalPolicyHash;
+    delete taskPayload.liveSpendRequest.worker.definitionHash;
+    run(runtime.db, "UPDATE tasks SET payload = ? WHERE id = ?", [
+      toJson(taskPayload),
+      taskRow.id,
+    ]);
+
+    const approvalRow = get(runtime.db, "SELECT * FROM approvals WHERE id = ?", [oldApprovalId]);
+    const approvalPayload = fromJson(approvalRow.payload, {});
+    approvalPayload.executionDescriptor = legacyDescriptor;
+    if (approvalPayload.worker) {
+      delete approvalPayload.worker.approvalPolicy;
+      delete approvalPayload.worker.approvalPolicyHash;
+      delete approvalPayload.worker.definitionHash;
+    }
+    const legacyTask = {
+      ...get(runtime.db, "SELECT * FROM tasks WHERE id = ?", [taskRow.id]),
+      payload: taskPayload,
+    };
+    const legacyScopeHash = scopeHash(buildApprovalScope(
+      { ...approvalRow, payload: approvalPayload },
+      legacyTask,
+    ));
+    run(
+      runtime.db,
+      "UPDATE approvals SET payload = ?, scope_hash = ? WHERE id = ?",
+      [toJson(approvalPayload), legacyScopeHash, oldApprovalId],
+    );
+
+    const invalid = validateApprovalScope(runtime.db, oldApprovalId, legacyTask);
+    assert.equal(invalid.valid, false);
+    assert.match(invalid.reason, /no exact worker policy binding/i);
+
+    const refreshed = refreshOutdatedLiveAiWorkerApproval(runtime.db, oldApprovalId, {
+      trigger: "test-policy-refresh",
+    });
+    assert.equal(refreshed.refreshed, true);
+    assert.notEqual(refreshed.replacementApprovalId, oldApprovalId);
+    assert.notEqual(refreshed.approval.scope_hash, oldScopeHash);
+    assert.equal(get(runtime.db, "SELECT status FROM approvals WHERE id = ?", [oldApprovalId]).status, "superseded");
+
+    const replacementTaskRow = get(runtime.db, "SELECT * FROM tasks WHERE id = ?", [taskRow.id]);
+    const replacementTask = {
+      ...replacementTaskRow,
+      payload: fromJson(replacementTaskRow.payload, {}),
+    };
+    assert.equal(replacementTask.approval_id, refreshed.replacementApprovalId);
+    assert.equal(replacementTask.status, "blocked");
+    assert.equal(replacementTask.outcome_status, "not_started");
+    assert.equal(replacementTask.attempt_count, 0);
+    assert.equal(replacementTask.cost_actual_cents, 0);
+    assert.equal(
+      verifyExecutionDescriptor(replacementTask.payload.liveSpendRequest.executionDescriptor).valid,
+      true,
+    );
+    assert.equal(
+      validateApprovalScope(runtime.db, refreshed.replacementApprovalId, replacementTask).valid,
+      true,
+    );
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM task_attempts WHERE task_id = ?", [taskRow.id]).count, 0);
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM model_calls WHERE task_id = ?", [taskRow.id]).count, 0);
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM agent_runs WHERE task_id = ?", [taskRow.id]).count, 0);
+
+    const cost = get(runtime.db, "SELECT * FROM costs WHERE id = ?", [`cost_spend_${taskRow.id}`]);
+    assert.equal(cost.amount_cents, 0);
+    assert.equal(cost.status, "approval_requested");
+    assert.equal(fromJson(cost.metadata, {}).approvalId, refreshed.replacementApprovalId);
+    assert.equal(fromJson(cost.metadata, {}).approvalRefreshHistory.length, 1);
+    assert.equal(
+      get(
+        runtime.db,
+        "SELECT COUNT(*) AS count FROM events WHERE type = 'approval.safely_refreshed' AND entity_id = ?",
+        [refreshed.replacementApprovalId],
+      ).count,
+      1,
+    );
   } finally {
     closeRuntime(runtime);
   }

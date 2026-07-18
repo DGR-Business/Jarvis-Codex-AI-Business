@@ -13,7 +13,12 @@ const { createCommandPlan } = require("./runtime/planner");
 const { runOnce, runUntilBlocked } = require("./runtime/orchestrator");
 const { generateApprovalPack } = require("./runtime/approval-pack");
 const { runMonitorCycle } = require("./runtime/monitor");
-const { createLiveAiWorkerSmokeTest, requestLiveAiWorker } = require("./runtime/live-ai-workers");
+const {
+  createLiveAiWorkerSmokeTest,
+  refreshOutdatedLiveAiWorkerApproval,
+  refreshOutdatedLiveAiWorkerApprovals,
+  requestLiveAiWorker,
+} = require("./runtime/live-ai-workers");
 const { prepareProductBuilderAsset } = require("./runtime/product-builder-workspace");
 const { createLiveResearchSmokeTest, requestLiveResearch } = require("./runtime/live-research");
 const { decideAgentHandoff, ensureAiTeam } = require("./runtime/ai-team");
@@ -248,9 +253,12 @@ function serveDeliverableFile(db, res, id) {
 
 function ensureRuntimeFoundation(db) {
   const integrationHealth = refreshIntegrationHealth(db);
-  const setupRecovery = recoverSetupBlockedTasks(db);
   ensureAiTeam(db);
   ensureAgentTools(db);
+  const approvalRefresh = refreshOutdatedLiveAiWorkerApprovals(db, {
+    trigger: "runtime-startup-policy-refresh",
+  });
+  const setupRecovery = recoverSetupBlockedTasks(db);
   ensureAgentWorkbench(db);
   ensureSchedulerJobs(db);
   ensureWorkflowScorecards(db);
@@ -258,7 +266,7 @@ function ensureRuntimeFoundation(db) {
   ensureCapabilityAutonomy(db);
   ensureWeeklyDigest(db);
   ensureRetentionPolicy(db);
-  return { integrationHealth, setupRecovery };
+  return { integrationHealth, approvalRefresh, setupRecovery };
 }
 
 function getMonitoringReadiness(db, runtimeState) {
@@ -1204,7 +1212,24 @@ function createApp(options = {}) {
           jsonResponse(res, 409, { error: "Refresh this decision before acting; its approval scope is missing." });
           return;
         }
-        const result = decideApproval(db, approvalDecision.id, decision, body.note || "", { expectedScopeHash: body.scopeHash });
+        let result;
+        try {
+          result = decideApproval(db, approvalDecision.id, decision, body.note || "", { expectedScopeHash: body.scopeHash });
+        } catch (error) {
+          const refreshed = refreshOutdatedLiveAiWorkerApproval(db, approvalDecision.id, {
+            trigger: "dashboard-policy-refresh",
+          });
+          if (refreshed?.refreshed) {
+            broadcastState();
+            jsonResponse(res, 409, {
+              code: "approval_refreshed",
+              error: "This decision was created under an older safety policy. Jarvis safely refreshed it before any work or cost occurred. Review and decide on the updated decision.",
+              result: refreshed,
+            });
+            return;
+          }
+          throw error;
+        }
         const execution = decision === "approved" && result.changed && result.approvedTaskIds?.length
           ? await runOnce(db, { taskId: result.approvedTaskIds[0], claimant: "dashboard_approval" })
           : null;
@@ -1287,8 +1312,11 @@ function createApp(options = {}) {
 
       notFound(res);
     } catch (error) {
-      if ([400, 413].includes(Number(error.statusCode))) {
-        jsonResponse(res, Number(error.statusCode), { error: error.message });
+      if (Number(error.statusCode) >= 400 && Number(error.statusCode) < 500) {
+        jsonResponse(res, Number(error.statusCode), {
+          error: error.message,
+          ...(error.code ? { code: error.code } : {}),
+        });
         return;
       }
       const requestId = crypto.randomUUID();
