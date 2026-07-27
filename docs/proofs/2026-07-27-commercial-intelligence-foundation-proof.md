@@ -1,7 +1,7 @@
 # Commercial Intelligence Foundation Proof
 
 Date: 2026-07-27
-Status: live commercial path complete; release verification in progress
+Status: live commercial path and local release gates complete; remote CI pending
 
 ## Proven
 
@@ -69,6 +69,41 @@ is reconciled. Pantheon performed no automatic retry after either timeout.
 
 ## Release Evidence
 
-Final automated test count, lint, dependency audit, clean-install proof,
-encrypted restore proof, CI result, and responsive browser result will be added
-when the release gates close.
+- Local suite: 268 of 268 tests passed.
+- Correctness lint: passed with zero warnings.
+- Clean clone of commit `7b869d4`: `npm ci` installed 166 locked packages;
+  268 of 268 tests passed; an isolated server started, returned `alive: true`,
+  and stopped without retaining its process or port.
+- Dependency audit: no high or critical findings. Six moderate findings remain
+  in `@hono/node-server@1.19.15`, pulled transitively through
+  `@openai/agents@0.13.5` and `@modelcontextprotocol/sdk@1.29.0`. npm's complete
+  automatic remedy would install a breaking Agents SDK version, so it was not
+  applied without an upstream-compatible upgrade.
+- Application security review found no high or critical code issue in the
+  changed surface. Loopback Host and Origin checks, signed HttpOnly
+  SameSite-Strict sessions, CSRF, JSON-only mutations, request-size limits,
+  Content Security Policy, output-path confinement, and WebSocket validation
+  remain active and covered by tests. Dynamic dashboard text is escaped and
+  external links are restricted to HTTP or HTTPS.
+- Operations Doctor: operations-ready when run through Pantheon's
+  Windows-protected recovery profile.
+- Lifecycle proof: ten isolated Standby, Working, Standby, and Stopped cycles
+  left no owned process, port, or ownership record. Maximum Standby memory was
+  53 MB.
+- Browser proof: Chrome passed at 1440x900, 1280x720, and 1024x768 with no
+  horizontal overflow. The 1024 review drawer remained readable at 960 pixels
+  wide. Pantheon logged no browser warning or error; observed messages came
+  from unrelated Chrome extensions.
+- Repository review: 50 changed files were scanned before commit. No runtime
+  database, output, private, environment, or secret-bearing path was included,
+  and no high-confidence secret material was found.
+- All retained OneDrive recovery sets authenticated with Pantheon's active
+  Windows-protected recovery key. Fresh set
+  `pantheon-recovery-set-2026-07-27T05-20-12-699Z.jbackup` authenticated 874
+  files, 122,104,103 restored bytes, and a valid SQLite database. It restored
+  independently into `C:\tmp\pantheon-restore-proof-20260727-0520`; quick check
+  and integrity check returned `ok` with zero foreign-key violations.
+- Weekly Jarvis engineering and commercial audit: active for Sunday 18:00
+  Brisbane time, without paid-call or protected-action authority.
+- GitHub branch and CI: pending the explicit repository transmission approval
+  required by the GitHub safety layer.

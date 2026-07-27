@@ -1086,6 +1086,21 @@ Operator proof confirmed:
 - Standby keeps the control shell available at roughly 46 MB with no scheduler,
   Agents SDK worker, or writable business runtime.
 
+Local release verification passed 268 of 268 tests, zero-warning lint,
+operations-ready Doctor through the protected recovery profile, and ten exact
+lifecycle cycles with 53 MB maximum Standby memory. Chrome passed the Portfolio
+and investment-review path at 1440x900, 1280x720, and 1024x768 without
+horizontal overflow or Pantheon console errors. A clean clone of commit
+`7b869d4` installed 166 locked packages, passed all 268 tests, started on an
+isolated port, returned a live health response, and stopped cleanly. The
+dependency audit has no high or critical finding; six moderate transitive
+`@hono/node-server` findings remain pending an upstream-compatible Agents SDK
+upgrade. Fresh encrypted recovery set
+`pantheon-recovery-set-2026-07-27T05-20-12-699Z.jbackup` authenticated 874 files
+and restored independently into `C:\tmp\pantheon-restore-proof-20260727-0520`.
+The restored SQLite database passed quick check, integrity check, and zero
+foreign-key violations.
+
 The exact plan and live evidence are:
 
 - `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`;
