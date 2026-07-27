@@ -35,11 +35,14 @@
           <button type="button" class="nav-button active" data-view="cockpit">
             <i data-lucide="layout-dashboard"></i><span>Command Center</span>
           </button>
+          <button type="button" class="nav-button" data-view="journey">
+            <i data-lucide="route"></i><span>Full Journey</span>
+          </button>
           <button type="button" class="nav-button" data-view="decisions">
             <i data-lucide="circle-check-big"></i><span>Decisions</span><b id="decision-count" hidden>0</b>
           </button>
-          <button type="button" class="nav-button" data-view="tests">
-            <i data-lucide="flask-conical"></i><span>Business Tests</span>
+          <button type="button" class="nav-button" data-view="portfolio">
+            <i data-lucide="briefcase-business"></i><span>Portfolio</span>
           </button>
           <button type="button" class="nav-button" data-view="ai-team">
             <i data-lucide="users"></i><span>AI Team</span>
@@ -63,6 +66,12 @@
           </div>
           <div class="topbar-actions">
             <span class="date-label" id="today-label"></span>
+            <button type="button" class="icon-button" data-action="runtime-standby" title="Return Pantheon to standby" aria-label="Return Pantheon to standby">
+              <i data-lucide="moon"></i>
+            </button>
+            <button type="button" class="icon-button stop-control" data-action="runtime-stop" title="Stop Pantheon" aria-label="Stop Pantheon">
+              <i data-lucide="power"></i>
+            </button>
             <button type="button" class="icon-button" data-action="refresh" title="Refresh current view" aria-label="Refresh current view">
               <i data-lucide="refresh-cw"></i>
             </button>

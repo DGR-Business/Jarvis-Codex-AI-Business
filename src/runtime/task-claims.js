@@ -154,6 +154,21 @@ function claimNextTask(db, options = {}) {
              WHERE earlier.workflow_id = candidate.workflow_id
                AND earlier.id <> candidate.id
                AND earlier.status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
+               AND NOT (
+                 json_extract(candidate.payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') IS NOT NULL
+                 AND json_extract(earlier.payload, '$.liveSpendRequest.parameters.pantheonProduction.planId')
+                   = json_extract(candidate.payload, '$.liveSpendRequest.parameters.pantheonProduction.planId')
+                 AND EXISTS (
+                   SELECT 1
+                   FROM catalogue_plans AS recovered_plan,
+                        json_each(recovered_plan.metadata, '$.recoverySupersededTaskIds') AS superseded
+                   WHERE recovered_plan.id = json_extract(
+                     candidate.payload,
+                     '$.liveSpendRequest.parameters.pantheonProduction.planId'
+                   )
+                     AND superseded.value = earlier.id
+                 )
+               )
                AND (
                  earlier.priority < candidate.priority
                  OR (earlier.priority = candidate.priority AND earlier.created_at < candidate.created_at)

@@ -11,6 +11,9 @@ data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
 data/artifacts/
+data/journey-rehearsal/
+data/historical/
+data/quarantine/
 output/
 tmp/
 private/

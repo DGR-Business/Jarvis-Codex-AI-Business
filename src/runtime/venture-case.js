@@ -6,8 +6,7 @@ const EXPERIMENT_STATES = new Set(["candidate", "ready", "running", "completed",
 const EVIDENCE_TYPES = new Set(["test_fixture", "operator_observation", "source_link", "platform_csv", "receipt"]);
 
 function activeVenture(db) {
-  return get(db, "SELECT * FROM ventures WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1")
-    || get(db, "SELECT * FROM ventures WHERE id = 'venture-digital-products'");
+  return get(db, "SELECT * FROM ventures WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1");
 }
 
 function putSettingIfMissing(db, key, value) {
@@ -26,8 +25,8 @@ function ensureActiveVentureCase(db) {
     longTermMode: "weekly digest plus important exceptions",
   });
   putSettingIfMissing(db, "commercial.pilot", {
-    businessModel: "digital_product",
-    platform: "gumroad_direct",
+    businessModel: "evidence_selected",
+    platform: "evidence_selected",
     oneActiveVenture: true,
     successBuyers: 3,
     requirePositiveCashContribution: true,
@@ -69,14 +68,14 @@ function ensureActiveVentureCase(db) {
     `INSERT INTO ventures
      (id, name, stage, status, summary, metadata, created_at, updated_at,
       lifecycle_stage, is_active, business_model)
-     VALUES ('venture-digital-products', 'Digital Products', 1, 'validating', ?, ?, ?, ?, 'validating',
+     VALUES ('venture-digital-products', 'First Venture', 1, 'validating', ?, ?, ?, ?, 'validating',
        CASE WHEN EXISTS (SELECT 1 FROM ventures WHERE is_active = 1) THEN 0 ELSE 1 END,
-       'digital_product')
+       'unselected')
      ON CONFLICT(id) DO NOTHING`,
     [
-      "The sole active venture until one digital-product offer proves three independent buyers and positive cash contribution.",
+      "The sole active venture until one evidence-selected offer proves three independent buyers and positive cash contribution.",
       toJson({
-        channel: "Gumroad Direct plus bounded organic distribution",
+        channel: "Evidence-selected distribution",
         publicIdentity: "faceless_and_voiceless",
         successThreshold: "3 independent paid buyers and positive cash contribution",
       }),
@@ -98,15 +97,15 @@ function ensureActiveVentureCase(db) {
       venture.id,
       "A specific buyer segment will be selected from evidence.",
       "A painful, repeated and purchasable problem still needs validation.",
-      "The smallest useful digital product that solves the validated problem.",
+      "The smallest credible commercial offer that solves the validated problem.",
       0,
-      "Gumroad Direct plus up to two evidence-selected organic channels.",
+      "One or more evidence-selected channels with supportable economics.",
       "Source-linked demand plus a measurable real-world buyer test.",
       0,
       "Three independent paid buyers with positive cash contribution.",
       "Stop after 50 qualified product views and zero sales without strong qualified interest.",
-      "Rank three digital-product opportunities and select one evidence-backed test.",
-      toJson({ oneActiveVenture: true, faceless: true, voiceless: true, platform: "gumroad_direct" }),
+      "Run broad market discovery, compare three qualified candidates, and invest only if one passes every commercial gate.",
+      toJson({ oneActiveVenture: true, faceless: true, voiceless: true, platform: "evidence_selected" }),
       ts,
       ts,
     ],

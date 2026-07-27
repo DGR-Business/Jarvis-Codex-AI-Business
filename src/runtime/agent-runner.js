@@ -1029,6 +1029,8 @@ async function runAgentTask(db, task, options = {}) {
         qualityError.providerRequestId = liveWorker.raw.responseId || null;
         qualityError.modelCallId = liveWorker.modelCall?.id || null;
         qualityError.incurredEstimateCents = Number(liveWorker.incurredEstimateCents || 0);
+        qualityError.localReviewOutput = output;
+        qualityError.localReviewDeliverables = touchedDeliverables;
         throw qualityError;
       }
       const liveParameters = task.payload?.liveSpendRequest?.parameters || {};
@@ -1551,6 +1553,9 @@ async function runAgentTask(db, task, options = {}) {
       workflowId: task.workflow_id,
       providerReceipt: error.providerReceipt || null,
       evaluation: terminalEvaluation,
+      localReviewOutput: error.localReviewOutput || null,
+      localStructuredOutput: error.localStructuredOutput || null,
+      localReviewDeliverables: error.localReviewDeliverables || [],
     });
     updateChiefAssignmentLifecycle(db, task, {
       status: "specialist_work_failed",

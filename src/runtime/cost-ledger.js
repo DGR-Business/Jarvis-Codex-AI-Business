@@ -124,6 +124,40 @@ function monthlyBudgetExposure(db, options = {}) {
   };
 }
 
+function taskJourneyId(task) {
+  const payload = typeof task?.payload === "string" ? fromJson(task.payload, {}) : task?.payload || {};
+  const parameters = payload.liveSpendRequest?.parameters || {};
+  return parameters.pantheonJourney?.journeyId
+    || parameters.pantheonCommercial?.journeyId
+    || parameters.pantheonProduction?.journeyId
+    || null;
+}
+
+function journeyBudgetExposure(db, journeyId, carriedExposureCents = 0) {
+  const taskIds = new Set(all(
+    db,
+    `SELECT id FROM tasks
+     WHERE COALESCE(
+       json_extract(payload, '$.liveSpendRequest.parameters.pantheonJourney.journeyId'),
+       json_extract(payload, '$.liveSpendRequest.parameters.pantheonCommercial.journeyId'),
+       json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.journeyId')
+     ) = ?`,
+    [journeyId],
+  ).map((row) => row.id));
+  const monthly = monthlyBudgetExposure(db);
+  const groups = monthly.groups.filter((group) => group.entries.some((entry) => taskIds.has(entry.taskId)));
+  const localCents = groups.reduce((sum, group) => sum + group.amountCents, 0);
+  const carried = Math.max(0, Number(carriedExposureCents || 0));
+  return {
+    journeyId,
+    currency: CONFIG.currency,
+    localCents,
+    carriedCents: carried,
+    totalCents: localCents + carried,
+    groups,
+  };
+}
+
 function reserveBudget(db, task, approval, amountCents) {
   const amount = Math.max(0, Number(amountCents || 0));
   const id = `reserve_${randomId()}`;
@@ -148,6 +182,23 @@ function reserveBudget(db, task, approval, amountCents) {
     }
     if (committed + amount > cap) {
       throw new Error(`This request would exceed the monthly pre-revenue cap of ${cap} cents.`);
+    }
+    const journeyId = taskJourneyId(task);
+    if (journeyId) {
+      const journey = get(
+        db,
+        `SELECT id, budget_cap_cents, carried_exposure_cents
+         FROM pantheon_journeys WHERE id = ?`,
+        [journeyId],
+      );
+      if (!journey) throw new Error("This paid task refers to a missing Pantheon journey.");
+      const journeyExposure = journeyBudgetExposure(db, journeyId, journey.carried_exposure_cents);
+      const { combinedProofExposureFromDatabase } = require("./proof-exposure-ledger");
+      const combinedExposure = combinedProofExposureFromDatabase(db);
+      const currentExposureCents = Math.max(journeyExposure.totalCents, combinedExposure.totalCents);
+      if (currentExposureCents + amount > Number(journey.budget_cap_cents)) {
+        throw new Error(`This request would exceed the full-journey cap of ${journey.budget_cap_cents} cents.`);
+      }
     }
     const request = typeof task.payload === "string" ? fromJson(task.payload, {})?.liveSpendRequest : task.payload?.liveSpendRequest;
     run(
@@ -612,6 +663,8 @@ function reconcileProviderUsageBatch(db, input = {}) {
 
 module.exports = {
   monthlyBudgetExposure,
+  journeyBudgetExposure,
+  taskJourneyId,
   monthlyCapCents,
   reconcileProviderUsageBatch,
   reserveBudget,

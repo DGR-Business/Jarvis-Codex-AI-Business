@@ -1,5 +1,14 @@
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { bindAgentRunToAttempt, sha256 } = require("./agent-execution-evidence");
+const {
+  digitalProductKitCompatibilityIssues,
+  offerClaimAlignmentIssues,
+} = require("./product-claim-alignment");
+const {
+  currentPackageDefectIssues,
+  exactPublicationListMatch,
+  publicationTextIssues,
+} = require("./publication-artifact-quality");
 
 const OFFICIAL_AGENT_GUIDANCE = {
   basis: "OpenAI agent guidance: define narrow specialists, keep local runtime context separate from model context, use manager-controlled orchestration where useful, pause for human review on sensitive actions, inspect traces, and evaluate workflows.",
@@ -100,9 +109,9 @@ const AI_TEAM_DEFINITIONS = [
     modelClass: "reasoning-medium",
     aliases: ["strategist"],
     taskKinds: ["offer_architecture", "commercial_brief"],
-    instructions: "Turn evidence into a specific buyer, promise, product format, price, positioning, and buying trigger.",
+    instructions: "Turn evidence into a specific buyer, functional promise, product format, price, positioning, and buying trigger. Every customer-facing promise must map to a named tool, field, instruction, calculation, or checklist that Product Builder can implement.",
     tools: ["runtime_state", "commercial_briefs", "scorecards"],
-    guardrails: ["Every offer needs buyer, painful problem, price, channel, and risk.", "Do not build beyond the smallest useful test."],
+    guardrails: ["Every offer needs buyer, painful problem, price, channel, and risk.", "Do not build beyond the smallest useful test.", "Do not promise better, fewer, faster, improved, reduced, guaranteed, or completed outcomes before measurement.", "Prefer literal verbs such as organize, track, record, display, calculate, and plan; confirmation or completeness claims require an explicit named mechanism."],
     handoffTargets: ["copy_conversion_agent", "finance_analyst", "distribution_operator"],
     inputContract: { required: ["buyer", "problem", "evidence", "channel"] },
     outputContract: { required: ["offer", "price", "positioning", "promise", "objections", "test_hypothesis"] },
@@ -117,9 +126,9 @@ const AI_TEAM_DEFINITIONS = [
     modelClass: "creative-vision",
     aliases: ["designer", "publisher"],
     taskKinds: ["product_action_plan", "product_file_build", "mockup_direction", "publish_digital_product_dry_run", "publish_gelato_dry_run"],
-    instructions: "Create the exact approved product files and catalogue package needed for the commercial test. A plan is not a finished product: every claimed output must be returned as a local, reviewable file.",
+    instructions: "Create the exact approved product files and catalogue package needed for the commercial test. A plan is not a finished product: every claimed output must be returned as a local, reviewable file, and every customer-facing promise must be visibly implemented by an exact field, instruction, formula, checklist, or status.",
     tools: ["local_deliverables", "digital_product_adapter", "approval_pack", "product_file_factory", "image_generation_spend"],
-    guardrails: ["Protected mode by default.", "No live upload, supplier order, or paid generation without approval.", "Keep product output tied to the test hypothesis.", "Never claim a product is built unless Pantheon stores and validates the generated files."],
+    guardrails: ["Protected mode by default.", "No live upload, supplier order, or paid generation without approval.", "Keep product output tied to the test hypothesis.", "Never claim a product is built unless Pantheon stores and validates the generated files.", "Use functional customer language, not unmeasured promises of better, fewer, faster, improved, reduced, guaranteed, or completed outcomes.", "If the approved offer says confirm, approve, verify, complete, or organize something, add the exact supporting field, status, checklist, criteria, index, or instruction."],
     handoffTargets: ["quality_reviewer", "chief_of_staff"],
     inputContract: { required: ["offer", "product_format", "quality_bar", "channel_requirements"] },
     outputContract: { required: ["asset_plan", "produced_files", "catalogue_coverage", "quality_checks", "quality_risks", "approval_needed"] },
@@ -242,6 +251,60 @@ function listValue(value) {
 function textValue(value, fallback = "") {
   const text = String(value ?? "").trim();
   return text || fallback;
+}
+
+function collectTextValues(value) {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(collectTextValues);
+  if (value && typeof value === "object") return Object.values(value).flatMap(collectTextValues);
+  return [];
+}
+
+function hasAffirmativeClientPortalClaim(value) {
+  return collectTextValues(value).some((candidate) => (
+    String(candidate)
+      .split(/(?<=[.!?\n])\s+|;\s*/u)
+      .some((segment) => {
+        if (!/\bclient portal\b/i.test(segment)) return false;
+        if (/\?\s*$/.test(segment.trim())) return false;
+        if (/\b(?:no|not|never|without)\b[^.!?\n]{0,90}\bclient portal\b/i.test(segment)) return false;
+        if (/\bclient portal\b[^.!?\n]{0,70}\b(?:is|are|was|were|will be)?\s*(?:not|never)\b/i.test(segment)) return false;
+        return true;
+      })
+  ));
+}
+
+function publicationClaimSurfaces(stage, output, work) {
+  const summary = output?.summary || "";
+  if (stage === "conversion_copy") {
+    return {
+      summary,
+      productTitle: work.productTitle,
+      headline: work.headline,
+      description: work.description,
+      callToAction: work.callToAction,
+      faq: work.faq,
+      messageVariants: work.messageVariants,
+    };
+  }
+  if (stage === "distribution_plan") {
+    return {
+      summary,
+      audience: work.audience,
+      channelSteps: work.channelSteps,
+      operatorWorkload: work.operatorWorkload,
+    };
+  }
+  if (stage === "chief_brief") {
+    return {
+      summary,
+      moneyMove: work.moneyMove,
+      whyNow: work.whyNow,
+      expectedUpside: work.expectedUpside,
+      decisionNeeded: work.decisionNeeded,
+    };
+  }
+  return { summary };
 }
 
 function usefulValue(value) {
@@ -574,6 +637,153 @@ function addAgentTrace(db, runId, type, title, detail, metadata = {}) {
   );
 }
 
+function journeyAcceptanceIssues(definition, task, output) {
+  const payload = normalizeJson(task?.payload, {});
+  const parameters = normalizeJson(normalizeJson(payload.liveSpendRequest, {}).parameters, {});
+  const journey = normalizeJson(parameters.pantheonJourney, {});
+  if (!journey.journeyId) return [];
+  const commercial = normalizeJson(parameters.pantheonCommercial, {});
+  const production = normalizeJson(parameters.pantheonProduction, {});
+  const stage = commercial.step || production.stage || definition.id;
+  const work = normalizeJson(output?.roleOutput, {});
+  const issues = [];
+  const text = (value, minimum = 12) => textValue(value).length >= minimum;
+  const list = (value, minimum = 1) => Array.isArray(value) && value.filter((item) => text(item, 6)).length >= minimum;
+
+  if (stage === "opportunity_scout") {
+    const opportunities = Array.isArray(work.opportunities) ? work.opportunities : [];
+    const commerciallyComplete = opportunities.filter((item) => (
+      text(item?.title)
+      && text(item?.buyer)
+      && text(item?.problem, 20)
+      && text(item?.offerDirection, 20)
+      && list(item?.demandEvidence)
+      && list(item?.competitionEvidence)
+      && list(item?.risks)
+    ));
+    const buildableDigital = opportunities.filter((item) => (
+      /(digital|download|template|spreadsheet|excel|tracker|calculator|planner|worksheet|workbook|guide|course|ebook|protocol|routine|checklist|toolkit|bundle)/i
+        .test(`${item?.businessModel || ""} ${item?.offerDirection || ""}`)
+    ));
+    if (commerciallyComplete.length < 3) issues.push("The broad scan did not contain three commercially complete candidates.");
+    if (buildableDigital.length < 3) issues.push("The broad scan did not contain three clearly buildable digital-product candidates.");
+  } else if (stage === "demand_validator") {
+    if (!list(work.sourceSummary) || !list(work.counterevidence)) {
+      issues.push("Demand validation needs both source findings and counterevidence.");
+    }
+    if (![work.priceChannelHypothesis, work.smallestTest, work.successMetric, work.stopRule].every((value) => text(value, 16))) {
+      issues.push("Demand validation did not define a useful price/channel hypothesis, test, metric, and stop rule.");
+    }
+  } else if (stage === "finance_analysis") {
+    if (![work.price, work.marginLogic, work.breakEven, work.costCap, work.financialRisk, work.decisionSignal]
+      .every((value) => text(value, 12))) {
+      issues.push("The economics check did not cover price, margin, break-even, cost cap, risk, and a decision signal.");
+    }
+  } else if (stage === "offer_architecture") {
+    if (![work.buyer, work.problem, work.offer, work.price, work.promise, work.testHypothesis, work.successMetric, work.stopRule]
+      .every((value) => text(value, 12))) {
+      issues.push("The offer is missing a substantive buyer, problem, product, price, promise, test, metric, or stop rule.");
+    }
+    issues.push(...offerClaimAlignmentIssues(work));
+    issues.push(...digitalProductKitCompatibilityIssues(work));
+  } else if (stage === "product_build") {
+    const generated = normalizeJson(output?.generatedFiles, {});
+    const manifest = normalizeJson(generated.manifest, {});
+    if (!Array.isArray(generated.files) || generated.files.length < 2) {
+      issues.push("Product Builder did not retain both a real manifest and a customer product package.");
+    }
+    if (!Array.isArray(manifest.catalogueItems) || manifest.catalogueItems.length < 3) {
+      issues.push("The product manifest does not cover the required minimum three-item catalogue.");
+    }
+    if (!Array.isArray(generated.previews) || generated.previews.length !== 2) {
+      issues.push("The customer package did not yield exactly two truthful storefront previews.");
+    }
+  } else if (stage === "storefront_visuals") {
+    if (!Array.isArray(output?.generatedAssets) || output.generatedAssets.length !== 1) {
+      issues.push("The storefront stage did not retain exactly one generated cover.");
+    }
+  } else if (stage === "quality_review") {
+    if (!Number.isFinite(Number(work.qualityScore)) || !text(work.operatorRecommendation, 20)) {
+      issues.push("Independent review did not provide a reasoned score and operator recommendation.");
+    }
+    if (!Array.isArray(work.riskFindings)) {
+      issues.push("Independent review did not explicitly record product and usability risks.");
+    }
+    if (!Array.isArray(work.missingEvidence)) {
+      issues.push("Independent review did not explicitly record missing evidence.");
+    }
+    if (!text(work.claimSafety, 4)) {
+      issues.push("Independent review did not state whether the product claims are safe, need revision, or are unsafe.");
+    }
+  } else if (stage === "conversion_copy") {
+    if (!text(work.productTitle) || !text(work.headline) || !text(work.description, 80) || !text(work.callToAction)) {
+      issues.push("The Gumroad listing is missing substantive title, headline, description, or call to action.");
+    }
+    if (!list(work.includedFiles) || !list(work.tags, 2) || !list(work.faq) || !list(work.claimChecks)) {
+      issues.push("The Gumroad listing is missing included files, tags, FAQ, or claim checks.");
+    }
+  } else if (stage === "distribution_plan") {
+    const steps = Array.isArray(work.channelSteps) ? work.channelSteps.filter((item) => text(item, 12)) : [];
+    if (steps.length < 1 || steps.length > 5) {
+      issues.push("The launch plan must contain one to five concrete setup and channel actions.");
+    }
+    const publicPostActions = steps.filter((item) => (
+      /\b(?:post|publish|share)\b/i.test(item)
+      && !/\b(?:do not|must not|no automatic|before|pre-launch)\b[^.]{0,100}\b(?:post|publish|share)\b/i.test(item)
+    ));
+    if (publicPostActions.length > 3) {
+      issues.push("The launch plan cannot contain more than three public post actions.");
+    }
+    if (![work.successMetric, work.stopRule, work.operatorWorkload].every((value) => text(value, 16))) {
+      issues.push("The launch plan did not define measurement, a stop rule, and Daniel's exact workload.");
+    }
+  } else if (stage === "chief_brief") {
+    if (![work.moneyMove, work.whyNow, work.expectedUpside, work.costRisk, work.decisionNeeded, work.successMetric, work.stopRule]
+      .every((value) => text(value, 16))) {
+      issues.push("The final brief did not clearly state the money move, rationale, upside, cost/risk, decision, metric, and stop rule.");
+    }
+  }
+  const verifiedLaunchState = normalizeJson(production.verifiedLaunchState, {});
+  if (["conversion_copy", "distribution_plan", "chief_brief"].includes(stage)
+      && verifiedLaunchState.stage === stage) {
+    issues.push(...publicationTextIssues(output, "The worker's publication output"));
+    if (verifiedLaunchState.currentPackageReconciled === true) {
+      issues.push(...currentPackageDefectIssues(output, "The worker's publication output"));
+    }
+    if (
+      stage === "conversion_copy"
+      && Array.isArray(verifiedLaunchState.expectedIncludedFiles)
+      && !exactPublicationListMatch(work.includedFiles, verifiedLaunchState.expectedIncludedFiles)
+    ) {
+      issues.push("The listing's included-file summary does not exactly match the canonical product manifest.");
+    }
+    const outputText = JSON.stringify(output || {});
+    const supersededFailurePatterns = [
+      /unterminated json/i,
+      /listing[- ]copy task failed/i,
+      /(?:manifest|packet|catalogue)[^.]{0,100}\btruncated\b/i,
+      /status[- ]field limitation/i,
+      /independent[^.]{0,100}(?:review|usability)[^.]{0,80}(?:incomplete|not confirmed)/i,
+    ];
+    if (verifiedLaunchState.supersededErrorsAreCurrent === false
+        && supersededFailurePatterns.some((pattern) => pattern.test(outputText))) {
+      issues.push("The worker reported a superseded technical attempt as a current launch defect.");
+    }
+    if (hasAffirmativeClientPortalClaim(publicationClaimSurfaces(stage, output, work))) {
+      issues.push("The worker described the workbook-and-guide toolkit as a client portal, which the verified product does not provide.");
+    }
+    if (stage === "chief_brief") {
+      if (verifiedLaunchState.qualityPassed === true && output?.operatorDecision !== "approve") {
+        issues.push("The final brief contradicted the current quality-passed launch record instead of presenting the exact publish-readiness decision.");
+      }
+      if (!/(?:ready[- ]to[- ]publish|publish[- ]ready|publication[- ]ready)/i.test(String(work.decisionNeeded || ""))) {
+        issues.push("The final brief did not state the exact decision to mark the local package ready to publish.");
+      }
+    }
+  }
+  return issues;
+}
+
 function evaluateAgentOutput(db, definition, runRecord, task, output, context = {}) {
   const attemptId = context.attemptId || null;
   if (attemptId) bindAgentRunToAttempt(db, attemptId, runRecord.id);
@@ -611,6 +821,11 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
       findings.push("Live commercial research did not complete with grounded evidence.");
       score -= 20;
     }
+  }
+  const commercialAcceptanceIssues = journeyAcceptanceIssues(definition, task, output);
+  if (commercialAcceptanceIssues.length) {
+    findings.push(...commercialAcceptanceIssues);
+    score -= Math.min(70, commercialAcceptanceIssues.length * 35);
   }
 
   const requiredBusinessDecisionFields = [
@@ -713,6 +928,7 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
         businessDecisionSchema: decision?.schema || null,
         missingBusinessDecisionFields,
         missingContractFields,
+        commercialAcceptanceIssues,
       }),
       "local-structural-v2",
       sha256(output || {}),
@@ -966,9 +1182,12 @@ function recordAgentFailure(db, runRecord, definition, error, metadata = {}) {
   if (!runRecord?.id) return null;
   const evalStatus = metadata.evaluation?.status
     || (error.outcomeUnknown === true ? "unknown" : "not_evaluable");
+  const providerReceipt = metadata.providerReceipt || error.providerReceipt || null;
   finishAgentRun(db, runRecord.id, {
     status: "failed",
     outputSummary: error.message,
+    modelCallId: error.modelCallId || providerReceipt?.modelCallId || null,
+    estimatedCostCents: Number(error.incurredEstimateCents || providerReceipt?.incurredEstimateCents || 0),
     evalStatus,
     metadata: { error: error.message, ...metadata },
   });

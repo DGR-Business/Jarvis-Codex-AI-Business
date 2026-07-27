@@ -143,6 +143,107 @@ test("task-scoped context exposes focused records without credentials or direct 
   }
 });
 
+test("selected-opportunity evidence and production records stay inside the exact workflow scope", () => {
+  const runtime = makeRuntime();
+  try {
+    insertWorkflow(runtime.db, "wf-current-context");
+    insertWorkflow(runtime.db, "wf-historical-context");
+    const ts = "2026-07-17T01:00:00.000Z";
+    run(
+      runtime.db,
+      `INSERT INTO commercial_evidence
+       (id, venture_id, source_type, source_url, title, summary, captured_at, is_demo, metadata, created_at)
+       VALUES
+       ('evidence-selected', 'venture-digital-products', 'source_link', 'https://example.com/selected',
+        'Selected source', 'Evidence for the selected opportunity.', ?, 0, '{}', ?),
+       ('evidence-other', 'venture-digital-products', 'source_link', 'https://example.com/other',
+        'Other source', 'Evidence for another opportunity.', ?, 0, '{}', ?)`,
+      [ts, ts, ts, ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO opportunities
+       (id, venture_id, source_type, status, title, business_model, buyer, problem,
+        offer_direction, channel, overall_score, confidence, recommendation, evidence_ids,
+        metadata, created_at, updated_at)
+       VALUES
+       ('opp-selected', 'venture-digital-products', 'live_agent_research', 'selected_for_finance',
+        'Selected opportunity', 'digital_product', 'Selected buyer', 'Selected problem',
+        'Selected offer', 'Gumroad', 72, 'medium', 'Run the bounded test.', ?,
+        ?, ?, ?),
+       ('opp-other', 'venture-digital-products', 'live_agent_research', 'ranked_alternative',
+        'Other opportunity', 'digital_product', 'Other buyer', 'Other problem',
+        'Other offer', 'Marketplace', 65, 'medium', 'Retain for later.', ?,
+        ?, ?, ?)`,
+      [
+        toJson(["evidence-selected"]),
+        toJson({
+          validation: {
+            recommendation: "Selected validation conclusion.",
+            verdict: "needs_evidence",
+            confidence: "medium",
+            evidence: ["Selected buyer problem is recurrent."],
+            smallestTest: "Show the selected offer to qualified buyers.",
+            metric: "Three independent paid buyers.",
+            stopRule: "Stop after 50 qualified views and zero sales.",
+          },
+        }),
+        ts,
+        ts,
+        toJson(["evidence-other"]),
+        toJson({
+          validation: {
+            recommendation: "Other validation conclusion.",
+            evidence: ["Unrelated evidence."],
+          },
+        }),
+        ts,
+        ts,
+      ],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO deliverables
+       (id, workflow_id, venture_id, title, human_name, audience, format, status,
+        summary, metadata, created_at, updated_at)
+       VALUES
+       ('deliverable-current', 'wf-current-context', 'venture-digital-products',
+        'Current file', 'Current file', 'operator', 'application/pdf', 'ready',
+        'Current workflow output.', '{}', ?, ?),
+       ('deliverable-superseded', 'wf-current-context', 'venture-digital-products',
+        'Superseded file', 'Superseded file', 'operator', 'text/markdown', 'superseded',
+        'Old launch material retained only for audit.', '{}', ?, ?),
+       ('deliverable-historical', 'wf-historical-context', 'venture-digital-products',
+        'Historical file', 'Historical file', 'operator', 'application/pdf', 'needs_changes',
+        'Old rehearsal output.', '{}', ?, ?)`,
+      [ts, ts, ts, ts, ts, ts],
+    );
+
+    const snapshot = buildAgentContextSnapshot(runtime.db, {
+      ventureId: "venture-digital-products",
+      workflowId: "wf-current-context",
+      taskId: "task-current-context",
+      agentId: "product_builder",
+      opportunityId: "opp-selected",
+      purpose: "Build only the selected product.",
+    });
+    const evidenceRefs = snapshot.sections.evidence.records.map((item) => item.ref.id);
+    const productionRefs = snapshot.sections.production.records.map((item) => item.ref.id);
+
+    assert.ok(evidenceRefs.includes("opp-selected"));
+    assert.ok(evidenceRefs.includes("evidence-selected"));
+    assert.equal(evidenceRefs.includes("evidence-other"), false);
+    assert.ok(productionRefs.includes("deliverable-current"));
+    assert.equal(productionRefs.includes("deliverable-superseded"), false);
+    assert.equal(productionRefs.includes("deliverable-historical"), false);
+    assert.equal(snapshot.contextScope.opportunityId, "opp-selected");
+    assert.equal(snapshot.dataPolicy.selectedOpportunityEvidenceOnly, true);
+    assert.equal(snapshot.dataPolicy.workflowScopedOperationalRecords, true);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
 test("live worker approvals bind a persisted context snapshot while supplied-evidence pilots stay isolated", () => {
   const runtime = makeRuntime();
   try {
@@ -174,6 +275,35 @@ test("live worker approvals bind a persisted context snapshot while supplied-evi
       maxOutputTokens: 200,
       disableVentureContext: true,
     }), /cannot be disabled/i);
+
+    insertWorkflow(runtime.db, "wf-context-too-large");
+    assert.throws(() => requestLiveAiWorker(runtime.db, "wf-context-too-large", {
+      worker: "finance_analyst",
+      requestedBy: "test",
+      estimatedCostCents: 100,
+      maxOutputTokens: 200,
+      workBrief: {
+        objective: "Review one exact structured record.",
+        assetPrompt: JSON.stringify({ schema: "complete-record-v1", payload: "x".repeat(12_000) }),
+      },
+    }), /concise complete context instead of clipping structured business records/i);
+
+    insertWorkflow(runtime.db, "wf-context-complete");
+    const completeAssetPrompt = JSON.stringify({
+      schema: "complete-record-v1",
+      currentTruth: { status: "quality_passed", score: 93 },
+    });
+    const completeContext = requestLiveAiWorker(runtime.db, "wf-context-complete", {
+      worker: "finance_analyst",
+      requestedBy: "test",
+      estimatedCostCents: 100,
+      maxOutputTokens: 200,
+      workBrief: {
+        objective: "Review one exact structured record.",
+        assetPrompt: completeAssetPrompt,
+      },
+    });
+    assert.equal(completeContext.task.payload.workBrief.assetPrompt, completeAssetPrompt);
 
     const fixtureRecord = createPilotFixture(runtime.db, {
       id: "fixture-only",

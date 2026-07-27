@@ -4,6 +4,12 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { URL } = require("node:url");
 const { WebSocketServer } = require("ws");
+const {
+  emergencyStopPantheon,
+  getRuntimeControlState,
+  returnToStandby,
+  stopPantheon,
+} = require("./runtime/runtime-supervisor");
 const CONFIG = require("./config");
 const { decideApproval } = require("./runtime/approvals");
 const { refreshIntegrationHealth } = require("./adapters/registry");
@@ -85,8 +91,38 @@ const {
   unsafeTaskReason,
 } = require("./runtime/scheduler");
 const { getOpportunityState, startOpportunityRound } = require("./runtime/pantheon-opportunities");
+const {
+  ensurePortfolioController,
+  getPortfolioState,
+  startPortfolioDiscovery,
+} = require("./runtime/portfolio-controller");
+const {
+  getCommercialConstitution,
+  searchCommercialKnowledge,
+} = require("./runtime/commercial-knowledge");
+const {
+  getInvestmentCase,
+  listInvestmentCases,
+} = require("./runtime/commercial-investment-review");
+const {
+  approveServiceTrialWithinMandate,
+  completeServiceTrial,
+  decideServiceRetention,
+  getServiceTrialsState,
+  proposeServiceTrial,
+  startServiceTrial,
+} = require("./runtime/service-trials");
+const { getCapabilityAssuranceState } = require("./runtime/capability-assurance");
+const { listVentureKits } = require("./runtime/venture-kit-registry");
+const { approveInternalWorkWithinMandate } = require("./runtime/pantheon-policy");
 const { getPantheonSupervisorState, runPantheonSupervisorCycle } = require("./runtime/pantheon-supervisor");
 const { applyPantheonHandoffDecision, getProductionState } = require("./runtime/pantheon-production");
+const {
+  getJourneyState,
+  isTerminalJourneyStatus,
+  journeyById,
+  startPantheonJourney,
+} = require("./runtime/pantheon-journey");
 
 const PUBLIC_DIR = path.join(CONFIG.rootDir, "public");
 const MONITOR_JOB_ID = "job-monitor-cycle";
@@ -283,6 +319,7 @@ function ensureRuntimeFoundation(db) {
   ensureCapabilityAutonomy(db);
   ensureWeeklyDigest(db);
   ensureRetentionPolicy(db);
+  ensurePortfolioController(db);
   return { integrationHealth, approvalRefresh, setupRecovery };
 }
 
@@ -647,6 +684,34 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/api/runtime/control") {
+        jsonResponse(res, 200, getRuntimeControlState(db));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/runtime/standby") {
+        const result = await returnToStandby(db);
+        jsonResponse(res, 202, result);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/runtime/stop") {
+        const result = await stopPantheon(db);
+        jsonResponse(res, 202, result);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/runtime/emergency-stop") {
+        const body = await readBody(req);
+        if (body.confirm !== "STOP PANTHEON NOW") {
+          jsonResponse(res, 400, { error: "Emergency stop needs the exact confirmation phrase." });
+          return;
+        }
+        const result = await emergencyStopPantheon(db);
+        jsonResponse(res, 202, result);
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/api/cockpit") {
         jsonResponse(res, 200, getCockpitState(db));
         return;
@@ -657,8 +722,121 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/api/portfolio") {
+        jsonResponse(res, 200, getPortfolioState(db));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/portfolio/discovery") {
+        const body = await readBody(req);
+        const result = startPortfolioDiscovery(db, body || {});
+        broadcastState();
+        jsonResponse(res, result.started ? 202 : 409, result);
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/commercial/constitution") {
+        jsonResponse(res, 200, getCommercialConstitution());
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/commercial/knowledge") {
+        const query = url.searchParams.get("query") || "";
+        if (!query.trim()) {
+          jsonResponse(res, 400, { error: "A focused commercial knowledge query is required." });
+          return;
+        }
+        jsonResponse(res, 200, {
+          query,
+          results: searchCommercialKnowledge(db, {
+            query,
+            domains: url.searchParams.getAll("domain"),
+            classes: url.searchParams.getAll("class"),
+            jurisdiction: url.searchParams.get("jurisdiction") || "Australia",
+            limit: url.searchParams.get("limit") || 8,
+          }),
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/commercial/investment-cases") {
+        jsonResponse(res, 200, { cases: listInvestmentCases(db) });
+        return;
+      }
+
+      const investmentCaseDetail = routeMatch(url.pathname, "/api/commercial/investment-cases/:id");
+      if (req.method === "GET" && investmentCaseDetail) {
+        const result = getInvestmentCase(db, investmentCaseDetail.id);
+        if (!result) notFound(res);
+        else jsonResponse(res, 200, result);
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/commercial/service-trials") {
+        jsonResponse(res, 200, getServiceTrialsState(db));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/commercial/service-trials") {
+        const body = await readBody(req);
+        const trial = proposeServiceTrial(db, body || {});
+        broadcastState();
+        jsonResponse(res, 201, { trial });
+        return;
+      }
+
+      const serviceTrialApprove = routeMatch(url.pathname, "/api/commercial/service-trials/:id/approve");
+      if (req.method === "POST" && serviceTrialApprove) {
+        const body = await readBody(req);
+        const result = approveServiceTrialWithinMandate(db, serviceTrialApprove.id, body || {});
+        broadcastState();
+        jsonResponse(res, result.approved ? 200 : 409, result);
+        return;
+      }
+
+      const serviceTrialStart = routeMatch(url.pathname, "/api/commercial/service-trials/:id/start");
+      if (req.method === "POST" && serviceTrialStart) {
+        const trial = startServiceTrial(db, serviceTrialStart.id);
+        broadcastState();
+        jsonResponse(res, 200, { trial });
+        return;
+      }
+
+      const serviceTrialComplete = routeMatch(url.pathname, "/api/commercial/service-trials/:id/complete");
+      if (req.method === "POST" && serviceTrialComplete) {
+        const body = await readBody(req);
+        const trial = completeServiceTrial(db, serviceTrialComplete.id, body || {});
+        broadcastState();
+        jsonResponse(res, 200, { trial });
+        return;
+      }
+
+      const serviceTrialDecision = routeMatch(url.pathname, "/api/commercial/service-trials/:id/decision");
+      if (req.method === "POST" && serviceTrialDecision) {
+        const body = await readBody(req);
+        const result = decideServiceRetention(db, serviceTrialDecision.id, body || {});
+        broadcastState();
+        jsonResponse(res, result.decided ? 200 : 409, result);
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/system/capability-assurance") {
+        jsonResponse(res, 200, getCapabilityAssuranceState(db));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/venture-kits") {
+        jsonResponse(res, 200, { kits: listVentureKits(db) });
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/api/pantheon") {
         jsonResponse(res, 200, getPantheonSupervisorState(db));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/journey") {
+        jsonResponse(res, 200, getJourneyState(db, url.searchParams.get("id")));
         return;
       }
 
@@ -672,7 +850,9 @@ function createApp(options = {}) {
           ventures: all(
             db,
             `SELECT id, name, lifecycle_stage, is_active, business_model
-             FROM ventures ORDER BY is_active DESC, name ASC`,
+             FROM ventures
+             WHERE COALESCE(json_extract(metadata, '$.visibleInVentureSelector'), 1) <> 0
+             ORDER BY is_active DESC, name ASC`,
           ),
         });
         return;
@@ -701,7 +881,12 @@ function createApp(options = {}) {
       }
 
       if (req.method === "GET" && url.pathname === "/api/gumroad/sales") {
-        jsonResponse(res, 200, getGumroadSalesState(db, url.searchParams.get("venture_id") || "venture-digital-products"));
+        const ventureId = url.searchParams.get("venture_id");
+        if (!ventureId) {
+          jsonResponse(res, 400, { error: "venture_id is required." });
+          return;
+        }
+        jsonResponse(res, 200, getGumroadSalesState(db, ventureId));
         return;
       }
 
@@ -1102,6 +1287,56 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "POST" && url.pathname === "/api/pantheon/journeys") {
+        const body = await readBody(req);
+        const journeyInput = {
+          mode: body.mode || CONFIG.journeyMode,
+          prompt: body.prompt,
+          idea: body.idea,
+          geography: body.geography,
+          language: body.language,
+          model: CONFIG.lunaModel,
+          budgetCapCents: Math.min(
+            CONFIG.journeyBudgetCapCents,
+            Number(body.budgetCapCents || CONFIG.journeyBudgetCapCents),
+          ),
+          source: "dashboard-full-journey",
+          createdBy: "Daniel",
+          force: body.force === true,
+        };
+        if (body.carriedExposureCents !== undefined) {
+          journeyInput.carriedExposureCents = Number(body.carriedExposureCents);
+        }
+        const result = startPantheonJourney(db, journeyInput);
+        broadcastState();
+        jsonResponse(res, result.alreadyRunning ? 200 : 202, result);
+        return;
+      }
+
+      const journeyContinue = routeMatch(url.pathname, "/api/pantheon/journeys/:id/continue");
+      if (req.method === "POST" && journeyContinue) {
+        const journey = journeyById(db, journeyContinue.id);
+        if (!journey) {
+          jsonResponse(res, 404, { error: "This Pantheon journey was not found." });
+          return;
+        }
+        if (isTerminalJourneyStatus(journey.status)) {
+          jsonResponse(res, 409, { error: "This journey is already finished.", state: getJourneyState(db, journey.id) });
+          return;
+        }
+        const result = await runPantheonSupervisorCycle(db, {
+          triggerType: "manual",
+          triggerId: journey.id,
+          startedBy: "dashboard-full-journey",
+          workflowId: journey.workflow_id,
+          ventureId: journey.venture_id,
+          maxSteps: 2,
+        });
+        broadcastState();
+        jsonResponse(res, 200, { result, state: getJourneyState(db, journey.id) });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/pantheon/run") {
         const body = await readBody(req);
         const result = await runPantheonSupervisorCycle(db, {
@@ -1153,6 +1388,10 @@ function createApp(options = {}) {
         const result = prepareReviewedLiveAiWorkerRetry(db, taskKnownRetry.id, {
           proofMode: CONFIG.systemProofMode === true,
         });
+        const commercial = result.task?.payload?.liveSpendRequest?.parameters?.pantheonCommercial;
+        if (commercial?.supervisorOwned === true && result.approval?.id) {
+          result.mandate = approveInternalWorkWithinMandate(db, result.approval.id);
+        }
         broadcastState();
         jsonResponse(res, 202, { result });
         return;
@@ -1357,7 +1596,7 @@ function createApp(options = {}) {
           ? await runOnce(db, { taskId: result.approvedTaskIds[0], claimant: "dashboard_approval" })
           : null;
         const approvedTask = result.approvedTaskIds?.length
-          ? get(db, "SELECT payload FROM tasks WHERE id = ?", [result.approvedTaskIds[0]])
+          ? get(db, "SELECT payload, workflow_id, venture_id FROM tasks WHERE id = ?", [result.approvedTaskIds[0]])
           : null;
         const approvedPayload = fromJson(approvedTask?.payload, {});
         const isPantheonWork = Boolean(
@@ -1365,12 +1604,14 @@ function createApp(options = {}) {
           || approvedPayload.liveSpendRequest?.parameters?.pantheonProduction,
         );
         const pantheonContinuation = decision === "approved"
-          && execution?.status === "completed"
+          && execution
           && isPantheonWork
           ? await runPantheonSupervisorCycle(db, {
             triggerType: "operator_approval",
             triggerId: approvalDecision.id,
             startedBy: "dashboard",
+            workflowId: approvedTask.workflow_id,
+            ventureId: approvedTask.venture_id,
             maxSteps: 10,
           })
           : null;

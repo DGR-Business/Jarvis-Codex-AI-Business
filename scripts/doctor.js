@@ -11,6 +11,11 @@ const {
   requiredPassphrase,
   verifyBackup,
 } = require("../src/runtime/backup");
+const {
+  IMAGE_GENERATION_PRICING,
+  MODEL_PRICING_USD_PER_MILLION,
+  TOOL_PRICING_USD_PER_THOUSAND_CALLS,
+} = require("../src/runtime/model-pricing");
 
 const root = path.resolve(__dirname, "..");
 
@@ -66,6 +71,32 @@ function checkNodeSqlite() {
   }
 }
 
+function checkPricingFreshness(options = {}) {
+  const nowValue = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
+  const maxAgeDays = Number(options.maxAgeDays || 30);
+  const entries = [
+    ...Object.entries(MODEL_PRICING_USD_PER_MILLION).map(([name, pricing]) => ({ name: `model:${name}`, ...pricing })),
+    ...Object.entries(TOOL_PRICING_USD_PER_THOUSAND_CALLS).map(([name, pricing]) => ({ name: `tool:${name}`, ...pricing })),
+    { name: `image:${IMAGE_GENERATION_PRICING.model}`, ...IMAGE_GENERATION_PRICING },
+  ];
+  const invalid = entries.filter((entry) => Number.isNaN(new Date(entry.checkedAt).getTime()));
+  if (invalid.length) {
+    return result("Pricing data", "fail", `Pantheon has ${invalid.length} pricing record(s) without a valid review date.`);
+  }
+  const stale = entries.filter((entry) => (
+    (nowValue.getTime() - new Date(entry.checkedAt).getTime()) / 86400000 > maxAgeDays
+  ));
+  if (stale.length) {
+    return result(
+      "Pricing data",
+      "warn",
+      `${stale.length} model or tool price record(s) are older than ${maxAgeDays} days; refresh them before approving paid work.`,
+      { stale: stale.map((entry) => ({ name: entry.name, checkedAt: entry.checkedAt, source: entry.source })) },
+    );
+  }
+  return result("Pricing data", "pass", `${entries.length} model and tool price records were reviewed within ${maxAgeDays} days.`);
+}
+
 function checkTar() {
   const command = process.platform === "win32" ? "tar.exe" : "tar";
   const probe = spawnSync(command, ["--version"], { encoding: "utf8", windowsHide: true });
@@ -98,18 +129,34 @@ function checkRenderer() {
     if (path.isAbsolute(candidate.command) && !fs.existsSync(candidate.command)) continue;
     const probe = spawnSync(
       candidate.command,
-      [...candidate.prefix, "-c", "import reportlab,sys; print(sys.version_info[0]); print(reportlab.Version)"],
+      [
+        ...candidate.prefix,
+        "-c",
+        [
+          "import openpyxl,PIL,reportlab,sys",
+          "print(sys.version_info[0])",
+          "print(reportlab.Version)",
+          "print(openpyxl.__version__)",
+          "print(PIL.__version__)",
+        ].join(";"),
+      ],
       { encoding: "utf8", windowsHide: true },
     );
     if (probe.status === 0) {
       const lines = String(probe.stdout || "").trim().split(/\r?\n/);
-      return result("PDF renderer", "pass", `Python ${lines[0] || "3"} and ReportLab ${lines[1] || "available"} are available.`);
+      return result(
+        "PDF renderer",
+        "pass",
+        `Python ${lines[0] || "3"}, ReportLab ${lines[1] || "available"}, `
+          + `openpyxl ${lines[2] || "available"}, and Pillow ${lines[3] || "available"} are available.`,
+      );
     }
   }
   return result(
     "PDF renderer",
     "fail",
-    "No usable Python 3 runtime with ReportLab was found. Set PANTHEON_PYTHON "
+    "No usable Python 3 runtime with Pantheon's pinned ReportLab, openpyxl, and Pillow dependencies was found. "
+      + "Install requirements-runtime.txt and set PANTHEON_PYTHON "
       + "(or the legacy JARVIS_PYTHON alias) to the approved runtime.",
   );
 }
@@ -345,6 +392,7 @@ async function runDoctor(options = {}) {
     checkNodeVersion(),
     checkLockfile(),
     checkNodeSqlite(),
+    checkPricingFreshness({ now: options.now, maxAgeDays: options.pricingMaxAgeDays }),
     checkTar(),
     checkRenderer(),
     checkWritableDirectory("Data directory", options.dataDir || CONFIG.dataDir),
@@ -406,6 +454,7 @@ module.exports = {
   checkNodeSqlite,
   checkNodeVersion,
   checkPort,
+  checkPricingFreshness,
   checkRenderer,
   checkRecoverySet,
   checkRuntimeDatabase,

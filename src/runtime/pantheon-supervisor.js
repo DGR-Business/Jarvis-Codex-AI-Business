@@ -13,6 +13,7 @@ const {
   pendingProductionTask,
   projectCompletedProductionTask,
 } = require("./pantheon-production");
+const { journeyById, updateJourney } = require("./pantheon-journey");
 const { recoverSetupBlockedTasks } = require("./spend-gate");
 
 const RUNNABLE = new Set(["queued", "planned"]);
@@ -97,7 +98,7 @@ function finishCycle(db, cycleId, payload = {}) {
   return parseCycle(get(db, "SELECT * FROM supervisor_cycles WHERE id = ?", [cycleId]));
 }
 
-function completedUnprojectedOpportunityTask(db) {
+function completedUnprojectedOpportunityTask(db, workflowId = null) {
   const rows = all(
     db,
     `SELECT tasks.*, opportunity_rounds.metadata AS round_metadata
@@ -110,17 +111,22 @@ function completedUnprojectedOpportunityTask(db) {
      ORDER BY tasks.completed_at ASC, tasks.created_at ASC`,
   );
   return rows.find((row) => {
+    if (workflowId && row.workflow_id !== workflowId) return false;
     const roundMetadata = fromJson(row.round_metadata, {});
     return !(roundMetadata.projectedTaskIds || []).includes(row.id);
   }) || null;
 }
 
-function completedUnprojectedTask(db) {
-  return completedUnprojectedOpportunityTask(db) || completedUnprojectedProductionTask(db);
+function completedUnprojectedTask(db, workflowId = null) {
+  return completedUnprojectedOpportunityTask(db, workflowId)
+    || completedUnprojectedProductionTask(db, workflowId);
 }
 
-function pendingPantheonTask(db) {
-  const tasks = [pendingCommercialTask(db), pendingProductionTask(db)].filter(Boolean);
+function pendingPantheonTask(db, workflowId = null) {
+  const tasks = [
+    pendingCommercialTask(db, workflowId),
+    pendingProductionTask(db, workflowId),
+  ].filter(Boolean);
   return tasks.sort((a, b) => (
     Number(a.priority || 100) - Number(b.priority || 100)
     || String(a.created_at || "").localeCompare(String(b.created_at || ""))
@@ -138,6 +144,194 @@ function exactApproval(db, task) {
     || fromJson(task?.payload, {})?.liveSpendRequest?.approvalId
     || null;
   return id ? get(db, "SELECT * FROM approvals WHERE id = ?", [id]) : null;
+}
+
+function journeyForTask(db, task) {
+  const payload = task?.payload && typeof task.payload === "object"
+    ? task.payload
+    : fromJson(task?.payload, {});
+  const journeyId = payload?.liveSpendRequest?.parameters?.pantheonJourney?.journeyId;
+  return journeyId ? journeyById(db, journeyId) : null;
+}
+
+function markJourneyAttention(db, task, summary) {
+  const journey = journeyForTask(db, task);
+  if (!journey) return null;
+  if (!["starting", "running", "waiting_for_operator", "needs_attention"].includes(journey.status)) {
+    return journey;
+  }
+  const payload = task?.payload && typeof task.payload === "object"
+    ? task.payload
+    : fromJson(task?.payload, {});
+  const production = payload?.liveSpendRequest?.parameters?.pantheonProduction || {};
+  const correctionNumber = production.stage === "product_build"
+    ? Math.max(
+      Number(payload?.liveSpendRequest?.parameters?.retry?.number || 0),
+      Number(production.revisionNumber || 0),
+    )
+    : Number(payload?.liveSpendRequest?.parameters?.retry?.number || 0);
+  const correctionLimit = Math.max(0, Number(journey.metadata?.correctionLimitPerStage || 1));
+  if (task.outcome_status === "unknown") {
+    const ts = now();
+    if (journey.workflow_id) {
+      run(db, "UPDATE workflows SET status = 'failed', updated_at = ? WHERE id = ?", [ts, journey.workflow_id]);
+      run(db, "UPDATE commands SET status = 'failed', updated_at = ? WHERE workflow_id = ?", [ts, journey.workflow_id]);
+    }
+    if (journey.round_id) {
+      run(
+        db,
+        "UPDATE opportunity_rounds SET status = 'stopped_unknown_outcome', updated_at = ? WHERE id = ?",
+        [ts, journey.round_id],
+      );
+    }
+    const stopped = updateJourney(db, journey.id, {
+      status: "stopped_unknown_outcome",
+      completedAt: ts,
+      metadata: {
+        currentTaskId: task.id,
+        blocker: summary,
+        providerOutcomeUnknown: true,
+      },
+      stageEvent: {
+        stage: journey.active_stage,
+        status: "stopped_unknown_outcome",
+        taskId: task.id,
+        workerId: task.agent,
+        note: "The provider outcome could not be confirmed. Pantheon stopped this journey and will not retry it automatically.",
+      },
+    });
+    insertEvent(db, {
+      level: "error",
+      actor: "pantheon-supervisor",
+      type: "pantheon.journey_stopped_unknown_outcome",
+      entityType: "pantheon_journey",
+      entityId: journey.id,
+      message: "Pantheon stopped the journey because a paid provider outcome could not be confirmed.",
+      metadata: { taskId: task.id, workerId: task.agent, summary },
+    });
+    return stopped;
+  }
+  if (correctionNumber >= correctionLimit && correctionNumber > 0) {
+    const ts = now();
+    if (journey.workflow_id) {
+      run(db, "UPDATE workflows SET status = 'failed', updated_at = ? WHERE id = ?", [ts, journey.workflow_id]);
+      run(db, "UPDATE commands SET status = 'failed', updated_at = ? WHERE workflow_id = ?", [ts, journey.workflow_id]);
+    }
+    if (journey.round_id) {
+      run(
+        db,
+        "UPDATE opportunity_rounds SET status = 'stopped_after_correction', updated_at = ? WHERE id = ?",
+        [ts, journey.round_id],
+      );
+    }
+    const stopped = updateJourney(db, journey.id, {
+      status: "stopped_after_correction",
+      completedAt: ts,
+      metadata: {
+        currentTaskId: task.id,
+        blocker: summary,
+        correctionLimitReached: true,
+      },
+      stageEvent: {
+        stage: journey.active_stage,
+        status: "stopped_after_correction",
+        taskId: task.id,
+        workerId: task.agent,
+        note: "The single permitted corrected attempt did not pass. Pantheon stopped this journey before spending again.",
+      },
+    });
+    insertEvent(db, {
+      level: "error",
+      actor: "pantheon-supervisor",
+      type: "pantheon.journey_stopped_after_correction",
+      entityType: "pantheon_journey",
+      entityId: journey.id,
+      message: "Pantheon stopped the journey after its single corrected attempt failed.",
+      metadata: {
+        taskId: task.id,
+        workerId: task.agent,
+        correctionNumber,
+        correctionLimit,
+        summary,
+      },
+    });
+    return stopped;
+  }
+  return updateJourney(db, journey.id, {
+    status: "needs_attention",
+    metadata: {
+      currentTaskId: task.id,
+      blocker: summary,
+    },
+    stageEvent: {
+      stage: journey.active_stage,
+      status: "needs_attention",
+      taskId: task.id,
+      workerId: task.agent,
+      note: summary,
+    },
+  });
+}
+
+function markPortfolioAttention(db, task, summary) {
+  const payload = task?.payload && typeof task.payload === "object"
+    ? task.payload
+    : fromJson(task?.payload, {});
+  const commercial = payload?.liveSpendRequest?.parameters?.pantheonCommercial || {};
+  if (commercial.supervisorOwned !== true || !commercial.roundId) return null;
+  const round = get(db, "SELECT * FROM opportunity_rounds WHERE id = ?", [commercial.roundId]);
+  if (!round || !["researching", "validating", "checking_economics", "investment_review"].includes(round.status)) {
+    return round;
+  }
+  const correctionNumber = Number(payload?.liveSpendRequest?.parameters?.retry?.number || 0);
+  const outcomeUnknown = task.outcome_status === "unknown";
+  if (!outcomeUnknown && correctionNumber < 1) return round;
+  const timestamp = now();
+  const status = outcomeUnknown ? "stopped_unknown_outcome" : "stopped_after_correction";
+  const metadata = {
+    ...fromJson(round.metadata, {}),
+    outcome: status,
+    stoppedTaskId: task.id,
+    stoppedWorkerId: task.agent,
+    stoppedReason: summary,
+    stoppedAt: timestamp,
+    providerOutcomeUnknown: outcomeUnknown,
+    correctionLimitReached: !outcomeUnknown,
+  };
+  run(
+    db,
+    "UPDATE opportunity_rounds SET status = ?, metadata = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+    [status, toJson(metadata), timestamp, timestamp, round.id],
+  );
+  if (task.workflow_id) {
+    run(db, "UPDATE workflows SET status = 'failed', updated_at = ? WHERE id = ?", [timestamp, task.workflow_id]);
+    run(db, "UPDATE commands SET status = 'failed', updated_at = ? WHERE workflow_id = ?", [timestamp, task.workflow_id]);
+  }
+  insertEvent(db, {
+    level: "error",
+    actor: "pantheon-supervisor",
+    type: outcomeUnknown
+      ? "portfolio.round_stopped_unknown_outcome"
+      : "portfolio.round_stopped_after_correction",
+    entityType: "opportunity_round",
+    entityId: round.id,
+    message: outcomeUnknown
+      ? "Pantheon stopped the portfolio round because the paid provider outcome could not be confirmed."
+      : "Pantheon stopped the portfolio round after its single corrected attempt did not pass.",
+    metadata: {
+      taskId: task.id,
+      workerId: task.agent,
+      correctionNumber,
+      summary,
+      noAutomaticRetry: true,
+    },
+  });
+  return get(db, "SELECT * FROM opportunity_rounds WHERE id = ?", [round.id]);
+}
+
+function markPantheonAttention(db, task, summary) {
+  return markJourneyAttention(db, task, summary)
+    || markPortfolioAttention(db, task, summary);
 }
 
 function operatorBoundary(task, approval) {
@@ -180,8 +374,8 @@ async function runPantheonSupervisorCycle(db, options = {}) {
   }
   if (
     options.allowDiscoveryStart !== true
-    && !pendingPantheonTask(db)
-    && !completedUnprojectedTask(db)
+    && !pendingPantheonTask(db, options.workflowId)
+    && !completedUnprojectedTask(db, options.workflowId)
   ) {
     return {
       status: "idle",
@@ -204,7 +398,11 @@ async function runPantheonSupervisorCycle(db, options = {}) {
   const maxSteps = Math.max(1, Math.min(Number(options.maxSteps || 4), 12));
   const actions = [];
   try {
-    if (!pendingPantheonTask(db) && !completedUnprojectedTask(db) && options.allowDiscoveryStart === true) {
+    if (
+      !pendingPantheonTask(db, options.workflowId)
+      && !completedUnprojectedTask(db, options.workflowId)
+      && options.allowDiscoveryStart === true
+    ) {
       const started = startOpportunityRound(db, {
         prompt: options.prompt,
         source: options.startedBy || "pantheon-supervisor",
@@ -217,7 +415,7 @@ async function runPantheonSupervisorCycle(db, options = {}) {
     }
 
     for (let index = 0; index < maxSteps; index += 1) {
-      const completed = completedUnprojectedTask(db);
+      const completed = completedUnprojectedTask(db, options.workflowId);
       if (completed) {
         const projection = projectPantheonTask(db, completed);
         actions.push({
@@ -228,7 +426,7 @@ async function runPantheonSupervisorCycle(db, options = {}) {
         continue;
       }
 
-      const task = pendingPantheonTask(db);
+      const task = pendingPantheonTask(db, options.workflowId);
       if (!task) {
         const state = getOpportunityState(db);
         const production = getProductionState(db);
@@ -251,6 +449,9 @@ async function runPantheonSupervisorCycle(db, options = {}) {
       let approval = exactApproval(db, task);
       const boundary = operatorBoundary(task, approval);
       if (boundary) {
+        if (boundary.status === "needs_attention") {
+          markPantheonAttention(db, task, boundary.summary);
+        }
         const state = getOpportunityState(db);
         const cycle = finishCycle(db, cycleId, {
           ventureId: task.venture_id,
@@ -317,6 +518,11 @@ async function runPantheonSupervisorCycle(db, options = {}) {
       });
       actions.push({ type: "worker_run", taskId: refreshedTask.id, workerId: refreshedTask.agent, status: result.status });
       if (result.status !== "completed") {
+        markPantheonAttention(
+          db,
+          get(db, "SELECT * FROM tasks WHERE id = ?", [refreshedTask.id]),
+          result.error || `Pantheon stopped at ${refreshedTask.title}.`,
+        );
         const state = getOpportunityState(db);
         const cycle = finishCycle(db, cycleId, {
           ventureId: refreshedTask.venture_id,
@@ -335,7 +541,7 @@ async function runPantheonSupervisorCycle(db, options = {}) {
     }
 
     const state = getOpportunityState(db);
-    const currentTask = pendingPantheonTask(db);
+    const currentTask = pendingPantheonTask(db, options.workflowId);
     const cycle = finishCycle(db, cycleId, {
       ventureId: state.latestRound?.venture_id || currentTask?.venture_id || null,
       workflowId: state.latestRound?.metadata?.workflowId || currentTask?.workflow_id || null,
@@ -349,7 +555,29 @@ async function runPantheonSupervisorCycle(db, options = {}) {
     });
     return { status: cycle.status, cycle, actions, state };
   } catch (error) {
-    const task = pendingPantheonTask(db);
+    const task = pendingPantheonTask(db, options.workflowId)
+      || completedUnprojectedTask(db, options.workflowId);
+    if (task?.status === "completed") {
+      const journey = journeyForTask(db, task);
+      if (journey) {
+        updateJourney(db, journey.id, {
+          status: "needs_attention",
+          metadata: {
+            currentTaskId: task.id,
+            blocker: `Pantheon retained the completed AI result but could not apply it: ${error.message}`,
+          },
+          stageEvent: {
+            stage: journey.active_stage,
+            status: "projection_needs_attention",
+            taskId: task.id,
+            workerId: task.agent,
+            note: "The completed AI result is safe; Jarvis must repair the local projection before continuing.",
+          },
+        });
+      }
+    } else if (task) {
+      markPantheonAttention(db, task, error.message);
+    }
     const cycle = finishCycle(db, cycleId, {
       ventureId: task?.venture_id || null,
       workflowId: task?.workflow_id || null,
@@ -396,5 +624,6 @@ function getPantheonSupervisorState(db) {
 
 module.exports = {
   getPantheonSupervisorState,
+  markPortfolioAttention,
   runPantheonSupervisorCycle,
 };

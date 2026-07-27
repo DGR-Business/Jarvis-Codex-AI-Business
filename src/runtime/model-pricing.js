@@ -120,7 +120,7 @@ function normalizedTools(tools) {
     web_search: "web_search",
     image_generation_spend: "image_generation",
     image_generation: "image_generation",
-    product_file_factory: "code_interpreter",
+    product_file_factory: "",
     code_interpreter: "code_interpreter",
     visual_asset_review: "",
   };
@@ -276,7 +276,7 @@ function worstCaseExecutionCostAud(input = {}) {
   const explicitInputLimit = positiveNumber(input.maxInputTokens);
   const maxInputTokensPerTurn = Math.ceil(explicitInputLimit || (tools.length ? priced.pricing.maxInputTokens : materializedInputTokens));
   if (maxInputTokensPerTurn < materializedInputTokens) {
-    throw new Error("Live execution input is larger than its approved input-token limit.");
+    throw new Error(`Live execution input requires up to ${materializedInputTokens} tokens, above the approved ${maxInputTokensPerTurn}-token limit.`);
   }
   if (maxInputTokensPerTurn > priced.pricing.maxInputTokens) {
     throw new Error(`Live execution input limit exceeds the registered ${priced.pricingModel} maximum.`);

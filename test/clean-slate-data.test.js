@@ -120,14 +120,14 @@ test("Gumroad foreign currency requires evidence and stores separate source and 
   const privacy = { hashKey: "test-only-privacy-hash-key-32-bytes" };
   try {
     assert.throws(
-      () => importGumroadCsv(runtime.db, { csvText: GUMROAD_CSV, currency: "USD" }, privacy),
+      () => importGumroadCsv(runtime.db, { ventureId: "venture-digital-products", csvText: GUMROAD_CSV, currency: "USD" }, privacy),
       /AUD conversion rate is required/i,
     );
     assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM platform_sales").count, 0);
     assert.throws(
       () => importGumroadCsv(
         runtime.db,
-        { csvText: GUMROAD_CSV, currency: "USD", audConversionRate: 1.5 },
+        { ventureId: "venture-digital-products", csvText: GUMROAD_CSV, currency: "USD", audConversionRate: 1.5 },
         privacy,
       ),
       /AUD conversion evidence is required/i,
@@ -136,6 +136,7 @@ test("Gumroad foreign currency requires evidence and stores separate source and 
     const imported = importGumroadCsv(
       runtime.db,
       {
+        ventureId: "venture-digital-products",
         csvText: GUMROAD_CSV,
         currency: "USD",
         audConversionRate: 1.5,
@@ -264,6 +265,9 @@ test("reconciled accounting is append-only and corrections use signed reversal r
     const summary = getAccountingSummary(runtime.db, { month: "2026-07" });
     assert.equal(summary.cashPaidCents, 800);
     assert.equal(summary.entryCount, 3);
+    assert.equal(summary.currentEntryCount, 1);
+    assert.equal(summary.recent.length, 1);
+    assert.equal(summary.recent[0].description, "Corrected reconciled charge");
   } finally {
     closeRuntime(runtime);
   }

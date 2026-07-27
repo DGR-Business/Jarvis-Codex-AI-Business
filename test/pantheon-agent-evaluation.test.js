@@ -249,6 +249,13 @@ test("failed live commercial evaluation cannot complete its task", async () => {
     assert.equal(task.outcome_status, "known_provider_result_needs_review");
     assert.match(task.error, /local quality check/i);
     assert.equal(agentRun.status, "failed");
+    assert.equal(agentRun.model_call_id, modelCall.id);
+    assert.equal(agentRun.estimated_cost_cents, modelCall.estimated_cost_cents);
+    assert.equal(
+      fromJson(agentRun.metadata, {}).localReviewOutput.summary,
+      "Three candidate directions were ranked, but the provider returned no attributable source URL.",
+      "A completed provider result must remain locally reviewable when a later deterministic gate rejects it.",
+    );
     assert.equal(evaluation.status, "failed");
     assert.equal(evaluation.score, 45);
     assert.ok(fromJson(evaluation.findings, []).some((finding) => /no provider-grounded source URLs/i.test(finding)));

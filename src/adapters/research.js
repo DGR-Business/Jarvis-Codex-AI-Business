@@ -613,22 +613,23 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
   try {
     response = await callOpenAIResponses(requestBody, { ...options, deadlineMs });
   } catch (error) {
-    if (!error.providerDispatchStatus) {
-      error = providerError(error, "outcome_unknown", { providerRequestStarted: true });
+    let failure = error;
+    if (!failure.providerDispatchStatus) {
+      failure = providerError(failure, "outcome_unknown", { providerRequestStarted: true });
     }
-    error.agentRunId = agentRunId;
-    error.taskAttemptId = taskAttemptId;
-    error.modelCallId = dispatchCall.id;
+    failure.agentRunId = agentRunId;
+    failure.taskAttemptId = taskAttemptId;
+    failure.modelCallId = dispatchCall.id;
     observeResearchTool(db, toolInvocation, {
       ...options,
-      status: error.outcomeUnknown === true ? "unknown" : "missing",
-      outputSummary: error.outcomeUnknown === true
+      status: failure.outcomeUnknown === true ? "unknown" : "missing",
+      outputSummary: failure.outcomeUnknown === true
         ? "The web-search outcome is unknown because the provider request did not return a definitive result."
         : "The approved web search did not complete before the provider rejected the request.",
     });
     const costId = costIdForTask(task);
     const existingCost = get(db, "SELECT metadata FROM costs WHERE id = ?", [costId]);
-    if (error.outcomeUnknown === true && existingCost) {
+    if (failure.outcomeUnknown === true && existingCost) {
       run(
         db,
         `UPDATE costs
@@ -639,14 +640,14 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
         [
           estimateCents,
           now(),
-          toJson({ ...fromJson(existingCost.metadata), outcomeUnknown: true, error: error.message, noSpendOccurred: null, taskId: task.id }),
+          toJson({ ...fromJson(existingCost.metadata), outcomeUnknown: true, error: failure.message, noSpendOccurred: null, taskId: task.id }),
           agentRunId,
           task.id,
           dispatchCall.id,
           costId,
         ],
       );
-    } else if (error.outcomeUnknown === true) {
+    } else if (failure.outcomeUnknown === true) {
       run(
         db,
         `INSERT INTO costs
@@ -664,7 +665,7 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
           estimateCents,
           CONFIG.currency,
           now(),
-          toJson({ taskId: task.id, outcomeUnknown: true, error: error.message, noSpendOccurred: null }),
+          toJson({ taskId: task.id, outcomeUnknown: true, error: failure.message, noSpendOccurred: null }),
         ],
       );
     } else if (existingCost) {
@@ -677,7 +678,7 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
          WHERE id = ?`,
         [
           now(),
-          toJson({ ...fromJson(existingCost.metadata), taskId: task.id, outcomeUnknown: false, noSpendOccurred: true, providerDispatchStatus: error.providerDispatchStatus, error: error.message }),
+          toJson({ ...fromJson(existingCost.metadata), taskId: task.id, outcomeUnknown: false, noSpendOccurred: true, providerDispatchStatus: failure.providerDispatchStatus, error: failure.message }),
           agentRunId,
           task.id,
           dispatchCall.id,
@@ -689,21 +690,21 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
       modelCallId: dispatchCall.id,
       agentRunId,
       taskAttemptId,
-      outcomeUnknown: error.outcomeUnknown === true,
-      errorKind: error.outcomeUnknown === true ? "provider_outcome_unknown" : "provider_rejected",
-      providerDispatchStatus: error.providerDispatchStatus,
-      httpStatus: error.httpStatus || null,
-      error: error.message,
+      outcomeUnknown: failure.outcomeUnknown === true,
+      errorKind: failure.outcomeUnknown === true ? "provider_outcome_unknown" : "provider_rejected",
+      providerDispatchStatus: failure.providerDispatchStatus,
+      httpStatus: failure.httpStatus || null,
+      error: failure.message,
     });
-    error.modelCallId = failedCall.id;
-    error.providerReceipt = {
+    failure.modelCallId = failedCall.id;
+    failure.providerReceipt = {
       modelCallId: failedCall.id,
       providerRequestId: null,
       provider: LIVE_RESEARCH_PROVIDER,
-      status: error.providerDispatchStatus,
+      status: failure.providerDispatchStatus,
       deadlineMs,
     };
-    error.incurredEstimateCents = 0;
+    failure.incurredEstimateCents = 0;
     run(
       db,
       `INSERT INTO research_runs (id, workflow_id, task_id, query, provider, mode, status, budget_cents, actual_cents, summary, metadata, created_at, completed_at)
@@ -718,13 +719,13 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
         "failed_live",
         budgetCents,
         0,
-        `Live research failed before usable evidence was captured: ${error.message}`,
+        `Live research failed before usable evidence was captured: ${failure.message}`,
         toJson({
           subject,
           channel,
-          error: error.message,
-          outcomeUnknown: error.outcomeUnknown === true,
-          providerDispatchStatus: error.providerDispatchStatus,
+          error: failure.message,
+          outcomeUnknown: failure.outcomeUnknown === true,
+          providerDispatchStatus: failure.providerDispatchStatus,
           modelCallId: failedCall.id,
           request: { tool: "web_search", toolChoice: "required", deadlineMs },
         }),
@@ -738,10 +739,10 @@ async function runLiveResearchTask(db, task, workflow, command, options = {}) {
       type: "research.live_failed",
       entityType: "research_run",
       entityId: runId,
-      message: `Live research failed for ${subject}: ${error.message}`,
-      metadata: { workflowId: task.workflow_id, taskId: task.id, outcomeUnknown: error.outcomeUnknown === true, providerDispatchStatus: error.providerDispatchStatus, modelCallId: failedCall.id },
+      message: `Live research failed for ${subject}: ${failure.message}`,
+      metadata: { workflowId: task.workflow_id, taskId: task.id, outcomeUnknown: failure.outcomeUnknown === true, providerDispatchStatus: failure.providerDispatchStatus, modelCallId: failedCall.id },
     });
-    throw error;
+    throw failure;
   }
   const { text } = outputTextAndAnnotations(response);
   const parsed = parseJsonOutput(text);
@@ -1011,10 +1012,26 @@ async function runResearchTask(db, task, workflow, command, options = {}) {
   return runDryResearchTask(db, task, workflow, command);
 }
 
+function createResearchSourceAdapter(db, options = {}) {
+  return Object.freeze({
+    contract: "ResearchSourceAdapter.v1",
+    provider: LIVE_RESEARCH_PROVIDER,
+    liveEnabled: () => liveResearchEnabled(options),
+    run: (task, workflow, command, runOptions = {}) => runResearchTask(
+      db,
+      task,
+      workflow,
+      command,
+      { ...options, ...runOptions },
+    ),
+  });
+}
+
 module.exports = {
   DEFAULT_RESEARCH_BUDGET_CENTS,
   LIVE_RESEARCH_PROVIDER,
   buildOpenAIRequest,
   collectLiveSources,
+  createResearchSourceAdapter,
   runResearchTask,
 };

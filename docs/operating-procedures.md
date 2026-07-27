@@ -2,18 +2,32 @@
 
 ## Session Start
 
-1. Start Pantheon with `START PANTHEON.cmd` and use the secure dashboard window it
-   opens. A manually opened localhost tab is not an authenticated operator
-   session.
+1. Start Pantheon with `START PANTHEON.cmd` and use the secure control window it
+   opens. Pantheon begins in **Standby**: the dashboard control shell is
+   available while the scheduler, Agents SDK workers, monitoring, and writable
+   business runtime remain unloaded. Select **Start working** when business work
+   is needed. Select **Return to standby** when finished, or **Stop Pantheon** to
+   stop the control shell as well. `STATUS PANTHEON.cmd` reports the current
+   state, and `STOP PANTHEON.cmd` stops every exact launcher-owned process while
+   leaving unrelated Node programs alone. A manually opened localhost tab is
+   not an authenticated operator session.
+   Use `START PANTHEON REHEARSAL.cmd` only for retained isolated Full Journey
+   engineering proof.
+   Pantheon reads OpenAI access from the Windows-user-protected credential under
+   `%LOCALAPPDATA%\Pantheon`. Do not reconnect on normal starts. Use
+   `scripts\configure-openai.ps1` only for initial setup, deliberate key
+   rotation, disconnection, or a different Windows account or machine.
 2. Confirm `/api/health` reports `alive`, `operationsReady`, a running
    scheduler, and a recent completed monitor check. `alive` alone means only
    that the local process is responding.
 3. Read `docs/Pantheon Master Plan.md`.
 4. Read `docs/Pantheon Build Log.md`.
-5. For worker operations, read
-   `docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md` and
+5. For the active commercial gate, read
+   `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`,
+   `docs/commercial/COMMERCIAL-CONSTITUTION.md`, and
    `docs/decisions/0006-autonomous-agent-operations-foundation.md`.
-6. Check the active task against `AGENTS.md` and `config/guardrails.md`.
+6. Check the active task against `AGENTS.md` and
+   `docs/policies/OPERATOR-DELIVERY-AND-SECURITY.md`.
 7. Check the current venture, queue, approvals, monthly exposure, provider
    readiness, latest monitor result, and unresolved unknown outcomes.
 8. Treat `archive/historical/` as context only.
@@ -49,20 +63,35 @@ Confirm that the persisted assignment names:
 If material scope changes, create a new assignment and approval. Do not edit an
 old approval into a broader one or pass it through a worker handoff.
 
-## Demand Validator Sequence
+## Portfolio Sequence
 
-1. Prepare one distinct supplied-evidence packet.
-2. Run no web, browser, connector, or other external research tool.
-3. Keep the proof to one turn, 1,200 output tokens, and an approved A$1 maximum.
-4. Record the local receipt, technical checks, and Daniel's usefulness verdict.
-5. Only after acceptance, prepare a separate live-web approval naming the exact
-   question, model, search limits, deadline, storage policy, and A$2 cap.
-6. Limit the live-web proof to three public read-only searches and 120 seconds.
-7. Review queries, sources, counterevidence, unsupported claims, receipt, and
-   cost before using the result.
+1. Explore at least five materially different lawful opportunity spaces.
+2. Retain model ideas as hypotheses, not market proof.
+3. Give three eligible finalists comparable attributable demand and finance
+   review.
+4. Apply all mandatory commercial gates, compare alternatives and doing
+   nothing, and allow a no-investment result.
+5. Use one Sol Commercial Investment Review only after the deterministic case
+   exists.
+6. Stop after two bounded rounds. Do not repeat generic discovery or begin
+   production without materially new evidence.
 
-Never reuse the supplied-evidence approval for live web. Live web has its own
-five-run reviewed capability history.
+## Digital Product Journey Sequence
+
+Use this only after an approved case selects `digital_product_v1`; it is not the
+generic Pantheon workflow.
+
+1. Run the isolated rehearsal before production-intent work when the kit version
+   or production contract has materially changed.
+2. Lock every specialist to Luna and the exact A$15 combined journey cap.
+3. Let Opportunity Scout retain broad findings, then give three eligible
+   candidates comparable Demand Validator review.
+4. Persist each specialist result and handoff as its own resumable stage.
+5. Allow one bounded correction per stage; stop on an unknown provider outcome.
+6. Inspect exact product files, hashes, rendered previews, sources, claims,
+   receipts, and costs before accepting the Quality Reviewer result.
+7. Stop at Ready to publish. Account, KYC, upload, publication, customer
+   contact, advertising, agreements, and money actions remain protected.
 
 ## Product And Quality Work
 
@@ -105,21 +134,21 @@ The monitor can pause and escalate. It cannot approve work, spend, or a retry.
 
 ## Retention And Privacy
 
-Daniel must approve the Phase 1 retention schedule before ongoing live research,
-provider-side storage for business evidence, or customer-data worker operations
-widen.
-
-Until then:
+Daniel approved the current data-protection schedule. It is active and recorded
+immutably in the runtime. Under that schedule:
 
 - keep provider response storage and trace content off for business or personal
-  data;
-- use stored provider content only for an exactly approved, non-personal
-  fixture;
+  data by default;
+- never send credentials, raw identity records, or unnecessary direct customer
+  identifiers to a model;
 - exclude raw buyer names, email addresses, credentials, browser profiles, and
   unnecessary personal text from worker packets;
-- retain existing local audit and backup evidence rather than silently deleting
-  it;
-- do not add long-term model memory, remote/mobile access, or dynamic agents.
+- apply the active seven-year, active-plus-three-year, ninety-day, and encrypted
+  backup periods by record class;
+- preview destructive maintenance separately; activation did not itself delete
+  any record;
+- require a new policy decision before long-term model memory, remote/mobile
+  access, or dynamic agents.
 
 ## Runtime Work
 
@@ -131,19 +160,38 @@ Until then:
 - Prefer digital-product pilot work before POD/Gelato work unless the operator
   changes direction.
 
+## OpenAI Connection
+
+- Keep the API key outside the repository. Pantheon's authoritative local copy
+  is Windows CurrentUser DPAPI ciphertext in
+  `%LOCALAPPDATA%\Pantheon\openai-credential.json`, with an account-restricted
+  folder ACL.
+- The launcher may use a process or Windows user environment key only as a
+  development or migration fallback. A protected Pantheon credential overrides
+  that fallback.
+- The legacy `private/runtime-credentials.json` file remains a recovery-settings
+  compatibility source. Failure to decrypt an old backup or privacy secret must
+  not disconnect an otherwise valid OpenAI connection.
+- Rotate a key when exposure is suspected. Save the replacement through the
+  protected connection workflow, prove startup without an environment key, then
+  revoke the predecessor in OpenAI Platform.
+- Never print, log, commit, place in a URL, or return the plaintext key from a
+  health or status interface.
+
 ## Verification
 
 After runtime or worker-operation changes:
 
 1. Run `npm.cmd test` on Windows PowerShell.
-2. Start the operator runtime with `START PANTHEON.cmd`; use `npm.cmd start` or
+2. Run `npm.cmd run lint`.
+3. Start the operator runtime with `START PANTHEON.cmd`; use `npm.cmd start` or
    `node src/server.js` only for isolated development proof.
-3. Check `/api/health` for liveness and operations readiness, including the
+4. Check `/api/health` for liveness and operations readiness, including the
    scheduler and latest monitor cycle.
-4. Run the monitor and review any Important Work or unknown outcome.
-5. Use a real browser to confirm the dashboard loads, one queued safe proof can
+5. Run the monitor and review any Important Work or unknown outcome.
+6. Use a real browser to confirm the dashboard loads, one queued safe proof can
    run, and its receipt and event timeline update.
-6. Confirm that no unapproved provider call, publishing, customer contact,
+7. Confirm that no unapproved provider call, publishing, customer contact,
    account action, legal decision, or money movement occurred.
 
 Documentation-only changes do not require a paid model call or external action.

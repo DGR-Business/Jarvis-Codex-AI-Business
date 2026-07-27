@@ -205,6 +205,42 @@ function stopWorkflowAfterDecision(db, approval, decision, note, ts) {
   }
 }
 
+function stopPantheonJourneyAfterDecision(db, approval, decision, note, ts) {
+  const taskIds = decisionTaskIds(db, approval);
+  const task = taskIds
+    .map((taskId) => get(db, "SELECT payload FROM tasks WHERE id = ?", [taskId]))
+    .find(Boolean);
+  const parameters = fromJson(task?.payload, {})?.liveSpendRequest?.parameters || {};
+  const journeyId = parameters.pantheonJourney?.journeyId
+    || parameters.pantheonCommercial?.journeyId
+    || parameters.pantheonProduction?.journeyId
+    || null;
+  if (!journeyId) return null;
+  const { journeyById, updateJourney } = require("./pantheon-journey");
+  const journey = journeyById(db, journeyId);
+  if (!journey) return null;
+  const rejected = decision === "rejected";
+  return updateJourney(db, journeyId, {
+    status: rejected ? "cancelled" : "needs_attention",
+    completedAt: rejected ? ts : null,
+    metadata: {
+      currentTaskId: null,
+      currentApprovalId: null,
+      blocker: note || (rejected
+        ? "Daniel chose not to continue this journey."
+        : "Daniel requested changes before this journey continues."),
+    },
+    stageEvent: {
+      stage: journey.active_stage,
+      status: rejected ? "cancelled" : "needs_attention",
+      taskId: approval.task_id || taskIds[0] || null,
+      note: rejected
+        ? "The exact journey was closed after Daniel chose not to continue."
+        : "The journey paused after Daniel requested changes.",
+    },
+  });
+}
+
 function decideApproval(db, approvalId, decision, note = "", options = {}) {
   if (!DECISIONS.has(decision)) {
     const allowed = Array.from(DECISIONS).join(", ");
@@ -229,7 +265,11 @@ function decideApproval(db, approvalId, decision, note = "", options = {}) {
 
     const approvedTaskIds = decision === "approved"
       ? updateApprovedWork(db, approval, ts)
-      : (stopWorkflowAfterDecision(db, approval, decision, note, ts), []);
+      : (
+        stopWorkflowAfterDecision(db, approval, decision, note, ts),
+        stopPantheonJourneyAfterDecision(db, approval, decision, note, ts),
+        []
+      );
 
     run(
       db,

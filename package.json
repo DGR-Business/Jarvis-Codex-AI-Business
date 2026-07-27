@@ -14,6 +14,7 @@
     "backup": "node scripts/backup-runtime.js",
     "restore": "node scripts/restore-runtime.js",
     "doctor": "node scripts/doctor.js",
+    "lint": "eslint \"src/**/*.js\" \"scripts/**/*.js\" \"test/**/*.js\" \"public/**/*.js\" \"*.js\" --max-warnings=0",
     "test": "node scripts/run-tests.js",
     "test:ops": "node scripts/run-tests.js test/ops-recovery.test.js",
     "test:recovery": "node scripts/run-tests.js test/ops-recovery.test.js"
@@ -26,12 +27,16 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@openai/agents": "0.13.4",
+    "@openai/agents": "0.13.5",
     "adm-zip": "0.6.0",
     "csv-parse": "6.1.0",
     "lucide": "0.468.0",
     "openai": "6.47.0",
     "ws": "^8.19.0",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "eslint": "10.7.0",
+    "globals": "17.7.0"
   }
 }

@@ -8,8 +8,15 @@ integration contracts, deployment notes, and runtime diagrams.
 ## Current Steering
 
 - `docs/Pantheon Master Plan.md`: business and system source of truth.
+- `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`:
+  completed Portfolio, commercial knowledge, investment review, service-trial,
+  runtime-control, and release directive.
+- `docs/plans/PANTHEON-MULTI-VENTURE-FOUNDATION-AND-VENTURE-KITS-2026-07-22.md`:
+  active Venture Factory, kit, isolated-lane, and dynamic-team roadmap.
+- `docs/commercial/COMMERCIAL-CONSTITUTION.md`: shared decision doctrine used by
+  Pantheon workers and Jarvis.
 - `docs/plans/PANTHEON-COMMERCIAL-OPERATING-SYSTEM-EXECUTION-PLAN-2026-07-18.md`:
-  active commercial and technical execution directive.
+  completed earlier commercial and technical foundation.
 - `docs/plans/FOUNDATION-TO-FIRST-REVENUE-EXECUTION-PLAN-2026-07-14.md`:
   historical first-proof foundation incorporated into the active plan.
 - `docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md`: active
@@ -28,6 +35,8 @@ integration contracts, deployment notes, and runtime diagrams.
   implementation review and guarded-tool boundary.
 - `docs/reviews/PRE-FIRST-USE-ENGINEERING-AND-SECURITY-REVIEW-2026-07-17.md`:
   current release evidence and residual risks.
+- `docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`:
+  current live Portfolio and foundation release evidence.
 
 ## Historical Reference
 

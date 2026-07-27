@@ -60,7 +60,14 @@ const {
   prepareRetentionPolicyDecision,
 } = require("../src/runtime/retention-policy");
 const { recoverSetupBlockedTasks } = require("../src/runtime/spend-gate");
-const { AI_TEAM_DEFINITIONS, createAgentRun, decideAgentHandoff, findAgentDefinition, finishAgentRun } = require("../src/runtime/ai-team");
+const {
+  AI_TEAM_DEFINITIONS,
+  createAgentRun,
+  decideAgentHandoff,
+  evaluateAgentOutput,
+  findAgentDefinition,
+  finishAgentRun,
+} = require("../src/runtime/ai-team");
 const { ensureSchedulerJobs, runDueSchedulerJobs, runSchedulerJob, setSchedulerJobStatus } = require("../src/runtime/scheduler");
 const { recordCommercialFeedback, recordCommercialResult } = require("../src/runtime/commercial-results");
 const {
@@ -596,6 +603,94 @@ test("live workers receive allowlisted business packets and role-specific output
   }
 });
 
+test("verified launch workers receive current truth without superseded work history", () => {
+  const db = seededDb("worker-current-launch-truth");
+  try {
+    const task = get(db, "SELECT * FROM tasks WHERE id = ?", ["task-market-validated"]);
+    task.payload = {
+      liveSpendRequest: {
+        parameters: {
+          pantheonProduction: {
+            currentTruthOnly: true,
+            stage: "conversion_copy",
+            verifiedLaunchState: {
+              currentPackageReconciled: true,
+            },
+          },
+        },
+      },
+    };
+    task.agent = "copy_conversion_agent";
+    const definition = findAgentDefinition(db, task);
+    const packet = buildWorkerModelPacket(db, task, definition);
+
+    assert.deepEqual(packet.relevantCompletedWork, []);
+  } finally {
+    db.close();
+  }
+});
+
+test("publication evaluation distinguishes a denied client-portal claim from a misleading promise", () => {
+  const db = seededDb("publication-claim-negation");
+  try {
+    const task = get(db, "SELECT * FROM tasks WHERE id = ?", ["task-market-validated"]);
+    task.payload = {
+      liveSpendRequest: {
+        parameters: {
+          pantheonJourney: {
+            journeyId: "journey-publication-claim-negation",
+          },
+          pantheonProduction: {
+            stage: "conversion_copy",
+            verifiedLaunchState: {
+              stage: "conversion_copy",
+              currentPackageReconciled: true,
+              supersededErrorsAreCurrent: false,
+              expectedIncludedFiles: ["customer-workbook.xlsx"],
+            },
+          },
+        },
+      },
+    };
+    task.agent = "copy_conversion_agent";
+    const definition = findAgentDefinition(db, task);
+    const baseOutput = {
+      summary: "A truthful downloadable workbook listing is ready for review.",
+      evidence: ["The customer workbook and guide were verified locally."],
+      nextAction: "Review the exact listing before any publication.",
+      roleOutput: {
+        productTitle: "Freelancer Client-Onboarding Workbook",
+        headline: "Organize client onboarding with an editable workbook.",
+        description: "An editable workbook-and-guide toolkit for organizing client information and follow-ups.",
+        callToAction: "Review the workbook preview.",
+        includedFiles: ["customer-workbook.xlsx"],
+        tags: ["freelancer workbook", "client onboarding"],
+        faq: ["Is this a client portal? No. It is a downloadable workbook-and-guide toolkit."],
+        messageVariants: ["Use an editable workbook to organize client onboarding."],
+        claimChecks: ["Not claimed: No automation, integrations, client portal, managed service, or guaranteed outcome."],
+        trackingNote: "Track qualified views and paid buyers.",
+      },
+    };
+    const safeRun = createAgentRun(db, definition, task, { mode: "test" });
+    const safeEvaluation = evaluateAgentOutput(db, definition, safeRun, task, baseOutput);
+    assert.equal(
+      safeEvaluation.findings.some((finding) => /described.*client portal/i.test(finding)),
+      false,
+    );
+
+    const misleadingOutput = JSON.parse(JSON.stringify(baseOutput));
+    misleadingOutput.roleOutput.description = "A complete client portal for organizing client information and follow-ups.";
+    const misleadingRun = createAgentRun(db, definition, task, { mode: "test" });
+    const misleadingEvaluation = evaluateAgentOutput(db, definition, misleadingRun, task, misleadingOutput);
+    assert.equal(
+      misleadingEvaluation.findings.some((finding) => /described.*client portal/i.test(finding)),
+      true,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("Agents SDK capability bridge exposes only exact capped worker skills", () => {
   const sdk = require("@openai/agents");
   const demandValidator = AI_TEAM_DEFINITIONS.find((item) => item.id === "demand_validator");
@@ -699,10 +794,12 @@ test("Agents SDK capability bridge exposes only exact capped worker skills", () 
 
 test("visual review sends only exact approved local images without logging image data", () => {
   const db = seededDb("sdk-visual-input");
+  const workspaceTemp = path.join(CONFIG.rootDir, "tmp");
+  fs.mkdirSync(workspaceTemp, { recursive: true });
+  const outputDir = fs.mkdtempSync(path.join(workspaceTemp, "pantheon-visual-input-test-"));
   try {
     const workflowId = "wf-digital-product-pilot-proof";
     const assetId = "asset-approved-visual";
-    const outputDir = path.join(CONFIG.artifactRoot, "visual-input-test");
     const imagePath = path.join(outputDir, "approved-visual.png");
     fs.mkdirSync(outputDir, { recursive: true });
     fs.writeFileSync(
@@ -771,6 +868,7 @@ test("visual review sends only exact approved local images without logging image
     );
   } finally {
     db.close();
+    fs.rmSync(outputDir, { recursive: true, force: true });
   }
 });
 
@@ -819,6 +917,148 @@ test("operator decision brief payload excludes raw paths and machine-facing reco
   assert.equal(serialized.includes("private/secret/path.md"), false);
   assert.equal(serialized.includes("modelPolicy"), false);
   assert.equal(serialized.includes("file_path"), false);
+});
+
+test("operator decision brief can normalize presentation text without changing source records", () => {
+  const sourceSummary = "Test the accepted package at US$15 before scaling.";
+  const payload = buildOperatorPackPayload({
+    approvalPackId: "pack-presentation-normalization",
+    humanName: "Launch Decision Brief",
+    generatedAt: "2026-07-24T10:15:00.000Z",
+    workflow: {
+      id: "workflow-presentation-normalization",
+      title: "Launch test",
+      status: "ready_for_review",
+      expected_profit_cents: 0,
+      metadata: { subject: "Finished digital product" },
+    },
+    command: { raw_text: "Prepare the launch." },
+    scorecard: null,
+    tasks: [{
+      id: "task-distribution",
+      kind: "live_ai_worker_execution",
+      agent: "distribution_operator",
+      title: "Prepare launch",
+      status: "completed",
+      result: {
+        output: {
+          summary: sourceSummary,
+          risks: ["The US$15 test price is not validated."],
+          nextAction: "Review the US$15 launch package.",
+        },
+      },
+    }],
+    deliverables: [],
+    costs: [],
+    presentationTransform: (value) => value.replaceAll("US$15", "A$15"),
+  });
+  const serialized = JSON.stringify(payload);
+  assert.equal(sourceSummary, "Test the accepted package at US$15 before scaling.");
+  assert.equal(serialized.includes("US$15"), false);
+  assert.equal(serialized.includes("A$15"), true);
+});
+
+test("operator decision brief uses the latest completed live worker result", () => {
+  const payload = buildOperatorPackPayload({
+    approvalPackId: "pack-current-truth",
+    humanName: "Current Decision Brief",
+    generatedAt: "2026-07-24T10:30:00.000Z",
+    workflow: {
+      id: "workflow-current-truth",
+      title: "Full commercial journey",
+      status: "completed",
+      expected_profit_cents: 0,
+      metadata: { subject: "Finished digital product" },
+    },
+    command: { raw_text: "Complete the journey." },
+    scorecard: null,
+    tasks: [
+      {
+        id: "task-opportunity",
+        kind: "live_ai_worker_execution",
+        agent: "opportunity_scout",
+        title: "Research opportunities",
+        status: "completed",
+        completed_at: "2026-07-24T09:00:00.000Z",
+        result: {
+          output: {
+            summary: "Build only the smallest useful version.",
+            nextAction: "Validate three opportunities.",
+          },
+        },
+      },
+      {
+        id: "task-chief",
+        kind: "live_ai_worker_execution",
+        agent: "chief_of_staff",
+        title: "Prepare the final operator brief",
+        status: "completed",
+        completed_at: "2026-07-24T10:20:00.000Z",
+        result: {
+          output: {
+            summary: "The verified customer package is ready to publish.",
+            nextAction: "Record the package as ready to publish.",
+            operatorDecision: "approve",
+            confidence: "high",
+            businessDecision: {
+              buyer: "Independent professionals",
+              problem: "Scattered client onboarding records",
+              offer: "A verified four-workbook catalogue",
+              channel: "Gumroad Direct",
+            },
+          },
+        },
+      },
+    ],
+    deliverables: [],
+    costs: [],
+  });
+
+  assert.equal(payload.header.preparedBy, "Chief of Staff");
+  assert.equal(payload.decision.recommendation, "The verified customer package is ready to publish.");
+  assert.equal(payload.decision.headline, "Record the package as ready to publish.");
+  assert.doesNotMatch(JSON.stringify(payload.decision), /Build only the smallest useful version/);
+  assert.doesNotMatch(JSON.stringify(payload.commercialCase), /Build only the smallest useful version/);
+});
+
+test("operator decision brief uses an authoritative full-journey exposure when supplied", () => {
+  const payload = buildOperatorPackPayload({
+    approvalPackId: "pack-proof-exposure",
+    humanName: "Proof Decision Brief",
+    generatedAt: "2026-07-24T10:30:00.000Z",
+    workflow: {
+      id: "workflow-proof-exposure",
+      title: "Full commercial journey",
+      status: "completed",
+      expected_profit_cents: 0,
+      metadata: {},
+    },
+    command: {},
+    scorecard: null,
+    tasks: [{
+      id: "task-chief",
+      kind: "live_ai_worker_execution",
+      agent: "chief_of_staff",
+      title: "Prepare the final operator brief",
+      status: "completed",
+      completed_at: "2026-07-24T10:20:00.000Z",
+      result: {
+        output: {
+          summary: "The verified package is ready to publish.",
+          nextAction: "Record the package as ready to publish.",
+          details: { "Cost/risk": "An earlier estimate said A$1.27." },
+        },
+      },
+    }],
+    deliverables: [],
+    costs: [{ status: "incurred_estimate", amount_cents: 127 }],
+    authoritativeExposureCents: 1634,
+  });
+
+  assert.equal(payload.economics.estimatedCostCents, 1634);
+  assert.match(payload.decision.costRisk, /A\$16\.34/);
+  assert.doesNotMatch(payload.decision.costRisk, /A\$1\.27/);
+  assert.match(payload.decision.costRisk, /Exact provider billing remains pending/);
 });
 
 test("structured research URLs are not accepted without provider provenance", () => {
@@ -2293,6 +2533,9 @@ test("cockpit surfaces queued work and exact-task execution cannot start a diffe
     assert.equal(result.status, "completed");
     assert.equal(result.task.id, tasks[0].id);
     assert.equal(get(db, "SELECT status FROM tasks WHERE id = ?", [tasks[1].id]).status, "planned");
+    const refreshedCockpit = getCockpitState(db);
+    assert.ok(refreshedCockpit.weeklyDigest.metrics.completedWork >= 1);
+    assert.doesNotMatch(refreshedCockpit.weeklyDigest.summary, /^0 internal work items completed this week\./);
   } finally {
     db.close();
   }
@@ -3346,6 +3589,172 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
   }
 });
 
+test("a verified pre-dispatch failure gets a fresh approval without consuming a content correction", () => {
+  const db = seededDb("live-ai-worker-pre-dispatch-recovery");
+  try {
+    const planned = createCommandPlan(db, {
+      text: "Check one supplied demand hypothesis.",
+      source: "test",
+      createFiles: false,
+    });
+    const requested = requestLiveAiWorker(db, planned.workflow.id, {
+      estimatedCostCents: 80,
+      worker: "demand_validator",
+      maxOutputTokens: 900,
+      requestKey: "pre_dispatch_recovery_test",
+    });
+    const failedAt = new Date().toISOString();
+    run(
+      db,
+       `UPDATE approvals
+       SET status = 'approved', decided_at = ?, decision_note = 'Approved before local execution.',
+           consumed_at = ?
+       WHERE id = ?`,
+      [failedAt, failedAt, requested.approval.id],
+    );
+    run(
+      db,
+      `UPDATE tasks
+       SET status = 'failed', outcome_status = 'failed_before_effect',
+           error = 'Local spending ledger could not be verified.', completed_at = ?, updated_at = ?
+       WHERE id = ?`,
+      [failedAt, failedAt, requested.task.id],
+    );
+    run(
+      db,
+      `INSERT INTO task_attempts
+       (id, task_id, workflow_id, venture_id, claim_token, status, outcome_status,
+        error_kind, error, started_at, completed_at, metadata)
+       VALUES (?, ?, ?, ?, ?, 'failed', 'failed_before_effect',
+        'non_retryable_error', 'Local spending ledger could not be verified.', ?, ?, ?)`,
+      [
+        "attempt-pre-dispatch-recovery",
+        requested.task.id,
+        requested.task.workflow_id,
+        requested.task.venture_id,
+        "claim-pre-dispatch-recovery",
+        failedAt,
+        failedAt,
+        toJson({ providerCallOccurred: false }),
+      ],
+    );
+
+    const importantWork = getCockpitState(db).importantWork.find(
+      (item) => item.id === requested.task.id,
+    );
+    assert.equal(importantWork.type, "pre_dispatch_recovery");
+    assert.equal(importantWork.action.kind, "prepare_known_ai_retry");
+    assert.equal(importantWork.action.label, "Try this stage again");
+
+    const recovery = prepareReviewedLiveAiWorkerRetry(db, requested.task.id);
+    assert.equal(recovery.technicalRecovery, true);
+    assert.equal(recovery.correctionNumber, 0);
+    assert.equal(recovery.retryNumber, 1);
+    assert.equal(recovery.approval.status, "pending");
+    assert.equal(recovery.task.payload.liveSpendRequest.maxOutputTokens, 900);
+    assert.equal(recovery.task.payload.liveSpendRequest.parameters.retry.technicalRecovery, true);
+    assert.equal(recovery.task.payload.liveSpendRequest.parameters.retry.consumesCorrection, false);
+    assert.equal(recovery.task.payload.liveSpendRequest.parameters.retry.sourceModelCallId, null);
+    assert.equal(
+      get(db, "SELECT COUNT(*) AS count FROM model_calls WHERE task_id = ?", [recovery.task.id]).count,
+      0,
+    );
+    assert.equal(
+      prepareReviewedLiveAiWorkerRetry(db, requested.task.id).task.id,
+      recovery.task.id,
+    );
+
+    const localRecoveryAt = new Date().toISOString();
+    run(
+      db,
+      `UPDATE tasks
+       SET status = 'failed', outcome_status = 'known_provider_result_needs_review',
+           error = 'A retained result needs the corrected local evaluator.', updated_at = ?
+       WHERE id = ?`,
+      [localRecoveryAt, recovery.task.id],
+    );
+    run(
+      db,
+      `INSERT INTO tasks
+       (id, workflow_id, venture_id, title, kind, agent, status, priority,
+        cost_budget_cents, cost_actual_cents, payload, result, outcome_status,
+        created_at, updated_at, completed_at)
+       VALUES (?, ?, ?, ?, 'local_production_output_recovery', 'jarvis', 'completed', 1,
+               0, 0, ?, ?, 'known', ?, ?, ?)`,
+      [
+        "task-local-recovery-pre-dispatch-test",
+        recovery.task.workflow_id,
+        recovery.task.venture_id,
+        `Recover accepted result from ${recovery.task.title}`,
+        toJson({
+          recovery: { sourceTaskId: recovery.task.id, noNewProviderCall: true },
+          liveSpendRequest: recovery.task.payload.liveSpendRequest,
+        }),
+        toJson({ status: "completed", providerCallOccurred: false }),
+        localRecoveryAt,
+        localRecoveryAt,
+        localRecoveryAt,
+      ],
+    );
+    const resolvedCockpit = getCockpitState(db);
+    assert.equal(
+      resolvedCockpit.importantWork.some((item) => item.id === requested.task.id),
+      false,
+      "A completed local recovery must remove its pre-dispatch ancestor from current operator work.",
+    );
+    assert.equal(
+      resolvedCockpit.importantWork.some((item) => item.id === recovery.task.id),
+      false,
+      "The exact recovered provider result must leave current operator work.",
+    );
+    run(
+      db,
+      `INSERT INTO tasks
+       (id, workflow_id, venture_id, title, kind, agent, status, priority,
+        cost_budget_cents, cost_actual_cents, payload, result, outcome_status,
+        error, created_at, updated_at, completed_at)
+       VALUES (?, ?, ?, ?, 'local_production_output_recovery', 'jarvis', 'failed', 1,
+               0, 0, ?, ?, 'failed_before_effect', ?, ?, ?, ?)`,
+      [
+        "task-failed-local-recovery-pre-dispatch-test",
+        recovery.task.workflow_id,
+        recovery.task.venture_id,
+        `Recover accepted result from ${recovery.task.title}`,
+        toJson({
+          recovery: { sourceTaskId: recovery.task.id, noNewProviderCall: true },
+          liveSpendRequest: recovery.task.payload.liveSpendRequest,
+        }),
+        toJson({ status: "failed", providerCallOccurred: false }),
+        "The first local evaluator revision could not accept the result.",
+        localRecoveryAt,
+        localRecoveryAt,
+        localRecoveryAt,
+      ],
+    );
+    assert.equal(
+      getCockpitState(db).importantWork.some(
+        (item) => item.id === "task-failed-local-recovery-pre-dispatch-test",
+      ),
+      false,
+      "A failed local recovery attempt must not remain current after a sibling recovery succeeds.",
+    );
+
+    run(
+      db,
+      `UPDATE task_attempts
+       SET provider_dispatched_at = ?, metadata = ?
+       WHERE id = 'attempt-pre-dispatch-recovery'`,
+      [failedAt, toJson({ providerCallOccurred: true })],
+    );
+    assert.throws(
+      () => prepareReviewedLiveAiWorkerRetry(db, requested.task.id),
+      /cannot prove.*before provider dispatch/i,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("SDK tool interruption uses Jarvis approval and resumes the same serialized run", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
@@ -3773,7 +4182,7 @@ test("Agents SDK invalid structured output is recorded as a known provider respo
       worker: "demand_validator",
       provider: "openai-agents-sdk",
       model: "gpt-5.6-luna",
-      maxInputTokens: 12000,
+      maxInputTokens: 32000,
       maxOutputTokens: 1000,
     });
     decideApproval(db, requested.approval.id, "approved", "approve invalid-output classification proof");
@@ -3832,7 +4241,7 @@ test("Agents SDK invalid structured output is recorded as a known provider respo
     assert.equal(
       retry.task.payload.liveSpendRequest.maxInputTokens,
       Math.max(
-        12000,
+        32000,
         retry.task.payload.liveSpendRequest.executionDescriptor.worstCaseCost.materializedInputTokens,
       ),
     );
@@ -3961,7 +4370,7 @@ test("dashboard recovery prepares and completes a new exact Luna attempt without
       worker: "demand_validator",
       provider: "openai-agents-sdk",
       model: "gpt-5.6-luna",
-      maxInputTokens: 12000,
+      maxInputTokens: 32000,
       maxOutputTokens: 1000,
       proofMode: true,
     };
@@ -4846,11 +5255,14 @@ test("HTTP API prepares a guarded Product Builder asset without calling a model"
 });
 
 test("HTTP API serves registered PDF and image review outputs for dashboard preview", async () => {
-  const previousPackDir = process.env.JARVIS_APPROVAL_PACK_DIR;
-  const packDir = path.join(
-    CONFIG.artifactRoot,
-    `jarvis-codex-pdf-preview-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-  );
+  const previousPackDirs = {
+    pantheon: process.env.PANTHEON_APPROVAL_PACK_DIR,
+    jarvis: process.env.JARVIS_APPROVAL_PACK_DIR,
+  };
+  const workspaceTemp = path.join(CONFIG.rootDir, "tmp");
+  fs.mkdirSync(workspaceTemp, { recursive: true });
+  const packDir = fs.mkdtempSync(path.join(workspaceTemp, "pantheon-pdf-preview-"));
+  process.env.PANTHEON_APPROVAL_PACK_DIR = packDir;
   process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
   const db = seededDb("server-pdf-preview");
   const app = createApp({ db, dbPath: tempDbPath("server-pdf-preview-unused"), security: false });
@@ -4899,8 +5311,14 @@ test("HTTP API serves registered PDF and image review outputs for dashboard prev
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
     db.close();
-    if (previousPackDir === undefined) delete process.env.JARVIS_APPROVAL_PACK_DIR;
-    else process.env.JARVIS_APPROVAL_PACK_DIR = previousPackDir;
+    fs.rmSync(packDir, { recursive: true, force: true });
+    for (const [name, value] of [
+      ["PANTHEON_APPROVAL_PACK_DIR", previousPackDirs.pantheon],
+      ["JARVIS_APPROVAL_PACK_DIR", previousPackDirs.jarvis],
+    ]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 });
 

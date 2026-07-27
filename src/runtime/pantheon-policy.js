@@ -1,7 +1,7 @@
 const CONFIG = require("../config");
 const { fromJson, get, insertEvent, now, run, toJson } = require("../db");
 const { decideApproval } = require("./approvals");
-const { monthlyBudgetExposure } = require("./cost-ledger");
+const { journeyBudgetExposure, monthlyBudgetExposure } = require("./cost-ledger");
 
 const INTERNAL_ACTIONS = Object.freeze([
   "live_ai_worker",
@@ -116,12 +116,26 @@ function classifyInternalApproval(approval) {
     : Array.isArray(descriptor.externalEffects) ? descriptor.externalEffects : [];
   const tools = Array.isArray(payload.tools) ? payload.tools : [];
   const type = String(payload.type || descriptor.kind || "");
-  const amountCents = Math.max(
+  const hardCapCents = Math.max(
     0,
-    Number(payload.maxCostCents || payload.worstCaseCostCents || payload.estimatedCostCents || 0),
+    Number(payload.maxCostCents || payload.estimatedCostCents || 0),
   );
+  const pricedWorstCaseCents = Math.max(
+    0,
+    Number(payload.worstCaseCostCents || descriptor.worstCaseCost?.amountCents || 0),
+  );
+  const amountCents = pricedWorstCaseCents > 0 && pricedWorstCaseCents <= hardCapCents
+    ? pricedWorstCaseCents
+    : hardCapCents;
   const operatorChoiceRequired = payload.parameters?.operatorChoiceRequired === true
     || descriptor.parameters?.operatorChoiceRequired === true;
+  const journeyId = payload.parameters?.pantheonJourney?.journeyId
+    || payload.parameters?.pantheonCommercial?.journeyId
+    || payload.parameters?.pantheonProduction?.journeyId
+    || descriptor.parameters?.pantheonJourney?.journeyId
+    || descriptor.parameters?.pantheonCommercial?.journeyId
+    || descriptor.parameters?.pantheonProduction?.journeyId
+    || null;
   const allowedType = ["live_ai_worker", "live_research"].includes(type);
   const allowedTools = tools.every((toolId) => SAFE_INTERNAL_TOOLS.has(toolId));
   const protectedEffect = effects.length > 0;
@@ -140,9 +154,12 @@ function classifyInternalApproval(approval) {
       && amountCents > 0
     ),
     amountCents,
+    hardCapCents,
+    pricedWorstCaseCents,
     type,
     tools,
     effects,
+    journeyId,
     reason: !approval
       ? "approval_missing"
       : approval.status !== "pending"
@@ -196,6 +213,45 @@ function approveInternalWorkWithinMandate(db, approvalId, options = {}) {
       classification,
       mandate: state,
     };
+  }
+  if (classification.journeyId) {
+    const journey = get(
+      db,
+      `SELECT id, budget_cap_cents, carried_exposure_cents
+       FROM pantheon_journeys WHERE id = ?`,
+      [classification.journeyId],
+    );
+    if (!journey) {
+      return { approved: false, reason: "journey_missing", classification, mandate: state };
+    }
+    const journeyExposure = journeyBudgetExposure(
+      db,
+      journey.id,
+      journey.carried_exposure_cents,
+    );
+    if (journeyExposure.totalCents + classification.amountCents > Number(journey.budget_cap_cents)) {
+      insertEvent(db, {
+        level: "warn",
+        actor: "pantheon",
+        type: "pantheon.journey_budget_stopped",
+        entityType: "pantheon_journey",
+        entityId: journey.id,
+        message: `Pantheon stopped before the full journey could exceed its exact A$${(Number(journey.budget_cap_cents) / 100).toFixed(2)} limit.`,
+        metadata: {
+          requestedCents: classification.amountCents,
+          currentExposureCents: journeyExposure.totalCents,
+          capCents: Number(journey.budget_cap_cents),
+          approvalId,
+        },
+      });
+      return {
+        approved: false,
+        reason: "journey_budget_exceeded",
+        classification,
+        mandate: state,
+        journey: { ...journey, exposure: journeyExposure },
+      };
+    }
   }
   const result = decideApproval(
     db,

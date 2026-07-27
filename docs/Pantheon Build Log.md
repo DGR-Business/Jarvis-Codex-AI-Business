@@ -1,6 +1,6 @@
 # Pantheon Build Log
 
-Last updated: 2026-07-18
+Last updated: 2026-07-27
 
 Pantheon is the active product name from 2026-07-18. Earlier entries retain
 Jarvis-Codex or Jarvis where that was the product name at the time. Jarvis now
@@ -15,26 +15,33 @@ commercial move.
 
 ## Current Position
 
-- Product direction: one digital-product venture to first revenue.
-- Checkout direction: Gumroad Direct; private KYC is permitted; public identity
-  remains faceless and voiceless.
-- Runtime: Node.js 24, CommonJS, built-in SQLite schema 20, local signed operator
-  session, scheduler-backed supervisor, and independent monitor.
+- Product direction: evidence-led opportunity selection before venture creation.
+  No venture currently has authority to enter production.
+- Channel direction: selected from evidence per opportunity. Gumroad, Etsy,
+  marketplaces, direct commerce, service channels, affiliate networks, and
+  other lawful routes are options, not generic defaults.
+- Runtime: Node.js 24, CommonJS, built-in SQLite schema 23, local signed operator
+  session, scheduler-backed supervisor, independent monitor, Portfolio
+  Controller, and a registered non-universal `digital_product_v1` Venture Kit.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
-- First live worker position: one real Luna Opportunity Scout and three real
-  Luna Demand Validator assignments completed through the Agents SDK. They
-  stored 137 attributable sources, four traces, complete receipts, and passed
-  deterministic checks. They prove the operating path, not Pantheon's own
-  demand, conversion, contribution, or revenue.
-- Current operator state: no decision, queue item, unknown outcome, or system
-  finding is waiting. All 11 workers are on standby. The active move is one
-  broad opportunity scan, followed by three validations and one concise venture
-  selection.
+- Current commercial result: two bounded rounds retained ten hypotheses,
+  performed comparable live demand and finance review on six finalists, and
+  completed two Sol investment reviews. Pantheon selected no investment.
+- Current operator state: all 11 workers are on standby. One consolidated
+  accounting note retains two unknown post-dispatch calls; there is no product,
+  publication, market-test, or external-action decision waiting.
+- Historical product: the Job Search Evidence Tracker package remains
+  recoverable engineering evidence but is parked after an unbiased comparison.
+  It is not an active venture or publication recommendation.
 - External actions: locked by default.
 - Operator budget: eight hours per week in the build and first-proof phase.
-- Pre-revenue AI and tool cap: A$100 per month. July exposure is A$1.18:
-  A$0.05 reconciled and A$1.13 pending provider reconciliation.
+- Pre-revenue AI and tool cap: A$100 per month. July runtime exposure is
+  A$16.54, including A$10.00 conservatively held for two unknown calls. These
+  amounts are estimates pending provider reconciliation, not settled spend.
+- Operations: `START PANTHEON.cmd` opens the lightweight control shell in
+  Standby. The dashboard starts Working mode and can return to Standby or stop
+  every exact Pantheon-owned process without touching unrelated Node work.
 
 ## Durable Decisions
 
@@ -56,6 +63,210 @@ commercial move.
 | 2026-07-18 | Name the business runtime Pantheon and reserve Jarvis for Codex as Daniel's developer and technical steward. | The business software and the all-seeing engineering role need clear, durable identities. |
 | 2026-07-18 | Allow exact internal research and production work within the A$100 monthly mandate while retaining capability, cost, and external-action boundaries. | Daniel should not approve routine internal work repeatedly, but authority must remain scoped and auditable. |
 | 2026-07-18 | Begin with broad-to-deep opportunity discovery rather than a preselected token product. | A commercial system must compare opportunities, challenge demand and economics, and build a credible venture-specific catalogue. |
+| 2026-07-22 | Reconcile the independent audit selectively and freeze new frameworks. | The deterministic kernel is sound; concrete correctness and operations defects should be fixed without replacing working architecture or delaying the commercial loop. |
+| 2026-07-22 | Make Windows lifecycle ownership exact and fail closed. | Pantheon may stop only the verified instance it launched and must never solve an orphan-process problem by killing unrelated Node work. |
+| 2026-07-22 | Enforce the Full Journey cap from the shared verified proof ledger plus every active journey's local exposure. | Separate databases and interrupted journeys must not create hidden budget headroom. |
+| 2026-07-22 | Keep one canonical current deliverable while preserving superseded versions. | Recovery must not clutter the operator view or erase immutable execution history. |
+| 2026-07-22 | Add correctness lint and Windows CI without a broad type rewrite. | The audit found real low-cost hardening work; large structural refactors remain post-proof. |
+| 2026-07-22 | Separate OpenAI access from the legacy recovery profile. | One Windows-user-protected LocalAppData credential should survive normal starts independently of old backup or privacy secrets. |
+| 2026-07-22 | Treat the current digital-product journey as Venture Kit 1, not Pantheon's permanent workflow. | Pantheon's destination is one reusable commercial kernel, a portfolio controller and venture factory, and multiple isolated venture-specific kits, teams, tools, rules, records, and schedules. |
+| 2026-07-22 | Require complete compact workbook evidence before an AI quality verdict can stop a journey. | A sampled formula list caused a false rejection even though the exact workbook contained formulas and dropdowns through row 500. |
+| 2026-07-22 | Do not waive a genuine quality mismatch merely to finish the first journey. | The 86/100 final review correctly found that one approved promise was absent from the delivered workbook; commercial truth outranks a cosmetically complete proof. |
+| 2026-07-22 | Reject unsupported product topology at Offer Architect acceptance for Digital Product Kit V1. | The current renderer creates complete Excel/CSV/PDF packages, not Notion systems, hosted portals, reusable databases, project indexes, CRMs, or automated integrations. |
+| 2026-07-24 | Complete the Full Journey proof under an amended A$30 combined ceiling. | A fresh rehearsal and clean production-intent run were necessary to prove the corrected journey without weakening per-action controls or outside-action protections. |
+| 2026-07-24 | Treat `Ready to publish` as engineering readiness, not commercial proof. | Real buyer demand, revenue, and positive contribution can only come from the protected Gumroad market test. |
+| 2026-07-27 | Use one versioned Commercial Constitution and cited knowledge library across Pantheon and Jarvis. | Commercial judgement must be a shared, testable decision method rather than another decorative worker or prompt. |
+| 2026-07-27 | Place Portfolio Controller before venture creation and allow a no-investment result. | Pantheon must compare business models fairly and retain cash when evidence, economics, or entry position is weak. |
+| 2026-07-27 | Treat channels and Venture Kits as evidence-selected, versioned capabilities. | Gumroad and digital products are one implementation path, not the architecture of the commercial kernel. |
+| 2026-07-27 | Use Stopped, Standby, and Working as the only operator lifecycle states. | Daniel needs a low-memory dashboard state and exact process ownership without recurring command-line work or orphaned Node processes. |
+| 2026-07-27 | Do not repeat generic broad discovery after two unsupported rounds. | The next spend must close a named evidence gap through stronger market data, a measured service trial, a submitted idea, or direct buyer intent. |
+
+## 2026-07-22 Full Journey Rehearsal: Genuine Quality Stop
+
+This section records the first terminal rehearsal and is superseded
+operationally by the clean completed proof on 2026-07-24. It remains here
+because the failure and its correction are part of Pantheon's evidence.
+
+The isolated Luna-only rehearsal genuinely completed Opportunity Scout, three
+comparable Demand Validator checks, deterministic candidate selection, Finance,
+Offer Architect, Product Builder, storefront visual generation, and a final
+Quality Reviewer call. Pantheon selected the Freelancer Client Delivery and
+Onboarding OS and retained a five-item customer package.
+
+Jarvis independently opened and checked the actual package before the final
+review:
+
+- five Excel workbooks opened and contained the expected formulas and dropdowns;
+- five CSV files parsed;
+- the seven-page guide PDF opened and rendered;
+- both storefront previews were derived from the real customer files;
+- the cover title and subtitle fit; and
+- earlier false client-view language was absent.
+
+The final Luna review was a real pass through the Agents SDK and cost an
+estimated A$0.06. It scored the package 86/100 and returned `revise`. The Agency
+Delivery Bundle had been approved with a promise of reusable databases and a
+project index, while the delivered product was one Excel workbook with
+Dashboard, Read Me, and Tracker sheets. Pantheon correctly stopped the terminal
+journey instead of silently weakening the verdict or presenting the package as
+ready to publish.
+
+The shared proof exposure is A$13.96 of the approved A$15 ceiling. Only A$1.04
+remains, so a clean rehearsal plus production-intent run cannot honestly fit.
+No additional paid call, publication, account action, customer contact,
+advertising activation, agreement, legal action, or money movement occurred.
+
+Root corrections now prevent the same class of defect earlier in the journey:
+
+- Offer Architect output for Digital Product Kit V1 must describe products the
+  current renderer can actually build;
+- unsupported Notion, Airtable, hosted portal, reusable database, project
+  index, CRM, automation, integration, and sync promises fail acceptance;
+- generated workbook guidance removes unsupported topology language;
+- the command center and Full Journey view state that the run stopped, why it
+  stopped, what must change, and that no work will continue automatically.
+
+Verification after these fixes: 236 of 236 automated tests passed, correctness
+lint passed, the encrypted local recovery set
+`output/recovery/pantheon-recovery-set-2026-07-22T08-27-02-070Z.jbackup`
+authenticated 834 files and a valid SQLite database, and Chrome passed the
+stopped journey at 1440x900, 1280x720, and 1024x768 without horizontal overflow.
+Chrome reported no Pantheon warning or error; logged errors belonged to unrelated
+extensions.
+
+## Approved Multi-Venture Direction
+
+Daniel confirmed that the first venture is a vertical proof, while Pantheon's
+actual destination is a dynamic agentic business builder and runner. The
+detailed future plan is preserved at
+`docs/plans/PANTHEON-MULTI-VENTURE-FOUNDATION-AND-VENTURE-KITS-2026-07-22.md`.
+
+The current kernel is reusable, but the execution layer is not yet dynamic: one
+active venture, one fixed digital-product journey, one implemented kit, a fixed
+team, and Gumroad-oriented production remain deliberate proof constraints. The
+approved sequence is to finish the current journey, publish and begin its real
+buyer test, then use that measurement window to extract Digital Product Kit V1,
+add portfolio-level opportunity selection and Venture Factory, prove a
+structurally different second kit, and only then enable three isolated venture
+lanes. A future venture must not require a copied runtime, mass file duplication,
+or business-specific branches in the kernel.
+
+## 2026-07-22 Quality Evidence Recovery
+
+The first corrected Quality Reviewer pass stopped the Beauty Business journey
+at 78/100 because its review packet exposed only 50 formula examples while
+reporting 501 formula cells. Jarvis inspected the exact workbook independently:
+
+- `Tracker!E2:E500` contains the promised follow-up completion formulas;
+- `Tracker!G2:G500` contains the promised controlled status dropdown;
+- the Tracker and Dashboard render cleanly; and
+- the product bytes were not changed by this diagnosis.
+
+The defect was in Pantheon's evidence handoff, not the workbook. Pantheon now
+records compact first/last formula samples plus complete contiguous coverage
+ranges and counts, includes calculated-field semantics, and refuses evidence
+recovery unless deterministic workbook semantics and formula coverage both pass.
+A new zero-cost local recovery path preserves the earlier verdict, keeps the
+product files unchanged, creates a fresh exact review scope, and records that no
+provider or outside action occurred.
+
+Two related browser-proof defects were also corrected:
+
+- the dashboard now selects the journey most recently updated after terminal
+  work instead of an unrelated journey created later; and
+- a reopened journey replaces its immutable terminal ledger contribution rather
+  than counting the same A$0.77 twice.
+
+The repaired rehearsal is now waiting at one honest operator action: start the
+exact Luna Quality Reviewer check, priced at A$0.17 upper estimate with an A$1
+hard cap. The Full Journey page says `Review this decision`, explains the one
+bounded correction policy, and reports the correct A$12.04 combined exposure.
+All 232 automated tests and lint passed after the repair. No additional OpenAI
+call or external business action occurred during diagnosis and recovery.
+
+## 2026-07-22 Windows Credential Repair And Rotation
+
+The original repository-local encrypted profile had been written by a different
+Windows security identity during development. Daniel's desktop account correctly
+refused to decrypt it, but the launcher coupled that failure to OpenAI readiness
+and therefore blocked an otherwise recoverable startup.
+
+Implemented and proved:
+
+- added an authoritative Windows CurrentUser DPAPI credential under
+  `%LOCALAPPDATA%\Pantheon`, outside the repository and restricted to Daniel's
+  Windows account plus SYSTEM;
+- made the protected store override environment fallbacks and kept the legacy
+  repository profile only for migration and non-OpenAI recovery settings;
+- isolated backup and privacy-secret failures so they warn without disconnecting
+  live AI access;
+- rotated the OpenAI key after unsafe verification output, removed the temporary
+  plaintext transfer file and temporary encryption material, removed the old
+  local environment and legacy-profile copies, and retained no key in Git;
+- started the isolated rehearsal under Daniel's real Windows account with the
+  process environment key deliberately absent. Health reported the paid AI path
+  armed, external actions locked, rehearsal isolation active, and the exact
+  launcher-owned process then stopped cleanly.
+
+The predecessor Platform key was revoked after the replacement passed its
+desktop proof. No further Connect OpenAI step is needed for normal startup.
+
+## 2026-07-22 Independent Audit And Operations Checkpoint
+
+Fable/Claude independently audited commit `0b9f3ca` from 2026-07-18. Jarvis
+retained the exact report at
+`docs/reviews/PANTHEON-INDEPENDENT-AUDIT-2026-07-21.md` and reconciled every
+finding against the current tree at
+`docs/reviews/PANTHEON-INDEPENDENT-AUDIT-RECONCILIATION-2026-07-22.md`.
+
+Accepted and implemented:
+
+- fixed exception masking in receipt finalisation and approval metadata loss
+  when work becomes blocked;
+- made planned integrations report truthfully instead of appearing configured
+  from environment keys alone;
+- moved non-executable policy-looking Markdown out of active `config/` and into
+  current policy documents or the historical archive;
+- added pricing-freshness checks, correctness ESLint, and Windows GitHub Actions
+  for locked install, lint, all tests, and critical runtime dependency audit;
+- replaced PID-only lifecycle behavior with exact executable, process-start,
+  owner-SID, instance, listener, port, and control-token verification;
+- added `START PANTHEON REHEARSAL.cmd` and `STATUS PANTHEON.cmd`; stopping all
+  owned production/rehearsal instances is now the normal default;
+- repaired shared A$15 proof-cap accounting, terminal-journey recovery rules,
+  and canonical local-recovery deliverables after finding additional issues not
+  identified in the external report.
+
+Deferred deliberately: retry-column rationalisation, broad module splitting,
+legacy helper renaming, proof-framework consolidation, dynamic teams, and
+multi-venture lanes. None is allowed to interrupt the first commercial proof.
+The audit's proposed prompt-injection regex and speculative SQLite migration
+were rejected as false confidence or unsupported churn.
+
+Recovery and verification facts:
+
+- fresh encrypted coherent recovery set
+  `pantheon-recovery-set-2026-07-22T00-16-55-591Z.jbackup` contains 823 verified
+  files and restored successfully through SQLite integrity and foreign-key
+  checks before its temporary private copy was removed;
+- the native Windows launcher suite passes duplicate-start, ready/stop, stale
+  metadata, exact tree fallback, output-pipe safety, and unrelated-Node
+  protection scenarios;
+- all 230 isolated automated tests and correctness lint pass, including the
+  Windows-protected credential-store regression;
+- a compatible lockfile update removed the high `fast-uri` advisory. Six
+  moderate `@hono/node-server` advisories remain in the unused Agents SDK MCP
+  server path; forcing npm's proposed old-SDK downgrade was rejected. CI fails
+  on critical runtime advisories while this upstream exception remains visible;
+- Pantheon is stopped cleanly on ports 5051 and 5052. Daniel's desktop account
+  has now passed the final launcher check using only the protected LocalAppData
+  credential. A different Windows identity remains unable to decrypt it, as
+  designed.
+
+The audit's core verdict is accepted: Pantheon is substantial real software,
+but it is not commercially proven. No additional framework is justified before
+the rehearsal and production-intent journeys finish and real buyers test the
+offer.
 
 ## 2026-07-17 Foundation Hardening
 
@@ -772,13 +983,160 @@ Release verification:
 Exact evidence and limits are recorded in
 `docs/proofs/2026-07-18-pantheon-release-proof.md`.
 
-## Accounting Preserved At Reset
+## 2026-07-24 Full Journey Proof Completed
+
+Pantheon completed both required Luna-only journeys without a silent Terra or
+Sol fallback:
+
+- the isolated rehearsal completed 24 model calls, produced the four-item Niche
+  Freelancer Client-Onboarding OS catalogue, and passed final quality at 92;
+- the clean production-intent journey completed 18 model calls, four approved
+  read-only web searches, and one approved image-generation call;
+- production selected the Job Search Evidence Tracker and Interview Learning
+  System, built five working spreadsheet products plus CSV counterparts, a
+  six-page setup guide, two previews, a truthful cover, listing copy, launch
+  posts, tracking rules, and a final operator brief;
+- the first listing answer failed local commercial acceptance and was corrected
+  once; the post-cover distribution recheck also failed once and was corrected
+  once. Pantheon did not silently accept incomplete model output;
+- the final Luna Quality Reviewer scored the inspected production package
+  92/100 and passed it;
+- every reviewed production file, including the canonical manifest, is marked
+  quality-passed; hashes, workbook formulas, data validation, CSV widths, PDFs,
+  previews, and ZIP contents were independently checked;
+- Chrome completed the signed operator path at 1440x900, opened the final PDF
+  inside Pantheon, and showed no Pantheon console error; and
+- lint and all 259 automated tests passed;
+- `STOP PANTHEON.cmd` stopped the exact production and rehearsal process trees,
+  both ports were independently confirmed free, and `START PANTHEON.cmd`
+  returned production to an operations-ready state under Daniel's Windows
+  identity; and
+- final encrypted recovery set
+  `pantheon-recovery-set-2026-07-24T13-23-33-010Z.jbackup` authenticated and
+  restored 868 files into an independent location. The restored database passed
+  quick check, integrity check, and zero foreign-key violations.
+
+The production run used an estimated A$0.82 of provider exposure. Combined
+Full Journey exposure is A$17.39 of the amended A$30 ceiling, leaving A$12.61.
+These remain estimates until reconciled with provider billing. No Gumroad
+account action, publication, public post, customer contact, paid advertising,
+agreement, legal action, or money movement occurred.
+
+The final recovery set is stored in Pantheon's ignored private backup area. An
+external OneDrive copy was not made during this run because exporting the full
+encrypted set outside the workspace requires a separate explicit authorization.
+
+The exact proof record is
+`docs/proofs/2026-07-24-pantheon-full-journey-proof.md`.
+
+## 2026-07-27 Commercial Intelligence Foundation
+
+Pantheon implemented and exercised the first venture-neutral commercial
+selection layer:
+
+- a versioned Commercial Constitution and 60 source-backed propositions across
+  12 commercial areas;
+- FTS5 retrieval with tags, jurisdiction, limits, citations, and a 20-case
+  evaluation;
+- Portfolio Controller v1 with two bounded five-space rounds, three comparable
+  finalists per round, Finance review, and final Sol investment review;
+- Commercial Investment Review with ten mandatory criteria and a valid
+  no-investment outcome;
+- Research Service Trial controls with a public-data baseline and A$25
+  per-service ceiling;
+- `RuntimeSupervisor` with exact Stopped, Standby, and Working modes;
+- `VentureKitRegistry`, with `digital_product_v1` registered as one
+  non-universal production path; and
+- one capability-assurance read model over retained workbench, pilot,
+  readiness, playbook, and comparison evidence; and
+- an active Sunday 18:00 Brisbane Jarvis audit that reviews engineering,
+  commercial evidence, costs, recovery, security, and operator clarity without
+  authorising paid calls or protected external actions.
+
+The live path used 21 provider attempts. Nineteen returned known outcomes with
+A$4.54 of combined incurred estimates. Two Scout calls timed out after dispatch
+and retain A$10.00 of conservative unknown exposure; Pantheon stopped their
+rounds and did not retry them. One Demand Validator response and one Finance
+response were known but truncated; each used its one explicit compact
+correction and then passed.
+
+Round one retained Job Search tracking, niche freelance templates, POD
+milestone goods, affiliate comparison content, and white-label replenishment.
+Round two retained a private-label desk bundle, freelancer onboarding service,
+accessible presentation templates, professional-equipment affiliate content,
+and a fresh Job Search benchmark. Six finalists received attributable demand
+and finance review.
+
+Pantheon selected no investment. Job Search remained parked because willingness
+to pay, acquisition economics, and differentiation from capable free
+substitutes were unproven. The freelancer onboarding service remained parked
+because demand for the exact offer, channel fit, entry position, and net
+contribution were unproven. No production, publication, account action, customer
+contact, advertising, agreement, legal decision, or money movement occurred.
+
+Operator proof confirmed:
+
+- the Command Center says `No investment selected` and cannot start the legacy
+  production journey;
+- all 11 workers are visible and on standby;
+- two timeout records collapse into one accounting note while full receipts
+  remain in System;
+- Portfolio exposes opportunities, investment cases, source-backed knowledge,
+  and justified service trials in ordinary language; and
+- Standby keeps the control shell available at roughly 46 MB with no scheduler,
+  Agents SDK worker, or writable business runtime.
+
+Local release verification passed 268 of 268 tests, zero-warning lint,
+operations-ready Doctor through the protected recovery profile, and ten exact
+lifecycle cycles with 53 MB maximum Standby memory. Chrome passed the Portfolio
+and investment-review path at 1440x900, 1280x720, and 1024x768 without
+horizontal overflow or Pantheon console errors. A clean clone of commit
+`7b869d4` installed 166 locked packages, passed all 268 tests, started on an
+isolated port, returned a live health response, and stopped cleanly. The
+dependency audit has no high or critical finding; six moderate transitive
+`@hono/node-server` findings remain pending an upstream-compatible Agents SDK
+upgrade. Fresh encrypted recovery set
+`pantheon-recovery-set-2026-07-27T05-20-12-699Z.jbackup` authenticated 874 files
+and restored independently into `C:\tmp\pantheon-restore-proof-20260727-0520`.
+The restored SQLite database passed quick check, integrity check, and zero
+foreign-key violations.
+
+The private GitHub release check was allowed to fail honestly and then repaired
+from its exact evidence. The first run exposed missing `openpyxl`, Pillow, and
+ReportLab packages plus a PowerShell 7 module path inherited by Windows
+PowerShell 5.1 tests. Pantheon now pins those renderer dependencies and runs
+launcher tests from the intended shell. The next run passed 267 of 268 tests
+and exposed a genuine concurrent-start race: PowerShell wrapped expected
+port-lock contention inside a method-invocation exception. The launcher now
+walks that exception chain, retries only expected Windows file contention, and
+retains exact process-ownership checks. After 268 local passes and five extra
+concurrency stress runs, private GitHub Actions run `30244872549` passed every
+step for implementation commit `a6db9c4`, including the critical dependency
+audit and cleanup.
+
+The exact plan and live evidence are:
+
+- `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`;
+- `docs/commercial/COMMERCIAL-CONSTITUTION.md`; and
+- `docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`.
+
+## Accounting Position
 
 - ChatGPT Pro active monthly commitment: A$100.00.
 - ChatGPT Pro upgrade cash cost: A$94.68.
-- OpenAI API credit cash cost: A$15.79.
+- OpenAI API credit cash cost: A$63.07 total, comprising A$15.79 for the first
+  US$10 plus US$1 tax purchase and A$47.28 for the later US$30 plus US$3 tax
+  purchase.
+- July recorded cash paid: A$157.75.
 - Confirmed historical provider usage: A$0.05.
 - Pantheon release-proof provider usage: A$1.13 pending reconciliation.
+- Full Journey production-intent exposure: A$0.82 estimated; combined rehearsal
+  and production proof exposure: A$17.39 estimated.
+- Commercial Intelligence Foundation: A$4.54 known incurred estimate plus
+  A$10.00 conservative unknown exposure.
+- July runtime exposure after the Portfolio proof: A$16.54. This is the active
+  monthly-cap figure and remains an estimate until provider billing is
+  reconciled.
 
 These records remain in the active accounting and cost ledgers after pilot work
 is removed. Historical workflows, approvals, packs, model calls, and runs remain
@@ -822,9 +1180,17 @@ review.
 
 ## Next Best Work
 
-Run the first real broad opportunity scan from Command Center. Let Pantheon rank
-three candidates and validate each one, then present Daniel with one concise
-selection. After selection, build the venture-specific minimum credible
-catalogue, economics case, and smallest valid buyer test. Publishing, buyer
-contact, Gumroad account/KYC, advertising activation, and spend remain separate
-protected actions.
+First reconcile the two unknown provider calls against billing. Then close one
+named, decision-critical gap using stronger evidence rather than another generic
+scan. Valid next paths are:
+
+- a measured research-service trial that materially beats the public baseline;
+- a Daniel-submitted opportunity examined against the same gates; or
+- a bounded direct buyer-intent method for one parked case.
+
+Pantheon reopens an investment case only when attributable evidence changes a
+mandatory criterion. If nothing qualifies, it reports no investment again. If
+one case clears all gates, the next goal implements that opportunity's exact
+Venture Kit and the pending Venture Factory boundary; it still does not publish,
+spend externally, contact customers, or create accounts without the applicable
+protected action.

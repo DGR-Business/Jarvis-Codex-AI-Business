@@ -26,6 +26,7 @@ operator outputs belong in `data/artifacts/`.
 Current source of truth:
 
 - `AGENTS.md`
-- `docs/Jarvis-Codex Master Plan.md`
-- `docs/Jarvis-Codex Build Log.md`
-- `config/guardrails.md`
+- `docs/Pantheon Master Plan.md`
+- `docs/Pantheon Build Log.md`
+- `docs/operating-procedures.md`
+- `docs/policies/OPERATOR-DELIVERY-AND-SECURITY.md`

@@ -67,6 +67,10 @@ function recordCapabilityReview(db, capabilityKey, review) {
     );
   } else {
     const wasPromoted = capability.status === "promoted";
+    const activeVenture = get(
+      db,
+      "SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1",
+    );
     run(
       db,
       `UPDATE capability_autonomy
@@ -77,9 +81,10 @@ function recordCapabilityReview(db, capabilityKey, review) {
     run(
       db,
       `INSERT INTO messages (id, venture_id, severity, status, subject, body, created_at, metadata)
-       VALUES (?, 'venture-digital-products', 'urgent', 'open', ?, ?, ?, ?)`,
+       VALUES (?, ?, 'urgent', 'open', ?, ?, ?, ?)`,
       [
         `msg_capability_${randomId()}`,
+        review.ventureId || activeVenture?.id || null,
         "Worker capability needs review",
         `${capabilityKey} did not pass its latest reviewed run. Its promotion streak was reset.`,
         ts,

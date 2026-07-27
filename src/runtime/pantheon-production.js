@@ -1,25 +1,53 @@
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
-const { recordProtectedWorkerOutcome } = require("./ai-team");
+const { recordAgentHandoff, recordProtectedWorkerOutcome } = require("./ai-team");
 const { generateApprovalPack } = require("./approval-pack");
 const { createCommercialExperiment } = require("./commercial-results");
+const { buildDeliverableReviewBindings } = require("./deliverable-review-bindings");
+const {
+  canonicalListingIncludedFiles,
+  currentPackageDefectIssues,
+  exactPublicationListMatch,
+  publicationSafeList,
+  publicationSafeText,
+  publicationTextIssues,
+} = require("./publication-artifact-quality");
 const { requestLiveAiWorker } = require("./live-ai-workers");
+const { journeyForRound, updateJourney } = require("./pantheon-journey");
+const { combinedProofExposureFromDatabase } = require("./proof-exposure-ledger");
 
 const PRODUCT_BUILD_SPEC_SCHEMA = "pantheon.product-build-spec.v1";
 const PRODUCT_MANIFEST_SCHEMA = "pantheon.product-manifest.v1";
 const PRODUCTION_STAGES = new Set([
   "product_build",
+  "storefront_visuals",
   "quality_review",
   "conversion_copy",
   "distribution_plan",
+  "chief_brief",
 ]);
 
 function safeId(value, max = 64) {
   return String(value || "pantheon")
     .replace(/[^a-zA-Z0-9_-]+/g, "_")
     .slice(0, max) || "pantheon";
+}
+
+function withSavepoint(db, prefix, operation) {
+  const name = `${safeId(prefix, 32)}_${randomId().replace(/[^a-zA-Z0-9]/g, "")}`;
+  db.exec(`SAVEPOINT ${name}`);
+  try {
+    const value = operation();
+    db.exec(`RELEASE SAVEPOINT ${name}`);
+    return value;
+  } catch (error) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${name}`);
+    db.exec(`RELEASE SAVEPOINT ${name}`);
+    throw error;
+  }
 }
 
 function slug(value, max = 54) {
@@ -38,11 +66,433 @@ function parseRow(row, jsonFields = ["metadata"]) {
 }
 
 function productMetadata(task) {
-  return fromJson(task?.payload, {})?.liveSpendRequest?.parameters?.pantheonProduction || null;
+  const payload = task?.payload && typeof task.payload === "object"
+    ? task.payload
+    : fromJson(task?.payload, {});
+  return payload?.liveSpendRequest?.parameters?.pantheonProduction || null;
 }
 
 function taskOutput(task) {
-  return fromJson(task?.result, {})?.output || {};
+  const result = task?.result && typeof task.result === "object"
+    ? task.result
+    : fromJson(task?.result, {});
+  return result?.output || {};
+}
+
+function actualProductTitle(plan, opportunityRecord) {
+  return String(
+    plan?.metadata?.productManifest?.packageTitle
+      || plan?.title
+      || opportunityRecord?.title
+      || "",
+  ).trim();
+}
+
+function actualProductPromise(plan, opportunityRecord) {
+  return String(
+    plan?.metadata?.productManifest?.customerPromise
+      || opportunityRecord?.offer_direction
+      || "",
+  ).trim();
+}
+
+function actualProductOffer(plan, opportunityRecord) {
+  const title = actualProductTitle(plan, opportunityRecord);
+  const promise = actualProductPromise(plan, opportunityRecord);
+  if (title && promise && title.toLowerCase() !== promise.toLowerCase()) {
+    return `${title}: ${promise}`;
+  }
+  return title || promise;
+}
+
+function publicationScorecard(plan, opportunityRecord) {
+  const validation = opportunityRecord.metadata?.validation || {};
+  return {
+    total_score: Number(opportunityRecord.overall_score || 0),
+    verdict: "ready_to_test",
+    confidence: opportunityRecord.confidence || "medium",
+    recommendation: `The verified ${actualProductTitle(plan, opportunityRecord)} package is ready for a bounded market test; demand and willingness to pay remain unproven until real buyers act.`,
+    risks: [],
+    next_actions: [],
+    dimensions: {
+      demand_signal: {
+        label: "Demand evidence",
+        score: Number(opportunityRecord.demand_score || 0),
+        note: publicationSafeText(validation.recommendation || "Comparable offers and recurring buyer problems support a test, but this exact package has no verified buyers yet."),
+      },
+      supply_gap: {
+        label: "Differentiation",
+        score: Number(opportunityRecord.supply_gap_score || 0),
+        note: "Alternatives exist; this package must earn its price through the verified customer workflow, not presentation alone.",
+      },
+      unit_economics: {
+        label: "Unit economics",
+        score: Number(opportunityRecord.economics_score || 0),
+        note: "Digital delivery supports attractive gross margins, but platform fees, refunds, conversion, and net contribution still require real sales data.",
+      },
+      channel_fit: {
+        label: "Channel fit",
+        score: Number(opportunityRecord.channel_fit_score || 0),
+        note: "Gumroad Direct and a bounded two-channel organic test fit the offer; qualified reach has not yet been observed.",
+      },
+      execution_fit: {
+        label: "Execution readiness",
+        score: Number(opportunityRecord.execution_fit_score || 0),
+        note: "The customer package, listing, previews, launch plan, and independent quality review are complete.",
+      },
+      risk_control: {
+        label: "Risk control",
+        score: Number(opportunityRecord.risk_score || 0),
+        note: "Nothing has been published and no external spend is authorised; buyer demand, support burden, and final platform economics remain open risks.",
+      },
+    },
+  };
+}
+
+function publicationPriceChannelHypothesis(plan, opportunityRecord) {
+  const price = `A$${(Number(plan.price_floor_cents || 0) / 100).toFixed(2)}`;
+  const buyer = publicationSafeText(opportunityRecord.buyer || "buyers")
+    .replace(/[.!?]+$/, "")
+    .toLowerCase();
+  return `If qualified ${buyer} see the verified package at ${price} through Gumroad Direct and the two bounded organic channels, real views and purchases will show whether this offer deserves further investment.`;
+}
+
+function publicationWorkTaskIds(db, plan, opportunityRecord, workflowId, currentChiefTaskId = null) {
+  const tasks = all(
+    db,
+    `SELECT * FROM tasks
+     WHERE workflow_id = ? AND status = 'completed'
+     ORDER BY completed_at DESC, updated_at DESC`,
+    [workflowId],
+  ).map((task) => parseRow(task, ["payload", "result"]));
+  const scoped = (task, scopeName, scopeId) => {
+    const contextScope = task.payload?.contextSnapshot?.contextScope || {};
+    const production = task.payload?.liveSpendRequest?.parameters?.pantheonProduction || {};
+    return contextScope[scopeName] === scopeId || production[scopeName] === scopeId;
+  };
+  const latest = (agent, predicate = () => true) => tasks.find(
+    (task) => task.agent === agent && predicate(task),
+  )?.id || null;
+  return [
+    opportunityRecord.metadata?.sourceTaskId,
+    opportunityRecord.metadata?.validation?.taskId,
+    latest("finance_analyst", (task) => scoped(task, "opportunityId", opportunityRecord.id)),
+    plan.metadata?.sourceTaskId,
+    plan.metadata?.buildTaskId,
+    plan.metadata?.qualityTaskId,
+    latest("copy_conversion_agent", (task) => (
+      scoped(task, "planId", plan.id)
+      || scoped(task, "opportunityId", opportunityRecord.id)
+    )),
+    plan.metadata?.distributionTaskId,
+    currentChiefTaskId || plan.metadata?.chiefTaskId,
+  ].filter(Boolean);
+}
+
+function publicationPackOptions(db, plan, opportunityRecord, workflowId, currentChiefTaskId = null) {
+  const validation = opportunityRecord.metadata?.validation || {};
+  const price = `A$${(Number(plan.price_floor_cents || 0) / 100).toFixed(2)}`;
+  return {
+    humanName: `${opportunityRecord.title} Ready-to-Publish Brief`,
+    workflowStatus: "ready_to_publish",
+    scorecardOverride: publicationScorecard(plan, opportunityRecord),
+    decisionOverride: {
+      headline: `The exact local package is ready for a no-spend ${price} launch test. Nothing has been published.`,
+      approvalQuestion: "The package is ready. Publishing remains a separate protected action.",
+    },
+    commercialCaseOverride: {
+      buyer: opportunityRecord.buyer,
+      problem: opportunityRecord.problem,
+      offer: actualProductOffer(plan, opportunityRecord),
+      channel: opportunityRecord.channel,
+      priceChannelHypothesis: publicationPriceChannelHypothesis(plan, opportunityRecord),
+      smallestTest: `After separate publication approval, run the accepted 14-day organic launch sequence or stop at 50 qualified product views. Use no more than three posts across two channels and record every qualified view, purchase, buyer segment, question, and objection.`,
+      successMetric: validation.metric || "Three independent paid buyers with positive cash contribution.",
+      stopRule: validation.stopRule || "Revise or stop after 50 qualified views and zero sales without strong qualified interest.",
+    },
+    actionsOverride: [
+      {
+        id: "approve",
+        label: "Keep ready to publish",
+        effect: "Retain this exact verified package for Daniel's later protected publication action.",
+      },
+      {
+        id: "changes",
+        label: "Request changes",
+        effect: "Return the package with your direction; nothing is published.",
+      },
+      {
+        id: "deny",
+        label: "Stop this launch test",
+        effect: "Pause this direction without any external action.",
+      },
+    ],
+    workTaskIdsOverride: publicationWorkTaskIds(db, plan, opportunityRecord, workflowId, currentChiefTaskId),
+    presentationTransform: (value) => publicationPresentationText(value, plan),
+  };
+}
+
+function firstRevenueHypothesis(plan, opportunityRecord) {
+  const title = actualProductTitle(plan, opportunityRecord) || "the finished product package";
+  const promise = actualProductPromise(plan, opportunityRecord);
+  const buyer = publicationSafeText(opportunityRecord.buyer).replace(/[.!?]+$/, "");
+  const channel = publicationSafeText(opportunityRecord.channel).replace(/[.!?]+$/, "");
+  const customerPromise = publicationSafeText(promise).replace(/[.!?]+$/, "");
+  return [
+    `Show ${title} to ${buyer} through ${channel}.`,
+    customerPromise ? `Customer promise: ${customerPromise}.` : "",
+    "The test succeeds when at least three independent buyers purchase with positive cash contribution.",
+  ].filter(Boolean).join(" ");
+}
+
+function conciseCatalogueContext(plan) {
+  const manifest = plan?.metadata?.productManifest || {};
+  const catalogue = Array.isArray(manifest.catalogueItems) ? manifest.catalogueItems : [];
+  return {
+    schema: "pantheon.verified-launch-context.v1",
+    packageTitle: manifest.packageTitle || plan.title,
+    customerPromise: manifest.customerPromise || "",
+    deliveryFormat: manifest.deliveryFormat || "",
+    catalogueItems: catalogue.map((item) => ({
+      title: item.title,
+      purpose: item.purpose,
+      files: Array.isArray(item.files) ? item.files : [],
+    })),
+    sharedFiles: Array.isArray(manifest.sharedFiles) ? manifest.sharedFiles : [],
+    storefrontPreviews: Array.isArray(manifest.storefrontPreviews) ? manifest.storefrontPreviews : [],
+    listingIncludedFiles: canonicalListingIncludedFiles(manifest),
+    disclaimers: Array.isArray(manifest.disclaimers) ? manifest.disclaimers : [],
+    bundleFilename: manifest.bundle?.filename || "",
+    canonicalManifestInsideBundle: manifest.bundle?.canonicalManifestInsideBundle === true,
+    publishingStatus: manifest.publishingStatus || "not_published",
+    independentQuality: {
+      passed: Number(plan?.metadata?.qualityScore || 0) >= 80
+        && plan?.metadata?.qualityDecision === "approve",
+      score: Number(plan?.metadata?.qualityScore || 0),
+      decision: plan?.metadata?.qualityDecision || "",
+    },
+    appliedRuntimeAdjustments: (manifest.runtimeNormalizations || []).map((item) => ({
+      code: item.code,
+      fieldName: item.fieldName || "",
+      status: "applied_and_included_in_quality_reviewed_files",
+    })),
+    currentTruthRule: "This record is the current verified package. Earlier failed, truncated, or superseded attempts are audit history and must not be reported as current defects.",
+  };
+}
+
+function conciseQualityContext(qualityTask) {
+  const output = taskOutput(qualityTask);
+  const work = output.roleOutput || {};
+  return {
+    taskId: qualityTask.id,
+    status: qualityTask.status,
+    score: Number(work.qualityScore || 0),
+    decision: output.operatorDecision || "",
+    claimSafety: work.claimSafety || "",
+    operatorRecommendation: work.operatorRecommendation || "",
+    currentRiskFindings: Array.isArray(work.riskFindings) ? work.riskFindings : [],
+    currentMissingEvidence: Array.isArray(work.missingEvidence) ? work.missingEvidence : [],
+  };
+}
+
+function conciseListingContext(copyTask, plan = null) {
+  const output = taskOutput(copyTask);
+  const work = output.roleOutput || {};
+  const canonicalIncludedFiles = plan
+    ? canonicalListingIncludedFiles(plan?.metadata?.productManifest || {})
+    : [];
+  const normalize = (value) => plan ? publicationPlanPriceText(value, plan) : value;
+  const normalizeList = (value) => (
+    Array.isArray(value) ? value.map((item) => normalize(item)).filter(Boolean) : []
+  );
+  return {
+    taskId: copyTask.id,
+    status: copyTask.status,
+    productTitle: normalize(work.productTitle || ""),
+    headline: normalize(work.headline || ""),
+    description: normalize(work.description || ""),
+    callToAction: normalize(work.callToAction || ""),
+    includedFiles: canonicalIncludedFiles.length
+      ? canonicalIncludedFiles
+      : Array.isArray(work.includedFiles) ? work.includedFiles : [],
+    tags: normalizeList(work.tags),
+    faq: normalizeList(work.faq),
+    messageVariants: normalizeList(work.messageVariants),
+    claimChecks: normalizeList(work.claimChecks),
+    trackingNote: normalize(work.trackingNote || ""),
+  };
+}
+
+function conciseDistributionContext(distributionTask, plan = null) {
+  const output = taskOutput(distributionTask);
+  const work = output.roleOutput || {};
+  const normalize = (value) => plan ? publicationPlanPriceText(value, plan) : value;
+  return {
+    taskId: distributionTask.id,
+    status: distributionTask.status,
+    audience: normalize(work.audience || ""),
+    channelSteps: Array.isArray(work.channelSteps)
+      ? work.channelSteps.map((item) => normalize(item)).filter(Boolean)
+      : [],
+    evidenceToCapture: Array.isArray(work.evidenceToCapture)
+      ? work.evidenceToCapture.map((item) => normalize(item)).filter(Boolean)
+      : [],
+    successMetric: normalize(work.successMetric || ""),
+    stopRule: normalize(work.stopRule || ""),
+    operatorWorkload: normalize(work.operatorWorkload || ""),
+  };
+}
+
+function chiefDecisionContext(plan, copyTask, distributionTask) {
+  const catalogue = conciseCatalogueContext(plan);
+  const listing = conciseListingContext(copyTask, plan);
+  const distribution = conciseDistributionContext(distributionTask, plan);
+  return {
+    currentVerifiedCatalogue: {
+      packageTitle: catalogue.packageTitle,
+      customerPromise: catalogue.customerPromise,
+      deliveryFormat: catalogue.deliveryFormat,
+      catalogueItems: catalogue.catalogueItems.map((item) => item.title),
+      sharedFiles: catalogue.sharedFiles,
+      bundleFilename: catalogue.bundleFilename,
+      canonicalManifestInsideBundle: catalogue.canonicalManifestInsideBundle,
+      disclaimers: catalogue.disclaimers,
+      publishingStatus: catalogue.publishingStatus,
+      independentQuality: catalogue.independentQuality,
+      currentTruthRule: catalogue.currentTruthRule,
+    },
+    currentAcceptedListing: {
+      taskId: listing.taskId,
+      status: listing.status,
+      productTitle: listing.productTitle,
+      headline: listing.headline,
+      description: String(listing.description || "").slice(0, 1200),
+      callToAction: listing.callToAction,
+      includedFiles: listing.includedFiles,
+      claimChecks: listing.claimChecks,
+      trackingNote: listing.trackingNote,
+    },
+    currentAcceptedDistributionPlan: distribution,
+  };
+}
+
+function serializedLaunchContext(value, label) {
+  const serialized = JSON.stringify(value);
+  if (serialized.length > 11000) {
+    throw new Error(`${label} is too large for one verified worker handoff. Reduce it to current, decision-relevant facts.`);
+  }
+  return serialized;
+}
+
+function publicationParagraphs(value) {
+  return String(value || "")
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .split(/\r?\n+/)
+    .map(publicationSafeText)
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function publicationPlanPriceText(value, plan) {
+  const text = publicationSafeText(value);
+  const priceCents = Number(plan?.price_floor_cents || 0);
+  if (!priceCents) return text;
+  const fixed = (priceCents / 100).toFixed(2);
+  const compact = fixed.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  const variants = [...new Set([fixed, compact])]
+    .sort((left, right) => right.length - left.length)
+    .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const foreignPrefix = new RegExp(
+    `\\b(?:US\\$|USD\\s*)(${variants})(?!\\d|\\.\\d)`,
+    "gi",
+  );
+  const foreignSuffix = new RegExp(
+    `(^|[^\\d.])(${variants})\\s*USD\\b`,
+    "gi",
+  );
+  const audPrefix = new RegExp(
+    `\\bAUD\\s*(${variants})(?!\\d|\\.\\d)`,
+    "gi",
+  );
+  const audSuffix = new RegExp(
+    `(^|[^\\d.])(${variants})\\s*AUD\\b`,
+    "gi",
+  );
+  const barePrice = new RegExp(`(^|[^A-Za-z])\\$(${variants})(?!\\d|\\.\\d)`, "g");
+  return text
+    .replace(foreignPrefix, (_match, amount) => `A$${amount}`)
+    .replace(foreignSuffix, (_match, prefix, amount) => `${prefix}A$${amount}`)
+    .replace(audPrefix, (_match, amount) => `A$${amount}`)
+    .replace(audSuffix, (_match, prefix, amount) => `${prefix}A$${amount}`)
+    .replace(barePrice, (_match, prefix, amount) => `${prefix}A$${amount}`);
+}
+
+function publicationPresentationText(value, plan) {
+  return publicationPlanPriceText(value, plan)
+    .replace(
+      /\bprepare a measured paid test rather than publish or claim validated sales\b/gi,
+      "prepare the accepted measured organic test after separate publication approval rather than claim validated sales",
+    );
+}
+
+function containsForeignCanonicalPrice(value, plan) {
+  const priceCents = Number(plan?.price_floor_cents || 0);
+  if (!priceCents) return false;
+  const fixed = (priceCents / 100).toFixed(2);
+  const compact = fixed.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  const variants = [...new Set([fixed, compact])]
+    .sort((left, right) => right.length - left.length)
+    .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  return new RegExp(
+    `(?:\\bUS\\$|\\bUSD\\s*)(?:${variants})(?!\\d|\\.\\d)|(^|[^\\d.])(?:${variants})\\s*USD\\b`,
+    "i",
+  ).test(String(value || ""));
+}
+
+function publicationPlanPriceParagraphs(value, plan) {
+  return String(value || "")
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .split(/\r?\n+/)
+    .map((item) => publicationPlanPriceText(item, plan))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function publicationPlanPriceList(value, plan) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => publicationPlanPriceText(item, plan)).filter(Boolean);
+}
+
+function stableCostRiskText(value) {
+  return publicationSafeText(value)
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !(
+      /\bfinance record\b/i.test(sentence)
+      && /\b(?:provider|tool|model|AI)\b/i.test(sentence)
+      && /\bcost/i.test(sentence)
+    ))
+    .join(" ")
+    .trim();
+}
+
+function contextRevision(task) {
+  return Number(productMetadata(task)?.contextRevision || 0);
+}
+
+function existingProductionContextTask(db, planId, stage, revision) {
+  const rows = all(
+    db,
+    `SELECT * FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage') = ?
+     ORDER BY created_at DESC`,
+    [planId, stage],
+  );
+  const match = rows.find((row) => contextRevision(row) === Number(revision || 0));
+  return match ? parseRow(match, ["payload", "result"]) : null;
 }
 
 function cataloguePlan(db, planId) {
@@ -76,6 +526,23 @@ function roundForPlan(db, plan) {
      WHERE opportunities.id = ?`,
     [plan.opportunity_id],
   ));
+}
+
+function journeyForPlan(db, plan) {
+  const round = roundForPlan(db, plan);
+  return round ? journeyForRound(db, round.id) : null;
+}
+
+function journeyParameters(journey) {
+  return journey ? {
+    pantheonJourney: {
+      journeyId: journey.id,
+      mode: journey.mode,
+      model: journey.model,
+      modelLocked: journey.model_locked === 1,
+      budgetCapCents: journey.budget_cap_cents,
+    },
+  } : {};
 }
 
 function buildProfile(opportunityRecord) {
@@ -128,8 +595,22 @@ function buildProfile(opportunityRecord) {
   };
 }
 
+function normalizedRevisionCorrections(options = {}) {
+  const supplied = Array.isArray(options.revisionCorrections)
+    ? options.revisionCorrections
+    : String(options.revisionFeedback || "").split(/\s*;\s*|\r?\n+/);
+  return [...new Set(
+    supplied
+      .filter(Boolean)
+      .map((item) => String(item).replace(/\s+/g, " ").trim().slice(0, 700))
+      .filter(Boolean),
+  )].slice(0, 6);
+}
+
 function buildSpec(plan, opportunityRecord, items, options = {}) {
   const profile = buildProfile(opportunityRecord);
+  const fullJourney = Boolean(plan.metadata.journeyId);
+  const revisionCorrections = normalizedRevisionCorrections(options);
   return {
     schema: PRODUCT_BUILD_SPEC_SCHEMA,
     planId: plan.id,
@@ -155,8 +636,12 @@ function buildSpec(plan, opportunityRecord, items, options = {}) {
     manifestFilename: "pantheon-product-manifest.json",
     bundleFilename: `${slug(opportunityRecord.title)}-catalogue.zip`,
     minimumReturnedFiles: 2,
+    storefrontPreviewCount: fullJourney ? 2 : 0,
+    storefrontPreviewDirectory: fullJourney ? "storefront-previews" : null,
+    ventureKit: fullJourney ? "digital_product_v1" : null,
     revisionNumber: Number(options.revisionNumber || 0),
-    revisionFeedback: String(options.revisionFeedback || ""),
+    revisionCorrections,
+    revisionFeedback: revisionCorrections.join("; ").slice(0, 1800),
     externalActionsAllowed: false,
     publishingAllowed: false,
   };
@@ -176,6 +661,53 @@ function existingProductionTask(db, planId, stage, revisionNumber = null) {
     ? rows[0]
     : rows.find((row) => Number(productMetadata(row)?.revisionNumber || 0) === Number(revisionNumber));
   return match ? parseRow(match, ["payload", "result"]) : null;
+}
+
+function reviewFingerprint(reviewBindings, qualityReviewPacket) {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify({
+      reviewBindings: Array.isArray(reviewBindings) ? reviewBindings : [],
+      qualityReviewPacket: qualityReviewPacket || null,
+    }))
+    .digest("hex");
+}
+
+function qualityReviewFingerprintForTask(task) {
+  const payload = task?.payload && typeof task.payload === "object"
+    ? task.payload
+    : fromJson(task?.payload, {});
+  const parameters = payload?.liveSpendRequest?.parameters || {};
+  return parameters?.pantheonProduction?.reviewFingerprint
+    || reviewFingerprint(parameters.reviewBindings, parameters.qualityReviewPacket);
+}
+
+function existingQualityReviewTask(db, planId, revisionNumber, fingerprint) {
+  const rows = all(
+    db,
+    `SELECT * FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND status <> 'cancelled'
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage') = 'quality_review'
+     ORDER BY created_at DESC`,
+    [planId],
+  ).map((row) => parseRow(row, ["payload", "result"]));
+  const sameRevision = rows.filter((row) => (
+    Number(productMetadata(row)?.revisionNumber || 0) === Number(revisionNumber)
+  ));
+  const matching = sameRevision.find((row) => qualityReviewFingerprintForTask(row) === fingerprint);
+  const reviewedFingerprints = new Set(
+    sameRevision.map(qualityReviewFingerprintForTask).filter(Boolean),
+  );
+  if (matching) return { task: matching, existing: true, sequence: reviewedFingerprints.size };
+  // One product correction may require bounded rechecks when Jarvis fixes the
+  // deterministic renderer or applies an exact claim-safety finding without
+  // asking the model to redesign the product.
+  if (reviewedFingerprints.size >= 3) {
+    throw new Error("Pantheon stopped before creating another quality review for the same product revision.");
+  }
+  return { task: null, existing: false, sequence: reviewedFingerprints.size + 1 };
 }
 
 function updatePlan(db, planId, patch = {}) {
@@ -236,6 +768,7 @@ function prepareCatalogueBuild(db, input = {}) {
     };
   }
   const round = roundForPlan(db, plan);
+  const journey = journeyForPlan(db, plan);
   const operatorChoiceRequired = input.operatorChoiceRequired !== false;
   const request = requestLiveAiWorker(db, round.metadata.workflowId, {
     requestKey: `catalogue_build_${safeId(plan.id)}_r${revisionNumber}`,
@@ -247,22 +780,23 @@ function prepareCatalogueBuild(db, input = {}) {
     approvalTitle: revisionNumber
       ? `Correct the ${plan.title} product files`
       : `Build and quality-check the ${items.length}-product catalogue`,
-    estimatedCostCents: 800,
+    estimatedCostCents: 200,
     reason: operatorChoiceRequired
       ? `Create the exact ${items.length}-item local product catalogue that Daniel reviewed. Nothing will be published, sent, or uploaded to a marketplace.`
       : "Correct the exact local product package after Pantheon's Quality Reviewer found a material defect. Nothing will be published or sent.",
     expectedOutput: `A real downloadable ${spec.bundleFilename}, ${spec.manifestFilename}, and a structured production summary. Planning prose without files is a failed build.`,
     expectedMetric: `Pantheon downloads, hashes, validates, and maps usable product files to all ${items.length} approved catalogue items.`,
-    model: CONFIG.terraModel,
-    maxInputTokens: 16000,
-    maxOutputTokens: 2600,
-    maxTurns: 8,
-    maxToolCalls: 8,
-    deadlineMs: 300000,
+    model: journey?.model || CONFIG.terraModel,
+    modelLocked: journey?.model_locked === 1,
+    maxInputTokens: 64000,
+    maxOutputTokens: 8000,
+    maxTurns: 1,
+    maxToolCalls: 0,
+    deadlineMs: 180000,
     tools: ["product_file_factory"],
     toolArguments: {
       product_file_factory: {
-        memoryLimit: "1g",
+        renderer: "pantheon-local-digital-product-factory-v1",
       },
     },
     businessContext: {
@@ -274,27 +808,48 @@ function prepareCatalogueBuild(db, input = {}) {
       evidenceStandard: "Use the approved opportunity, economics, offer, and catalogue records. Do not invent buyer proof or public claims.",
     },
     workBrief: {
-      objective: `Use the python tool to build the complete ${items.length}-item product catalogue described by the exact productBuildSpec.`,
-      deliverable: `Return ${spec.bundleFilename} and ${spec.manifestFilename}. Cite both files in the final response so Pantheon can download them before the container expires.`,
+      objective: `Design the exact customer contents for the complete ${items.length}-item catalogue in approvedProductBuildSpec.`,
+      deliverable: `Return one strict Product Builder result containing a complete productBlueprint. Pantheon will turn it into ${spec.bundleFilename} and ${spec.manifestFilename} locally after validation.`,
       assetPrompt: [
         `The manifest must use schema ${PRODUCT_MANIFEST_SCHEMA} and exactly match planId ${plan.id} and opportunityId ${opportunityRecord.id}.`,
         "Its catalogueItems array must contain every exact catalogue item id. Each item must list the real customer-facing files that exist inside the returned bundle.",
-        "Create complete customer-usable files, not outlines, lorem ipsum, TODO markers, empty worksheets, or claims that work was done elsewhere.",
-        revisionNumber ? `Correct these review findings: ${String(input.revisionFeedback || "Rebuild the defective package.").slice(0, 1000)}` : "",
+        "Define complete customer-usable trackers, instructions, fields, and realistic examples. Do not return outlines, lorem ipsum, TODO markers, empty worksheets, or claims that files already exist.",
+        "Keep the strict blueprint compact: one short sentence per purpose, instruction, and field guide; use one realistic sample row unless a second is essential; do not repeat the same explanation.",
+        "Calculations are row-level only. The supported operations are sum, subtract, multiply, and percent_of using values from columns in the same row and the same catalogue item. Never request grouping, cross-row totals, SUMIF or SUMIFS logic, lookups, counts, running totals, or date arithmetic. Make category, month, or other aggregate totals user-entered reviewed fields and omit them from calculations.",
+        "For any promised row-level calculator, every calculation target and input must exactly copy a column.name from that same catalogue item, with no explanatory prose added to an input name. For percent_of use exactly [numerator column name, denominator column name]. Use an empty calculations array when no supported row-level formula is required. For any promised email or message scripts, include an Email Body, Message Copy, Script Text, or Script Wording field with actual editable wording in the sample data.",
+        "Every column must include options. Use [] for non-status fields. For every status field, list all 2-12 allowed dropdown values explicitly in options. Copy each sample status value character-for-character from that field's options; never append punctuation, translations, symbols, or commentary.",
+        "Every catalogue item must include a dedicated Status, Workflow Status, Message Status, Contact Status, or Completion Status field. Give that field a recognised successful value such as Complete, Sent, Closed, Approved, Confirmed, or Ready so the Dashboard counts the correct workflow field.",
+        "When a product promises a finite sequence of up to three steps, include one realistic sample row for every promised step and include every step name in that field's options.",
+        "Map every approved catalogue promise to exact visible support in that item's fields, instructions, formulas, checklist, validation options, or statuses.",
+        "If an approved offer says confirm, verify, approve, complete, or organize something, implement the named target and the exact confirmation, completeness, approval, index, or status mechanism. If the promise is not supportable, narrow the customer-facing purpose to a literal functional description.",
       ].filter(Boolean).join(" "),
+      requiredCorrections: revisionNumber
+        ? (spec.revisionCorrections.length ? spec.revisionCorrections : ["Rebuild the defective package and resolve the recorded quality finding."])
+        : [],
       constraints: [
         "No internet, publishing, customer contact, account action, legal decision, or money movement.",
         "Do not include executables, scripts, macros, credentials, personal data, or external tracking.",
         "Use ordinary customer-facing language and clearly label assumptions or educational limitations.",
+        "Do not claim better, fewer, faster, improved, reduced, guaranteed, or completed outcomes before real customer measurement.",
+        "Prefer functional verbs such as organize, track, record, display, calculate, and plan.",
       ],
       acceptanceCriteria: [
+        ...(revisionNumber ? ["Every requiredCorrections item is visibly resolved in the corrected customer files."] : []),
         `All ${items.length} exact catalogue item IDs appear once in the manifest.`,
         "Every item maps to at least one real file in the bundle.",
         "Files open cleanly and include practical instructions or examples where useful.",
-        "The final response names and cites the manifest and bundle.",
+        "Every customer-facing purpose and approved offer is supported by an exact field, instruction, formula, checklist, validation option, or status.",
+        ...(spec.storefrontPreviewCount
+          ? [`Create exactly ${spec.storefrontPreviewCount} PNG storefront previews in ${spec.storefrontPreviewDirectory}/, derived from the actual customer files rather than invented mockups, and list them in manifest.storefrontPreviews.`]
+          : []),
+        "Every sample row has exactly one value for every defined column.",
+        "Every controlled field contains the complete promised option set, every sample status value exactly equals one declared option, and every item has a dedicated workflow-status field used by its Dashboard.",
+        "Every calculation uses only supported row-level logic and exact same-item column names; aggregate or cross-row values are user-entered rather than represented as formulas.",
+        "Every item declares calculations as an array. Use an empty array only when that item makes no calculation promise.",
       ],
     },
     parameters: {
+      ...journeyParameters(journey),
       operatorChoiceRequired,
       productBuildSpec: spec,
       pantheonProduction: {
@@ -305,6 +860,7 @@ function prepareCatalogueBuild(db, input = {}) {
         planId: plan.id,
         revisionNumber,
         operatorChoiceRequired,
+        journeyId: journey?.id || null,
       },
     },
     effects: [],
@@ -320,6 +876,25 @@ function prepareCatalogueBuild(db, input = {}) {
       noSellableFilesClaimed: true,
     },
   });
+  if (journey) {
+    updateJourney(db, journey.id, {
+      status: operatorChoiceRequired ? "waiting_for_operator" : "running",
+      activeStage: "product_build",
+      selectedOpportunityId: opportunityRecord.id,
+      metadata: {
+        currentTaskId: request.task?.id || null,
+        currentApprovalId: request.approval?.id || null,
+        cataloguePlanId: plan.id,
+      },
+      stageEvent: {
+        stage: "product_build",
+        status: request.task?.status || "waiting_to_start",
+        taskId: request.task?.id || null,
+        workerId: "product_builder",
+        note: revisionNumber ? "A corrected product build was prepared." : "The complete product build was prepared.",
+      },
+    });
+  }
   return { ...request, spec, existing: false };
 }
 
@@ -331,9 +906,519 @@ function generatedProductResult(task) {
   return generated;
 }
 
-function queueQualityReview(db, plan, opportunityRecord, buildTask, generated) {
-  const existing = existingProductionTask(db, plan.id, "quality_review");
-  if (existing) return { task: existing, existing: true };
+function markCatalogueDeliverablesQualityPassed(db, plan, generated) {
+  const visualIds = [
+    ...(plan.metadata.storefrontVisualIds || []),
+    ...(plan.metadata.storefrontPreviewIds || []),
+  ];
+  const reviewedDeliverableIds = [...new Set([
+    ...(generated.files || []).map((file) => file.id).filter(Boolean),
+    ...visualIds,
+  ])];
+  if (reviewedDeliverableIds.length) {
+    const placeholders = reviewedDeliverableIds.map(() => "?").join(", ");
+    run(
+      db,
+      `UPDATE deliverables SET status = 'quality_passed', updated_at = ?
+       WHERE id IN (${placeholders})`,
+      [now(), ...reviewedDeliverableIds],
+    );
+  }
+  run(
+    db,
+    `UPDATE deliverables SET status = 'quality_passed', updated_at = ?
+     WHERE id IN (SELECT deliverable_id FROM catalogue_items WHERE plan_id = ? AND deliverable_id IS NOT NULL)`,
+    [now(), plan.id],
+  );
+  return reviewedDeliverableIds;
+}
+
+function supersedeUnstartedProductionTask(db, task, reason) {
+  const evidence = get(
+    db,
+    `SELECT
+       (SELECT COUNT(*) FROM task_attempts WHERE task_id = ?) AS attempts,
+       (SELECT COUNT(*) FROM model_calls WHERE task_id = ?) AS model_calls,
+       (SELECT COUNT(*) FROM agent_runs WHERE task_id = ?) AS agent_runs,
+       (SELECT COUNT(*) FROM costs
+        WHERE task_id = ? AND status IN ('reserved', 'incurred_estimate', 'unknown', 'reconciled')) AS costs`,
+    [task.id, task.id, task.id, task.id],
+  );
+  if (
+    !["queued", "planned", "blocked", "waiting_approval"].includes(task.status)
+    || Object.values(evidence || {}).some((count) => Number(count || 0) > 0)
+  ) {
+    throw new Error(
+      "Pantheon cannot replace this product-stage request because execution evidence already exists.",
+    );
+  }
+  const ts = now();
+  run(
+    db,
+    `UPDATE tasks
+     SET status = 'cancelled', outcome_status = 'failed_before_effect',
+         error = ?, completed_at = COALESCE(completed_at, ?), updated_at = ?
+     WHERE id = ?`,
+    [reason, ts, ts, task.id],
+  );
+  if (task.approval_id) {
+    run(
+      db,
+      `UPDATE approvals
+       SET status = 'superseded', decided_at = COALESCE(decided_at, ?),
+           decision_note = ?
+       WHERE id = ? AND status IN ('pending', 'approved')`,
+      [ts, reason, task.approval_id],
+    );
+    run(
+      db,
+      `UPDATE approval_action_tokens
+       SET status = 'superseded', used_at = COALESCE(used_at, ?)
+       WHERE approval_id = ? AND status IN ('active', 'approved')`,
+      [ts, task.approval_id],
+    );
+  }
+  run(
+    db,
+    `UPDATE messages
+     SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?)
+     WHERE task_id = ? AND status = 'open'`,
+    [ts, task.id],
+  );
+  insertEvent(db, {
+    level: "info",
+    actor: "jarvis",
+    type: "production.unstarted_request_superseded",
+    entityType: "task",
+    entityId: task.id,
+    message: "Pantheon retired an unstarted product-stage request because its exact input package changed.",
+    metadata: {
+      approvalId: task.approval_id || null,
+      reason,
+      noProviderCall: true,
+      noSpendOccurred: true,
+    },
+  });
+}
+
+function queueStorefrontVisual(db, plan, opportunityRecord, buildTask, generated) {
+  const revisionNumber = Number(productMetadata(buildTask)?.revisionNumber || 0);
+  const existing = existingProductionTask(db, plan.id, "storefront_visuals", revisionNumber);
+  if (existing) {
+    const existingBuildTaskId = productMetadata(existing)?.buildTaskId || null;
+    if (existingBuildTaskId === buildTask.id) {
+      return { task: existing, existing: true };
+    }
+    supersedeUnstartedProductionTask(
+      db,
+      existing,
+      "The exact locally rendered product package changed before storefront work began.",
+    );
+  }
+  const journey = journeyForPlan(db, plan);
+  const request = requestLiveAiWorker(db, buildTask.workflow_id, {
+    requestKey: `catalogue_storefront_visual_${safeId(plan.id)}_r${revisionNumber}`,
+    requestedBy: "pantheon_supervisor",
+    worker: "product_builder",
+    taskTitle: `Create the storefront cover for ${opportunityRecord.title}`,
+    approvalTitle: `Create one storefront cover for ${opportunityRecord.title}`,
+    estimatedCostCents: 100,
+    reason: "Create one exact, capped local storefront cover for the finished product. Nothing will be published or sent.",
+    expectedOutput: "One locally stored cover image, a concise production note, and honest limitations.",
+    expectedMetric: "Exactly one truthful cover image is stored and linked to the finished product before independent review.",
+    model: journey?.model || CONFIG.terraModel,
+    modelLocked: journey?.model_locked === 1,
+    maxOutputTokens: 2400,
+    maxTurns: 2,
+    maxToolCalls: 1,
+    deadlineMs: 180000,
+    tools: ["image_generation_spend"],
+    toolArguments: {
+      image_generation_spend: {
+        quality: "low",
+        size: "1024x1024",
+        outputFormat: "png",
+      },
+    },
+    businessContext: {
+      subject: opportunityRecord.title,
+      buyer: opportunityRecord.buyer,
+      problem: opportunityRecord.problem,
+      offer: opportunityRecord.offer_direction,
+      channel: "Gumroad digital product",
+      evidenceStandard: "The cover may represent the real product theme, but must not depict features, testimonials, results, brands, or included files that do not exist.",
+    },
+    workBrief: {
+      objective: `Create a clean storefront cover background for ${opportunityRecord.title}.`,
+      deliverable: "One square PNG background that Pantheon will finish with an exact local product-title overlay for the Gumroad product card.",
+      assetPrompt: `Professional, clean digital-product cover artwork for ${opportunityRecord.title}, designed for ${opportunityRecord.buyer}. Show an abstract workflow using restrained geometric panels and connecting lines. Do not include people, human silhouettes, profile symbols, user icons, stars, ratings, review marks, badges, logos, trademarks, testimonials, screenshots, numbers, or readable text. Use a composed business-ready layout with clear central space for a later title overlay. Do not imitate a named brand or artist.`,
+      constraints: [
+        "No readable text, logos, trademarks, people or people-related pictograms, stars, ratings, review symbols, testimonials, prices, guarantees, or unsupported product features.",
+        "No publishing or external action.",
+      ],
+      acceptanceCriteria: [
+        "Exactly one 1024x1024 PNG is returned.",
+        "The background is relevant to the real product and leaves clean space for Pantheon's exact local title overlay.",
+        "The visual does not misrepresent the included product files.",
+      ],
+    },
+    parameters: {
+      ...journeyParameters(journey),
+      ...(journey ? {} : { requiredReviewer: "quality_reviewer" }),
+      pantheonProduction: {
+        supervisorOwned: true,
+        stage: "storefront_visuals",
+        roundId: productMetadata(buildTask).roundId,
+        opportunityId: opportunityRecord.id,
+        planId: plan.id,
+        buildTaskId: buildTask.id,
+        revisionNumber,
+        journeyId: journey?.id || null,
+        customerPromise: actualProductPromise(plan, opportunityRecord),
+      },
+    },
+    effects: [],
+    tracePolicy: {
+      providerResponseStored: false,
+      providerTraceContent: false,
+      dataClass: "business_internal",
+      purpose: "Retain the generated asset locally while keeping the provider trace free of private content.",
+    },
+  });
+  if (journey) {
+    updateJourney(db, journey.id, {
+      status: "running",
+      activeStage: "storefront_visuals",
+      metadata: {
+        currentTaskId: request.task?.id || null,
+        currentApprovalId: request.approval?.id || null,
+      },
+      stageEvent: {
+        stage: "storefront_visuals",
+        status: request.task?.status || "waiting_to_start",
+        taskId: request.task?.id || null,
+        workerId: "product_builder",
+        note: "A truthful storefront cover is ready to generate from the finished product direction.",
+      },
+    });
+  }
+  return request;
+}
+
+function compactReviewText(value, max = 500) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function reviewDeliverableFact(db, deliverableId) {
+  const row = get(
+    db,
+    `SELECT id, human_name, title, format, status, content_hash, metadata
+     FROM deliverables WHERE id = ?`,
+    [deliverableId],
+  );
+  if (!row) throw new Error(`Quality review asset not found: ${deliverableId}`);
+  const metadata = fromJson(row.metadata, {});
+  return {
+    id: row.id,
+    name: row.human_name || row.title,
+    format: row.format,
+    status: row.status,
+    bytes: Number(metadata.bytes || 0),
+    sha256: row.content_hash || metadata.sha256 || null,
+    derivedFromProductFiles: metadata.derivedFromProductFiles === true,
+  };
+}
+
+function formulaRangeFact(range, formula = "") {
+  const match = /^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(String(range || "").toUpperCase());
+  if (!match || (match[3] && match[1] !== match[3])) return null;
+  const startRow = Number(match[2]);
+  const endRow = Number(match[4] || match[2]);
+  if (endRow < startRow) return null;
+  return {
+    sheet: "Tracker",
+    range: String(range).toUpperCase(),
+    count: endRow - startRow + 1,
+    firstFormula: String(formula || ""),
+    lastFormula: "",
+  };
+}
+
+function formulaCellCovered(formula, coverage) {
+  const cellMatch = /^([A-Z]+)(\d+)$/.exec(String(formula?.cell || "").toUpperCase());
+  if (!cellMatch) return false;
+  return coverage.some((item) => {
+    if (String(item.sheet || "") !== String(formula.sheet || "")) return false;
+    const rangeMatch = /^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(String(item.range || "").toUpperCase());
+    if (!rangeMatch || cellMatch[1] !== rangeMatch[1] || (rangeMatch[3] && cellMatch[1] !== rangeMatch[3])) return false;
+    const row = Number(cellMatch[2]);
+    return row >= Number(rangeMatch[2]) && row <= Number(rangeMatch[4] || rangeMatch[2]);
+  });
+}
+
+function formulaCoverageForValidation(validation = {}) {
+  const explicit = Array.isArray(validation.formulaCoverage) ? validation.formulaCoverage : [];
+  if (explicit.length) return explicit;
+  const calculatedCoverage = (Array.isArray(validation.calculatedFields) ? validation.calculatedFields : [])
+    .map((field) => formulaRangeFact(field?.range, field?.formula))
+    .filter(Boolean);
+  const standalone = (Array.isArray(validation.formulas) ? validation.formulas : [])
+    .filter((formula) => !formulaCellCovered(formula, calculatedCoverage))
+    .map((formula) => ({
+      sheet: String(formula.sheet || ""),
+      range: String(formula.cell || ""),
+      count: 1,
+      firstFormula: String(formula.formula || ""),
+      lastFormula: String(formula.formula || ""),
+    }));
+  return [...calculatedCoverage, ...standalone];
+}
+
+function completeFormulaEvidence(validation = {}) {
+  const totalFormulaCells = Number(validation.formulaCells || 0);
+  const samples = Array.isArray(validation.formulas) ? validation.formulas : [];
+  const coverage = formulaCoverageForValidation(validation);
+  const coveredFormulaCells = coverage.reduce(
+    (total, item) => total + Math.max(0, Number(item?.count || 0)),
+    0,
+  );
+  if (totalFormulaCells === 0) {
+    return samples.length === 0 && coveredFormulaCells === 0;
+  }
+  return coverage.length > 0
+    ? coveredFormulaCells === totalFormulaCells
+    : samples.length === totalFormulaCells;
+}
+
+function buildQualityReviewPacket(
+  db,
+  plan,
+  opportunityRecord,
+  buildTask,
+  generated,
+  visualAssetIds,
+  reviewAssetIds,
+) {
+  const manifest = generated.manifest || {};
+  const manifestItems = Array.isArray(manifest.catalogueItems) ? manifest.catalogueItems : [];
+  const manifestFiles = Array.isArray(manifest.files) ? manifest.files : [];
+  const bundleFile = (generated.files || []).find((file) => /\.zip$/i.test(String(file.humanName || "")));
+  const builderOutput = taskOutput(buildTask);
+  const approvedCatalogueItems = catalogueItems(db, plan.id);
+  const exactExpectedIds = approvedCatalogueItems.map((item) => item.id);
+  const actualIds = manifestItems.map((item) => String(item.id || item.catalogueItemId || ""));
+  return {
+    schema: "pantheon.product-quality-review-packet.v3",
+    planId: plan.id,
+    opportunityId: opportunityRecord.id,
+    buildTaskId: buildTask.id,
+    revisionNumber: Number(productMetadata(buildTask)?.revisionNumber || 0),
+    packageTitle: compactReviewText(manifest.packageTitle, 240),
+    customerPromise: compactReviewText(manifest.customerPromise, 500),
+    deliveryFormat: compactReviewText(manifest.deliveryFormat, 320),
+    customerInstructionSource: String(manifest.customerInstructionSource || "unknown"),
+    expectedCatalogueCount: Number(plan.target_item_count || 0),
+    approvedCatalogueItems: approvedCatalogueItems.map((item) => ({
+      id: item.id,
+      title: compactReviewText(item.title, 240),
+      audience: compactReviewText(item.audience, 360),
+      promisedOffer: compactReviewText(item.offer, 600),
+      priceCents: Number(item.price_cents || 0),
+    })),
+    catalogueItems: manifestItems.map((item) => ({
+      id: String(item.id || item.catalogueItemId || ""),
+      title: compactReviewText(item.title, 240),
+      purpose: compactReviewText(item.purpose, 420),
+      files: (Array.isArray(item.files) ? item.files : []).map(String),
+      validation: {
+        sheets: (item.validation?.sheets || []).map(String),
+        columns: Number(item.validation?.columns || 0),
+        sampleRows: Number(item.validation?.sampleRows || 0),
+        formulaCells: Number(item.validation?.formulaCells || 0),
+        reopened: item.validation?.reopened === true,
+        instructionColumns: ["cell", "text"],
+        instructions: (item.validation?.instructions || []).map((instruction) => [
+          String(instruction.cell || ""),
+          compactReviewText(instruction.text, 420),
+        ]),
+        fieldColumns: ["name", "type", "guidance", "trackerHeader", "readMeCell", "readMeText"],
+        fields: (item.validation?.fields || []).map((field) => [
+          compactReviewText(field.name, 120),
+          compactReviewText(field.type, 60),
+          compactReviewText(field.guidance, 320),
+          compactReviewText(field.trackerHeader, 120),
+          String(field.readMeCell || ""),
+          compactReviewText(field.readMeText, 320),
+        ]),
+        sampleData: {
+          headers: (item.validation?.sampleData?.headers || []).map((value) => compactReviewText(value, 160)),
+          rows: (item.validation?.sampleData?.rows || []).map((row) => (
+            (Array.isArray(row) ? row : []).map((value) => compactReviewText(value, 160))
+          )),
+        },
+        formulaColumns: ["sheet", "cell", "formula"],
+        formulas: (item.validation?.formulas || []).map((formula) => [
+          String(formula.sheet || ""),
+          String(formula.cell || ""),
+          compactReviewText(formula.formula, 240),
+        ]),
+        calculatedFieldColumns: ["target", "operation", "inputs", "formula", "range"],
+        calculatedFields: (item.validation?.calculatedFields || []).map((field) => [
+          compactReviewText(field.target, 120),
+          compactReviewText(field.operation, 80),
+          (field.inputs || []).map((value) => compactReviewText(value, 120)),
+          compactReviewText(field.formula, 240),
+          String(field.range || ""),
+        ]),
+        formulaEvidence: {
+          totalFormulaCells: Number(item.validation?.formulaCells || 0),
+          sampleCount: Array.isArray(item.validation?.formulas) ? item.validation.formulas.length : 0,
+          samplePolicy: String(item.validation?.formulaSamplePolicy || (
+            Number(item.validation?.formulaCells || 0) > (item.validation?.formulas || []).length
+              ? "compact_samples_with_complete_ranges"
+              : "complete"
+          )),
+          coverageColumns: ["sheet", "range", "count", "firstFormula", "lastFormula"],
+          coverage: formulaCoverageForValidation(item.validation).map((coverage) => [
+            String(coverage.sheet || ""),
+            String(coverage.range || ""),
+            Number(coverage.count || 0),
+            compactReviewText(coverage.firstFormula, 240),
+            compactReviewText(coverage.lastFormula, 240),
+          ]),
+          completeCoverage: completeFormulaEvidence(item.validation),
+        },
+        dataValidationColumns: ["sheet", "type", "formula", "range", "allowBlank"],
+        dataValidations: (item.validation?.dataValidations || []).map((validation) => [
+          String(validation.sheet || ""),
+          String(validation.type || ""),
+          compactReviewText(validation.formula, 240),
+          String(validation.range || ""),
+          validation.allowBlank === true,
+        ]),
+        statusFields: (item.validation?.statusFields || []).map((statusField) => ({
+          field: compactReviewText(statusField.field, 120),
+          column: String(statusField.column || ""),
+          options: (statusField.options || []).map((value) => compactReviewText(value, 80)),
+          positiveStatus: compactReviewText(statusField.positiveStatus, 80) || null,
+        })),
+        dashboardMetric: item.validation?.dashboardMetric ? {
+          label: compactReviewText(item.validation.dashboardMetric.label, 160),
+          formula: compactReviewText(item.validation.dashboardMetric.formula, 240),
+          statusField: compactReviewText(item.validation.dashboardMetric.statusField, 120),
+          countedValue: compactReviewText(item.validation.dashboardMetric.countedValue, 80) || null,
+          countedValueInValidation: item.validation.dashboardMetric.countedValueInValidation === true,
+        } : null,
+        sheetSummaryColumns: ["sheet", "summary"],
+        sheetSummary: Object.entries(item.validation?.sheetSummary || {}).map(([sheet, summary]) => [
+          String(sheet),
+          compactReviewText(summary, 260),
+        ]),
+      },
+    })),
+    sharedFiles: (Array.isArray(manifest.sharedFiles) ? manifest.sharedFiles : []).map(String),
+    setupGuide: manifest.setupGuide ? {
+      path: String(manifest.setupGuide.path || ""),
+      contentSource: String(manifest.setupGuide.contentSource || ""),
+      quickStart: (manifest.setupGuide.quickStart || []).map((value) => compactReviewText(value, 420)),
+      products: (manifest.setupGuide.products || []).map((item) => ({
+        title: compactReviewText(item.title, 180),
+        purpose: compactReviewText(item.purpose, 600),
+        instructions: (item.instructions || []).map((value) => compactReviewText(value, 420)),
+        fieldColumns: ["name", "guidance"],
+        fields: (item.fields || []).map((field) => [
+          compactReviewText(Array.isArray(field) ? field[0] : field?.name, 100),
+          compactReviewText(Array.isArray(field) ? field[1] : field?.guidance, 320),
+        ]),
+      })),
+      disclaimers: (manifest.setupGuide.disclaimers || []).map((value) => compactReviewText(value, 500)),
+    } : null,
+    archiveInventory: manifestFiles.map((file) => ({
+      path: String(file.path || ""),
+      bytes: Number(file.bytes || 0),
+      sha256: String(file.sha256 || ""),
+    })),
+    bundle: bundleFile ? {
+      filename: String(bundleFile.humanName || manifest.bundle?.filename || ""),
+      bytes: Number(bundleFile.bytes || 0),
+      sha256: String(bundleFile.sha256 || ""),
+      canonicalManifestInsideBundle: generated.manifestEmbeddedIdentical === true,
+      archiveInventoryVerified: generated.archiveInventoryVerified === true,
+    } : null,
+    packageDeliverables: (generated.files || []).map((file) => ({
+      id: file.id,
+      name: file.humanName,
+      format: file.format,
+      bytes: Number(file.bytes || 0),
+      sha256: file.sha256 || null,
+    })),
+    storefrontPreviews: (generated.previews || []).map((preview) => reviewDeliverableFact(db, preview.id)),
+    storefrontVisuals: visualAssetIds.map((id) => reviewDeliverableFact(db, id)),
+    approvedVisualReviewIds: reviewAssetIds,
+    deterministicChecks: {
+      manifestSchemaValid: manifest.schema === PRODUCT_MANIFEST_SCHEMA,
+      exactCatalogueCoverage: (
+        actualIds.length === exactExpectedIds.length
+        && new Set(actualIds).size === actualIds.length
+        && exactExpectedIds.every((id) => actualIds.includes(id))
+      ),
+      everyItemHasFiles: manifestItems.every((item) => Array.isArray(item.files) && item.files.length > 0),
+      everyWorkbookReopened: manifestItems.every((item) => item.validation?.reopened === true),
+      archiveInventoryRecorded: manifestFiles.length > 0,
+      standaloneManifestMatchesArchive: generated.manifestEmbeddedIdentical === true,
+      archiveInventoryVerified: generated.archiveInventoryVerified === true,
+      workbookSemanticsExposed: manifestItems.every((item) => (
+        Array.isArray(item.validation?.instructions)
+        && item.validation.instructions.length >= 2
+        && Array.isArray(item.validation?.fields)
+        && item.validation.fields.length === Number(item.validation?.columns || 0)
+        && Array.isArray(item.validation?.sampleData?.rows)
+        && item.validation.sampleData.rows.length === Number(item.validation?.sampleRows || 0)
+        && Array.isArray(item.validation?.formulas)
+        && completeFormulaEvidence(item.validation)
+      )),
+      formulaCoverageComplete: manifestItems.every((item) => completeFormulaEvidence(item.validation)),
+      customerInstructionsDerivedFromActualFiles: (
+        manifest.customerInstructionSource === "generated_from_actual_files_by_local_factory"
+      ),
+      dashboardStatusMetricsMatchDropdowns: manifestItems.every((item) => (
+        !item.validation?.dashboardMetric
+        || item.validation.dashboardMetric.countedValueInValidation === true
+      )),
+      setupGuideContentExposed: (
+        manifest.setupGuide?.contentSource === "same_claim_safe_blueprint_used_to_render_pdf"
+        && Array.isArray(manifest.setupGuide.products)
+        && manifest.setupGuide.products.length === manifestItems.length
+      ),
+      externalActionsTaken: Array.isArray(manifest.externalActionsTaken)
+        ? manifest.externalActionsTaken.map(String)
+        : [],
+      publishingStatus: String(manifest.publishingStatus || "unknown"),
+    },
+    builderSummary: compactReviewText(builderOutput.summary, 500),
+    builderQualityChecks: (builderOutput.roleOutput?.qualityChecks || []).map((item) => compactReviewText(item, 240)).slice(0, 8),
+    reviewInstructions: [
+      "Treat deterministic checks and hashes as file-integrity evidence, not as proof of buyer value.",
+      "Formula samples are intentionally compact for large workbooks. Use formulaEvidence.totalFormulaCells, coverage ranges, and completeCoverage to judge deterministic coverage; do not treat the sample count as the workbook's formula count.",
+      "Inspect every approved visual for clipping, misleading motifs, unsupported claims, and consistency with the real package.",
+      "Compare each approved catalogue promise with the exact workbook fields, instructions, sample data, and delivery format. Do not pass a technically valid but commercially empty or misrepresented package.",
+      `Pass only when the complete ${manifestItems.length}-part package is usable, truthfully represented, and has no unresolved material defect.`,
+    ],
+  };
+}
+
+function queueQualityReview(
+  db,
+  plan,
+  opportunityRecord,
+  buildTask,
+  generated,
+  visualAssetIds = [],
+  options = {},
+) {
+  const revisionNumber = Number(productMetadata(buildTask)?.revisionNumber || 0);
+  const journey = journeyForPlan(db, plan);
   const files = generated.files.map((file) => ({
     id: file.id,
     name: file.humanName,
@@ -341,22 +1426,85 @@ function queueQualityReview(db, plan, opportunityRecord, buildTask, generated) {
     bytes: file.bytes,
     sha256: file.sha256,
   }));
-  return requestLiveAiWorker(db, buildTask.workflow_id, {
-    requestKey: `catalogue_quality_${safeId(plan.id)}_r${Number(productMetadata(buildTask)?.revisionNumber || 0)}`,
+  const reviewAssetIds = [...new Set([
+    ...visualAssetIds,
+    ...(generated.previews || []).map((preview) => preview.id),
+  ])].slice(0, 4);
+  for (const visualId of visualAssetIds) {
+    run(
+      db,
+      `UPDATE deliverables
+       SET status = 'built_pending_quality_review', updated_at = ?
+       WHERE id = ? AND status = 'draft'`,
+      [now(), visualId],
+    );
+  }
+  const reviewBindings = buildDeliverableReviewBindings(
+    db,
+    buildTask.workflow_id,
+    generated.files.map((file) => file.id),
+  );
+  const qualityReviewPacket = buildQualityReviewPacket(
+    db,
+    plan,
+    opportunityRecord,
+    buildTask,
+    generated,
+    visualAssetIds,
+    reviewAssetIds,
+  );
+  if (options.requireFormulaEvidenceRepair === true && (
+    qualityReviewPacket.deterministicChecks.workbookSemanticsExposed !== true
+    || qualityReviewPacket.deterministicChecks.formulaCoverageComplete !== true
+  )) {
+    throw new Error("The local evidence repair did not prove complete workbook semantics and formula coverage.");
+  }
+  const fingerprint = reviewFingerprint(reviewBindings, qualityReviewPacket);
+  const staleReviews = all(
+    db,
+    `SELECT * FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND status IN ('queued', 'planned', 'blocked', 'waiting_approval')
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage') = 'quality_review'
+     ORDER BY created_at, id`,
+    [plan.id],
+  ).map((row) => parseRow(row, ["payload", "result"])).filter((row) => (
+    Number(productMetadata(row)?.revisionNumber || 0) === revisionNumber
+    && qualityReviewFingerprintForTask(row) !== fingerprint
+  ));
+  for (const staleReview of staleReviews) {
+    supersedeUnstartedProductionTask(
+      db,
+      staleReview,
+      "The exact product files or review packet changed before this quality review began.",
+    );
+  }
+  const prior = existingQualityReviewTask(db, plan.id, revisionNumber, fingerprint);
+  if (prior.task) return { task: prior.task, existing: true };
+  const requestKeySuffix = options.requestKeySuffix
+    ? `_${safeId(options.requestKeySuffix)}`
+    : "";
+  const request = requestLiveAiWorker(db, buildTask.workflow_id, {
+    requestKey: `catalogue_quality_${safeId(plan.id)}_r${revisionNumber}_${fingerprint.slice(0, 12)}${requestKeySuffix}`,
     requestedBy: "pantheon_supervisor",
     worker: "quality_reviewer",
     taskTitle: `Review the finished product package for ${opportunityRecord.title}`,
     approvalTitle: `Run the product quality review for ${opportunityRecord.title}`,
-    estimatedCostCents: 200,
+    estimatedCostCents: 100,
     reason: "Independently check the exact locally stored product package before any launch preparation.",
     expectedOutput: "A clear pass, revise, or stop verdict with quality score, file coverage, usability risks, unsupported claims, and exact corrections.",
     expectedMetric: "All catalogue items are covered, deterministic file validation passed, and semantic review scores at least 80/100 with no unresolved high-risk finding.",
-    model: CONFIG.terraModel,
-    maxInputTokens: 12000,
-    maxOutputTokens: 1600,
+    model: journey?.model || CONFIG.terraModel,
+    modelLocked: journey?.model_locked === 1,
+    maxInputTokens: 96000,
+    maxOutputTokens: 2400,
     maxTurns: 1,
     maxToolCalls: 0,
-    tools: [],
+    tools: reviewAssetIds.length ? ["visual_asset_review"] : [],
+    toolArguments: reviewAssetIds.length ? {
+      visual_asset_review: { assetIds: reviewAssetIds },
+    } : {},
     businessContext: {
       subject: opportunityRecord.title,
       buyer: opportunityRecord.buyer,
@@ -368,12 +1516,7 @@ function queueQualityReview(db, plan, opportunityRecord, buildTask, generated) {
     workBrief: {
       objective: "Review the exact product manifest, deterministic file checks, commercial promise, claim safety, usability, and catalogue completeness.",
       deliverable: "A decision-quality review that clearly distinguishes verified file facts from semantic judgements and remaining inspection limits.",
-      assetPrompt: JSON.stringify({
-        manifest: generated.manifest,
-        files,
-        buildSummary: taskOutput(buildTask).summary || "",
-        builderWork: taskOutput(buildTask).roleOutput || {},
-      }),
+      assetPrompt: `Use the complete frozen qualityReviewPacket, exact qualityReviewTargets, and all ${reviewAssetIds.length} approved visual inputs. Do not infer from a shortened narrative excerpt.`,
       constraints: [
         "Fail the package if any catalogue item lacks a real file.",
         "Do not approve unsupported legal, financial, medical, fitness, income, or performance claims.",
@@ -386,7 +1529,11 @@ function queueQualityReview(db, plan, opportunityRecord, buildTask, generated) {
       ],
     },
     parameters: {
+      ...journeyParameters(journey),
+      approvedAssetIds: reviewAssetIds,
       reviewOfTaskId: buildTask.id,
+      reviewBindings,
+      qualityReviewPacket,
       pantheonProduction: {
         supervisorOwned: true,
         stage: "quality_review",
@@ -394,11 +1541,479 @@ function queueQualityReview(db, plan, opportunityRecord, buildTask, generated) {
         opportunityId: opportunityRecord.id,
         planId: plan.id,
         buildTaskId: buildTask.id,
-        revisionNumber: Number(productMetadata(buildTask)?.revisionNumber || 0),
+        revisionNumber,
+        reviewFingerprint: fingerprint,
+        reviewSequence: prior.sequence,
+        journeyId: journey?.id || null,
       },
     },
     effects: [],
   });
+  if (journey) {
+    const waitingForOperator = ["blocked", "waiting_approval"].includes(String(request.task?.status || ""));
+    const terminalReset = options.allowTerminalRecovery === true
+      || options.allowTerminalAuditRepair === true;
+    updateJourney(db, journey.id, {
+      allowTerminalRecovery: options.allowTerminalRecovery === true,
+      allowTerminalAuditRepair: options.allowTerminalAuditRepair === true,
+      status: waitingForOperator ? "waiting_for_operator" : "running",
+      activeStage: "quality_review",
+      completedAt: terminalReset ? null : undefined,
+      metadata: {
+        currentTaskId: request.task?.id || null,
+        currentApprovalId: request.approval?.id || null,
+        reviewAssetIds,
+        qualityReviewFingerprint: fingerprint,
+        ...(terminalReset ? {
+          blocker: null,
+          correctionLimitReached: false,
+        } : {}),
+      },
+      stageEvent: {
+        stage: "quality_review",
+        status: request.task?.status || "waiting_to_start",
+        taskId: request.task?.id || null,
+        workerId: "quality_reviewer",
+        note: prior.sequence > 1
+          ? "The locally corrected package is frozen under new hashes and ready for a fresh independent review."
+          : "The exact product files, previews, and cover are ready for independent review.",
+      },
+    });
+  }
+  return request;
+}
+
+function recoverQualityReviewAfterEvidenceRepair(db, qualityTaskId) {
+  const qualityTask = parseRow(
+    get(db, "SELECT * FROM tasks WHERE id = ?", [qualityTaskId]),
+    ["payload", "result"],
+  );
+  const metadata = productMetadata(qualityTask);
+  const priorPacket = qualityTask?.payload?.liveSpendRequest?.parameters?.qualityReviewPacket || {};
+  if (
+    !qualityTask
+    || qualityTask.kind !== "live_ai_worker_execution"
+    || qualityTask.agent !== "quality_reviewer"
+    || qualityTask.status !== "completed"
+    || qualityTask.outcome_status !== "known"
+    || metadata.stage !== "quality_review"
+    || !metadata.planId
+    || !metadata.buildTaskId
+  ) {
+    throw new Error("This task is not an eligible completed Quality Reviewer result.");
+  }
+  if (
+    priorPacket.schema === "pantheon.product-quality-review-packet.v3"
+    && priorPacket.deterministicChecks?.workbookSemanticsExposed === true
+    && priorPacket.deterministicChecks?.formulaCoverageComplete === true
+  ) {
+    throw new Error("The completed review already used the current complete workbook evidence packet.");
+  }
+
+  const plan = cataloguePlan(db, metadata.planId);
+  const opportunityRecord = opportunity(db, metadata.opportunityId || plan?.opportunity_id);
+  const buildTask = parseRow(
+    get(db, "SELECT * FROM tasks WHERE id = ?", [metadata.buildTaskId]),
+    ["payload", "result"],
+  );
+  const journey = plan ? journeyForPlan(db, plan) : null;
+  if (!plan || !opportunityRecord || !buildTask || buildTask.status !== "completed") {
+    throw new Error("Pantheon cannot bind the evidence repair to the exact completed product package.");
+  }
+  if (!journey || journey.status !== "stopped_after_correction") {
+    throw new Error("Only the exact journey stopped after its bounded correction may use this evidence repair.");
+  }
+
+  const generated = generatedProductResult(buildTask);
+  const replacement = queueQualityReview(
+    db,
+    plan,
+    opportunityRecord,
+    buildTask,
+    generated,
+    Array.isArray(plan.metadata.storefrontVisualIds) ? plan.metadata.storefrontVisualIds : [],
+    {
+      allowTerminalRecovery: true,
+      requireFormulaEvidenceRepair: true,
+      requestKeySuffix: `evidence_repair_${qualityTask.id}`,
+    },
+  );
+  if (replacement.existing || replacement.task.id === qualityTask.id) {
+    throw new Error("The repaired evidence packet did not create a distinct exact quality review.");
+  }
+  const replacementFingerprint = qualityReviewFingerprintForTask(replacement.task);
+  updatePlan(db, plan.id, {
+    status: "quality_review",
+    metadata: {
+      buildStatus: "evidence_repaired_pending_quality_review",
+      supersededQualityTaskId: qualityTask.id,
+      qualityTaskId: replacement.task.id,
+      qualityReviewFingerprint: replacementFingerprint,
+    },
+  });
+  run(
+    db,
+    "UPDATE messages SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?) WHERE task_id = ? AND status = 'open'",
+    [now(), qualityTask.id],
+  );
+  insertEvent(db, {
+    actor: "jarvis",
+    type: "quality_review.evidence_packet_recovered",
+    entityType: "task",
+    entityId: replacement.task.id,
+    message: "Jarvis refreshed the exact unchanged product package with complete workbook evidence. No provider call or external action occurred.",
+    metadata: {
+      sourceQualityTaskId: qualityTask.id,
+      buildTaskId: buildTask.id,
+      journeyId: journey.id,
+      priorPacketSchema: priorPacket.schema || "unknown",
+      replacementPacketSchema: replacement.task.payload.liveSpendRequest.parameters.qualityReviewPacket.schema,
+      replacementFingerprint,
+      noProviderCall: true,
+      externalAction: false,
+    },
+  });
+  return {
+    recovered: true,
+    sourceQualityTask: qualityTask,
+    task: replacement.task,
+    approval: replacement.approval,
+    journeyId: journey.id,
+    noProviderCall: true,
+  };
+}
+
+function recoverQualityReviewAfterLocalRendererRepair(db, qualityTaskId) {
+  const qualityTask = parseRow(
+    get(db, "SELECT * FROM tasks WHERE id = ?", [qualityTaskId]),
+    ["payload", "result"],
+  );
+  const metadata = productMetadata(qualityTask);
+  const priorBindings = qualityTask?.payload?.liveSpendRequest?.parameters?.reviewBindings || [];
+  const priorVerdict = qualityTask ? qualityPassed(taskOutput(qualityTask)) : null;
+  if (
+    !qualityTask
+    || qualityTask.kind !== "live_ai_worker_execution"
+    || qualityTask.agent !== "quality_reviewer"
+    || qualityTask.status !== "completed"
+    || qualityTask.outcome_status !== "known"
+    || metadata?.stage !== "quality_review"
+    || !metadata.planId
+    || !metadata.buildTaskId
+    || !Array.isArray(priorBindings)
+    || !priorBindings.length
+  ) {
+    throw new Error("This task is not an eligible completed Quality Reviewer result.");
+  }
+
+  const plan = cataloguePlan(db, metadata.planId);
+  const opportunityRecord = opportunity(db, metadata.opportunityId || plan?.opportunity_id);
+  const buildTask = parseRow(
+    get(db, "SELECT * FROM tasks WHERE id = ?", [metadata.buildTaskId]),
+    ["payload", "result"],
+  );
+  const journey = plan ? journeyForPlan(db, plan) : null;
+  if (!plan || !opportunityRecord || !buildTask || buildTask.status !== "completed") {
+    throw new Error("Pantheon cannot bind the renderer repair to the exact completed product package.");
+  }
+  const stoppedCorrectionRecovery = !priorVerdict.passed
+    && journey?.status === "stopped_after_correction";
+  const completedAuditRecertification = priorVerdict.passed
+    && journey?.status === "completed";
+  if (!stoppedCorrectionRecovery && !completedAuditRecertification) {
+    throw new Error(
+      "A local renderer refresh may reopen only the exact stopped correction or a completed publish-ready journey whose prior review passed.",
+    );
+  }
+  if (stoppedCorrectionRecovery && Number(metadata.revisionNumber || 0) < 1) {
+    throw new Error("The normal bounded Product Builder correction must run before a local renderer repair.");
+  }
+
+  const rendererRefresh = plan.metadata.localRendererRefresh || {};
+  const coverRefresh = plan.metadata.localCoverRefresh || {};
+  const generated = generatedProductResult(buildTask);
+  const currentBindings = buildDeliverableReviewBindings(
+    db,
+    buildTask.workflow_id,
+    generated.files.map((file) => file.id),
+  );
+  const priorById = new Map(priorBindings.map((binding) => [binding.deliverableId, binding.inputHash]));
+  const bindingChanged = currentBindings.some((binding) => (
+    priorById.get(binding.deliverableId) !== binding.inputHash
+  ));
+  const previousById = new Map(
+    (rendererRefresh.previousFiles || []).map((file) => [file.id, file.sha256]),
+  );
+  const packageChanged = (rendererRefresh.currentFiles || []).some((file) => (
+    previousById.get(file.id) !== file.sha256
+  ));
+  const currentFilesMatchRefresh = generated.files.every((file) => (
+    (rendererRefresh.currentFiles || []).some((current) => (
+      current.id === file.id && current.sha256 === file.sha256
+    ))
+  ));
+  const rendererRepairProven = (
+    rendererRefresh.schema === "pantheon.local-renderer-refresh.v1"
+    && rendererRefresh.sourceTaskId === buildTask.id
+    && rendererRefresh.noProviderCall === true
+    && rendererRefresh.externalAction === false
+    && Boolean(rendererRefresh.rendererRevision)
+    && rendererRefresh.blueprintHash === generated.blueprintHash
+    && packageChanged
+    && bindingChanged
+    && currentFilesMatchRefresh
+  );
+
+  const visualAssetIds = Array.isArray(plan.metadata.storefrontVisualIds)
+    ? plan.metadata.storefrontVisualIds
+    : [];
+  const refreshedCover = coverRefresh.currentAsset?.id
+    ? get(
+      db,
+      "SELECT id, content_hash, file_path FROM deliverables WHERE id = ? AND status <> 'superseded'",
+      [coverRefresh.currentAsset.id],
+    )
+    : null;
+  const coverChanged = Boolean(
+    coverRefresh.previousAsset?.id
+    && coverRefresh.currentAsset?.id === coverRefresh.previousAsset.id
+    && coverRefresh.currentAsset.sha256
+    && coverRefresh.previousAsset.sha256 !== coverRefresh.currentAsset.sha256,
+  );
+  const coverRepairProven = (
+    coverRefresh.schema === "pantheon.local-cover-refresh.v1"
+    && visualAssetIds.includes(coverRefresh.currentAsset?.id)
+    && coverRefresh.noProviderCall === true
+    && coverRefresh.externalAction === false
+    && Boolean(coverRefresh.rendererRevision)
+    && coverChanged
+    && refreshedCover?.content_hash === coverRefresh.currentAsset.sha256
+    && refreshedCover?.file_path === coverRefresh.currentAsset.filePath
+  );
+  if (!rendererRepairProven && !coverRepairProven) {
+    throw new Error("Pantheon cannot prove a zero-spend local renderer repair with new exact package hashes.");
+  }
+  if (!visualAssetIds.length || visualAssetIds.some((id) => !get(
+    db,
+    "SELECT id FROM deliverables WHERE id = ? AND status <> 'superseded'",
+    [id],
+  ))) {
+    throw new Error("The repaired package no longer has its exact approved storefront cover.");
+  }
+  const refresh = rendererRepairProven ? rendererRefresh : coverRefresh;
+  const repairKind = rendererRepairProven ? "product_renderer" : "storefront_cover";
+  const repairStatusPrefix = rendererRepairProven ? "local_renderer" : "local_cover";
+  const refreshDescription = rendererRepairProven
+    ? "deterministic product renderer produced new customer-package bytes"
+    : "deterministic storefront compositor produced new cover artwork";
+  const previousFiles = rendererRepairProven
+    ? rendererRefresh.previousFiles
+    : [coverRefresh.previousAsset];
+  const currentFiles = rendererRepairProven
+    ? rendererRefresh.currentFiles
+    : [coverRefresh.currentAsset];
+
+  const invalidatedAt = now();
+  let queuePlan = plan;
+  let nextContextRevision = Number(plan.metadata.launchContextRevision || 0);
+  let supersededLaunchTaskIds = [];
+  if (completedAuditRecertification) {
+    const launchRows = all(
+      db,
+      `SELECT * FROM tasks
+       WHERE kind = 'live_ai_worker_execution'
+         AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+         AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage')
+           IN ('conversion_copy', 'distribution_plan', 'chief_brief')`,
+      [plan.id],
+    );
+    nextContextRevision = Math.max(
+      nextContextRevision + 1,
+      ...launchRows.map((row) => contextRevision(row) + 1),
+    );
+    queuePlan = updatePlan(db, plan.id, {
+      status: "quality_review",
+      metadata: {
+        buildStatus: `${repairStatusPrefix}_refreshed_pending_quality_recertification`,
+        previousQualityTaskId: qualityTask.id,
+        supersededQualityTaskId: qualityTask.id,
+        qualityTaskId: null,
+        qualityScore: null,
+        qualityDecision: null,
+        qualityFindings: [],
+        qualityReviewFingerprint: null,
+        previousLaunchDecision: plan.metadata.launchDecision || null,
+        launchDecision: null,
+        launchDecisionAt: null,
+        launchDecisionNote: null,
+        launchDecisionHandoffId: null,
+        listingCopyDeliverableId: null,
+        launchPackDeliverableId: null,
+        chiefBriefDeliverableId: null,
+        approvalPackDeliverableId: null,
+        launchContextRevision: nextContextRevision,
+        publicationReadinessInvalidatedAt: invalidatedAt,
+        publicationReadinessInvalidatedReason:
+          `The ${refreshDescription} and requires exact quality recertification.`,
+      },
+    });
+    const retired = retireSupersededLaunchContextRecords(
+      db,
+      queuePlan,
+      nextContextRevision,
+    );
+    supersededLaunchTaskIds = retired.supersededTaskIds;
+    run(
+      db,
+      "UPDATE catalogue_items SET status = 'built', quality_status = 'pending_review', updated_at = ? WHERE plan_id = ?",
+      [invalidatedAt, plan.id],
+    );
+    const reviewAssetIds = [...new Set([
+      ...visualAssetIds,
+      ...(generated.previews || []).map((preview) => preview.id),
+      ...generated.files.map((file) => file.id),
+    ])];
+    if (reviewAssetIds.length) {
+      const placeholders = reviewAssetIds.map(() => "?").join(", ");
+      run(
+        db,
+        `UPDATE deliverables SET status = 'built_pending_quality_review', updated_at = ?
+         WHERE id IN (${placeholders}) AND status <> 'superseded'`,
+        [invalidatedAt, ...reviewAssetIds],
+      );
+    }
+    run(
+      db,
+      "UPDATE opportunities SET status = 'quality_review', updated_at = ? WHERE id = ?",
+      [invalidatedAt, opportunityRecord.id],
+    );
+    run(
+      db,
+      "UPDATE opportunity_rounds SET status = 'quality_review', updated_at = ? WHERE id = ?",
+      [invalidatedAt, metadata.roundId],
+    );
+    run(
+      db,
+      `UPDATE workflows
+       SET status = 'in_progress',
+           current_step = 'Updated product assets require independent quality review',
+           updated_at = ?
+       WHERE id = ?`,
+      [invalidatedAt, buildTask.workflow_id],
+    );
+    run(
+      db,
+      `UPDATE messages SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?)
+       WHERE status = 'open'
+         AND (
+           id = ?
+           OR json_extract(metadata, '$.planId') = ?
+           OR json_extract(metadata, '$.pantheonProduction.planId') = ?
+         )`,
+      [invalidatedAt, `msg_publish_${safeId(plan.id)}`, plan.id, plan.id],
+    );
+    queuePlan = cataloguePlan(db, plan.id);
+  }
+
+  const replacement = queueQualityReview(
+    db,
+    queuePlan,
+    opportunityRecord,
+    buildTask,
+    generated,
+    visualAssetIds,
+    {
+      allowTerminalRecovery: stoppedCorrectionRecovery,
+      allowTerminalAuditRepair: completedAuditRecertification,
+      requestKeySuffix: completedAuditRecertification
+        ? `${repairKind}_recertification_${qualityTask.id}_${refresh.rendererRevision}`
+        : `${repairKind}_repair_${qualityTask.id}`,
+    },
+  );
+  if (replacement.existing || replacement.task.id === qualityTask.id) {
+    throw new Error("The local asset repair did not create a distinct exact quality review.");
+  }
+  const replacementFingerprint = qualityReviewFingerprintForTask(replacement.task);
+  updatePlan(db, plan.id, {
+    status: "quality_review",
+    metadata: {
+      buildStatus: completedAuditRecertification
+        ? `${repairStatusPrefix}_refreshed_pending_quality_recertification`
+        : `${repairStatusPrefix}_repaired_pending_quality_review`,
+      supersededQualityTaskId: qualityTask.id,
+      qualityTaskId: replacement.task.id,
+      qualityReviewFingerprint: replacementFingerprint,
+      qualityScore: null,
+      qualityDecision: null,
+      qualityFindings: [],
+    },
+  });
+  if (completedAuditRecertification) {
+    updateJourney(db, journey.id, {
+      metadata: {
+        previousCompletedAt: journey.completed_at,
+        previousFinalDecision: journey.metadata.finalDecision || null,
+        finalDecision: null,
+        finalDecisionNote: null,
+        externalActionCompleted: false,
+        publicationReadinessInvalidatedAt: invalidatedAt,
+        publicationReadinessInvalidatedReason:
+          `The ${refreshDescription} and requires exact quality recertification.`,
+        launchContextRevision: nextContextRevision,
+      },
+    });
+  }
+  run(
+    db,
+    "UPDATE messages SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?) WHERE task_id = ? AND status = 'open'",
+    [now(), qualityTask.id],
+  );
+  insertEvent(db, {
+    actor: "jarvis",
+    type: completedAuditRecertification
+      ? rendererRepairProven
+        ? "quality_review.local_renderer_recertification_ready"
+        : "quality_review.local_cover_recertification_ready"
+      : rendererRepairProven
+        ? "quality_review.local_renderer_repair_ready"
+        : "quality_review.local_cover_repair_ready",
+    entityType: "task",
+    entityId: replacement.task.id,
+    message: completedAuditRecertification
+      ? "Jarvis withdrew the earlier publish-ready state and prepared independent quality recertification for the changed exact product asset."
+      : "Jarvis corrected the local product asset, preserved the approved Product Builder source work, and prepared a review of its new hash.",
+    metadata: {
+      sourceQualityTaskId: qualityTask.id,
+      buildTaskId: buildTask.id,
+      journeyId: journey.id,
+      repairKind,
+      rendererRevision: refresh.rendererRevision,
+      blueprintHash: generated.blueprintHash,
+      replacementFingerprint,
+      previousFiles,
+      currentFiles,
+      reusedStorefrontVisualIds: visualAssetIds,
+      completedAuditRecertification,
+      nextContextRevision,
+      supersededLaunchTaskIds,
+      noProviderCall: true,
+      externalAction: false,
+    },
+  });
+  return {
+    recovered: true,
+    sourceQualityTask: qualityTask,
+    task: replacement.task,
+    approval: replacement.approval,
+    journeyId: journey.id,
+    repairKind,
+    rendererRevision: refresh.rendererRevision,
+    completedAuditRecertification,
+    nextContextRevision,
+    supersededLaunchTaskIds,
+    noProviderCall: true,
+    externalAction: false,
+  };
 }
 
 function mapManifestToItems(db, plan, generated) {
@@ -435,8 +2050,9 @@ function projectProductBuild(db, task, plan, opportunityRecord) {
   const generated = generatedProductResult(task);
   const bundle = mapManifestToItems(db, plan, generated);
   const revisionNumber = Number(productMetadata(task)?.revisionNumber || 0);
+  const journey = journeyForPlan(db, plan);
   updatePlan(db, plan.id, {
-    status: "quality_review",
+    status: journey ? "storefront_visuals" : "quality_review",
     metadata: {
       buildStatus: "built_pending_quality_review",
       buildTaskId: task.id,
@@ -447,7 +2063,9 @@ function projectProductBuild(db, task, plan, opportunityRecord) {
       noSellableFilesClaimed: false,
     },
   });
-  const review = queueQualityReview(db, cataloguePlan(db, plan.id), opportunityRecord, task, generated);
+  const next = journey
+    ? queueStorefrontVisual(db, cataloguePlan(db, plan.id), opportunityRecord, task, generated)
+    : queueQualityReview(db, cataloguePlan(db, plan.id), opportunityRecord, task, generated);
   insertEvent(db, {
     actor: "pantheon",
     type: "catalogue.files_built",
@@ -456,7 +2074,51 @@ function projectProductBuild(db, task, plan, opportunityRecord) {
     message: `Pantheon stored and validated ${generated.files.length} product-package files; independent quality review is next.`,
     metadata: { taskId: task.id, bundleId: bundle.id, revisionNumber },
   });
-  return { next: review, bundle, generated };
+  return { next, bundle, generated };
+}
+
+function projectStorefrontVisual(db, task, plan, opportunityRecord) {
+  const metadata = productMetadata(task);
+  const output = taskOutput(task);
+  const visualAssets = Array.isArray(output.generatedAssets) ? output.generatedAssets : [];
+  if (visualAssets.length !== 1) {
+    throw new Error("The storefront visual stage did not retain exactly one generated cover image.");
+  }
+  const buildTask = get(db, "SELECT * FROM tasks WHERE id = ?", [metadata.buildTaskId]);
+  if (!buildTask || buildTask.status !== "completed") {
+    throw new Error("The storefront visual is not bound to a completed product build.");
+  }
+  const generated = generatedProductResult(parseRow(buildTask, ["payload", "result"]));
+  const updated = updatePlan(db, plan.id, {
+    status: "quality_review",
+    metadata: {
+      buildStatus: "storefront_visual_ready",
+      storefrontVisualTaskId: task.id,
+      storefrontVisualIds: visualAssets.map((asset) => asset.id),
+      storefrontPreviewIds: (generated.previews || []).map((preview) => preview.id),
+    },
+  });
+  const review = queueQualityReview(
+    db,
+    updated,
+    opportunityRecord,
+    parseRow(buildTask, ["payload", "result"]),
+    generated,
+    visualAssets.map((asset) => asset.id),
+  );
+  insertEvent(db, {
+    actor: "pantheon",
+    type: "catalogue.storefront_visual_ready",
+    entityType: "catalogue_plan",
+    entityId: plan.id,
+    message: "Pantheon retained one storefront cover and passed the exact product visuals to independent review.",
+    metadata: {
+      taskId: task.id,
+      visualAssetIds: visualAssets.map((asset) => asset.id),
+      previewIds: (generated.previews || []).map((preview) => preview.id),
+    },
+  });
+  return { next: review, visualAssets };
 }
 
 function qualityPassed(output) {
@@ -477,56 +2139,118 @@ function qualityPassed(output) {
   };
 }
 
-function queueConversionCopy(db, plan, opportunityRecord, qualityTask) {
-  const existing = existingProductionTask(db, plan.id, "conversion_copy");
+function queueConversionCopy(db, plan, opportunityRecord, qualityTask, options = {}) {
+  const revision = Number(options.contextRevision || 0);
+  const existing = existingProductionContextTask(db, plan.id, "conversion_copy", revision);
   if (existing) return { task: existing, existing: true };
-  return requestLiveAiWorker(db, qualityTask.workflow_id, {
-    requestKey: `catalogue_copy_${safeId(plan.id)}`,
+  const journey = journeyForPlan(db, plan);
+  const verifiedCatalogue = conciseCatalogueContext(plan);
+  const expectedIncludedFiles = verifiedCatalogue.listingIncludedFiles;
+  const verifiedState = {
+    contextRevision: revision,
+    stage: "conversion_copy",
+    qualityPassed: verifiedCatalogue.independentQuality.passed,
+    qualityScore: verifiedCatalogue.independentQuality.score,
+    catalogueItemCount: verifiedCatalogue.catalogueItems.length,
+    bundleFilename: verifiedCatalogue.bundleFilename,
+    customerPromise: verifiedCatalogue.customerPromise,
+    canonicalManifestInsideBundle: verifiedCatalogue.canonicalManifestInsideBundle,
+    currentPackageReconciled: true,
+    expectedIncludedFiles,
+    supersededErrorsAreCurrent: false,
+  };
+  const request = requestLiveAiWorker(db, qualityTask.workflow_id, {
+    requestKey: `catalogue_copy_${safeId(plan.id)}_context_${revision}`,
     requestedBy: "pantheon_supervisor",
     worker: "copy_conversion_agent",
-    taskTitle: `Prepare the listing copy for ${opportunityRecord.title}`,
-    approvalTitle: `Run the listing-copy preparation for ${opportunityRecord.title}`,
+    taskTitle: revision
+      ? `Correct the listing copy from verified files for ${opportunityRecord.title}`
+      : `Prepare the listing copy for ${opportunityRecord.title}`,
+    approvalTitle: revision
+      ? `Correct the listing copy from the verified product files`
+      : `Run the listing-copy preparation for ${opportunityRecord.title}`,
     estimatedCostCents: 150,
     reason: "Prepare truthful listing copy for the quality-passed local product package. No copy will be published or sent.",
-    expectedOutput: "A clear title, product description, included-file summary, buyer promise, objections, calls to action, and claim checks.",
+    expectedOutput: "A Gumroad-ready product title, headline, description, included-file summary, tags, FAQ, buyer promise, calls to action, message variants, tracking note, and claim checks.",
     expectedMetric: "Copy matches the real product files, buyer, channel, price hypothesis, and evidence without unsupported claims.",
-    model: CONFIG.terraModel,
-    maxOutputTokens: 1600,
+    model: journey?.model || CONFIG.terraModel,
+    modelLocked: journey?.model_locked === 1,
+    maxOutputTokens: 2400,
     maxTurns: 1,
     maxToolCalls: 0,
     tools: [],
+    contextClasses: ["venture", "evidence"],
     businessContext: {
       subject: opportunityRecord.title,
       buyer: opportunityRecord.buyer,
       problem: opportunityRecord.problem,
-      offer: opportunityRecord.offer_direction,
+      offer: actualProductOffer(plan, opportunityRecord),
       channel: opportunityRecord.channel,
       evidenceStandard: "Only claim what the validated opportunity evidence and actual product manifest support.",
     },
     workBrief: {
       objective: "Write conversion copy for the exact quality-passed catalogue and its first commercial test.",
-      deliverable: "One primary listing plus concise message variants and claim checks in ordinary buyer language.",
-      assetPrompt: JSON.stringify({
-        productManifest: plan.metadata.productManifest,
-        qualityReview: taskOutput(qualityTask),
+      deliverable: "One complete Gumroad listing plus concise message variants and claim checks in ordinary buyer language.",
+      assetPrompt: serializedLaunchContext({
+        currentVerifiedCatalogue: verifiedCatalogue,
+        currentQualityReview: conciseQualityContext(qualityTask),
+        requiredIncludedFileSummary: expectedIncludedFiles,
+        currency: CONFIG.currency,
         priceFloorCents: plan.price_floor_cents,
         priceCeilingCents: plan.price_ceiling_cents,
-      }),
-      constraints: ["No fabricated scarcity, testimonials, sales, guarantees, or performance claims.", "No publishing or customer contact."],
-      acceptanceCriteria: ["The offer is clear at a glance.", "Included files are accurate.", "The call to action is measurable."],
+      }, "The verified listing-copy context"),
+      requiredCorrections: revision ? [
+        "Use only the current verified catalogue and quality review. Do not report a superseded truncation, parser error, missing workflow-status field, or earlier failed attempt as a current defect.",
+        "Describe this as an editable workbook-and-guide toolkit, never as a client portal, automated system, or service.",
+      ] : [],
+      constraints: [
+        "No fabricated scarcity, testimonials, sales, guarantees, or performance claims.",
+        "No publishing or customer contact.",
+        `Use ${CONFIG.currency} for the proposed listing price and every current commercial total. Foreign marketplace comparisons must be clearly labelled as source evidence, not as the Pantheon price.`,
+      ],
+      acceptanceCriteria: [
+        "The product title and offer are clear at a glance.",
+        "Return requiredIncludedFileSummary exactly as includedFiles, in the same order and without adding or removing entries.",
+        "Tags and FAQ are specific, useful, and free of unsupported claims.",
+        "The call to action is measurable.",
+        `The tracking note uses the exact ${CONFIG.currency} price supplied in the verified context.`,
+      ],
     },
     parameters: {
+      ...journeyParameters(journey),
       pantheonProduction: {
         supervisorOwned: true,
+        currentTruthOnly: true,
         stage: "conversion_copy",
         roundId: productMetadata(qualityTask).roundId,
         opportunityId: opportunityRecord.id,
         planId: plan.id,
         qualityTaskId: qualityTask.id,
+        journeyId: journey?.id || null,
+        contextRevision: revision,
+        verifiedLaunchState: verifiedState,
       },
     },
     effects: [],
   });
+  if (journey) {
+    updateJourney(db, journey.id, {
+      status: "running",
+      activeStage: "conversion_copy",
+      metadata: {
+        currentTaskId: request.task?.id || null,
+        currentApprovalId: request.approval?.id || null,
+      },
+      stageEvent: {
+        stage: "conversion_copy",
+        status: request.task?.status || "waiting_to_start",
+        taskId: request.task?.id || null,
+        workerId: "copy_conversion_agent",
+        note: "Truthful Gumroad listing copy is ready to prepare from the quality-passed files.",
+      },
+    });
+  }
+  return request;
 }
 
 function writeTextDeliverable(db, task, filename, title, content, metadata = {}) {
@@ -572,7 +2296,126 @@ function writeTextDeliverable(db, task, filename, title, content, metadata = {})
   return get(db, "SELECT * FROM deliverables WHERE id = ?", [id]);
 }
 
+function deliverableTextIssues(deliverable, label) {
+  if (!deliverable) return [`${label} is missing.`];
+  const root = path.resolve(CONFIG.rootDir);
+  const artifactRoot = path.resolve(CONFIG.artifactRoot);
+  const filePath = path.resolve(root, String(deliverable.file_path || ""));
+  const managed = [root, artifactRoot].some((allowedRoot) => (
+    filePath === allowedRoot || filePath.startsWith(`${allowedRoot}${path.sep}`)
+  ));
+  if (!managed) {
+    return [`${label} points outside Pantheon's managed workspace.`];
+  }
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    return [`${label} is not available on disk.`];
+  }
+  const text = fs.readFileSync(filePath, "utf8");
+  return [
+    ...publicationTextIssues(text, label),
+    ...currentPackageDefectIssues(text, label),
+  ];
+}
+
+function launchReadinessIssues(db, plan, options = {}) {
+  const issues = [];
+  const manifest = plan?.metadata?.productManifest || {};
+  const expectedIncludedFiles = canonicalListingIncludedFiles(manifest);
+  if (!manifest.bundle?.filename || manifest.bundle?.canonicalManifestInsideBundle !== true) {
+    issues.push("The canonical product bundle and embedded manifest are not reconciled.");
+  }
+  if (Number(plan?.metadata?.qualityScore || 0) < 80 || plan?.metadata?.qualityDecision !== "approve") {
+    issues.push("The current exact product package has not passed independent quality review.");
+  }
+  if (!expectedIncludedFiles.length) {
+    issues.push("The canonical product manifest does not describe the customer package.");
+  }
+
+  const listingDeliverable = options.listingDeliverable || get(
+    db,
+    "SELECT * FROM deliverables WHERE id = ? AND status <> 'superseded'",
+    [plan?.metadata?.listingCopyDeliverableId || ""],
+  );
+  issues.push(...deliverableTextIssues(listingDeliverable, "The current listing copy"));
+  if (listingDeliverable && expectedIncludedFiles.length) {
+    const listingPath = path.resolve(CONFIG.rootDir, String(listingDeliverable.file_path || ""));
+    if (fs.existsSync(listingPath)) {
+      const listingText = fs.readFileSync(listingPath, "utf8");
+      for (const item of expectedIncludedFiles) {
+        if (!listingText.includes(`- ${item}`)) {
+          issues.push(`The current listing copy is missing canonical package entry: ${item}`);
+        }
+      }
+    }
+  }
+
+  const launchDeliverable = options.launchDeliverable || get(
+    db,
+    "SELECT * FROM deliverables WHERE id = ? AND status <> 'superseded'",
+    [plan?.metadata?.launchPackDeliverableId || ""],
+  );
+  if (options.requireLaunchPack !== false) {
+    issues.push(...deliverableTextIssues(launchDeliverable, "The current launch pack"));
+  }
+
+  if (options.requireChiefBrief === true) {
+    const chiefDeliverable = options.chiefDeliverable || get(
+      db,
+      "SELECT * FROM deliverables WHERE id = ? AND status <> 'superseded'",
+      [plan?.metadata?.chiefBriefDeliverableId || ""],
+    );
+    issues.push(...deliverableTextIssues(chiefDeliverable, "The current operator brief"));
+  }
+  return [...new Set(issues)];
+}
+
 function projectQualityReview(db, task, plan, opportunityRecord) {
+  const metadata = productMetadata(task);
+  const buildTaskRow = metadata.buildTaskId
+    ? get(db, "SELECT * FROM tasks WHERE id = ?", [metadata.buildTaskId])
+    : null;
+  if (!buildTaskRow || buildTaskRow.status !== "completed") {
+    throw new Error("Quality review is no longer bound to a completed product package.");
+  }
+  const buildTask = parseRow(buildTaskRow, ["payload", "result"]);
+  const generated = generatedProductResult(buildTask);
+  const currentReview = queueQualityReview(
+    db,
+    plan,
+    opportunityRecord,
+    buildTask,
+    generated,
+    Array.isArray(plan.metadata.storefrontVisualIds) ? plan.metadata.storefrontVisualIds : [],
+  );
+  if (currentReview.task.id !== task.id) {
+    updatePlan(db, plan.id, {
+      status: "quality_review",
+      metadata: {
+        buildStatus: "locally_repaired_pending_quality_review",
+        supersededQualityTaskId: task.id,
+        qualityTaskId: currentReview.task.id,
+        qualityReviewFingerprint: qualityReviewFingerprintForTask(currentReview.task),
+      },
+    });
+    insertEvent(db, {
+      actor: "jarvis",
+      type: "catalogue.quality_review_superseded",
+      entityType: "task",
+      entityId: task.id,
+      message: "Pantheon preserved the earlier quality result but did not apply it to a locally corrected package with different verified hashes.",
+      metadata: {
+        planId: plan.id,
+        replacementTaskId: currentReview.task.id,
+        reviewedFingerprint: qualityReviewFingerprintForTask(task),
+        currentFingerprint: qualityReviewFingerprintForTask(currentReview.task),
+      },
+    });
+    return {
+      next: currentReview,
+      staleReviewSuperseded: true,
+      supersededTaskId: task.id,
+    };
+  }
   const output = taskOutput(task);
   const verdict = qualityPassed(output);
   const revisionNumber = Number(productMetadata(task)?.revisionNumber || 0);
@@ -593,13 +2436,42 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
       [now(), plan.id],
     );
     if (revisionNumber < 1) {
+      const roleOutput = output.roleOutput || {};
+      const actionableFindings = (verdict.findings || []).filter((finding) => (
+        !/^no (?:major |unresolved )/i.test(String(finding))
+        && /clipp|overflow|misrepresent|usability|layout|visual|workbook|formula|content|grammar|wording|copy|claim|contact|history|instruction|payment|field|status/i.test(String(finding))
+      ));
+      const revisionCorrections = [...new Set([
+        output.nextAction,
+        roleOutput.operatorRecommendation,
+        ...actionableFindings,
+      ].filter(Boolean).map((item) => String(item).replace(/\s+/g, " ").trim()))].slice(0, 6);
       const revision = prepareCatalogueBuild(db, {
         planId: plan.id,
         opportunityId: opportunityRecord.id,
         revisionNumber: revisionNumber + 1,
-        revisionFeedback: verdict.findings.join("; ") || output.summary,
+        revisionCorrections: revisionCorrections.length ? revisionCorrections : [output.summary],
         operatorChoiceRequired: false,
       });
+      const journey = journeyForPlan(db, plan);
+      if (journey) {
+        updateJourney(db, journey.id, {
+          status: "running",
+          activeStage: "product_build",
+          metadata: {
+            currentTaskId: revision.task?.id || null,
+            currentApprovalId: revision.approval?.id || null,
+            correctionReason: verdict.findings.join("; ") || output.summary,
+          },
+          stageEvent: {
+            stage: "quality_review",
+            status: "revision_required",
+            taskId: task.id,
+            workerId: "quality_reviewer",
+            note: "One bounded product correction was prepared from the exact review findings.",
+          },
+        });
+      }
       return { next: revision, verdict, correctionPrepared: true };
     }
     insertEvent(db, {
@@ -611,6 +2483,26 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
       message: "Pantheon stopped launch preparation because the corrected product package still failed quality review.",
       metadata: { taskId: task.id, score: verdict.score, findings: verdict.findings },
     });
+    const journey = journeyForPlan(db, plan);
+    if (journey) {
+      updateJourney(db, journey.id, {
+        status: "stopped_after_correction",
+        activeStage: "quality_review",
+        completedAt: now(),
+        metadata: {
+          blocker: "The corrected product package still failed independent quality review.",
+          currentTaskId: null,
+          currentApprovalId: null,
+        },
+        stageEvent: {
+          stage: "quality_review",
+          status: "stopped_after_correction",
+          taskId: task.id,
+          workerId: "quality_reviewer",
+          note: "The single permitted correction did not reach the quality threshold.",
+        },
+      });
+    }
     return { next: null, verdict, correctionPrepared: false };
   }
   run(
@@ -618,12 +2510,7 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
     "UPDATE catalogue_items SET status = 'ready', quality_status = 'passed', updated_at = ? WHERE plan_id = ?",
     [now(), plan.id],
   );
-  run(
-    db,
-    `UPDATE deliverables SET status = 'quality_passed', updated_at = ?
-     WHERE id IN (SELECT deliverable_id FROM catalogue_items WHERE plan_id = ? AND deliverable_id IS NOT NULL)`,
-    [now(), plan.id],
-  );
+  markCatalogueDeliverablesQualityPassed(db, plan, generated);
   const updated = updatePlan(db, plan.id, {
     status: "preparing_launch",
     metadata: {
@@ -634,7 +2521,9 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
       qualityDecision: verdict.decision,
     },
   });
-  const copy = queueConversionCopy(db, updated, opportunityRecord, task);
+  const copy = queueConversionCopy(db, updated, opportunityRecord, task, {
+    contextRevision: Number(updated.metadata.launchContextRevision || 0),
+  });
   insertEvent(db, {
     actor: "pantheon",
     type: "catalogue.quality_passed",
@@ -643,14 +2532,49 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
     message: `The product package passed independent quality review at ${verdict.score}/100; launch copy is next.`,
     metadata: { taskId: task.id, score: verdict.score },
   });
+  const journey = journeyForPlan(db, plan);
+  if (journey) {
+    updateJourney(db, journey.id, {
+      status: "running",
+      activeStage: "conversion_copy",
+      metadata: {
+        qualityScore: verdict.score,
+        qualityTaskId: task.id,
+      },
+      stageEvent: {
+        stage: "quality_review",
+        status: "completed",
+        taskId: task.id,
+        workerId: "quality_reviewer",
+        note: `The exact product and storefront assets passed at ${verdict.score}/100.`,
+      },
+    });
+  }
   return { next: copy, verdict };
 }
 
-function queueDistributionPlan(db, plan, opportunityRecord, copyTask) {
-  const existing = existingProductionTask(db, plan.id, "distribution_plan");
+function queueDistributionPlan(db, plan, opportunityRecord, copyTask, options = {}) {
+  const revision = Number(options.contextRevision ?? contextRevision(copyTask));
+  const existing = existingProductionContextTask(db, plan.id, "distribution_plan", revision);
   if (existing) return { task: existing, existing: true };
-  return requestLiveAiWorker(db, copyTask.workflow_id, {
-    requestKey: `catalogue_distribution_${safeId(plan.id)}`,
+  const journey = journeyForPlan(db, plan);
+  const verifiedCatalogue = conciseCatalogueContext(plan);
+  const verifiedState = {
+    contextRevision: revision,
+    stage: "distribution_plan",
+    qualityPassed: verifiedCatalogue.independentQuality.passed,
+    qualityScore: verifiedCatalogue.independentQuality.score,
+    catalogueItemCount: verifiedCatalogue.catalogueItems.length,
+    bundleFilename: verifiedCatalogue.bundleFilename,
+    customerPromise: verifiedCatalogue.customerPromise,
+    currentPackageReconciled: true,
+    expectedIncludedFiles: verifiedCatalogue.listingIncludedFiles,
+    copyTaskId: copyTask.id,
+    copyTaskStatus: copyTask.status,
+    supersededErrorsAreCurrent: false,
+  };
+  const request = requestLiveAiWorker(db, copyTask.workflow_id, {
+    requestKey: `catalogue_distribution_${safeId(plan.id)}_context_${revision}`,
     requestedBy: "pantheon_supervisor",
     worker: "distribution_operator",
     taskTitle: `Prepare the first market test for ${opportunityRecord.title}`,
@@ -659,69 +2583,101 @@ function queueDistributionPlan(db, plan, opportunityRecord, copyTask) {
     reason: "Prepare a channel-specific, measurable launch plan for operator review. No post, listing, ad, message, or spend will occur.",
     expectedOutput: "A 14-day or 50-qualified-view launch plan, up to three organic posts across no more than two channels, tracking requirements, stop rule, and operator workload.",
     expectedMetric: "The plan can test three independent buyers and positive cash contribution without unapproved public or paid action.",
-    model: CONFIG.terraModel,
-    maxOutputTokens: 1500,
+    model: journey?.model || CONFIG.terraModel,
+    modelLocked: journey?.model_locked === 1,
+    maxOutputTokens: 4000,
     maxTurns: 1,
     maxToolCalls: 0,
     tools: [],
+    contextClasses: ["venture", "evidence", "finance", "operations"],
     businessContext: {
       subject: opportunityRecord.title,
       buyer: opportunityRecord.buyer,
       problem: opportunityRecord.problem,
-      offer: opportunityRecord.offer_direction,
+      offer: actualProductOffer(plan, opportunityRecord),
       channel: opportunityRecord.channel,
       evidenceStandard: "Use the actual product package, approved opportunity evidence, and conservative unit economics.",
     },
     workBrief: {
       objective: "Prepare the smallest credible first-revenue test for the finished product package.",
       deliverable: "Channel sequence, post concepts, measurement plan, 14-day/50-view stop rule, and exact operator-only external actions.",
-      assetPrompt: JSON.stringify({
-        listingCopy: taskOutput(copyTask),
-        productManifest: plan.metadata.productManifest,
+      assetPrompt: serializedLaunchContext({
+        currentVerifiedCatalogue: verifiedCatalogue,
+        currentAcceptedListing: conciseListingContext(copyTask, plan),
+        currency: CONFIG.currency,
         priceFloorCents: plan.price_floor_cents,
         priceCeilingCents: plan.price_ceiling_cents,
-      }),
+      }, "The verified distribution context"),
+      requiredCorrections: revision ? [
+        "Use the current accepted listing and verified catalogue only. Earlier failed or truncated attempts are audit history, not current product defects.",
+        "Do not describe the workbook-and-guide toolkit as a client portal or automated system.",
+      ] : [],
       constraints: ["At most three organic posts across two channels initially.", "No automatic posting, account action, contact, or spend.", "A$25 paid test is optional only after organic reach is insufficient."],
       acceptanceCriteria: ["Every step has a metric.", "Daniel's external actions are short and explicit.", "Stop, revise, and continue conditions are unambiguous."],
     },
     parameters: {
+      ...journeyParameters(journey),
       pantheonProduction: {
         supervisorOwned: true,
+        currentTruthOnly: true,
         stage: "distribution_plan",
         roundId: productMetadata(copyTask).roundId,
         opportunityId: opportunityRecord.id,
         planId: plan.id,
         copyTaskId: copyTask.id,
+        journeyId: journey?.id || null,
+        contextRevision: revision,
+        verifiedLaunchState: verifiedState,
       },
     },
     effects: [],
   });
+  if (journey) {
+    updateJourney(db, journey.id, {
+      status: "running",
+      activeStage: "distribution_plan",
+      metadata: {
+        currentTaskId: request.task?.id || null,
+        currentApprovalId: request.approval?.id || null,
+      },
+      stageEvent: {
+        stage: "distribution_plan",
+        status: request.task?.status || "waiting_to_start",
+        taskId: request.task?.id || null,
+        workerId: "distribution_operator",
+        note: "The measured launch plan and up to three initial posts are ready to prepare.",
+      },
+    });
+  }
+  return request;
 }
 
 function projectConversionCopy(db, task, plan, opportunityRecord) {
   const output = taskOutput(task);
   const work = output.roleOutput || {};
-  const content = [
-    `# ${opportunityRecord.title} Listing Copy`,
-    "",
-    `## Headline`,
-    work.headline || output.summary || opportunityRecord.title,
-    "",
-    "## Description",
-    work.description || output.recommendation || "",
-    "",
-    "## Call To Action",
-    work.callToAction || output.nextAction || "",
-    "",
-    "## Message Variants",
-    ...(work.messageVariants || []).map((item) => `- ${item}`),
-    "",
-    "## Claim Checks",
-    ...(work.claimChecks || []).map((item) => `- ${item}`),
-    "",
-    "## Tracking",
-    work.trackingNote || "",
-  ].join("\n");
+  const expectedIncludedFiles = canonicalListingIncludedFiles(plan.metadata.productManifest || {});
+  const outputIssues = [
+    ...publicationTextIssues(output, "The accepted listing"),
+    ...currentPackageDefectIssues(output, "The accepted listing"),
+  ];
+  if (!exactPublicationListMatch(work.includedFiles, expectedIncludedFiles)) {
+    outputIssues.push("The accepted listing does not contain the exact canonical included-file summary.");
+  }
+  const customerPriceText = [
+    work.productTitle,
+    work.headline,
+    work.description,
+    work.callToAction,
+    work.trackingNote,
+    ...(Array.isArray(work.messageVariants) ? work.messageVariants : []),
+  ].filter(Boolean).join("\n");
+  if (containsForeignCanonicalPrice(customerPriceText, plan)) {
+    outputIssues.push("The accepted listing presents Pantheon's canonical AUD test price as a foreign-currency price.");
+  }
+  if (outputIssues.length) {
+    throw new Error(`Pantheon refused to publish malformed listing material: ${outputIssues.join(" ")}`);
+  }
+  const content = listingCopyContent(plan, opportunityRecord, task);
   const deliverable = writeTextDeliverable(
     db,
     task,
@@ -732,15 +2688,74 @@ function projectConversionCopy(db, task, plan, opportunityRecord) {
   );
   const updated = updatePlan(db, plan.id, {
     status: "preparing_launch",
-    metadata: { copyTaskId: task.id, listingCopyDeliverableId: deliverable.id },
+    metadata: {
+      copyTaskId: task.id,
+      listingCopyDeliverableId: deliverable.id,
+      launchContextRevision: contextRevision(task),
+    },
   });
-  return { next: queueDistributionPlan(db, updated, opportunityRecord, task), deliverable };
+  const next = queueDistributionPlan(db, updated, opportunityRecord, task, {
+    contextRevision: contextRevision(task),
+  });
+  const journey = journeyForPlan(db, plan);
+  if (journey) {
+    updateJourney(db, journey.id, {
+      stageEvent: {
+        stage: "conversion_copy",
+        status: "completed",
+        taskId: task.id,
+        workerId: "copy_conversion_agent",
+        note: "The complete Gumroad listing copy, tags, FAQ, and claim checks were retained.",
+      },
+    });
+  }
+  return { next, deliverable };
+}
+
+function listingCopyContent(plan, opportunityRecord, task) {
+  const output = taskOutput(task);
+  const work = output.roleOutput || {};
+  const expectedIncludedFiles = canonicalListingIncludedFiles(plan.metadata.productManifest || {});
+  return [
+    `# ${opportunityRecord.title} Listing Copy`,
+    "",
+    "## Product Title",
+    publicationPlanPriceText(work.productTitle || opportunityRecord.title, plan),
+    "",
+    `## Headline`,
+    publicationPlanPriceText(work.headline || output.summary || opportunityRecord.title, plan),
+    "",
+    "## Description",
+    publicationPlanPriceParagraphs(work.description || output.recommendation || "", plan),
+    "",
+    "## Included Files",
+    ...expectedIncludedFiles.map((item) => `- ${item}`),
+    "",
+    "## Tags",
+    publicationPlanPriceList(work.tags, plan).join(", "),
+    "",
+    "## Frequently Asked Questions",
+    ...publicationPlanPriceList(work.faq, plan).map((item) => `- ${item}`),
+    "",
+    "## Call To Action",
+    publicationPlanPriceText(work.callToAction || output.nextAction || "", plan),
+    "",
+    "## Message Variants",
+    ...publicationPlanPriceList(work.messageVariants, plan).map((item) => `- ${item}`),
+    "",
+    "## Claim Checks",
+    ...publicationPlanPriceList(work.claimChecks, plan).map((item) => `- ${item}`),
+    "",
+    "## Tracking",
+    publicationPlanPriceText(work.trackingNote || "", plan),
+  ].join("\n");
 }
 
 function launchPackContent(plan, opportunityRecord, distributionTask, copyTask, productFiles) {
   const distribution = taskOutput(distributionTask);
   const copy = taskOutput(copyTask);
   const work = distribution.roleOutput || {};
+  const includedFiles = canonicalListingIncludedFiles(plan.metadata.productManifest || {});
   return [
     `# ${opportunityRecord.title} Launch Pack`,
     "",
@@ -750,33 +2765,169 @@ function launchPackContent(plan, opportunityRecord, distributionTask, copyTask, 
     "## Product",
     `Buyer: ${opportunityRecord.buyer}`,
     `Problem: ${opportunityRecord.problem}`,
-    `Offer: ${opportunityRecord.offer_direction}`,
+    `Offer: ${actualProductOffer(plan, opportunityRecord)}`,
     `Target price: A$${(Number(plan.price_floor_cents || 0) / 100).toFixed(2)}`,
     "",
     "## Files Ready",
-    ...productFiles.map((file) => `- ${file.human_name} (${file.format})`),
+    ...productFiles.map((file) => `- ${publicationSafeText(file.human_name)} (${publicationSafeText(file.format)})`),
+    "",
+    "## Package Contents",
+    ...includedFiles.map((file) => `- ${file}`),
     "",
     "## Listing",
-    copy.roleOutput?.headline || copy.summary || "",
-    copy.roleOutput?.description || copy.recommendation || "",
-    `Call to action: ${copy.roleOutput?.callToAction || copy.nextAction || ""}`,
+    publicationPlanPriceText(copy.roleOutput?.headline || copy.summary || "", plan),
+    publicationPlanPriceParagraphs(copy.roleOutput?.description || copy.recommendation || "", plan),
+    `Call to action: ${publicationPlanPriceText(copy.roleOutput?.callToAction || copy.nextAction || "", plan)}`,
     "",
     "## First Market Test",
-    ...(work.channelSteps || []).map((item) => `- ${item}`),
+    ...publicationPlanPriceList(work.channelSteps, plan).map((item) => `- ${item}`),
     "",
-    `Success metric: ${work.successMetric || "3 independent buyers and positive cash contribution"}`,
-    `Stop rule: ${work.stopRule || "Revise or stop after 14 days or 50 qualified views if there is no meaningful buyer signal."}`,
-    `Operator workload: ${work.operatorWorkload || "Create or sign in to the approved marketplace account, review the final listing, and press Publish."}`,
+    `Success metric: ${publicationPlanPriceText(work.successMetric || "3 independent buyers and positive cash contribution", plan)}`,
+    `Stop rule: ${publicationPlanPriceText(work.stopRule || "Revise or stop after 14 days or 50 qualified views if there is no meaningful buyer signal.", plan)}`,
+    `Operator workload: ${publicationPlanPriceText(work.operatorWorkload || "Create or sign in to the approved marketplace account, review the final listing, and press Publish.", plan)}`,
     "",
     "## Still Protected",
     "- Marketplace account creation, KYC, publishing, posts, advertising activation, customer contact, refunds, agreements, and money movement still require Daniel or a later exact approval.",
   ].join("\n");
 }
 
+function queueChiefBrief(db, plan, opportunityRecord, distributionTask, copyTask, launchDeliverable, experiment, productFiles, options = {}) {
+  const revision = Number(options.contextRevision ?? contextRevision(distributionTask));
+  const existing = existingProductionContextTask(db, plan.id, "chief_brief", revision);
+  if (existing) return { task: existing, existing: true };
+  const journey = journeyForPlan(db, plan);
+  const verifiedCatalogue = conciseCatalogueContext(plan);
+  const decisionContext = chiefDecisionContext(plan, copyTask, distributionTask);
+  const verifiedState = {
+    contextRevision: revision,
+    stage: "chief_brief",
+    qualityPassed: verifiedCatalogue.independentQuality.passed,
+    qualityScore: verifiedCatalogue.independentQuality.score,
+    catalogueItemCount: verifiedCatalogue.catalogueItems.length,
+    bundleFilename: verifiedCatalogue.bundleFilename,
+    customerPromise: verifiedCatalogue.customerPromise,
+    currentPackageReconciled: true,
+    expectedIncludedFiles: verifiedCatalogue.listingIncludedFiles,
+    copyTaskId: copyTask.id,
+    copyTaskStatus: copyTask.status,
+    distributionTaskId: distributionTask.id,
+    distributionTaskStatus: distributionTask.status,
+    launchPackDeliverableId: launchDeliverable.id,
+    supersededErrorsAreCurrent: false,
+  };
+  const request = requestLiveAiWorker(db, distributionTask.workflow_id, {
+    requestKey: `catalogue_chief_brief_${safeId(plan.id)}_context_${revision}`,
+    requestedBy: "pantheon_supervisor",
+    worker: "chief_of_staff",
+    taskTitle: `Prepare the final operator brief for ${opportunityRecord.title}`,
+    approvalTitle: `Prepare the final operator brief for ${opportunityRecord.title}`,
+    estimatedCostCents: 100,
+    reason: "Turn the verified specialist outputs into one concise operator decision. No public or account action will occur.",
+    expectedOutput: "One plain-language brief stating the product, evidence, economics, exact files, launch plan, cost, risks, decision, success metric, and stop rule.",
+    expectedMetric: "Daniel can understand and decide the exact ready-to-publish package without opening multiple technical records.",
+    model: journey?.model || CONFIG.terraModel,
+    modelLocked: journey?.model_locked === 1,
+    maxOutputTokens: 4000,
+    maxTurns: 1,
+    maxToolCalls: 0,
+    tools: [],
+    contextClasses: ["venture", "evidence", "finance", "operations", "learning"],
+    businessContext: {
+      subject: opportunityRecord.title,
+      buyer: opportunityRecord.buyer,
+      problem: opportunityRecord.problem,
+      offer: actualProductOffer(plan, opportunityRecord),
+      channel: opportunityRecord.channel,
+      evidenceStandard: "Summarise only the exact retained product, source, cost, quality, copy, and distribution records. Do not invent results or imply publication.",
+    },
+    workBrief: {
+      objective: "Create the final concise decision brief for the complete pre-publication journey.",
+      deliverable: "Money move, why now, expected upside, cost/risk, exact decision needed, success metric, and stop rule.",
+      assetPrompt: serializedLaunchContext({
+        opportunity: {
+          title: opportunityRecord.title,
+          buyer: opportunityRecord.buyer,
+          problem: opportunityRecord.problem,
+          offer: actualProductOffer(plan, opportunityRecord),
+          score: opportunityRecord.overall_score,
+          confidence: opportunityRecord.confidence,
+        },
+        ...decisionContext,
+        retainedCustomerPackages: productFiles.map((file) => ({ name: file.human_name, format: file.format })),
+        launchPackDeliverableId: launchDeliverable.id,
+        experimentId: experiment.id,
+      }, "The verified Chief of Staff context"),
+      requiredCorrections: revision ? [
+        "Treat the current quality-passed catalogue, accepted listing, and accepted distribution plan as authoritative. Do not revive superseded truncation, parser, status-field, or earlier quality findings.",
+        "The exact operator decision is whether to mark the local package ready to publish. This does not publish it or claim that demand is proven.",
+        "Describe the product as an editable workbook-and-guide toolkit, never as a client portal or automated system.",
+      ] : [],
+      constraints: [
+        "No claim that the product is public, selling, proven, or earning revenue.",
+        "No account action, customer contact, publishing, advertising, or money movement.",
+        "Use ordinary business language and one clear decision.",
+        "Do not treat superseded failed attempts as current product or launch defects.",
+        "Do not state a current numeric provider or tool exposure; Pantheon appends the authoritative amount after this call completes.",
+      ],
+      acceptanceCriteria: [
+        "The next money move is immediately clear.",
+        "The brief states exact evidence and remaining uncertainty.",
+        "The decision does not grant authority beyond moving the package to ready to publish.",
+      ],
+    },
+    parameters: {
+      ...journeyParameters(journey),
+      pantheonProduction: {
+        supervisorOwned: true,
+        currentTruthOnly: true,
+        stage: "chief_brief",
+        roundId: productMetadata(distributionTask).roundId,
+        opportunityId: opportunityRecord.id,
+        planId: plan.id,
+        distributionTaskId: distributionTask.id,
+        copyTaskId: copyTask.id,
+        launchPackDeliverableId: launchDeliverable.id,
+        experimentId: experiment.id,
+        journeyId: journey?.id || null,
+        contextRevision: revision,
+        verifiedLaunchState: verifiedState,
+      },
+    },
+    effects: [],
+  });
+  if (journey) {
+    updateJourney(db, journey.id, {
+      status: "running",
+      activeStage: "chief_brief",
+      metadata: {
+        currentTaskId: request.task?.id || null,
+        currentApprovalId: request.approval?.id || null,
+        launchPackDeliverableId: launchDeliverable.id,
+      },
+      stageEvent: {
+        stage: "chief_brief",
+        status: request.task?.status || "waiting_to_start",
+        taskId: request.task?.id || null,
+        workerId: "chief_of_staff",
+        note: "The final operator brief is ready to prepare from verified specialist work.",
+      },
+    });
+  }
+  return request;
+}
+
 function projectDistribution(db, task, plan, opportunityRecord) {
   const metadata = productMetadata(task);
   const copyTask = get(db, "SELECT * FROM tasks WHERE id = ?", [metadata.copyTaskId]);
   if (!copyTask || copyTask.status !== "completed") throw new Error("Launch preparation is missing its completed listing-copy task.");
+  const distributionOutput = taskOutput(task);
+  const outputIssues = [
+    ...publicationTextIssues(distributionOutput, "The accepted launch plan"),
+    ...currentPackageDefectIssues(distributionOutput, "The accepted launch plan"),
+  ];
+  if (outputIssues.length) {
+    throw new Error(`Pantheon refused to publish malformed launch material: ${outputIssues.join(" ")}`);
+  }
   const productFiles = all(
     db,
     `SELECT DISTINCT deliverables.*
@@ -806,9 +2957,9 @@ function projectDistribution(db, task, plan, opportunityRecord) {
       ventureId: plan.venture_id,
       name: `${opportunityRecord.title} first-revenue test`,
       status: "ready",
-      hypothesis: `If ${opportunityRecord.buyer} sees the finished ${opportunityRecord.offer_direction} through ${opportunityRecord.channel}, at least three independent buyers will purchase with positive cash contribution.`,
+      hypothesis: firstRevenueHypothesis(plan, opportunityRecord),
       buyer: opportunityRecord.buyer,
-      offer: opportunityRecord.offer_direction,
+      offer: actualProductOffer(plan, opportunityRecord),
       channel: opportunityRecord.channel,
       priceCents: Number(plan.price_floor_cents || 0),
       expectedMetric: "independent paid buyers and positive cash contribution",
@@ -825,6 +2976,67 @@ function projectDistribution(db, task, plan, opportunityRecord) {
         realStartConfirmed: false,
       },
     });
+  } else {
+    const experimentMetadata = fromJson(experiment.metadata, {});
+    run(
+      db,
+      `UPDATE commercial_experiments
+       SET status = 'ready', hypothesis = ?, buyer = ?, offer = ?, channel = ?,
+         price_cents = ?, expected_metric = ?, target_value = 3, target_unit = 'buyers',
+         metadata = ?, updated_at = ?
+      WHERE id = ?`,
+      [
+        firstRevenueHypothesis(plan, opportunityRecord),
+        opportunityRecord.buyer,
+        actualProductOffer(plan, opportunityRecord),
+        opportunityRecord.channel,
+        Number(plan.price_floor_cents || 0),
+        "independent paid buyers and positive cash contribution",
+        toJson({
+          ...experimentMetadata,
+          launchPackDeliverableId: launchDeliverable.id,
+          contextRevision: contextRevision(task),
+          realStartConfirmed: false,
+        }),
+        now(),
+        experiment.id,
+      ],
+    );
+    experiment = get(db, "SELECT * FROM commercial_experiments WHERE id = ?", [experiment.id]);
+  }
+  const journey = journeyForPlan(db, plan);
+  if (journey) {
+    const updatedPlan = updatePlan(db, plan.id, {
+      status: "chief_brief",
+      metadata: {
+        distributionTaskId: task.id,
+        launchPackDeliverableId: launchDeliverable.id,
+        experimentId: experiment.id,
+        buildStatus: "preparing_final_operator_brief",
+        launchContextRevision: contextRevision(task),
+      },
+    });
+    const chief = queueChiefBrief(
+      db,
+      updatedPlan,
+      opportunityRecord,
+      task,
+      parseRow(copyTask, ["payload", "result"]),
+      launchDeliverable,
+      experiment,
+      productFiles,
+      { contextRevision: contextRevision(task) },
+    );
+    updateJourney(db, journey.id, {
+      stageEvent: {
+        stage: "distribution_plan",
+        status: "completed",
+        taskId: task.id,
+        workerId: "distribution_operator",
+        note: "The measured launch plan, tracking fields, stop rules, and initial channel work were retained.",
+      },
+    });
+    return { chief, launchDeliverable, experiment };
   }
   const chief = recordProtectedWorkerOutcome(
     db,
@@ -877,7 +3089,9 @@ function projectDistribution(db, task, plan, opportunityRecord) {
       },
     },
   );
-  const approvalPack = generateApprovalPack(db, task.workflow_id);
+  const approvalPack = generateApprovalPack(db, task.workflow_id, {
+    authoritativeExposureCents: combinedProofExposureFromDatabase(db).totalCents,
+  });
   updatePlan(db, plan.id, {
     status: "launch_decision",
     metadata: {
@@ -909,6 +3123,358 @@ function projectDistribution(db, task, plan, opportunityRecord) {
   return { chief, launchDeliverable, approvalPack, experiment };
 }
 
+function chiefBriefContent(db, plan, opportunityRecord, task, productFiles) {
+  const output = taskOutput(task);
+  const work = output.roleOutput || {};
+  const evidence = Array.isArray(output.evidence) ? output.evidence : [];
+  const risks = Array.isArray(output.risks) ? output.risks : [];
+  const exposure = combinedProofExposureFromDatabase(db);
+  const stableCostRisk = publicationPlanPriceText(stableCostRiskText(work.costRisk || ""), plan);
+  return [
+    `# ${opportunityRecord.title} Ready-to-Publish Brief`,
+    "",
+    "## The Decision",
+    publicationPlanPriceText(work.decisionNeeded || output.nextAction || "Decide whether this exact product package should move to ready to publish.", plan),
+    "",
+    "## Recommended Money Move",
+    publicationPlanPriceText(work.moneyMove || output.moneyMove || output.recommendation || "", plan),
+    "",
+    "## Why This Product",
+    publicationPlanPriceParagraphs(output.summary || "", plan),
+    publicationPlanPriceParagraphs(work.whyNow || "", plan),
+    "",
+    "## What Is Ready",
+    `- Buyer: ${opportunityRecord.buyer}`,
+    `- Problem: ${opportunityRecord.problem}`,
+    `- Offer: ${actualProductOffer(plan, opportunityRecord)}`,
+    `- Catalogue: ${plan.target_item_count} product items`,
+    `- Target price: A$${(Number(plan.price_floor_cents || 0) / 100).toFixed(2)}`,
+    `- Quality score: ${plan.metadata.qualityScore || "not recorded"}/100`,
+    ...productFiles.map((file) => `- File: ${publicationSafeText(file.human_name)} (${publicationSafeText(file.format)})`),
+    "",
+    "## Evidence",
+    ...(evidence.length ? publicationPlanPriceList(evidence, plan).map((item) => `- ${item}`) : ["- No additional evidence summary was supplied by the Chief of Staff."]),
+    "",
+    "## Expected Upside",
+    publicationPlanPriceText(work.expectedUpside || "The first market test can establish whether real buyers will pay for the finished offer.", plan),
+    "",
+    "## Cost And Risk",
+    `Current tracked pre-publication AI and tool exposure: A$${(Number(exposure.totalCents || 0) / 100).toFixed(2)} estimated or committed; exact provider billing remains pending.`,
+    ...(stableCostRisk ? [stableCostRisk] : []),
+    ...(risks.length ? publicationPlanPriceList(risks, plan).map((item) => `- ${item}`) : ["- Sales are not proven until independent buyers complete real purchases."]),
+    "",
+    "## How Success Will Be Judged",
+    `Success metric: ${publicationPlanPriceText(work.successMetric || "Three independent paid buyers and positive cash contribution.", plan)}`,
+    `Stop rule: ${publicationPlanPriceText(work.stopRule || "Revise or stop after 14 days or 50 qualified views without a meaningful buyer signal.", plan)}`,
+    "",
+    "## What Approval Does",
+    "Approval marks this exact local package as ready to publish. It does not create a Gumroad account, complete KYC, upload files, publish posts, contact customers, activate advertising, or move money.",
+  ].filter((line) => line !== undefined && line !== null).join("\n");
+}
+
+function projectChiefBrief(db, task, plan, opportunityRecord) {
+  const metadata = productMetadata(task);
+  const sourceRun = get(
+    db,
+     `SELECT * FROM agent_runs
+     WHERE task_id = ? AND status = 'completed'
+     ORDER BY completed_at DESC, started_at DESC LIMIT 1`,
+    [task.id],
+  );
+  if (!sourceRun) throw new Error("The final Chief of Staff task has no completed Agents SDK run.");
+  const launchDeliverable = get(db, "SELECT * FROM deliverables WHERE id = ?", [metadata.launchPackDeliverableId]);
+  if (!launchDeliverable) throw new Error("The final Chief of Staff task is missing its exact launch pack.");
+  const experiment = get(db, "SELECT * FROM commercial_experiments WHERE id = ?", [metadata.experimentId]);
+  if (!experiment) throw new Error("The final Chief of Staff task is missing its first-revenue experiment.");
+  const chiefOutput = taskOutput(task);
+  const chiefOutputIssues = [
+    ...publicationTextIssues(chiefOutput, "The final Chief of Staff output"),
+    ...currentPackageDefectIssues(chiefOutput, "The final Chief of Staff output"),
+    ...launchReadinessIssues(db, plan, { launchDeliverable }),
+  ];
+  if (chiefOutputIssues.length) {
+    throw new Error(`Pantheon refused to prepare a publish-readiness decision: ${chiefOutputIssues.join(" ")}`);
+  }
+  const productFiles = all(
+    db,
+    `SELECT DISTINCT deliverables.*
+     FROM deliverables
+     JOIN catalogue_items ON catalogue_items.deliverable_id = deliverables.id
+     WHERE catalogue_items.plan_id = ?
+     ORDER BY deliverables.created_at ASC`,
+    [plan.id],
+  );
+  const output = taskOutput(task);
+  const briefDeliverable = writeTextDeliverable(
+    db,
+    task,
+    `${slug(opportunityRecord.title)}-ready-to-publish-brief.md`,
+    `${opportunityRecord.title} Ready-to-Publish Brief`,
+    chiefBriefContent(db, plan, opportunityRecord, task, productFiles),
+    {
+      planId: plan.id,
+      opportunityId: opportunityRecord.id,
+      sourceTaskId: task.id,
+      sourceRunId: sourceRun.id,
+      launchPackDeliverableId: launchDeliverable.id,
+      experimentId: experiment.id,
+    },
+  );
+  const finalArtifactIssues = launchReadinessIssues(db, {
+    ...plan,
+    metadata: {
+      ...plan.metadata,
+      chiefBriefDeliverableId: briefDeliverable.id,
+    },
+  }, {
+    launchDeliverable,
+    chiefDeliverable: briefDeliverable,
+    requireChiefBrief: true,
+  });
+  if (finalArtifactIssues.length) {
+    throw new Error(`Pantheon refused to create the final operator decision: ${finalArtifactIssues.join(" ")}`);
+  }
+  const handoff = recordAgentHandoff(db, sourceRun, {
+    handoffTo: "distribution_operator",
+    outputSummary: output.summary || `${opportunityRecord.title} is ready for Daniel's publication decision.`,
+    approvalRequired: true,
+    handoffReason: "The complete internally verified product and Gumroad package is ready for Daniel's exact external-action decision.",
+    handoffDecisionNeeded: `Decide whether to mark ${opportunityRecord.title} ready to publish.`,
+    handoffRiskLevel: "medium",
+    metadata: {
+      pantheonProduction: {
+        action: "authorize_launch_preparation",
+        roundId: metadata.roundId,
+        opportunityId: opportunityRecord.id,
+        planId: plan.id,
+        experimentId: experiment.id,
+        launchPackDeliverableId: launchDeliverable.id,
+        chiefBriefDeliverableId: briefDeliverable.id,
+        journeyId: metadata.journeyId || null,
+      },
+    },
+  });
+  const approvalPack = generateApprovalPack(db, task.workflow_id, {
+    authoritativeExposureCents: combinedProofExposureFromDatabase(db).totalCents,
+    ...publicationPackOptions(db, plan, opportunityRecord, task.workflow_id, task.id),
+  });
+  updatePlan(db, plan.id, {
+    status: "launch_decision",
+    metadata: {
+      chiefTaskId: task.id,
+      chiefRunId: sourceRun.id,
+      chiefBriefDeliverableId: briefDeliverable.id,
+      launchDecisionHandoffId: handoff?.id || null,
+      approvalPackDeliverableId: approvalPack?.id || null,
+      buildStatus: "ready_for_launch_decision",
+    },
+  });
+  const ts = now();
+  run(db, "UPDATE opportunities SET status = 'ready_to_launch', updated_at = ? WHERE id = ?", [ts, opportunityRecord.id]);
+  run(db, "UPDATE opportunity_rounds SET status = 'ready_to_launch', updated_at = ? WHERE id = ?", [ts, metadata.roundId]);
+  run(
+    db,
+    `UPDATE workflows SET status = 'ready_for_review', current_step = 'Launch decision ready',
+      approval_required = 1, updated_at = ? WHERE id = ?`,
+    [ts, task.workflow_id],
+  );
+  const journey = journeyForPlan(db, plan);
+  if (journey) {
+    updateJourney(db, journey.id, {
+      status: "waiting_for_operator",
+      activeStage: "launch_decision",
+      metadata: {
+        currentTaskId: null,
+        currentApprovalId: null,
+        chiefTaskId: task.id,
+        chiefRunId: sourceRun.id,
+        chiefBriefDeliverableId: briefDeliverable.id,
+        launchDecisionHandoffId: handoff?.id || null,
+        approvalPackDeliverableId: approvalPack?.id || null,
+      },
+      stageEvent: {
+        stage: "chief_brief",
+        status: "completed",
+        taskId: task.id,
+        workerId: "chief_of_staff",
+        note: "The final Luna Chief of Staff brief was retained and one exact ready-to-publish decision was prepared.",
+      },
+    });
+  }
+  return { handoff, launchDeliverable, briefDeliverable, approvalPack, experiment };
+}
+
+function refreshPublicationArtifacts(db, planId) {
+  return withSavepoint(db, "refresh_publication_artifacts", () => {
+    const plan = cataloguePlan(db, planId);
+    if (!plan) throw new Error(`Catalogue plan not found: ${planId}`);
+    if (!["launch_decision", "ready_to_publish"].includes(plan.status)) {
+      throw new Error(`Publication artifacts can only be refreshed from a verified launch state; this plan is ${plan.status}.`);
+    }
+    const opportunityRecord = opportunity(db, plan.opportunity_id);
+    if (!opportunityRecord) throw new Error("The publication package is missing its exact opportunity record.");
+    const taskFor = (taskId, label) => {
+      const task = parseRow(get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]), ["payload", "result"]);
+      if (!task || task.status !== "completed") {
+        throw new Error(`${label} is not backed by a completed retained task.`);
+      }
+      return task;
+    };
+    const copyTask = taskFor(plan.metadata.copyTaskId, "The accepted listing");
+    const distributionTask = taskFor(plan.metadata.distributionTaskId, "The accepted launch plan");
+    const chiefTask = taskFor(plan.metadata.chiefTaskId, "The final operator brief");
+    const buildTask = taskFor(plan.metadata.buildTaskId, "The accepted customer package");
+    const qualityTask = taskFor(plan.metadata.qualityTaskId, "The accepted quality review");
+    const qualityVerdict = qualityPassed(taskOutput(qualityTask));
+    if (!qualityVerdict.passed) {
+      throw new Error("Publication artifacts cannot be refreshed because the retained quality review did not pass.");
+    }
+    markCatalogueDeliverablesQualityPassed(db, plan, generatedProductResult(buildTask));
+    const sourceRun = get(
+      db,
+      `SELECT * FROM agent_runs
+       WHERE task_id = ? AND status = 'completed'
+       ORDER BY completed_at DESC, started_at DESC LIMIT 1`,
+      [chiefTask.id],
+    );
+    if (!sourceRun) throw new Error("The final operator brief has no completed Agents SDK source run.");
+    const productFiles = all(
+      db,
+      `SELECT DISTINCT deliverables.*
+       FROM deliverables
+       JOIN catalogue_items ON catalogue_items.deliverable_id = deliverables.id
+       WHERE catalogue_items.plan_id = ?
+       ORDER BY deliverables.created_at ASC`,
+      [plan.id],
+    );
+
+    const listingDeliverable = writeTextDeliverable(
+      db,
+      copyTask,
+      `${slug(opportunityRecord.title)}-listing-copy.md`,
+      `${opportunityRecord.title} Listing Copy`,
+      listingCopyContent(plan, opportunityRecord, copyTask),
+      { planId: plan.id, opportunityId: opportunityRecord.id, sourceTaskId: copyTask.id },
+    );
+    const launchDeliverable = writeTextDeliverable(
+      db,
+      distributionTask,
+      `${slug(opportunityRecord.title)}-launch-pack.md`,
+      `${opportunityRecord.title} Launch Pack`,
+      launchPackContent(plan, opportunityRecord, distributionTask, copyTask, productFiles),
+      { planId: plan.id, opportunityId: opportunityRecord.id, sourceTaskId: distributionTask.id },
+    );
+    const briefDeliverable = writeTextDeliverable(
+      db,
+      chiefTask,
+      `${slug(opportunityRecord.title)}-ready-to-publish-brief.md`,
+      `${opportunityRecord.title} Ready-to-Publish Brief`,
+      chiefBriefContent(db, plan, opportunityRecord, chiefTask, productFiles),
+      {
+        planId: plan.id,
+        opportunityId: opportunityRecord.id,
+        sourceTaskId: chiefTask.id,
+        sourceRunId: sourceRun.id,
+        launchPackDeliverableId: launchDeliverable.id,
+        experimentId: plan.metadata.experimentId || null,
+      },
+    );
+    const refreshedPlan = {
+      ...plan,
+      metadata: {
+        ...plan.metadata,
+        listingCopyDeliverableId: listingDeliverable.id,
+        launchPackDeliverableId: launchDeliverable.id,
+        chiefBriefDeliverableId: briefDeliverable.id,
+      },
+    };
+    const issues = launchReadinessIssues(db, refreshedPlan, {
+      listingDeliverable,
+      launchDeliverable,
+      chiefDeliverable: briefDeliverable,
+      requireChiefBrief: true,
+    });
+    if (issues.length) {
+      throw new Error(`Pantheon refused to retain refreshed publication files: ${issues.join(" ")}`);
+    }
+    const approvalPack = generateApprovalPack(db, chiefTask.workflow_id, {
+      authoritativeExposureCents: combinedProofExposureFromDatabase(db).totalCents,
+      ...publicationPackOptions(db, plan, opportunityRecord, chiefTask.workflow_id),
+    });
+    const experiment = get(
+      db,
+      "SELECT * FROM commercial_experiments WHERE json_extract(metadata, '$.cataloguePlanId') = ? LIMIT 1",
+      [plan.id],
+    );
+    if (experiment) {
+      run(
+        db,
+        `UPDATE commercial_experiments
+         SET hypothesis = ?, buyer = ?, offer = ?, channel = ?, price_cents = ?, updated_at = ?
+         WHERE id = ?`,
+        [
+          firstRevenueHypothesis(plan, opportunityRecord),
+          opportunityRecord.buyer,
+          actualProductOffer(plan, opportunityRecord),
+          opportunityRecord.channel,
+          Number(plan.price_floor_cents || 0),
+          now(),
+          experiment.id,
+        ],
+      );
+    }
+    updatePlan(db, plan.id, {
+      metadata: {
+        listingCopyDeliverableId: listingDeliverable.id,
+        launchPackDeliverableId: launchDeliverable.id,
+        chiefBriefDeliverableId: briefDeliverable.id,
+        approvalPackDeliverableId: approvalPack?.id || plan.metadata.approvalPackDeliverableId || null,
+        publicationArtifactsRefreshedAt: now(),
+      },
+    });
+    const journey = journeyForPlan(db, plan);
+    if (journey) {
+      const selectionRationale = String(journey.metadata.selectionRationale || "")
+        .replace(
+          "complete, medium-confidence paid-test case",
+          "complete, medium-confidence case for a small first-revenue test",
+        );
+      updateJourney(db, journey.id, {
+        metadata: {
+          blocker: null,
+          selectionRationale,
+        },
+      });
+    }
+    insertEvent(db, {
+      actor: "jarvis",
+      type: "production.publication_artifacts_refreshed",
+      entityType: "catalogue_plan",
+      entityId: plan.id,
+      message: "Jarvis regenerated the accepted listing, launch pack, operator brief, and decision pack from current verified state without another model call.",
+      metadata: {
+        listingDeliverableId: listingDeliverable.id,
+        launchPackDeliverableId: launchDeliverable.id,
+        chiefBriefDeliverableId: briefDeliverable.id,
+        approvalPackDeliverableId: approvalPack?.id || null,
+        noProviderCall: true,
+        noExternalAction: true,
+      },
+    });
+    return {
+      refreshed: true,
+      plan: cataloguePlan(db, plan.id),
+      listingDeliverable,
+      launchDeliverable,
+      briefDeliverable,
+      approvalPack,
+      issues: [],
+      noProviderCall: true,
+      noExternalAction: true,
+    };
+  });
+}
+
 function markProjected(db, planId, taskId) {
   const plan = cataloguePlan(db, planId);
   const projectedTaskIds = [...new Set([...(plan.metadata.projectedTaskIds || []), taskId])];
@@ -916,49 +3482,106 @@ function markProjected(db, planId, taskId) {
 }
 
 function projectCompletedProductionTask(db, taskId) {
-  const task = get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]);
-  if (!task || task.status !== "completed") return { projected: false, reason: "task_not_completed" };
-  const metadata = productMetadata(task);
-  if (!metadata?.planId || !PRODUCTION_STAGES.has(metadata.stage)) {
-    return { projected: false, reason: "not_pantheon_production_work" };
-  }
-  const plan = cataloguePlan(db, metadata.planId);
-  if (!plan) throw new Error(`Catalogue plan not found: ${metadata.planId}`);
-  if ((plan.metadata.projectedTaskIds || []).includes(task.id)) {
-    return { projected: false, reason: "already_projected", plan };
-  }
-  const opportunityRecord = opportunity(db, metadata.opportunityId || plan.opportunity_id);
-  if (!opportunityRecord) throw new Error("Production task is missing its exact opportunity.");
-  let result;
-  if (metadata.stage === "product_build") result = projectProductBuild(db, task, plan, opportunityRecord);
-  else if (metadata.stage === "quality_review") result = projectQualityReview(db, task, plan, opportunityRecord);
-  else if (metadata.stage === "conversion_copy") result = projectConversionCopy(db, task, plan, opportunityRecord);
-  else if (metadata.stage === "distribution_plan") result = projectDistribution(db, task, plan, opportunityRecord);
-  markProjected(db, plan.id, task.id);
-  insertEvent(db, {
-    actor: "pantheon",
-    type: "production.step_projected",
-    entityType: "task",
-    entityId: task.id,
-    message: `Pantheon incorporated the ${metadata.stage.replaceAll("_", " ")} result into the product record.`,
-    metadata: { planId: plan.id, opportunityId: opportunityRecord.id, stage: metadata.stage },
+  return withSavepoint(db, "project_production", () => {
+    const task = get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]);
+    if (!task || task.status !== "completed") return { projected: false, reason: "task_not_completed" };
+    const metadata = productMetadata(task);
+    if (!metadata?.planId || !PRODUCTION_STAGES.has(metadata.stage)) {
+      return { projected: false, reason: "not_pantheon_production_work" };
+    }
+    const plan = cataloguePlan(db, metadata.planId);
+    if (!plan) throw new Error(`Catalogue plan not found: ${metadata.planId}`);
+    if ((plan.metadata.projectedTaskIds || []).includes(task.id)) {
+      return { projected: false, reason: "already_projected", plan };
+    }
+    if (
+      ["conversion_copy", "distribution_plan", "chief_brief"].includes(metadata.stage)
+      && contextRevision(task) < Number(plan.metadata.launchContextRevision || 0)
+    ) {
+      markProjected(db, plan.id, task.id);
+      insertEvent(db, {
+        actor: "pantheon",
+        type: "production.superseded_launch_context_ignored",
+        entityType: "task",
+        entityId: task.id,
+        message: "Pantheon retained an earlier launch-stage result as audit history without applying it to the current product record.",
+        metadata: {
+          planId: plan.id,
+          stage: metadata.stage,
+          taskContextRevision: contextRevision(task),
+          currentContextRevision: Number(plan.metadata.launchContextRevision || 0),
+        },
+      });
+      return { projected: false, reason: "superseded_launch_context", plan: cataloguePlan(db, plan.id) };
+    }
+    const opportunityRecord = opportunity(db, metadata.opportunityId || plan.opportunity_id);
+    if (!opportunityRecord) throw new Error("Production task is missing its exact opportunity.");
+    let result;
+    if (metadata.stage === "product_build") result = projectProductBuild(db, task, plan, opportunityRecord);
+    else if (metadata.stage === "storefront_visuals") result = projectStorefrontVisual(db, task, plan, opportunityRecord);
+    else if (metadata.stage === "quality_review") result = projectQualityReview(db, task, plan, opportunityRecord);
+    else if (metadata.stage === "conversion_copy") result = projectConversionCopy(db, task, plan, opportunityRecord);
+    else if (metadata.stage === "distribution_plan") result = projectDistribution(db, task, plan, opportunityRecord);
+    else if (metadata.stage === "chief_brief") result = projectChiefBrief(db, task, plan, opportunityRecord);
+    markProjected(db, plan.id, task.id);
+    insertEvent(db, {
+      actor: "pantheon",
+      type: "production.step_projected",
+      entityType: "task",
+      entityId: task.id,
+      message: `Pantheon incorporated the ${metadata.stage.replaceAll("_", " ")} result into the product record.`,
+      metadata: { planId: plan.id, opportunityId: opportunityRecord.id, stage: metadata.stage },
+    });
+    return { projected: true, stage: metadata.stage, plan: cataloguePlan(db, plan.id), opportunity: opportunityRecord, result };
   });
-  return { projected: true, stage: metadata.stage, plan: cataloguePlan(db, plan.id), opportunity: opportunityRecord, result };
 }
 
-function pendingProductionTask(db) {
+function pendingProductionTask(db, workflowId = null) {
+  const workflowFilter = workflowId ? "AND tasks.workflow_id = ?" : "";
   const row = get(
     db,
-    `SELECT * FROM tasks
-     WHERE kind = 'live_ai_worker_execution'
-       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.supervisorOwned') = 1
-       AND status IN ('queued', 'planned', 'blocked', 'waiting_approval', 'running', 'needs_attention')
-     ORDER BY priority ASC, created_at ASC LIMIT 1`,
+    `SELECT tasks.* FROM tasks
+     JOIN workflows ON workflows.id = tasks.workflow_id
+     JOIN opportunity_rounds
+       ON opportunity_rounds.id = json_extract(
+         tasks.payload,
+         '$.liveSpendRequest.parameters.pantheonProduction.roundId'
+       )
+     JOIN catalogue_plans
+       ON catalogue_plans.id = json_extract(
+         tasks.payload,
+         '$.liveSpendRequest.parameters.pantheonProduction.planId'
+       )
+     LEFT JOIN pantheon_journeys
+       ON pantheon_journeys.id = json_extract(
+         tasks.payload,
+         '$.liveSpendRequest.parameters.pantheonJourney.journeyId'
+       )
+     WHERE tasks.kind = 'live_ai_worker_execution'
+       AND json_extract(tasks.payload, '$.liveSpendRequest.parameters.pantheonProduction.supervisorOwned') = 1
+       AND tasks.status IN ('queued', 'planned', 'blocked', 'waiting_approval', 'running', 'needs_attention')
+       AND NOT EXISTS (
+         SELECT 1
+         FROM json_each(catalogue_plans.metadata, '$.recoverySupersededTaskIds') AS superseded
+         WHERE superseded.value = tasks.id
+       )
+       AND workflows.status NOT IN ('failed', 'cancelled', 'completed')
+       AND opportunity_rounds.status NOT IN (
+         'failed', 'cancelled', 'completed', 'paused', 'ready_to_publish',
+         'stopped_unknown_outcome', 'stopped_after_correction'
+       )
+       AND (
+         pantheon_journeys.id IS NULL
+         OR pantheon_journeys.status IN ('starting', 'running', 'waiting_for_operator', 'needs_attention')
+       )
+       ${workflowFilter}
+     ORDER BY tasks.priority ASC, tasks.created_at ASC LIMIT 1`,
+    workflowId ? [workflowId] : [],
   );
   return row ? parseRow(row, ["payload", "result"]) : null;
 }
 
-function completedUnprojectedProductionTask(db) {
+function completedUnprojectedProductionTask(db, workflowId = null) {
   const tasks = all(
     db,
     `SELECT * FROM tasks
@@ -968,6 +3591,7 @@ function completedUnprojectedProductionTask(db) {
      ORDER BY completed_at ASC, created_at ASC`,
   );
   return tasks.find((task) => {
+    if (workflowId && task.workflow_id !== workflowId) return false;
     const metadata = productMetadata(task);
     const plan = metadata?.planId ? cataloguePlan(db, metadata.planId) : null;
     return plan && !(plan.metadata.projectedTaskIds || []).includes(task.id);
@@ -986,6 +3610,14 @@ function applyPantheonHandoffDecision(db, handoff, decision, note = "") {
   const normalized = String(decision || "").toLowerCase();
   const approved = normalized === "approve";
   const changes = normalized === "changes";
+  if (approved) {
+    const readinessIssues = launchReadinessIssues(db, plan, {
+      requireChiefBrief: Boolean(plan.metadata.chiefBriefDeliverableId || journeyForPlan(db, plan)),
+    });
+    if (readinessIssues.length) {
+      throw new Error(`Pantheon cannot mark this package ready to publish: ${readinessIssues.join(" ")}`);
+    }
+  }
   const planStatus = approved ? "ready_to_publish" : changes ? "needs_changes" : "paused";
   updatePlan(db, plan.id, {
     status: planStatus,
@@ -1033,7 +3665,270 @@ function applyPantheonHandoffDecision(db, handoff, decision, note = "") {
         : "Daniel stopped this product launch.",
     metadata: { decision: normalized, note: note || "", ...metadata },
   });
+  const journey = journeyForPlan(db, plan);
+  if (journey) {
+    updateJourney(db, journey.id, {
+      status: approved ? "completed" : changes ? "needs_attention" : "cancelled",
+      activeStage: approved ? "ready_to_publish" : "launch_decision",
+      completedAt: approved || !changes ? ts : null,
+      metadata: {
+        currentTaskId: null,
+        currentApprovalId: null,
+        blocker: null,
+        finalDecision: normalized,
+        finalDecisionNote: note || "",
+        externalActionCompleted: false,
+      },
+      stageEvent: {
+        stage: approved ? "ready_to_publish" : "launch_decision",
+        status: approved ? "completed" : changes ? "needs_attention" : "cancelled",
+        workerId: "operator",
+        note: approved
+          ? "Daniel marked the exact product and Gumroad package ready to publish; no external action was performed."
+          : changes
+            ? "Daniel requested changes before publication."
+            : "Daniel stopped the proposed launch.",
+      },
+    });
+  }
   return { decision: normalized, plan: cataloguePlan(db, plan.id), externalActionCompleted: false };
+}
+
+function retireSupersededLaunchContextRecords(db, plan, currentRevision) {
+  const launchRows = all(
+    db,
+    `SELECT * FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage')
+         IN ('conversion_copy', 'distribution_plan', 'chief_brief')
+     ORDER BY created_at ASC`,
+    [plan.id],
+  );
+  const supersededRows = launchRows.filter((row) => contextRevision(row) < Number(currentRevision || 0));
+  const supersededTaskIds = supersededRows.map((row) => row.id);
+  if (!supersededTaskIds.length) return { supersededTaskIds: [] };
+  const retiredUnstartedTaskIds = [];
+  for (const row of supersededRows) {
+    if (!["queued", "planned", "blocked", "waiting_approval"].includes(row.status)) continue;
+    supersedeUnstartedProductionTask(
+      db,
+      parseRow(row, ["payload", "result"]),
+      "A newer verified launch context replaced this unstarted decision before any provider call or spend.",
+    );
+    retiredUnstartedTaskIds.push(row.id);
+  }
+  const placeholders = supersededTaskIds.map(() => "?").join(", ");
+  const ts = now();
+  run(
+    db,
+    `UPDATE agent_handoffs
+     SET status = 'superseded', resolved_at = COALESCE(resolved_at, ?), updated_at = ?
+     WHERE task_id IN (${placeholders})
+       AND status IN ('needs_operator_decision', 'waiting_for_review', 'ready_for_next_worker', 'waiting_approval')`,
+    [ts, ts, ...supersededTaskIds],
+  );
+  run(
+    db,
+    `UPDATE messages SET status = 'resolved'
+     WHERE task_id IN (${placeholders}) AND status = 'open'`,
+    supersededTaskIds,
+  );
+  run(
+    db,
+    `UPDATE deliverables SET status = 'superseded', updated_at = ?
+     WHERE json_extract(metadata, '$.planId') = ?
+       AND (
+         task_id IN (${placeholders})
+         OR json_extract(metadata, '$.sourceTaskId') IN (${placeholders})
+       )`,
+    [ts, plan.id, ...supersededTaskIds, ...supersededTaskIds],
+  );
+  updatePlan(db, plan.id, {
+    metadata: {
+      projectedTaskIds: [
+        ...new Set([...(plan.metadata.projectedTaskIds || []), ...supersededTaskIds]),
+      ],
+      supersededLaunchTaskIds: [
+        ...new Set([...(plan.metadata.supersededLaunchTaskIds || []), ...supersededTaskIds]),
+      ],
+      launchDecisionHandoffId: null,
+      chiefBriefDeliverableId: null,
+      approvalPackDeliverableId: null,
+    },
+  });
+  return { supersededTaskIds, retiredUnstartedTaskIds };
+}
+
+function reconcileVerifiedLaunchContextRepair(db, planId) {
+  return withSavepoint(db, "reconcile_launch_context", () => {
+    const plan = cataloguePlan(db, planId);
+    if (!plan) throw new Error("The launch-context reconciliation needs an existing catalogue plan.");
+    const currentRevision = Number(plan.metadata.launchContextRevision || 0);
+    if (currentRevision < 1) {
+      return { reconciled: false, reason: "no_launch_context_repair", plan };
+    }
+    const retired = retireSupersededLaunchContextRecords(db, plan, currentRevision);
+    const refreshed = updatePlan(db, plan.id, {
+      status: "preparing_launch",
+      metadata: {
+        buildStatus: "verified_launch_context_repair",
+        launchDecisionHandoffId: null,
+        chiefBriefDeliverableId: null,
+        approvalPackDeliverableId: null,
+      },
+    });
+    insertEvent(db, {
+      actor: "jarvis",
+      type: "production.launch_context_reconciled",
+      entityType: "catalogue_plan",
+      entityId: plan.id,
+      message: "Jarvis retired late-arriving launch decisions that were built from superseded context.",
+      metadata: {
+        currentRevision,
+        supersededTaskIds: retired.supersededTaskIds,
+      },
+    });
+    return {
+      reconciled: true,
+      currentRevision,
+      supersededTaskIds: retired.supersededTaskIds,
+      plan: refreshed,
+    };
+  });
+}
+
+function prepareVerifiedLaunchContextRepair(db, input = {}) {
+  return withSavepoint(db, "repair_launch_context", () => {
+    const plan = cataloguePlan(db, input.planId);
+    if (!plan) throw new Error("The launch-context repair needs an existing catalogue plan.");
+    const qualityTask = get(db, "SELECT * FROM tasks WHERE id = ?", [plan.metadata.qualityTaskId]);
+    if (!qualityTask || qualityTask.status !== "completed") {
+      throw new Error("The launch-context repair needs the current completed independent quality review.");
+    }
+    if (Number(plan.metadata.qualityScore || 0) < 80 || plan.metadata.qualityDecision !== "approve") {
+      throw new Error("The launch-context repair cannot bypass a failed or unresolved quality review.");
+    }
+    const manifest = plan.metadata.productManifest || {};
+    if (!manifest.bundle?.filename || manifest.bundle?.canonicalManifestInsideBundle !== true) {
+      throw new Error("The launch-context repair needs a reconciled canonical manifest and customer bundle.");
+    }
+    const opportunityRecord = opportunity(db, plan.opportunity_id);
+    if (!opportunityRecord) throw new Error("The launch-context repair is missing its exact opportunity.");
+    const launchRows = all(
+      db,
+      `SELECT * FROM tasks
+       WHERE kind = 'live_ai_worker_execution'
+         AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+         AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage')
+           IN ('conversion_copy', 'distribution_plan', 'chief_brief')
+       ORDER BY created_at ASC`,
+      [plan.id],
+    );
+    const nextRevision = Math.max(0, ...launchRows.map(contextRevision)) + 1;
+    const supersededTaskIds = launchRows.map((row) => row.id);
+    run(
+      db,
+      `UPDATE deliverables SET status = 'superseded', updated_at = ?
+       WHERE json_extract(metadata, '$.planId') = ?
+         AND task_id IN (
+           SELECT id FROM tasks
+           WHERE json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+             AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage')
+               IN ('conversion_copy', 'distribution_plan', 'chief_brief')
+         )`,
+      [now(), plan.id, plan.id],
+    );
+    const updated = updatePlan(db, plan.id, {
+      status: "preparing_launch",
+      metadata: {
+        buildStatus: "verified_launch_context_repair",
+        launchContextRevision: nextRevision,
+        launchContextRepairReason: String(input.reason || "Pantheon replaced clipped launch context with the current verified package record."),
+        supersededLaunchTaskIds: [
+          ...new Set([...(plan.metadata.supersededLaunchTaskIds || []), ...supersededTaskIds]),
+        ],
+        projectedTaskIds: [
+          ...new Set([...(plan.metadata.projectedTaskIds || []), ...supersededTaskIds]),
+        ],
+        launchDecisionHandoffId: null,
+        chiefBriefDeliverableId: null,
+        approvalPackDeliverableId: null,
+      },
+    });
+    retireSupersededLaunchContextRecords(db, updated, nextRevision);
+    let journey = journeyForPlan(db, updated);
+    if (journey?.status === "completed") {
+      journey = updateJourney(db, journey.id, {
+        status: "running",
+        activeStage: "conversion_copy",
+        completedAt: null,
+        allowTerminalAuditRepair: true,
+        metadata: {
+          previousCompletedAt: journey.completed_at,
+          previousFinalDecision: journey.metadata.finalDecision || null,
+          finalDecision: null,
+          finalDecisionNote: null,
+          publicationReadinessInvalidatedAt: now(),
+          publicationReadinessInvalidatedReason: String(
+            input.reason || "A direct artifact audit found launch material that must be corrected.",
+          ),
+        },
+        stageEvent: {
+          stage: "conversion_copy",
+          status: "audit_repair_started",
+          workerId: "jarvis",
+          note: "Jarvis invalidated the earlier publish-ready result after direct artifact inspection found a material launch-pack defect.",
+        },
+      });
+    }
+    const request = queueConversionCopy(db, updated, opportunityRecord, parseRow(qualityTask, ["payload", "result"]), {
+      contextRevision: nextRevision,
+    });
+    journey = journeyForPlan(db, updated);
+    if (journey) {
+      updateJourney(db, journey.id, {
+        status: "running",
+        activeStage: "conversion_copy",
+        completedAt: null,
+        metadata: {
+          currentTaskId: request.task?.id || null,
+          currentApprovalId: request.approval?.id || null,
+          blocker: null,
+          launchContextRevision: nextRevision,
+          launchContextRepairReason: String(input.reason || "Current verified launch context prepared."),
+        },
+        stageEvent: {
+          stage: "conversion_copy",
+          status: request.task?.status || "waiting_to_start",
+          taskId: request.task?.id || null,
+          workerId: "copy_conversion_agent",
+          note: "Jarvis replaced clipped launch context with one compact current-truth record; earlier attempts remain audit history only.",
+        },
+      });
+    }
+    insertEvent(db, {
+      actor: "jarvis",
+      type: "production.launch_context_repaired",
+      entityType: "catalogue_plan",
+      entityId: plan.id,
+      message: "Jarvis prepared corrected launch work from the exact current product, quality, and file records.",
+      metadata: {
+        contextRevision: nextRevision,
+        supersededTaskIds,
+        replacementTaskId: request.task?.id || null,
+        noExternalAction: true,
+      },
+    });
+    return {
+      repaired: true,
+      contextRevision: nextRevision,
+      supersededTaskIds,
+      task: request.task,
+      approval: request.approval,
+      plan: cataloguePlan(db, plan.id),
+    };
+  });
 }
 
 function getProductionState(db) {
@@ -1041,6 +3936,7 @@ function getProductionState(db) {
     db,
     `SELECT * FROM catalogue_plans
      WHERE status NOT IN ('planned')
+       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
      ORDER BY updated_at DESC LIMIT 30`,
   ).map((row) => parseRow(row, ["audience_segments", "channels", "geographies", "languages", "metadata"]));
   return {
@@ -1061,5 +3957,14 @@ module.exports = {
   getProductionState,
   pendingProductionTask,
   prepareCatalogueBuild,
+  prepareVerifiedLaunchContextRepair,
+  publicationPlanPriceText,
+  publicationPriceChannelHypothesis,
+  publicationPresentationText,
+  publicationScorecard,
   projectCompletedProductionTask,
+  refreshPublicationArtifacts,
+  reconcileVerifiedLaunchContextRepair,
+  recoverQualityReviewAfterEvidenceRepair,
+  recoverQualityReviewAfterLocalRendererRepair,
 };
