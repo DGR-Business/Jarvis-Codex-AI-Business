@@ -1114,6 +1114,14 @@ concurrency stress runs, private GitHub Actions run `30244872549` passed every
 step for implementation commit `a6db9c4`, including the critical dependency
 audit and cleanup.
 
+The exact release head then passed branch run `30246016896` and pull-request
+run `30246872222` before PR #1 merged into private `main` at `476f0ad`. The
+first post-merge run `30247599151` was cancelled by the workflow's 20-minute
+job ceiling while the test output was still advancing beyond test 243 of 268;
+no test failure was recorded. Pantheon retained the full suite and raised only
+the bounded Windows CI ceiling to 30 minutes so normal hosted-runner variance
+cannot masquerade as a product failure.
+
 The exact plan and live evidence are:
 
 - `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`;

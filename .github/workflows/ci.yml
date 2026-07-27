@@ -11,7 +11,10 @@ permissions:
 jobs:
   verify:
     runs-on: windows-latest
-    timeout-minutes: 20
+    # The full Windows lifecycle suite has reached 20 minutes on slower hosted
+    # runners while still making progress. Keep a bounded failure ceiling with
+    # enough headroom for normal runner variance.
+    timeout-minutes: 30
     steps:
       - name: Check out source
         uses: actions/checkout@v6
