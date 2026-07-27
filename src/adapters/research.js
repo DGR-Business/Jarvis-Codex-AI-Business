@@ -1012,10 +1012,26 @@ async function runResearchTask(db, task, workflow, command, options = {}) {
   return runDryResearchTask(db, task, workflow, command);
 }
 
+function createResearchSourceAdapter(db, options = {}) {
+  return Object.freeze({
+    contract: "ResearchSourceAdapter.v1",
+    provider: LIVE_RESEARCH_PROVIDER,
+    liveEnabled: () => liveResearchEnabled(options),
+    run: (task, workflow, command, runOptions = {}) => runResearchTask(
+      db,
+      task,
+      workflow,
+      command,
+      { ...options, ...runOptions },
+    ),
+  });
+}
+
 module.exports = {
   DEFAULT_RESEARCH_BUDGET_CENTS,
   LIVE_RESEARCH_PROVIDER,
   buildOpenAIRequest,
   collectLiveSources,
+  createResearchSourceAdapter,
   runResearchTask,
 };

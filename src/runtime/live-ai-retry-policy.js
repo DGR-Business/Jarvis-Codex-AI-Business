@@ -13,10 +13,11 @@ function isReviewedRetryableErrorKind(errorKind) {
 function canPrepareReviewedRetry(task, errorKind) {
   const parameters = task?.payload?.liveSpendRequest?.parameters || {};
   const journeyTask = Boolean(parameters.pantheonJourney?.journeyId);
+  const boundedCommercialTask = parameters.pantheonCommercial?.supervisorOwned === true;
   return Boolean(
     task
     && task.kind === "live_ai_worker_execution"
-    && (task.agent === "demand_validator" || journeyTask)
+    && (task.agent === "demand_validator" || journeyTask || boundedCommercialTask)
     && task.status === "needs_attention"
     && task.outcome_status === "known_provider_result_needs_review"
     && isReviewedRetryableErrorKind(errorKind),

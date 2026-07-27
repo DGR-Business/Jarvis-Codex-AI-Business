@@ -131,11 +131,9 @@ function createCommandPlan(db, input) {
   const channel = inferChannel(rawText);
   const subject = inferSubject(rawText, channel);
   const wantsMockups = /(mockup|mock-up|design|prototype|concept|visual)/i.test(rawText);
-  if (channel === "POD") throw new Error("Print-on-demand is paused until the digital-product pilot proves repeatable sales.");
   const mode = input.mode || "plan_only";
   if (!new Set(["plan_only", "run_protected"]).has(mode)) throw new Error("Mode must be plan_only or run_protected.");
-  const activeVenture = get(db, "SELECT * FROM ventures WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1")
-    || get(db, "SELECT * FROM ventures WHERE id = 'venture-digital-products'");
+  const activeVenture = get(db, "SELECT * FROM ventures WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1");
   const ventureId = input.ventureId || activeVenture?.id;
   if (!ventureId) throw new Error("An active venture is required before work can be planned.");
   const commandId = `cmd_${slugForId(subject)}_${randomId().slice(0, 8)}`;

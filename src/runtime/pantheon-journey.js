@@ -73,6 +73,7 @@ function activeJourney(db) {
     db,
     `SELECT * FROM pantheon_journeys
      WHERE status IN (${placeholders})
+       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
      ORDER BY created_at DESC LIMIT 1`,
     [...ACTIVE_JOURNEY_STATUSES],
   ));
@@ -82,7 +83,9 @@ function currentOperatorJourney(db) {
   return activeJourney(db)
     || parseJourney(get(
       db,
-      "SELECT * FROM pantheon_journeys ORDER BY updated_at DESC, created_at DESC LIMIT 1",
+      `SELECT * FROM pantheon_journeys
+       WHERE COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
+       ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
     ));
 }
 

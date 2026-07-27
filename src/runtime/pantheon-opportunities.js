@@ -3,9 +3,15 @@ const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require(
 const { recordProtectedWorkerOutcome } = require("./ai-team");
 const { requestLiveAiWorker } = require("./live-ai-workers");
 const { approveInternalWorkWithinMandate, operatingMandateState } = require("./pantheon-policy");
-const { buildProfile, prepareCatalogueBuild } = require("./pantheon-production");
+const { prepareCatalogueBuild } = require("./pantheon-production");
 const { journeyById, journeyForRound, updateJourney } = require("./pantheon-journey");
 const { recordEvidence } = require("./venture-case");
+const { selectVentureKit } = require("./venture-kit-registry");
+const {
+  persistInvestmentCase,
+  projectCommercialInvestmentReview,
+  queueCommercialInvestmentReview,
+} = require("./commercial-investment-review");
 const crypto = require("node:crypto");
 
 const ACTIVE_ROUND_STATES = new Set([
@@ -13,6 +19,7 @@ const ACTIVE_ROUND_STATES = new Set([
   "validating",
   "checking_economics",
   "structuring_offer",
+  "investment_review",
 ]);
 
 const STEP_CONFIG = Object.freeze({
@@ -22,9 +29,10 @@ const STEP_CONFIG = Object.freeze({
     budgetCents: 500,
     model: () => CONFIG.terraModel,
     tools: ["research_adapter"],
-    maxTurns: 6,
-    maxToolCalls: 6,
-    maxOutputTokens: 5200,
+    maxTurns: 5,
+    maxToolCalls: 4,
+    maxOutputTokens: 7000,
+    deadlineMs: 180000,
     status: "researching",
   },
   demand_validator: {
@@ -35,7 +43,7 @@ const STEP_CONFIG = Object.freeze({
     tools: ["research_adapter"],
     maxTurns: 4,
     maxToolCalls: 3,
-    maxOutputTokens: 2400,
+    maxOutputTokens: 4000,
     status: "validating",
   },
   finance_analysis: {
@@ -46,7 +54,7 @@ const STEP_CONFIG = Object.freeze({
     tools: [],
     maxTurns: 1,
     maxToolCalls: 0,
-    maxOutputTokens: 2400,
+    maxOutputTokens: 4000,
     deadlineMs: 120000,
     status: "checking_economics",
   },
@@ -71,6 +79,12 @@ function slug(value, max = 42) {
     .slice(0, max) || "commercial";
 }
 
+function cleanOpportunityTitle(value) {
+  return String(value || "Untitled opportunity")
+    .replace(/^\s*\d+\s*[.)-]\s*/, "")
+    .trim();
+}
+
 function parseRow(row, jsonFields = ["metadata"]) {
   if (!row) return null;
   const parsed = { ...row };
@@ -82,6 +96,29 @@ function activeVenture(db) {
   const venture = get(db, "SELECT * FROM ventures WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1");
   if (!venture) throw new Error("Pantheon needs one active venture workspace before commercial discovery can begin.");
   return parseRow(venture);
+}
+
+function ensurePortfolioWorkspace(db) {
+  const id = "venture-portfolio-controller";
+  const existing = get(db, "SELECT * FROM ventures WHERE id = ?", [id]);
+  if (existing) return parseRow(existing);
+  const ts = now();
+  run(
+    db,
+    `INSERT INTO ventures
+     (id, name, stage, status, summary, metadata, created_at, updated_at,
+      lifecycle_stage, is_active, business_model)
+     VALUES (?, 'Portfolio Research', 0, 'internal_workspace',
+       'Explicit non-operating workspace for broad discovery and pre-venture investment cases.',
+       ?, ?, ?, 'candidate', 0, 'portfolio_research')`,
+    [
+      id,
+      toJson({ systemWorkspace: true, visibleInVentureSelector: false, portfolioControllerVersion: 1 }),
+      ts,
+      ts,
+    ],
+  );
+  return parseRow(get(db, "SELECT * FROM ventures WHERE id = ?", [id]));
 }
 
 function activeOpportunityRound(db) {
@@ -141,21 +178,14 @@ function calculatedScore(candidate) {
   );
 }
 
-function firstJourneyBuildability(candidate) {
-  const profile = buildProfile({
-    business_model: candidate.business_model || candidate.businessModel || "",
-    offer_direction: candidate.offer_direction || candidate.offerDirection || "",
-  });
-  const descriptor = `${candidate.business_model || candidate.businessModel || ""} ${candidate.offer_direction || candidate.offerDirection || ""}`.toLowerCase();
-  const gumroadDigitalFit = /(digital|download|template|spreadsheet|excel|tracker|calculator|planner|worksheet|workbook|guide|course|ebook|protocol|routine|checklist|toolkit|bundle)/.test(descriptor);
+function ventureKitReadiness(db, candidate) {
+  const selection = selectVentureKit(db, candidate);
   return {
-    eligible: profile.supported && gumroadDigitalFit,
-    profile: profile.id,
-    reason: !profile.supported
-      ? profile.qualityBar
-      : gumroadDigitalFit
-        ? "Pantheon can create and validate this digital product locally for a Gumroad-ready first test."
-        : "The opportunity is retained, but it is not a clear Gumroad-ready digital product for this first complete journey.",
+    eligible: selection.buildableNow,
+    profile: selection.selected?.kitId || null,
+    version: selection.selected?.version || null,
+    reason: selection.selected?.reason || selection.instruction,
+    assessments: selection.assessments,
   };
 }
 
@@ -249,19 +279,34 @@ function stepBusinessContext(round, opportunity) {
 
 function stepWorkBrief(step, round, opportunity) {
   if (step === "opportunity_scout") {
+    const portfolioHypothesisScout = round.metadata.portfolioControllerV1 === true;
     return {
-      objective: `Scan broadly, then rank 3-5 viable online business opportunities for: ${round.prompt}`,
-      deliverable: "A scored shortlist covering demand, competition, economics, channel fit, execution fit, risks, geography, and the smallest meaningful validation.",
+      objective: portfolioHypothesisScout
+        ? `Generate exactly five commercially distinct opportunity hypotheses for later live validation: ${round.prompt}`
+        : `Scan broadly, then rank 3-5 viable online business opportunities for: ${round.prompt}`,
+      deliverable: portfolioHypothesisScout
+        ? "A compact hypothesis shortlist covering buyer, problem, offer, likely channel, evidence needed, economics hypothesis, risk, and the smallest live validation. No candidate is evidence-backed yet."
+        : "A scored shortlist covering demand, competition, economics, channel fit, execution fit, risks, geography, and the smallest meaningful validation.",
       constraints: [
         "Do not invent sales, unit volume, search volume, pricing, or competitor performance.",
         "Use normal public access only; do not bypass authentication, paywalls, CAPTCHAs, access controls, or rate limits.",
         "Consider digital products, POD, affiliate commerce, Amazon/white label, courses, guides, templates, art, and other AI-executable online models when evidence supports them.",
         "Prefer opportunities that can support a credible catalogue rather than a single token product.",
+        "Keep the structured answer compact: exactly five candidates for Portfolio Controller work, no more than two short demand-evidence items, two short competition-evidence items, and two short risks per candidate.",
+        "Do not repeat source descriptions across candidate fields; source URLs belong in the research tool record.",
+        ...(portfolioHypothesisScout ? [
+          "This Scout has no live market tool. Treat demand and competition entries as specific evidence requirements or hypotheses, never as observed facts.",
+          "Direct market, competitor, price, channel, and buyer-problem evidence will be collected only for the three finalists by Demand Validator.",
+        ] : []),
       ],
       acceptanceCriteria: [
         "Every opportunity names a buyer, painful problem, offer direction, channel, market, and evidence gap.",
         "Scores are comparative hypotheses, not fabricated market facts.",
         "At least one counter-signal or risk is visible for each candidate.",
+        ...(portfolioHypothesisScout ? [
+          "Exactly five candidates span materially different business models.",
+          "Every candidate is explicitly suitable for rejection if later live evidence does not support it.",
+        ] : []),
         ...(round.metadata.journeyId
           ? ["At least three candidates must be Gumroad-suitable digital products Pantheon can build now; broader unsupported findings may fill the remaining shortlist positions."]
           : []),
@@ -322,6 +367,8 @@ function queueCommercialWorker(db, roundId, step, options = {}) {
   const opportunity = options.opportunityId ? opportunityById(db, options.opportunityId) : null;
   const journey = journeyForRound(db, roundId)
     || (round.metadata.journeyId ? journeyById(db, round.metadata.journeyId) : null);
+  const portfolioHypothesisScout = step === "opportunity_scout"
+    && round.metadata.portfolioControllerV1 === true;
   const existing = existingStepTask(db, roundId, step, opportunity?.id);
   if (existing) return { task: parseRow(existing, ["payload", "result"]), existing: true };
 
@@ -331,18 +378,18 @@ function queueCommercialWorker(db, roundId, step, options = {}) {
     taskTitle: config.title,
     approvalTitle: `Run ${config.title.toLowerCase()}`,
     requestedBy: "pantheon_supervisor",
-    estimatedCostCents: Number(options.budgetCents || config.budgetCents),
+    estimatedCostCents: Number(options.budgetCents || (portfolioHypothesisScout ? 150 : config.budgetCents)),
     provider: "openai-agents-sdk",
     model: options.model || journey?.model || config.model(),
     modelLocked: options.modelLocked === true || journey?.model_locked === 1,
-    maxOutputTokens: Number(options.maxOutputTokens || config.maxOutputTokens),
-    ...(options.deadlineMs || config.deadlineMs
-      ? { deadlineMs: Number(options.deadlineMs || config.deadlineMs) }
+    maxOutputTokens: Number(options.maxOutputTokens || (portfolioHypothesisScout ? 5000 : config.maxOutputTokens)),
+    ...(options.deadlineMs || config.deadlineMs || portfolioHypothesisScout
+      ? { deadlineMs: Number(options.deadlineMs || (portfolioHypothesisScout ? 90000 : config.deadlineMs)) }
       : {}),
-    maxTurns: config.maxTurns,
-    maxToolCalls: config.maxToolCalls,
-    tools: config.tools,
-    toolArguments: config.tools.length ? {
+    maxTurns: portfolioHypothesisScout ? 1 : config.maxTurns,
+    maxToolCalls: portfolioHypothesisScout ? 0 : config.maxToolCalls,
+    tools: portfolioHypothesisScout ? [] : config.tools,
+    toolArguments: !portfolioHypothesisScout && config.tools.length ? {
       research_adapter: {
         searchContextSize: "low",
         userLocation: { type: "approximate", country: "AU", timezone: "Australia/Brisbane" },
@@ -370,7 +417,9 @@ function queueCommercialWorker(db, roundId, step, options = {}) {
         externalEffectsAllowed: false,
       },
     },
-    reason: "Pantheon is performing exact internal commercial analysis under Daniel's recorded monthly operating mandate. No external business action is exposed.",
+    reason: portfolioHypothesisScout
+      ? "Pantheon is generating a bounded commercial hypothesis shortlist before spending on live finalist diligence. No market fact is accepted at this stage."
+      : "Pantheon is performing exact internal commercial analysis under Daniel's recorded monthly operating mandate. No external business action is exposed.",
     expectedMetric: step === "opportunity_scout"
       ? "Return 3-5 attributable, commercially comparable opportunity candidates."
       : "Return a structured, commercially useful specialist recommendation that passes local quality checks.",
@@ -412,8 +461,15 @@ function createRoundRecords(db, input, venture) {
   const id = `opp_round_${randomId()}`;
   const workflowId = `wf_commercial_discovery_${randomId()}`;
   const commandId = `cmd_commercial_discovery_${randomId()}`;
-  const prompt = String(input.prompt || input.idea || "Find the strongest evidence-backed online business opportunities Pantheon can execute.").trim();
-  const mode = input.idea ? "operator_idea" : "broad_discovery";
+  const portfolioControllerV1 = input.portfolioControllerV1 === true;
+  const prompt = String(
+    input.prompt
+      || input.idea
+      || (portfolioControllerV1
+        ? "Explore at least five distinct lawful online-business opportunity spaces across different business models. Find evidence-backed buyer problems and rank the strongest candidates without favouring Pantheon's existing digital-product kit."
+        : "Find the strongest evidence-backed online business opportunities Pantheon can execute."),
+  ).trim();
+  const mode = input.idea ? "operator_idea" : portfolioControllerV1 ? "portfolio_discovery" : "broad_discovery";
   const metadata = {
     workflowId,
     commandId,
@@ -424,6 +480,10 @@ function createRoundRecords(db, input, venture) {
     journeyId: input.journeyId || null,
     journeyModel: input.model || null,
     journeyModelLocked: input.modelLocked === true,
+    portfolioControllerV1,
+    minimumOpportunitySpaces: portfolioControllerV1 ? 5 : null,
+    finalistCount: portfolioControllerV1 ? 3 : null,
+    productionBlocked: portfolioControllerV1,
   };
   run(
     db,
@@ -469,7 +529,9 @@ function startOpportunityRound(db, input = {}) {
   if (active && input.force !== true) {
     return { round: active, alreadyRunning: true, state: getOpportunityState(db) };
   }
-  const venture = activeVenture(db);
+  const venture = input.portfolioControllerV1 === true
+    ? ensurePortfolioWorkspace(db)
+    : activeVenture(db);
   const round = createRoundRecords(db, input, venture);
   const queued = queueCommercialWorker(db, round.id, "opportunity_scout", {
     ...input,
@@ -524,16 +586,21 @@ function projectScoutResult(db, task, round, output) {
   const candidates = Array.isArray(output.roleOutput?.opportunities)
     ? output.roleOutput.opportunities.slice(0, round.max_candidates)
     : [];
-  if (candidates.length < 3) throw new Error("Opportunity Scout did not return the required 3-5 structured candidates.");
+  const portfolioControllerV1 = round.metadata.portfolioControllerV1 === true;
+  const requiredCandidateCount = portfolioControllerV1 ? 5 : 3;
+  if (candidates.length < requiredCandidateCount) {
+    throw new Error(`Opportunity Scout did not return the required ${requiredCandidateCount} structured candidates.`);
+  }
   const evidenceIds = evidenceIdsForScout(db, task, round, output);
   const ts = now();
   const inserted = [];
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
+    const candidateTitle = cleanOpportunityTitle(candidate.title);
     const scores = normalizedCandidateScores(candidate);
-    const id = `opp_${slug(round.id, 24)}_${index + 1}_${slug(candidate.title, 24)}`;
+    const id = `opp_${slug(round.id, 24)}_${index + 1}_${slug(candidateTitle, 24)}`;
     const overallScore = calculatedScore(candidate);
-    const buildability = firstJourneyBuildability(candidate);
+    const buildability = ventureKitReadiness(db, candidate);
     run(
       db,
       `INSERT OR IGNORE INTO opportunities
@@ -541,14 +608,15 @@ function projectScoutResult(db, task, round, output) {
         offer_direction, geography, language, channel, demand_score, supply_gap_score,
         economics_score, channel_fit_score, execution_fit_score, risk_score, overall_score,
         confidence, recommendation, smallest_validation, evidence_ids, metadata, created_at, updated_at)
-       VALUES (?, ?, ?, 'live_agent_research', 'ranked',
+       VALUES (?, ?, ?, ?, 'ranked',
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         round.id,
         round.venture_id,
-        candidate.title,
+        portfolioControllerV1 ? "model_hypothesis" : "live_agent_research",
+        candidateTitle,
         candidate.businessModel,
         candidate.buyer,
         candidate.problem,
@@ -586,9 +654,11 @@ function projectScoutResult(db, task, round, output) {
   }
   const ranked = inserted.sort((a, b) => b.overall_score - a.overall_score);
   const journey = journeyForRound(db, round.id);
-  const validationQueue = journey
-    ? ranked.filter((candidate) => candidate.metadata.buildability?.eligible === true).slice(0, 3)
-    : ranked.slice(0, 1);
+  const validationQueue = portfolioControllerV1
+    ? ranked.slice(0, 3)
+    : journey
+      ? ranked.filter((candidate) => candidate.metadata.buildability?.eligible === true).slice(0, 3)
+      : ranked.slice(0, 1);
   if (journey && validationQueue.length < 3) {
     for (const candidate of ranked) {
       if (candidate.metadata.buildability?.eligible !== true) {
@@ -630,7 +700,7 @@ function projectScoutResult(db, task, round, output) {
   for (const candidate of ranked) {
     const status = validationIds.includes(candidate.id)
       ? "queued_for_validation"
-      : journey && candidate.metadata.buildability?.eligible !== true
+      : journey && !portfolioControllerV1 && candidate.metadata.buildability?.eligible !== true
         ? "retained_unsupported"
         : "ranked_alternative";
     run(db, "UPDATE opportunities SET status = ?, updated_at = ? WHERE id = ?", [status, ts, candidate.id]);
@@ -647,6 +717,8 @@ function projectScoutResult(db, task, round, output) {
       validationQueueIds: validationIds,
       validationCompletedIds: [],
       buildableCandidateCount: validationQueue.length,
+      portfolioControllerV1,
+      opportunitySpaceCount: ranked.length,
     },
   });
   if (journey) {
@@ -666,21 +738,80 @@ function projectScoutResult(db, task, round, output) {
       },
     });
   }
-  return queueCommercialWorker(db, round.id, "demand_validator", { opportunityId: selected.id });
+  return queueCommercialWorker(db, round.id, "demand_validator", {
+    opportunityId: selected.id,
+    ...(portfolioControllerV1 ? { model: CONFIG.terraModel, modelLocked: true } : {}),
+  });
 }
 
 function nextUnvalidatedOpportunity(db, roundId) {
   const journey = journeyForRound(db, roundId);
+  const round = parseRow(get(db, "SELECT * FROM opportunity_rounds WHERE id = ?", [roundId]));
+  const comparableMode = Boolean(journey || round?.metadata?.portfolioControllerV1);
   return parseRow(
     get(
       db,
       `SELECT * FROM opportunities
-       WHERE round_id = ? AND status IN (${journey ? "'queued_for_validation'" : "'queued_for_validation', 'ranked_alternative', 'ranked'"})
+       WHERE round_id = ? AND status IN (${comparableMode ? "'queued_for_validation'" : "'queued_for_validation', 'ranked_alternative', 'ranked'"})
        ORDER BY overall_score DESC, created_at ASC LIMIT 1`,
       [roundId],
     ),
     ["evidence_ids", "metadata"],
   );
+}
+
+function nextPortfolioFinanceCandidate(db, roundId) {
+  return parseRow(
+    get(
+      db,
+      `SELECT * FROM opportunities
+       WHERE round_id = ? AND status = 'queued_for_finance'
+       ORDER BY overall_score DESC, created_at ASC LIMIT 1`,
+      [roundId],
+    ),
+    ["evidence_ids", "metadata"],
+  );
+}
+
+function finalizePortfolioValidation(db, round, completedIds) {
+  const finalists = all(
+    db,
+    `SELECT * FROM opportunities
+     WHERE round_id = ? AND id IN (${completedIds.map(() => "?").join(", ")})
+     ORDER BY overall_score DESC, created_at ASC`,
+    [round.id, ...completedIds],
+  ).map((row) => parseRow(row, ["evidence_ids", "metadata"]));
+  if (finalists.length < 3) {
+    throw new Error("Portfolio discovery requires three completed comparable finalists.");
+  }
+  const timestamp = now();
+  for (const finalist of finalists) {
+    run(
+      db,
+      "UPDATE opportunities SET status = 'queued_for_finance', updated_at = ? WHERE id = ?",
+      [timestamp, finalist.id],
+    );
+  }
+  const first = finalists[0];
+  run(
+    db,
+    "UPDATE opportunities SET status = 'selected_for_finance', updated_at = ? WHERE id = ?",
+    [timestamp, first.id],
+  );
+  updateRound(db, round.id, {
+    status: "checking_economics",
+    metadata: {
+      validationCompletedIds: completedIds,
+      financeQueueIds: finalists.map((item) => item.id),
+      financeCompletedIds: [],
+      selectedOpportunityId: first.id,
+    },
+  });
+  return queueCommercialWorker(db, round.id, "finance_analysis", {
+    opportunityId: first.id,
+    model: CONFIG.terraModel,
+    modelLocked: true,
+  });
 }
 
 function validationEvidenceIds(db, task, round, opportunity, output) {
@@ -946,7 +1077,8 @@ function projectValidatorResult(db, task, round, opportunity, output) {
   );
   const completedIds = [...new Set([...(round.metadata.validationCompletedIds || []), opportunity.id])];
   const journey = journeyForRound(db, round.id);
-  if (!journey && positive) {
+  const portfolioControllerV1 = round.metadata.portfolioControllerV1 === true;
+  if (!journey && !portfolioControllerV1 && positive) {
     run(
       db,
       "UPDATE opportunities SET status = 'selected_for_finance', updated_at = ? WHERE id = ?",
@@ -974,9 +1106,48 @@ function projectValidatorResult(db, task, round, opportunity, output) {
         validationCompletedIds: completedIds,
       },
     });
-    return queueCommercialWorker(db, round.id, "demand_validator", { opportunityId: next.id });
+    return queueCommercialWorker(db, round.id, "demand_validator", {
+      opportunityId: next.id,
+      ...(portfolioControllerV1 ? { model: CONFIG.terraModel, modelLocked: true } : {}),
+    });
+  }
+  if (portfolioControllerV1) {
+    return finalizePortfolioValidation(db, round, completedIds);
   }
   return finalizeComparableCandidateSelection(db, round, journey, task.id, completedIds);
+}
+
+function finalizePortfolioFinance(db, round, completedIds) {
+  const finalistIds = Array.isArray(round.metadata.financeQueueIds)
+    ? round.metadata.financeQueueIds
+    : completedIds;
+  const cases = finalistIds.map((opportunityId) => persistInvestmentCase(db, opportunityId));
+  const recommendationOrder = { advance: 0, research_more: 1, park: 2, reject: 3, no_investment: 4 };
+  cases.sort((left, right) => {
+    const recommendationDifference = (recommendationOrder[left.recommendation] ?? 9)
+      - (recommendationOrder[right.recommendation] ?? 9);
+    if (recommendationDifference !== 0) return recommendationDifference;
+    const leftPassed = Object.values(left.criteria).filter((item) => item.passed).length;
+    const rightPassed = Object.values(right.criteria).filter((item) => item.passed).length;
+    return rightPassed - leftPassed;
+  });
+  const best = cases[0];
+  updateRound(db, round.id, {
+    status: "investment_review",
+    metadata: {
+      financeCompletedIds: completedIds,
+      investmentCaseIds: cases.map((item) => item.id),
+      selectedOpportunityId: best.opportunity_id,
+      selectedInvestmentCaseId: best.id,
+      productionBlocked: true,
+    },
+  });
+  run(
+    db,
+    "UPDATE opportunities SET status = 'selected_for_investment_review', updated_at = ? WHERE id = ?",
+    [now(), best.opportunity_id],
+  );
+  return queueCommercialInvestmentReview(db, best.id);
 }
 
 function projectFinanceResult(db, task, round, opportunity, output) {
@@ -992,6 +1163,37 @@ function projectFinanceResult(db, task, round, opportunity, output) {
     },
   };
   run(db, "UPDATE opportunities SET metadata = ?, updated_at = ? WHERE id = ?", [toJson(metadata), now(), opportunity.id]);
+  if (round.metadata.portfolioControllerV1 === true) {
+    const denied = String(output.operatorDecision || "").toLowerCase() === "deny";
+    run(
+      db,
+      "UPDATE opportunities SET status = ?, updated_at = ? WHERE id = ?",
+      [denied ? "finance_rejected" : "economics_checked", now(), opportunity.id],
+    );
+    const completedIds = [...new Set([...(round.metadata.financeCompletedIds || []), opportunity.id])];
+    const next = nextPortfolioFinanceCandidate(db, round.id);
+    if (next) {
+      run(
+        db,
+        "UPDATE opportunities SET status = 'selected_for_finance', updated_at = ? WHERE id = ?",
+        [now(), next.id],
+      );
+      updateRound(db, round.id, {
+        status: "checking_economics",
+        metadata: {
+          financeCompletedIds: completedIds,
+          selectedOpportunityId: next.id,
+        },
+      });
+      return queueCommercialWorker(db, round.id, "finance_analysis", {
+        opportunityId: next.id,
+        model: CONFIG.terraModel,
+        modelLocked: true,
+      });
+    }
+    const refreshedRound = parseRow(get(db, "SELECT * FROM opportunity_rounds WHERE id = ?", [round.id]));
+    return finalizePortfolioFinance(db, refreshedRound, completedIds);
+  }
   if (String(output.operatorDecision || "").toLowerCase() === "deny") {
     run(
       db,
@@ -1391,6 +1593,7 @@ function projectCompletedCommercialTask(db, taskId) {
   else if (step.step === "demand_validator") next = projectValidatorResult(db, task, round, opportunity, output);
   else if (step.step === "finance_analysis") next = projectFinanceResult(db, task, round, opportunity, output);
   else if (step.step === "offer_architecture") next = projectOfferResult(db, task, round, opportunity, output);
+  else if (step.step === "commercial_investment_review") next = projectCommercialInvestmentReview(db, task, output);
   else throw new Error(`Unsupported completed commercial step: ${step.step}`);
   const latest = parseRow(get(db, "SELECT * FROM opportunity_rounds WHERE id = ?", [round.id]));
   updateRound(db, round.id, {
@@ -1423,7 +1626,7 @@ function pendingCommercialTask(db, workflowId = null) {
        AND json_extract(tasks.payload, '$.liveSpendRequest.parameters.pantheonCommercial.supervisorOwned') = 1
        AND tasks.status IN ('queued', 'blocked', 'waiting_approval', 'running', 'needs_attention')
        AND workflows.status NOT IN ('failed', 'cancelled', 'completed')
-       AND opportunity_rounds.status IN ('researching', 'validating', 'checking_economics', 'structuring_offer')
+       AND opportunity_rounds.status IN ('researching', 'validating', 'checking_economics', 'structuring_offer', 'investment_review')
        ${workflowFilter}
      ORDER BY tasks.priority ASC, tasks.created_at ASC LIMIT 1`,
     workflowId ? [workflowId] : [],

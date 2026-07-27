@@ -3936,6 +3936,7 @@ function getProductionState(db) {
     db,
     `SELECT * FROM catalogue_plans
      WHERE status NOT IN ('planned')
+       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
      ORDER BY updated_at DESC LIMIT 30`,
   ).map((row) => parseRow(row, ["audience_segments", "channels", "geographies", "languages", "metadata"]));
   return {

@@ -513,7 +513,8 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
     throw new Error("This recovery action is only available for a recorded AI worker run.");
   }
   const journeyTask = Boolean(task.payload?.liveSpendRequest?.parameters?.pantheonJourney?.journeyId);
-  if (task.agent !== "demand_validator" && !journeyTask) {
+  const boundedCommercialTask = task.payload?.liveSpendRequest?.parameters?.pantheonCommercial?.supervisorOwned === true;
+  if (task.agent !== "demand_validator" && !journeyTask && !boundedCommercialTask) {
     throw new Error("The first dashboard recovery path is limited to Demand Validator system tests.");
   }
 
@@ -702,7 +703,7 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
       if (retry.technicalRecovery === true) return maximum;
       return Math.max(maximum, Number(retry.number || 0));
     }, 0);
-  const retryLimit = journeyTask ? 1 : 5;
+  const retryLimit = journeyTask || boundedCommercialTask ? 1 : 5;
   const technicalRecoveryCount = relatedTasks.filter(
     (candidate) => candidate.payload?.liveSpendRequest?.parameters?.retry?.technicalRecovery === true,
   ).length;
@@ -710,8 +711,8 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
     throw new Error("Three local pre-dispatch recoveries have failed. Jarvis must repair the underlying fault before another approval is prepared.");
   }
   if (!failedBeforeEffect && correctionNumber > retryLimit) {
-    throw new Error(journeyTask
-      ? "This journey stage has used its one targeted correction. Stop and reassess before spending again."
+    throw new Error(journeyTask || boundedCommercialTask
+      ? "This commercial stage has used its one targeted correction. Stop and reassess before spending again."
       : "Five reviewed attempts have already been prepared. Stop and reassess this test before spending again.");
   }
 
@@ -770,6 +771,71 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
         "Every approved offer and returned purpose passes Pantheon's deterministic claim-to-product preflight.",
         "Every promised selector exposes its complete option set, every sample status value exactly equals one declared option, and every Dashboard metric uses a dedicated workflow-status field.",
         "Every calculation is row-level, uses a supported operation, and references exact same-item column names only.",
+        ...(Array.isArray(priorWorkBrief.acceptanceCriteria) ? priorWorkBrief.acceptanceCriteria : []),
+      ],
+    };
+  } else if (!failedBeforeEffect && task.agent === "demand_validator") {
+    retryOptions.maxOutputTokens = Math.max(4000, retryOptions.maxOutputTokens);
+    retryOptions.workBrief = {
+      ...retryOptions.workBrief,
+      assetPrompt: [
+        "The prior strict demand-validation result was truncated. Return one complete, compact correction.",
+        "Use no more than four short source-summary items, three counterevidence items, three assumptions, and four short evidence items overall.",
+        "Keep each remaining field to one concise paragraph or sentence. Do not repeat source descriptions across fields.",
+        priorWorkBrief.assetPrompt,
+      ].filter(Boolean).join(" "),
+      constraints: [
+        "Return the complete strict structured response within the output limit.",
+        "Keep observed demand evidence, inference, assumptions, and missing evidence clearly separated.",
+        ...(Array.isArray(priorWorkBrief.constraints) ? priorWorkBrief.constraints : []),
+      ],
+      acceptanceCriteria: [
+        "The demand verdict is complete, parseable, and tied to attributable sources.",
+        "The result includes a smallest test, metric, stop rule, price-channel hypothesis, and honest counterevidence.",
+        ...(Array.isArray(priorWorkBrief.acceptanceCriteria) ? priorWorkBrief.acceptanceCriteria : []),
+      ],
+    };
+  } else if (!failedBeforeEffect && task.agent === "finance_analyst") {
+    retryOptions.maxOutputTokens = Math.max(4000, retryOptions.maxOutputTokens);
+    retryOptions.maxTurns = 1;
+    retryOptions.maxToolCalls = 0;
+    retryOptions.workBrief = {
+      ...retryOptions.workBrief,
+      assetPrompt: [
+        "The prior strict finance result was truncated. Return one complete, compact correction.",
+        "Use no more than three scenarios, three major risks, and three missing-evidence items. Keep each remaining field to one concise sentence or paragraph.",
+        "Do not repeat demand evidence or source descriptions already supplied in the task context.",
+        priorWorkBrief.assetPrompt,
+      ].filter(Boolean).join(" "),
+      constraints: [
+        "Return the complete strict structured response within the output limit.",
+        "Keep observed financial inputs, calculated outputs, estimates, and unknowns clearly separated.",
+        ...(Array.isArray(priorWorkBrief.constraints) ? priorWorkBrief.constraints : []),
+      ],
+      acceptanceCriteria: [
+        "The finance result is complete, parseable, and reconciles price, fees, variable costs, acquisition assumptions, contribution margin, break-even, and downside.",
+        "Unknown economics remain explicitly unknown rather than being presented as observed facts.",
+        ...(Array.isArray(priorWorkBrief.acceptanceCriteria) ? priorWorkBrief.acceptanceCriteria : []),
+      ],
+    };
+  } else if (!failedBeforeEffect && task.agent === "opportunity_scout") {
+    retryOptions.maxOutputTokens = Math.max(7000, retryOptions.maxOutputTokens);
+    retryOptions.workBrief = {
+      ...retryOptions.workBrief,
+      assetPrompt: [
+        "The prior strict structured result was truncated. Return one complete, compact correction.",
+        "Return exactly five opportunity candidates. Use no more than two short demand-evidence items, two short competition-evidence items, and two short risks per candidate.",
+        "Keep every other candidate field to one concise sentence. Put source URLs in tool evidence rather than repeating long source descriptions in the structured answer.",
+        priorWorkBrief.assetPrompt,
+      ].filter(Boolean).join(" "),
+      constraints: [
+        "Return the complete strict structured response within the output limit and do not repeat evidence across fields.",
+        "Preserve the required five-model comparison and the Job Search Evidence Tracker benchmark.",
+        ...(Array.isArray(priorWorkBrief.constraints) ? priorWorkBrief.constraints : []),
+      ],
+      acceptanceCriteria: [
+        "Exactly five distinct business-model candidates are complete and parseable.",
+        "Every candidate retains buyer, problem, offer, channel, evidence, economics, risk, and smallest-test fields.",
         ...(Array.isArray(priorWorkBrief.acceptanceCriteria) ? priorWorkBrief.acceptanceCriteria : []),
       ],
     };
@@ -1156,6 +1222,12 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       taskId,
       agentId: workerDefinition.id,
       purpose: options.contextPurpose || expectedOutput,
+      subject,
+      buyer: businessContext.buyer,
+      problem: businessContext.problem,
+      offer: businessContext.offer,
+      channel,
+      jurisdiction: businessContext.jurisdiction || options.jurisdiction,
       recordClasses: options.contextClasses,
       includePersonalData: options.includePersonalData === true,
       journeyId: journeyContextScope.journeyId

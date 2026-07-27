@@ -1,8 +1,9 @@
 const crypto = require("node:crypto");
 const { all, fromJson, get, now, randomId, run, toJson } = require("../db");
+const { commercialContextForTask } = require("./commercial-knowledge");
 
 const AGENT_CONTEXT_SCHEMA = "jarvis.agent-context-snapshot.v1";
-const AGENT_CONTEXT_POLICY_VERSION = "task-scoped-context-v1";
+const AGENT_CONTEXT_POLICY_VERSION = "task-scoped-context-v2";
 const CONTEXT_CLASSES = Object.freeze([
   "venture",
   "evidence",
@@ -551,6 +552,16 @@ function buildAgentContextSnapshot(db, input = {}) {
   const recordRefs = Object.values(sections)
     .flatMap((section) => section.records)
     .map((item) => item.ref);
+  const commercialKnowledge = commercialContextForTask(db, {
+    workerId: agentId,
+    purpose: input.purpose,
+    subject: input.subject,
+    buyer: input.buyer,
+    problem: input.problem,
+    offer: input.offer,
+    channel: input.channel,
+    jurisdiction: input.jurisdiction,
+  });
   const core = {
     schema: AGENT_CONTEXT_SCHEMA,
     policyVersion: AGENT_CONTEXT_POLICY_VERSION,
@@ -572,10 +583,13 @@ function buildAgentContextSnapshot(db, input = {}) {
       directCustomerIdentifiersExcluded: !includePersonalData,
       localOnlyRecordsExcluded: true,
       providerStorageDefault: false,
+      commercialDoctrineIsNotMarketEvidence: true,
     },
     sections,
+    commercialKnowledge,
     recordRefs,
-    recordCount: recordRefs.length,
+    commercialKnowledgeRefs: commercialKnowledge.records.map((item) => item.id),
+    recordCount: recordRefs.length + commercialKnowledge.recordCount,
   };
   const snapshotHash = hash(core);
   return {
@@ -706,6 +720,7 @@ function contextForModel(snapshot) {
     contextScope: snapshot.contextScope,
     dataPolicy: snapshot.dataPolicy,
     sections: snapshot.sections,
+    commercialKnowledge: snapshot.commercialKnowledge,
   };
 }
 

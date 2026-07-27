@@ -6,6 +6,8 @@ const store = {
   decisionTab: "approvals",
   testTab: "candidate",
   aiTeamTab: "team",
+  portfolioTab: "opportunities",
+  commercialSearch: null,
   runFilter: "running",
   systemTab: "health",
   showArchivedOutputs: false,
@@ -22,6 +24,7 @@ const viewConfig = {
   cockpit: { title: "Command Center", kicker: "Business overview", endpoint: "/api/cockpit" },
   journey: { title: "Full Journey", kicker: "Research to ready to publish", endpoint: "/api/journey" },
   decisions: { title: "Decisions", kicker: "Your attention", endpoint: "/api/decisions" },
+  portfolio: { title: "Portfolio", kicker: "Evidence before investment", endpoint: "/api/portfolio" },
   tests: { title: "Business Tests", kicker: "Evidence to revenue", endpoint: "/api/tests" },
   "ai-team": { title: "AI Team", kicker: "Workers and capability", endpoint: "/api/ai-team" },
   system: { title: "System", kicker: "Operations and detail", endpoint: "/api/system" },
@@ -119,6 +122,20 @@ function humanStatus(value) {
     ranked: "Ranked opportunity",
     rejected: "Did not pass",
     awaiting_verification: "Waiting for confirmation",
+    portfolio_discovery: "Portfolio research",
+    investment_review: "Final investment review",
+    investment_approved: "Investment case passed",
+    selected_for_investment_review: "Final review",
+    queued_for_validation: "Waiting for demand research",
+    queued_for_finance: "Waiting for financial review",
+    selected_for_finance: "Financial review",
+    economics_checked: "Financial review complete",
+    finance_rejected: "Numbers did not pass",
+    no_investment: "No investment recommended",
+    research_more: "More evidence needed",
+    park: "Parked",
+    advance: "Proceed",
+    retained: "Keep service",
   };
   return labels[key] || key.replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
@@ -306,7 +323,12 @@ async function loadView(view = store.view, options = {}) {
     $("#view").innerHTML = '<div class="loading-state"><span></span><p>Loading business state...</p></div>';
   }
   try {
-    const data = await fetchJson(viewConfig[requestedView].endpoint);
+    const data = requestedView === "portfolio"
+      ? await Promise.all([
+        fetchJson(viewConfig[requestedView].endpoint),
+        fetchJson("/api/commercial/service-trials"),
+      ]).then(([portfolio, serviceTrials]) => ({ ...portfolio, serviceTrials }))
+      : await fetchJson(viewConfig[requestedView].endpoint);
     store.data[requestedView] = data;
     if (store.view !== requestedView) return data;
     renderView();
@@ -356,9 +378,13 @@ function decisionReviewButton(item, className = "primary-button") {
 
 function renderCommandBand(data) {
   const discovery = data.commercialDiscovery || {};
+  const portfolio = discovery.portfolio || {};
   const journey = data.currentJourney;
   const journeyStopped = ["cancelled", "stopped_after_correction", "stopped_unknown_outcome"].includes(journey?.status);
   const active = discovery.activeRound;
+  const portfolioComplete = !active
+    && Number(portfolio.evidenceRoundCount || 0) >= 2
+    && portfolio.nextAction?.action == null;
   const currentTask = discovery.currentTask;
   const journeyProgress = journey
     ? `<div class="discovery-progress">
@@ -378,18 +404,20 @@ function renderCommandBand(data) {
     : "";
   return `<section class="command-band">
     <div>
-      <span class="section-label">${journey ? "Full business journey" : active ? "Commercial work" : "Do this next"}</span>
-      <h2>${journey ? `Pantheon ${journeyStopped ? "stopped at" : "is at"} ${escapeHtml(humanStatus(journey.activeStage))}` : active ? "Pantheon is moving the venture forward" : "Start with a broad opportunity scan"}</h2>
-      <p>${journey ? "This status comes from the active journey record. Open it to see the current worker, verified outputs, cost and one next action." : active ? "Pantheon will continue internal work and stop at the next genuine decision or protected action." : "Pantheon will research across suitable online business models, then narrow the strongest options by demand, economics and execution fit."}</p>
-      ${journey ? "" : `<textarea id="command-text" aria-label="Business idea" placeholder="Optional: describe a particular business idea for Pantheon to review"></textarea>`}
+      <span class="section-label">${journey ? "Full business journey" : active ? "Commercial work" : portfolioComplete ? "Research complete" : "Do this next"}</span>
+      <h2>${journey ? `Pantheon ${journeyStopped ? "stopped at" : "is at"} ${escapeHtml(humanStatus(journey.activeStage))}` : active ? "Pantheon is moving the venture forward" : portfolioComplete ? escapeHtml(portfolio.nextAction?.label || "Commercial review complete") : "Start with a broad opportunity scan"}</h2>
+      <p>${journey ? "This status comes from the active journey record. Open it to see the current worker, verified outputs, cost and one next action." : active ? "Pantheon will continue internal work and stop at the next genuine decision or protected action." : portfolioComplete ? escapeHtml(portfolio.nextAction?.detail || "Review the retained evidence before authorising any further research.") : "Pantheon will research across suitable online business models, then narrow the strongest options by demand, economics and execution fit."}</p>
+      ${journey || portfolioComplete ? "" : `<textarea id="command-text" aria-label="Business idea" placeholder="Optional: describe a particular business idea for Pantheon to review"></textarea>`}
     </div>
     <div class="command-controls">
       ${journey
         ? `<button type="button" class="primary-button" data-view="journey">${icon("route")}Open full journey</button>`
         : active
-        ? `<button type="button" class="secondary-button" data-view="tests">${icon("search")}View opportunities</button>`
-        : `<button type="button" class="primary-button" data-action="start-discovery" data-mode="broad">${icon("radar")}Find opportunities</button>
-           <button type="button" class="secondary-button" data-action="start-discovery" data-mode="idea">${icon("lightbulb")}Review my idea</button>`}
+        ? `<button type="button" class="secondary-button" data-view="portfolio">${icon("search")}View opportunities</button>`
+        : portfolioComplete
+          ? `<button type="button" class="primary-button" data-view="portfolio">${icon("briefcase-business")}Review investment cases</button>`
+          : `<button type="button" class="primary-button" data-action="start-portfolio-discovery" data-mode="broad">${icon("radar")}Find opportunities</button>
+             <button type="button" class="secondary-button" data-action="start-portfolio-discovery" data-mode="idea">${icon("lightbulb")}Review my idea</button>`}
     </div>
     ${journeyProgress || discoveryProgress}
   </section>`;
@@ -404,8 +432,9 @@ function renderImportantWork(items, commercialWorkExists = false, journeyStatus 
     return `<section class="priority-panel clear"><div class="priority-header"><div><span class="eyebrow">Important work</span><h2>Pantheon is working without needing you</h2></div>${badge("No action needed", "mint")}</div></section>`;
   }
   const onlyWaitingToStart = items.every((item) => item.type === "queued_work");
+  const onlyAccountingNotes = items.every((item) => item.type === "unknown_outcomes_summary");
   return `<section class="priority-panel">
-    <div class="priority-header"><div><span class="eyebrow">Needs you now</span><h2>${items.length === 1 ? "One item needs you" : `${items.length} items need you`}</h2></div>${onlyWaitingToStart ? badge("Ready to start", "amber") : badge("Your decision", "coral")}</div>
+    <div class="priority-header"><div><span class="eyebrow">${onlyAccountingNotes ? "Important record" : "Needs you now"}</span><h2>${onlyAccountingNotes ? (items.length === 1 ? "One item to review" : `${items.length} items to review`) : items.length === 1 ? "One item needs you" : `${items.length} items need you`}</h2></div>${onlyWaitingToStart ? badge("Ready to start", "amber") : onlyAccountingNotes ? badge("Accounting note", "amber") : badge("Your decision", "coral")}</div>
     <div class="priority-list">${items.map((item) => `<article class="work-item">
       <span class="risk-bar ${escapeHtml(item.risk || "medium")}"></span>
       <div class="work-copy">${item.attentionLabel ? `<span class="work-state">${escapeHtml(item.attentionLabel)}</span>` : ""}<h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(compact(item.recommendation, 260))}</p>${item.expectedUpside ? `<small>${escapeHtml(compact(item.expectedUpside, 180))}</small>` : ""}</div>
@@ -433,6 +462,7 @@ function renderCockpit() {
   const spend = data.spend;
   const test = data.currentTest;
   const discovery = data.commercialDiscovery || {};
+  const portfolio = discovery.portfolio || {};
   const journey = data.currentJourney;
   const topOpportunity = discovery.topOpportunity;
   const productionPlan = discovery.production?.plans?.[0] || null;
@@ -463,7 +493,9 @@ function renderCockpit() {
     ? `Decide whether Pantheon should build the ${topOpportunity.title} catalogue.`
     : discovery.activeRound
       ? `${humanStatus(discovery.activeRound.status)} for ${discovery.activeRound.prompt}.`
-      : data.nextMoneyMove);
+      : portfolio.nextAction?.label === "No investment selected"
+        ? "Review why no candidate qualified; no product work is authorised."
+        : data.nextMoneyMove);
   const importantDecisions = data.importantWork.filter((item) => item.type === "decision").length;
   const decisionCount = $("#decision-count");
   decisionCount.textContent = importantDecisions;
@@ -479,7 +511,7 @@ function renderCockpit() {
     <section class="money-move">
       <span class="move-icon">${icon("move-right")}</span>
       <div><span class="eyebrow">Next money move</span><h2>${escapeHtml(nextMoneyMove)}</h2><p>Pantheon keeps internal work moving and stops only for a material choice, setup need, or protected external action.</p></div>
-      <button class="secondary-button" data-view="tests">${icon("flask-conical")}Open business tests</button>
+      <button class="secondary-button" data-view="portfolio">${icon("briefcase-business")}Open portfolio</button>
     </section>
     ${data.activeRuns?.length ? `<section class="active-run-strip">${sectionHeading("AI working now", "A genuine worker is running. Open the record to follow its plain-language progress.")}${data.activeRuns.map(renderAgentRunRow).join("")}</section>` : ""}
     <section>
@@ -500,7 +532,7 @@ function renderCockpit() {
           <p>${escapeHtml(test.hypothesis || "The test hypothesis has not been written yet.")}</p>
           <dl><div><dt>Buyer</dt><dd>${escapeHtml(test.buyer || data.ventureCase.buyer)}</dd></div><div><dt>Offer</dt><dd>${escapeHtml(test.offer || data.ventureCase.offer)}</dd></div><div><dt>Measure</dt><dd>${escapeHtml(test.expected_metric || data.ventureCase.expected_metric)}</dd></div><div><dt>Stop rule</dt><dd>${escapeHtml(data.ventureCase.kill_rule)}</dd></div></dl>
           <button class="text-button" data-action="open-drawer" data-kind="test" data-id="${escapeHtml(test.id)}">Review the full test ${icon("arrow-right")}</button>
-        </div>` : emptyState("No market test is running", "The team is still selecting and validating the first digital-product opportunity.", "flask-conical")}
+        </div>` : emptyState("No market test is running", "The team is still selecting and validating the first investable opportunity.", "flask-conical")}
       </section>
       <section class="section-block">
         ${sectionHeading("Team pulse", `${data.teamPulse.working} working, ${data.teamPulse.waiting || 0} waiting to start, ${data.teamPulse.needsAttention} need attention.`)}
@@ -609,6 +641,195 @@ function productionStage(plan, currentTask) {
     detail: currentTask?.title || "Pantheon has retained the current production state.",
     tone: "sky",
   };
+}
+
+function portfolioTabs() {
+  const tabs = [
+    ["opportunities", "Opportunities"],
+    ["investment", "Investment cases"],
+    ["knowledge", "Business knowledge"],
+    ["services", "Research services"],
+  ];
+  return `<div class="view-tabs portfolio-tabs" role="tablist" aria-label="Portfolio views">${tabs.map(([id, label]) => (
+    `<button role="tab" aria-selected="${store.portfolioTab === id}" class="${store.portfolioTab === id ? "active" : ""}" data-action="portfolio-tab" data-tab="${id}">${escapeHtml(label)}</button>`
+  )).join("")}</div>`;
+}
+
+function portfolioNextAction(data) {
+  const active = data.activeRound;
+  const task = data.currentTask;
+  if (active) {
+    const needsAttention = ["needs_attention", "failed"].includes(task?.status);
+    const running = task?.status === "running";
+    return `<section class="portfolio-now">
+      <div class="portfolio-now-mark ${running ? "running" : needsAttention ? "attention" : ""}">${icon(running ? "loader-circle" : needsAttention ? "triangle-alert" : "radar")}</div>
+      <div>
+        <span class="eyebrow">${needsAttention ? "Needs attention" : "Current work"}</span>
+        <h2>${escapeHtml(task?.title || humanStatus(active.status))}</h2>
+        <p>${running
+          ? "Pantheon is completing this internal research now."
+          : needsAttention
+            ? "The AI response was received but could not be accepted. Pantheon has not treated it as evidence."
+            : "Pantheon has retained the evidence so far and is ready for the next internal step."}</p>
+      </div>
+      ${running
+        ? badge("running", "sky")
+        : needsAttention
+          ? `<button class="primary-button" data-action="prepare-portfolio-retry" data-id="${escapeHtml(task.id)}">${icon("rotate-cw")}Prepare one correction</button>`
+          : `<button class="primary-button" data-action="continue-portfolio">${icon("play")}Continue research</button>`}
+    </section>`;
+  }
+  if (data.nextAction?.action === "start_portfolio_discovery") {
+    return `<section class="portfolio-now">
+      <div class="portfolio-now-mark">${icon("telescope")}</div>
+      <div>
+        <span class="eyebrow">Next step</span>
+        <h2>${escapeHtml(data.nextAction.label)}</h2>
+        <p>${escapeHtml(data.nextAction.detail)}</p>
+      </div>
+      <button class="primary-button" data-action="start-portfolio-discovery">${icon("radar")}Find opportunities</button>
+    </section>`;
+  }
+  return `<section class="portfolio-now">
+    <div class="portfolio-now-mark ${data.selectedInvestmentCase ? "complete" : ""}">${icon(data.selectedInvestmentCase ? "badge-check" : "pause")}</div>
+    <div>
+      <span class="eyebrow">${data.selectedInvestmentCase ? "Investment review complete" : "Research complete"}</span>
+      <h2>${escapeHtml(data.nextAction?.label || "No action needed")}</h2>
+      <p>${escapeHtml(data.nextAction?.detail || "Pantheon has retained the result.")}</p>
+    </div>
+    ${data.selectedInvestmentCase
+      ? `<button class="secondary-button" data-action="open-drawer" data-kind="investment-case" data-id="${escapeHtml(data.selectedInvestmentCase.id)}">${icon("file-check-2")}Review the case</button>`
+      : ""}
+  </section>`;
+}
+
+function portfolioOpportunityList(data) {
+  const opportunities = data.opportunities || [];
+  if (!opportunities.length) {
+    return emptyState(
+      data.activeRound ? "The market scan is underway" : "No portfolio research yet",
+      data.activeRound
+        ? "Five opportunity spaces will appear here after the current research step finishes."
+        : "Pantheon has not started the bounded market scan.",
+      "search",
+    );
+  }
+  return `<div class="portfolio-list">${opportunities.map((item, index) => {
+    const validation = item.metadata?.validation || {};
+    const sourceCount = Array.isArray(validation.sources) ? validation.sources.length : Number(item.evidence_ids?.length || 0);
+    const hypothesisOnly = item.source_type === "model_hypothesis" && sourceCount === 0;
+    return `<button class="portfolio-row" data-action="open-drawer" data-kind="portfolio-opportunity" data-id="${escapeHtml(item.id)}">
+      <span class="portfolio-rank">${String(index + 1).padStart(2, "0")}</span>
+      <span class="portfolio-main">
+        <span class="eyebrow">${escapeHtml(humanStatus(item.business_model || "online business"))} / ${escapeHtml(item.geography || "global")}</span>
+        <strong>${escapeHtml(item.title)}</strong>
+        <small>${escapeHtml(compact(item.problem, 150))}</small>
+      </span>
+      <span class="portfolio-evidence"><strong>${hypothesisOnly ? "Idea" : sourceCount}</strong><small>${hypothesisOnly ? "hypothesis only" : "sources retained"}</small></span>
+      <span class="portfolio-score"><strong>${Number(item.overall_score || 0)}</strong><small>discovery score</small></span>
+      ${badge(item.status)}
+      ${icon("chevron-right")}
+    </button>`;
+  }).join("")}</div>`;
+}
+
+function investmentCaseList(data) {
+  const cases = data.investmentCases || [];
+  if (!cases.length) {
+    return emptyState(
+      "No investment case yet",
+      "Three finalists must complete demand and financial review before a case can be judged.",
+      "file-search-2",
+    );
+  }
+  return `<div class="portfolio-list">${cases.map((item) => {
+    const criteria = Object.values(item.criteria || {});
+    const passed = criteria.filter((criterion) => criterion.passed).length;
+    return `<button class="portfolio-row investment-row" data-action="open-drawer" data-kind="investment-case" data-id="${escapeHtml(item.id)}">
+      <span class="portfolio-main">
+        <span class="eyebrow">${escapeHtml(humanStatus(item.status))}</span>
+        <strong>${escapeHtml(item.offer || item.problem || "Commercial investment case")}</strong>
+        <small>${escapeHtml(compact(item.rationale || item.next_action, 150))}</small>
+      </span>
+      <span class="portfolio-evidence"><strong>${passed}/${criteria.length || 10}</strong><small>requirements passed</small></span>
+      ${badge(item.recommendation)}
+      ${icon("chevron-right")}
+    </button>`;
+  }).join("")}</div>`;
+}
+
+function commercialKnowledgePanel(data) {
+  const knowledge = data.commercial?.knowledge || {};
+  const results = store.commercialSearch?.results || [];
+  return `<div class="view-stack">
+    <section class="knowledge-summary">
+      <div><span>Reviewed principles</span><strong>${Number(knowledge.propositionCount || 0)}</strong><small>Across 12 commercial areas</small></div>
+      <div><span>Authoritative sources</span><strong>${Number(knowledge.sourceCount || 0)}</strong><small>Source and review dates retained</small></div>
+      <div><span>Retrieval method</span><strong>Focused search</strong><small>Only relevant records reach each worker</small></div>
+    </section>
+    <section>
+      ${sectionHeading("Search the business library", "Use ordinary language. Results show the rule, where it applies, and its limits.")}
+      <form class="knowledge-search" data-action="commercial-search">
+        <input id="commercial-query" type="search" placeholder="For example: pricing a new Australian digital product" value="${escapeHtml(store.commercialSearch?.query || "")}" aria-label="Search commercial knowledge">
+        <button class="secondary-button" type="submit">${icon("search")}Search</button>
+      </form>
+      ${store.commercialSearch
+        ? results.length
+          ? `<div class="knowledge-results">${results.map((item) => `<article>
+              <header><div><span class="eyebrow">${escapeHtml(humanStatus(item.domain))} / ${escapeHtml(item.jurisdiction || "General")}</span><h3>${escapeHtml(item.title)}</h3></div>${badge(item.confidence)}</header>
+              <p>${escapeHtml(item.proposition)}</p>
+              <small><strong>Use when:</strong> ${escapeHtml(item.applicability)}</small>
+              <small><strong>Limits:</strong> ${escapeHtml(item.limitations)}</small>
+              ${item.source?.url ? `<a href="${escapeHtml(safeExternalUrl(item.source.url) || "#")}" target="_blank" rel="noreferrer">Open source ${icon("external-link")}</a>` : ""}
+            </article>`).join("")}</div>`
+          : emptyState("No close match", "Try a shorter question or a different commercial term.", "search-x")
+        : ""}
+    </section>
+  </div>`;
+}
+
+function serviceTrialsPanel(data) {
+  const trialState = data.serviceTrials || { policy: {}, trials: [] };
+  const trials = trialState.trials || [];
+  return `<div class="view-stack">
+    <section class="policy-line">
+      <div><span>Per-service ceiling</span><strong>${money(trialState.policy?.perServiceCapCents || 2500)}</strong></div>
+      <p>Pantheon tests a paid research service only when public sources leave a decision-critical gap. Account setup and new terms still come to you once.</p>
+    </section>
+    <section>
+      ${sectionHeading("Research service trials", "Each trial must beat the public-data baseline on evidence quality and useful cost.")}
+      ${trials.length
+        ? `<div class="portfolio-list">${trials.map((trial) => `<button class="portfolio-row investment-row" data-action="open-drawer" data-kind="service-trial" data-id="${escapeHtml(trial.id)}">
+            <span class="portfolio-main"><span class="eyebrow">${escapeHtml(trial.vendor)}</span><strong>${escapeHtml(trial.serviceName)}</strong><small>${escapeHtml(compact(trial.hypothesis, 150))}</small></span>
+            <span class="portfolio-evidence"><strong>${money(trial.actualCostCents ?? trial.capCents)}</strong><small>${trial.actualCostCents === null ? "maximum" : "actual cost"}</small></span>
+            ${badge(trial.status)}
+            ${icon("chevron-right")}
+          </button>`).join("")}</div>`
+        : emptyState("No paid service is justified", "Pantheon will propose one only when a public-data gap blocks a real investment decision.", "receipt")}
+    </section>
+  </div>`;
+}
+
+function renderPortfolio() {
+  const data = store.data.portfolio || {};
+  const roundCount = Number(data.evidenceRoundCount || 0);
+  const technicalRoundCount = Number(data.technicalFailureCount || 0);
+  const body = store.portfolioTab === "investment"
+    ? `<section>${sectionHeading("Investment cases", "Pantheon can recommend no investment. Every requirement must be supported before production.")}${investmentCaseList(data)}</section>`
+    : store.portfolioTab === "knowledge"
+      ? commercialKnowledgePanel(data)
+      : store.portfolioTab === "services"
+        ? serviceTrialsPanel(data)
+        : `<div class="view-stack">
+            <section class="portfolio-metrics">
+              <div><span>Evidence rounds</span><strong>${roundCount}/2</strong><small>${technicalRoundCount ? `${technicalRoundCount} technical stop${technicalRoundCount === 1 ? "" : "s"} retained in System` : "Maximum before your review"}</small></div>
+              <div><span>Opportunity spaces</span><strong>${Number(data.opportunities?.length || 0)}</strong><small>Five required per round</small></div>
+              <div><span>Finalists</span><strong>${Number(data.activeRound?.metadata?.validationQueueIds?.length || 0)}</strong><small>Three receive comparable checks</small></div>
+              <div><span>Production</span><strong>Not started</strong><small>This goal ends at an investment case</small></div>
+            </section>
+            <section>${sectionHeading("Market opportunities", "Pantheon compares business models on evidence and economics, not on what it already knows how to build.")}${portfolioOpportunityList(data)}</section>
+          </div>`;
+  $("#view").innerHTML = `<div class="view-stack">${portfolioNextAction(data)}${portfolioTabs()}${body}</div>`;
 }
 
 function renderTests() {
@@ -952,7 +1173,7 @@ function renderJourney() {
     const protectionReady = protection?.status === "active";
     $("#view").innerHTML = `<div class="view-stack">
       <section class="journey-start">
-        ${sectionHeading("Prove the complete business journey", "Pantheon will research broadly, compare three viable digital-product opportunities, build the strongest range, check it, and prepare the complete Gumroad package.")}
+        ${sectionHeading("Prove the complete business journey", "After Pantheon selects an investable opportunity, its registered Venture Kit can build, check, and prepare the right publication package for that business model.")}
         <label class="field-label" for="journey-prompt">Optional direction</label>
         <textarea id="journey-prompt" rows="4" placeholder="Leave blank for a broad commercial scan, or describe a market or problem you want included."${protectionReady ? "" : " disabled"}></textarea>
         <div class="journey-start-footer">
@@ -1154,6 +1375,7 @@ function renderView() {
   if (store.view === "cockpit") renderCockpit();
   else if (store.view === "journey") renderJourney();
   else if (store.view === "decisions") renderDecisions();
+  else if (store.view === "portfolio") renderPortfolio();
   else if (store.view === "tests") renderTests();
   else if (store.view === "ai-team") renderAiTeam();
   else renderSystem();
@@ -1538,6 +1760,65 @@ async function showDetail(kind, id, options = {}) {
     ].join(""), { state: { kind, id }, preserveFocus: options.preserveFocus });
     return;
   }
+  if (kind === "portfolio-opportunity") {
+    const item = store.data.portfolio?.opportunities?.find((opportunity) => opportunity.id === id);
+    if (!item) throw new Error("This opportunity is no longer in the current portfolio view.");
+    const metadata = item.metadata || {};
+    const validation = metadata.validation || {};
+    const finance = metadata.finance || {};
+    const sources = Array.isArray(validation.sources) ? validation.sources : [];
+    const sourceList = sources.length
+      ? `<div class="evidence-list">${sources.map((source) => {
+        const url = safeExternalUrl(source.url);
+        return `<article><strong>${escapeHtml(source.title || externalDomain(url) || "Market source")}</strong><p>${escapeHtml(source.publisher || "Public source retained by Pantheon.")}</p>${url ? `<small><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open source</a></small>` : ""}</article>`;
+      }).join("")}</div>`
+      : "<p>No attributable source has been retained for this candidate yet.</p>";
+    openDrawer(item.title, "Portfolio opportunity", `<div class="review-workspace">
+      <section class="result-hero"><div><span class="eyebrow">${escapeHtml(humanStatus(item.business_model))} / ${escapeHtml(item.geography || "global")}</span><h3>${escapeHtml(item.offer_direction || item.title)}</h3><p>${escapeHtml(item.problem)}</p></div>${badge(item.status)}</section>
+      ${detailSection("Buyer and route to market", `<div class="review-facts"><div><span>Intended buyer</span><strong>${escapeHtml(item.buyer || "Not established")}</strong></div><div><span>Proposed channel</span><strong>${escapeHtml(item.channel || "Not established")}</strong></div><div><span>Discovery score</span><strong>${Number(item.overall_score || 0)}/100</strong></div><div><span>Confidence</span><strong>${escapeHtml(humanStatus(item.confidence || "low"))}</strong></div></div>`)}
+      ${detailSection("Demand finding", `<p>${escapeHtml(validation.recommendation || item.recommendation || "Demand research has not completed.")}</p>${detailList(validation.evidence || [], "No direct-demand finding has been recorded yet.")}`)}
+      ${detailSection("Financial finding", `<p>${escapeHtml(finance.summary || "The financial review has not completed.")}</p>${finance.work ? `<div class="review-facts"><div><span>Price</span><strong>${escapeHtml(finance.work.price || "Not quantified")}</strong></div><div><span>Margin</span><strong>${escapeHtml(finance.work.marginLogic || "Not quantified")}</strong></div><div><span>Break-even</span><strong>${escapeHtml(finance.work.breakEven || "Not quantified")}</strong></div><div><span>Downside</span><strong>${escapeHtml(finance.work.financialRisk || "Not quantified")}</strong></div></div>` : ""}`)}
+      ${detailSection("Retained sources", sourceList)}
+    </div>`, { wide: true, state: { kind, id }, preserveFocus: options.preserveFocus });
+    return;
+  }
+  if (kind === "investment-case") {
+    const item = await fetchJson(`/api/commercial/investment-cases/${encodeURIComponent(id)}`);
+    const criterionLabels = {
+      buyer_problem: "Buyer and problem",
+      direct_demand: "Direct demand",
+      competition_entry: "Competition and entry position",
+      offer_value: "Offer and customer value",
+      economics: "Price, costs, margin and break-even",
+      distribution: "Route to market",
+      operations: "Operating requirements",
+      experiment: "Smallest useful test",
+      alternatives: "Alternatives and doing nothing",
+      risk: "Downside and reversal conditions",
+    };
+    const criteria = Object.entries(item.criteria || {});
+    const sourceLinks = item.evidence_summary?.sourceUrls || [];
+    openDrawer(item.offer || item.problem || "Commercial investment case", "Investment review", `<div class="review-workspace">
+      <section class="result-hero"><div><span class="eyebrow">Pantheon recommendation</span><h3>${escapeHtml(humanStatus(item.recommendation))}</h3><p>${escapeHtml(item.rationale)}</p></div>${badge(item.recommendation)}</section>
+      ${detailSection("Decision requirements", `<div class="investment-criteria">${criteria.map(([key, criterion]) => `<article class="${criterion.passed ? "passed" : "failed"}"><span>${icon(criterion.passed ? "check" : "x")}</span><div><strong>${escapeHtml(criterionLabels[key] || humanStatus(key))}</strong><p>${escapeHtml(criterion.reason)}</p></div></article>`).join("")}</div>`)}
+      ${detailSection("Economics", `<div class="review-facts"><div><span>Price</span><strong>${escapeHtml(item.economics?.price || "Not established")}</strong></div><div><span>Margin</span><strong>${escapeHtml(item.economics?.marginLogic || "Not established")}</strong></div><div><span>Break-even</span><strong>${escapeHtml(item.economics?.breakEven || "Not established")}</strong></div><div><span>Cost limit</span><strong>${escapeHtml(item.economics?.costCap || "Not established")}</strong></div></div>`)}
+      ${detailSection("Market evidence", sourceLinks.length ? `<div class="evidence-list">${sourceLinks.map((url) => `<article><strong>${escapeHtml(externalDomain(url) || "Market source")}</strong><small><a href="${escapeHtml(safeExternalUrl(url) || "#")}" target="_blank" rel="noreferrer">Open source</a></small></article>`).join("")}</div>` : "<p>No attributable market source is retained. This case cannot pass direct demand without it.</p>")}
+      ${detailSection("What happens next", `<p>${escapeHtml(item.next_action)}</p>`)}
+      ${item.missing_evidence?.length ? detailDisclosure("Evidence still missing", detailList(item.missing_evidence)) : ""}
+    </div>`, { wide: true, state: { kind, id }, preserveFocus: options.preserveFocus });
+    return;
+  }
+  if (kind === "service-trial") {
+    const trial = store.data.portfolio?.serviceTrials?.trials?.find((item) => item.id === id);
+    if (!trial) throw new Error("This service trial is no longer available.");
+    openDrawer(trial.serviceName, "Research service trial", `<div class="review-workspace">
+      <section class="result-hero"><div><span class="eyebrow">${escapeHtml(trial.vendor)}</span><h3>${escapeHtml(trial.hypothesis)}</h3><p>The service must materially improve a real decision before Pantheon recommends keeping it.</p></div>${badge(trial.status)}</section>
+      ${detailSection("Public-data baseline", `<div class="review-facts"><div><span>Method</span><strong>${escapeHtml(trial.baseline.method || "Not recorded")}</strong></div><div><span>Useful findings</span><strong>${Number(trial.baseline.usefulFindings || 0)}</strong></div></div><p>${escapeHtml(trial.baseline.decisionGap || "")}</p>`)}
+      ${detailSection("Cost and retention rule", `<div class="review-facts"><div><span>Maximum cost</span><strong>${money(trial.capCents)}</strong></div><div><span>Actual cost</span><strong>${trial.actualCostCents === null ? "Not settled" : money(trial.actualCostCents)}</strong></div><div><span>Minimum useful findings</span><strong>${Number(trial.retentionThresholds.minimumUsefulFindings || 0)}</strong></div><div><span>Maximum cost per useful finding</span><strong>${money(trial.retentionThresholds.maximumCostPerUsefulFindingCents || 0)}</strong></div></div>`)}
+      ${trial.result?.baselineComparison ? detailSection("Measured result", `<p>${escapeHtml(trial.result.baselineComparison)}</p>`) : ""}
+    </div>`, { wide: true, state: { kind, id }, preserveFocus: options.preserveFocus });
+    return;
+  }
   if (kind === "decision") {
     const item = await fetchJson(`/api/decisions/${encodeURIComponent(id)}`);
     const aiCheck = Boolean(item.provider || item.model || item.worker);
@@ -1653,6 +1934,19 @@ function closePdf() {
 
 async function handleAction(button) {
   const action = button.dataset.action;
+  if (action === "runtime-standby") {
+    const result = await postJson("/api/runtime/standby", {});
+    toast("Pantheon is returning to standby.");
+    setTimeout(() => { window.location.href = result.controlUrl; }, 250);
+    return;
+  }
+  if (action === "runtime-stop") {
+    if (!window.confirm("Stop Pantheon completely? No business work will run until you start it again.")) return;
+    await postJson("/api/runtime/stop", {});
+    document.body.innerHTML = `<main class="stopped-screen"><div>${icon("power")}<h1>Pantheon has stopped</h1><p>No Pantheon processes remain. Run START PANTHEON.cmd when you need the system again.</p></div></main>`;
+    refreshIcons();
+    return;
+  }
   if (action === "refresh") return loadView(store.view);
   if (action === "close-drawer") return closeDrawer();
   if (action === "close-pdf") return closePdf();
@@ -1661,6 +1955,12 @@ async function handleAction(button) {
     return renderView();
   }
   if (action === "decision-tab") { store.decisionTab = button.dataset.tab; return renderDecisions(); }
+  if (action === "portfolio-tab") {
+    store.portfolioTab = button.dataset.tab;
+    renderPortfolio();
+    refreshIcons();
+    return;
+  }
   if (action === "test-tab") { store.testTab = button.dataset.tab; return renderTests(); }
   if (action === "ai-team-tab") {
     store.aiTeamTab = button.dataset.tab;
@@ -1740,6 +2040,42 @@ async function handleAction(button) {
       ? "The current full journey is already open."
       : "Pantheon prepared the complete Luna journey. Continue when you are ready to run the first specialist.");
     return loadView("journey", { silent: true });
+  }
+  if (action === "start-portfolio-discovery") {
+    const mode = button.dataset.mode || "broad";
+    const text = $("#command-text")?.value.trim() || "";
+    if (mode === "idea" && !text) {
+      throw new Error("Describe the business idea you want Pantheon to compare.");
+    }
+    const payload = await postJson("/api/portfolio/discovery", {
+      developerRecovery: store.data.portfolio?.nextAction?.developerRecovery === true,
+      idea: mode === "idea" ? text : undefined,
+      prompt: mode === "broad" && text ? text : undefined,
+    });
+    toast(payload.started
+      ? "Pantheon prepared the next bounded market scan."
+      : payload.message || "The portfolio scan is already in progress.");
+    return loadView("portfolio", { silent: true });
+  }
+  if (action === "continue-portfolio") {
+    const payload = await withRunPolling(() => postJson("/api/pantheon/run", { maxSteps: 2 }));
+    toast(payload.result?.cycle?.summary || "Pantheon completed the next research step.");
+    return loadView("portfolio", { silent: true });
+  }
+  if (action === "prepare-portfolio-retry") {
+    const payload = await postJson(`/api/tasks/${encodeURIComponent(button.dataset.id)}/prepare-known-ai-retry`, {});
+    toast(payload.result?.mandate?.approved
+      ? "One corrected internal research attempt is ready. OpenAI has not been called yet."
+      : "One corrected research attempt is ready for review. OpenAI has not been called yet.");
+    return loadView("portfolio", { silent: true });
+  }
+  if (action === "commercial-search") {
+    const query = $("#commercial-query")?.value.trim();
+    if (!query) throw new Error("Enter a business question to search.");
+    store.commercialSearch = await fetchJson(`/api/commercial/knowledge?query=${encodeURIComponent(query)}&limit=8`);
+    renderPortfolio();
+    refreshIcons();
+    return;
   }
   if (action === "start-journey") {
     const prompt = $("#journey-prompt")?.value.trim() || undefined;

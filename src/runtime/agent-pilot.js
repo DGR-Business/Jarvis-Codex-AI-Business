@@ -90,7 +90,9 @@ function createPilotFixture(db, input) {
   if (!normalized.question || !normalized.buyer || !normalized.hypothesis) {
     throw new Error("A pilot fixture needs a business question, buyer and hypothesis.");
   }
-  const ventureId = input.ventureId || "venture-digital-products";
+  const ventureId = input.ventureId
+    || get(db, "SELECT id FROM ventures WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1")?.id;
+  if (!ventureId) throw new Error("An active venture is required before a pilot fixture can be created.");
   const fixtureHash = digest(normalized);
   const existing = get(db, "SELECT * FROM agent_pilot_fixtures WHERE fixture_hash = ?", [fixtureHash]);
   if (existing) return hydrateFixture(existing);

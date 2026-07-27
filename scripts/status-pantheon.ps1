@@ -34,6 +34,7 @@ if ($Json) {
 foreach ($status in $statuses) {
   $label = switch ([string]$status.state) {
     "ready" { "READY" }
+    "standby" { "STANDBY" }
     "rehearsal_ready" { "REHEARSAL READY" }
     "stopped" { "STOPPED" }
     "stale_metadata" { "STOPPED (STALE RECORD)" }
@@ -42,4 +43,3 @@ foreach ($status in $statuses) {
   $processText = if ($null -ne $status.pid) { " PID $($status.pid)." } else { "" }
   Write-Host "Port $($status.port): $label.$processText $($status.detail)"
 }
-

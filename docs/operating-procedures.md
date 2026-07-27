@@ -2,12 +2,17 @@
 
 ## Session Start
 
-1. Start Pantheon with `START PANTHEON.cmd` and use the secure dashboard window it
-   opens. A manually opened localhost tab is not an authenticated operator
-   session.
-   Use `START PANTHEON REHEARSAL.cmd` only for the isolated Full Journey proof.
-   `STATUS PANTHEON.cmd` reports both modes, and `STOP PANTHEON.cmd` safely stops
-   every launcher-owned mode while leaving unrelated Node programs alone.
+1. Start Pantheon with `START PANTHEON.cmd` and use the secure control window it
+   opens. Pantheon begins in **Standby**: the dashboard control shell is
+   available while the scheduler, Agents SDK workers, monitoring, and writable
+   business runtime remain unloaded. Select **Start working** when business work
+   is needed. Select **Return to standby** when finished, or **Stop Pantheon** to
+   stop the control shell as well. `STATUS PANTHEON.cmd` reports the current
+   state, and `STOP PANTHEON.cmd` stops every exact launcher-owned process while
+   leaving unrelated Node programs alone. A manually opened localhost tab is
+   not an authenticated operator session.
+   Use `START PANTHEON REHEARSAL.cmd` only for retained isolated Full Journey
+   engineering proof.
    Pantheon reads OpenAI access from the Windows-user-protected credential under
    `%LOCALAPPDATA%\Pantheon`. Do not reconnect on normal starts. Use
    `scripts\configure-openai.ps1` only for initial setup, deliberate key
@@ -17,8 +22,9 @@
    that the local process is responding.
 3. Read `docs/Pantheon Master Plan.md`.
 4. Read `docs/Pantheon Build Log.md`.
-5. For the active commercial proof, read
-   `docs/plans/PANTHEON-FULL-JOURNEY-PROOF-AND-FIRST-PRODUCT-2026-07-22.md` and
+5. For the active commercial gate, read
+   `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`,
+   `docs/commercial/COMMERCIAL-CONSTITUTION.md`, and
    `docs/decisions/0006-autonomous-agent-operations-foundation.md`.
 6. Check the active task against `AGENTS.md` and
    `docs/policies/OPERATOR-DELIVERY-AND-SECURITY.md`.
@@ -57,9 +63,26 @@ Confirm that the persisted assignment names:
 If material scope changes, create a new assignment and approval. Do not edit an
 old approval into a broader one or pass it through a worker handoff.
 
-## Full Journey Sequence
+## Portfolio Sequence
 
-1. Run the isolated rehearsal before production-intent work.
+1. Explore at least five materially different lawful opportunity spaces.
+2. Retain model ideas as hypotheses, not market proof.
+3. Give three eligible finalists comparable attributable demand and finance
+   review.
+4. Apply all mandatory commercial gates, compare alternatives and doing
+   nothing, and allow a no-investment result.
+5. Use one Sol Commercial Investment Review only after the deterministic case
+   exists.
+6. Stop after two bounded rounds. Do not repeat generic discovery or begin
+   production without materially new evidence.
+
+## Digital Product Journey Sequence
+
+Use this only after an approved case selects `digital_product_v1`; it is not the
+generic Pantheon workflow.
+
+1. Run the isolated rehearsal before production-intent work when the kit version
+   or production contract has materially changed.
 2. Lock every specialist to Luna and the exact A$15 combined journey cap.
 3. Let Opportunity Scout retain broad findings, then give three eligible
    candidates comparable Demand Validator review.

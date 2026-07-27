@@ -305,7 +305,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -342,7 +342,7 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 21);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 23);
   } finally {
     closeRuntime(runtime);
   }
@@ -1300,7 +1300,7 @@ test("Gumroad imports are idempotent and retain no raw buyer identity", () => {
     assert.match(stored.buyer_hash, /^[a-f0-9]{64}$/);
     assert.equal(stored.referrer, "example.com");
     assert.equal(JSON.stringify(stored).includes("buyer@example.com"), false);
-    const publicState = getGumroadSalesState(runtime.db);
+    const publicState = getGumroadSalesState(runtime.db, "venture-digital-products");
     assert.equal(Object.hasOwn(publicState.sales[0], "buyer_hash"), false);
     assert.equal(publicState.economics.independentBuyers, 1);
     assert.equal(publicState.economics.cashContributionCents, 1545);
@@ -1319,7 +1319,7 @@ test("weekly executive digest is concise, idempotent, and does not create an int
     assert.equal(second.id, first.id);
     assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM executive_digests").count, 1);
     assert.match(second.summary, /paying buyer/i);
-    assert.ok(second.nextActions.includes("Rank three digital-product opportunities and select one evidence-backed test."));
+    assert.ok(second.nextActions.includes("Run broad market discovery, compare three qualified candidates, and invest only if one passes every commercial gate."));
     assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM messages WHERE status = 'open' AND severity = 'urgent'").count, urgentBefore);
   } finally {
     closeRuntime(runtime);

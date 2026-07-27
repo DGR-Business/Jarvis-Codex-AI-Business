@@ -139,11 +139,14 @@ function ensureWeeklyDigest(db, options = {}) {
   )) || generateWeeklyDigest(db, options);
 }
 
-function getLatestDigest(db, ventureId = "venture-digital-products") {
+function getLatestDigest(db, ventureId = null) {
+  const resolvedVentureId = ventureId
+    || get(db, "SELECT id FROM ventures WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1")?.id;
+  if (!resolvedVentureId) return null;
   return parseDigest(get(
     db,
     "SELECT * FROM executive_digests WHERE venture_id = ? ORDER BY period_end DESC LIMIT 1",
-    [ventureId],
+    [resolvedVentureId],
   ));
 }
 

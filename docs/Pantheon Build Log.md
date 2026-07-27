@@ -1,6 +1,6 @@
 # Pantheon Build Log
 
-Last updated: 2026-07-24
+Last updated: 2026-07-27
 
 Pantheon is the active product name from 2026-07-18. Earlier entries retain
 Jarvis-Codex or Jarvis where that was the product name at the time. Jarvis now
@@ -15,34 +15,33 @@ commercial move.
 
 ## Current Position
 
-- Product direction: one digital-product venture to first revenue.
-- Checkout direction: Gumroad Direct; private KYC is permitted; public identity
-  remains faceless and voiceless.
-- Runtime: Node.js 24, CommonJS, built-in SQLite schema 21, local signed operator
-  session, scheduler-backed supervisor, independent monitor, and a first-class
-  resumable Full Journey record.
+- Product direction: evidence-led opportunity selection before venture creation.
+  No venture currently has authority to enter production.
+- Channel direction: selected from evidence per opportunity. Gumroad, Etsy,
+  marketplaces, direct commerce, service channels, affiliate networks, and
+  other lawful routes are options, not generic defaults.
+- Runtime: Node.js 24, CommonJS, built-in SQLite schema 23, local signed operator
+  session, scheduler-backed supervisor, independent monitor, Portfolio
+  Controller, and a registered non-universal `digital_product_v1` Venture Kit.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
-- Current journey: the isolated Luna-only rehearsal and the clean
-  production-intent journey both reached `Ready to publish`. Production selected
-  the Job Search Evidence Tracker and Interview Learning System and produced a
-  quality-passed five-item customer catalogue, Gumroad listing kit, launch plan,
-  cover, previews, and concise operator brief.
-- Current operator state: no internal task or approval is waiting. The product
-  package exists and has passed engineering and content-quality checks, but
-  demand, revenue, and profit remain unproven until Daniel approves publication
-  and the real market test. No account, publication, customer-contact,
-  advertising, agreement, legal, or money action occurred.
+- Current commercial result: two bounded rounds retained ten hypotheses,
+  performed comparable live demand and finance review on six finalists, and
+  completed two Sol investment reviews. Pantheon selected no investment.
+- Current operator state: all 11 workers are on standby. One consolidated
+  accounting note retains two unknown post-dispatch calls; there is no product,
+  publication, market-test, or external-action decision waiting.
+- Historical product: the Job Search Evidence Tracker package remains
+  recoverable engineering evidence but is parked after an unbiased comparison.
+  It is not an active venture or publication recommendation.
 - External actions: locked by default.
 - Operator budget: eight hours per week in the build and first-proof phase.
-- Pre-revenue AI and tool cap: A$100 per month. Daniel amended the Full Journey
-  proof ceiling to A$30. The completed proof ledger reports A$17.39 combined
-  exposure, leaving A$12.61. Provider invoices have not yet reconciled those
-  estimates.
-- Operations: the repaired `START`, `STATUS`, and `STOP PANTHEON` launchers own
-  exact processes and cover both production and rehearsal. Automated native
-  Windows lifecycle tests pass, and the launcher has passed under Daniel's real
-  desktop credential context with no environment-key dependency.
+- Pre-revenue AI and tool cap: A$100 per month. July runtime exposure is
+  A$16.54, including A$10.00 conservatively held for two unknown calls. These
+  amounts are estimates pending provider reconciliation, not settled spend.
+- Operations: `START PANTHEON.cmd` opens the lightweight control shell in
+  Standby. The dashboard starts Working mode and can return to Standby or stop
+  every exact Pantheon-owned process without touching unrelated Node work.
 
 ## Durable Decisions
 
@@ -76,6 +75,11 @@ commercial move.
 | 2026-07-22 | Reject unsupported product topology at Offer Architect acceptance for Digital Product Kit V1. | The current renderer creates complete Excel/CSV/PDF packages, not Notion systems, hosted portals, reusable databases, project indexes, CRMs, or automated integrations. |
 | 2026-07-24 | Complete the Full Journey proof under an amended A$30 combined ceiling. | A fresh rehearsal and clean production-intent run were necessary to prove the corrected journey without weakening per-action controls or outside-action protections. |
 | 2026-07-24 | Treat `Ready to publish` as engineering readiness, not commercial proof. | Real buyer demand, revenue, and positive contribution can only come from the protected Gumroad market test. |
+| 2026-07-27 | Use one versioned Commercial Constitution and cited knowledge library across Pantheon and Jarvis. | Commercial judgement must be a shared, testable decision method rather than another decorative worker or prompt. |
+| 2026-07-27 | Place Portfolio Controller before venture creation and allow a no-investment result. | Pantheon must compare business models fairly and retain cash when evidence, economics, or entry position is weak. |
+| 2026-07-27 | Treat channels and Venture Kits as evidence-selected, versioned capabilities. | Gumroad and digital products are one implementation path, not the architecture of the commercial kernel. |
+| 2026-07-27 | Use Stopped, Standby, and Working as the only operator lifecycle states. | Daniel needs a low-memory dashboard state and exact process ownership without recurring command-line work or orphaned Node processes. |
+| 2026-07-27 | Do not repeat generic broad discovery after two unsupported rounds. | The next spend must close a named evidence gap through stronger market data, a measured service trial, a submitted idea, or direct buyer intent. |
 
 ## 2026-07-22 Full Journey Rehearsal: Genuine Quality Stop
 
@@ -1025,6 +1029,69 @@ encrypted set outside the workspace requires a separate explicit authorization.
 The exact proof record is
 `docs/proofs/2026-07-24-pantheon-full-journey-proof.md`.
 
+## 2026-07-27 Commercial Intelligence Foundation
+
+Pantheon implemented and exercised the first venture-neutral commercial
+selection layer:
+
+- a versioned Commercial Constitution and 60 source-backed propositions across
+  12 commercial areas;
+- FTS5 retrieval with tags, jurisdiction, limits, citations, and a 20-case
+  evaluation;
+- Portfolio Controller v1 with two bounded five-space rounds, three comparable
+  finalists per round, Finance review, and final Sol investment review;
+- Commercial Investment Review with ten mandatory criteria and a valid
+  no-investment outcome;
+- Research Service Trial controls with a public-data baseline and A$25
+  per-service ceiling;
+- `RuntimeSupervisor` with exact Stopped, Standby, and Working modes;
+- `VentureKitRegistry`, with `digital_product_v1` registered as one
+  non-universal production path; and
+- one capability-assurance read model over retained workbench, pilot,
+  readiness, playbook, and comparison evidence; and
+- an active Sunday 18:00 Brisbane Jarvis audit that reviews engineering,
+  commercial evidence, costs, recovery, security, and operator clarity without
+  authorising paid calls or protected external actions.
+
+The live path used 21 provider attempts. Nineteen returned known outcomes with
+A$4.54 of combined incurred estimates. Two Scout calls timed out after dispatch
+and retain A$10.00 of conservative unknown exposure; Pantheon stopped their
+rounds and did not retry them. One Demand Validator response and one Finance
+response were known but truncated; each used its one explicit compact
+correction and then passed.
+
+Round one retained Job Search tracking, niche freelance templates, POD
+milestone goods, affiliate comparison content, and white-label replenishment.
+Round two retained a private-label desk bundle, freelancer onboarding service,
+accessible presentation templates, professional-equipment affiliate content,
+and a fresh Job Search benchmark. Six finalists received attributable demand
+and finance review.
+
+Pantheon selected no investment. Job Search remained parked because willingness
+to pay, acquisition economics, and differentiation from capable free
+substitutes were unproven. The freelancer onboarding service remained parked
+because demand for the exact offer, channel fit, entry position, and net
+contribution were unproven. No production, publication, account action, customer
+contact, advertising, agreement, legal decision, or money movement occurred.
+
+Operator proof confirmed:
+
+- the Command Center says `No investment selected` and cannot start the legacy
+  production journey;
+- all 11 workers are visible and on standby;
+- two timeout records collapse into one accounting note while full receipts
+  remain in System;
+- Portfolio exposes opportunities, investment cases, source-backed knowledge,
+  and justified service trials in ordinary language; and
+- Standby keeps the control shell available at roughly 46 MB with no scheduler,
+  Agents SDK worker, or writable business runtime.
+
+The exact plan and live evidence are:
+
+- `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`;
+- `docs/commercial/COMMERCIAL-CONSTITUTION.md`; and
+- `docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`.
+
 ## Accounting Position
 
 - ChatGPT Pro active monthly commitment: A$100.00.
@@ -1037,6 +1104,11 @@ The exact proof record is
 - Pantheon release-proof provider usage: A$1.13 pending reconciliation.
 - Full Journey production-intent exposure: A$0.82 estimated; combined rehearsal
   and production proof exposure: A$17.39 estimated.
+- Commercial Intelligence Foundation: A$4.54 known incurred estimate plus
+  A$10.00 conservative unknown exposure.
+- July runtime exposure after the Portfolio proof: A$16.54. This is the active
+  monthly-cap figure and remains an estimate until provider billing is
+  reconciled.
 
 These records remain in the active accounting and cost ledgers after pilot work
 is removed. Historical workflows, approvals, packs, model calls, and runs remain
@@ -1080,16 +1152,17 @@ review.
 
 ## Next Best Work
 
-Daniel reviews the completed Job Search Evidence Tracker package and its
-operator brief. The next protected sequence is Gumroad account/private KYC,
-upload preview, and a separate publication decision. Pantheon then proposes up
-to three compliant organic posts across no more than two selected channels and
-measures the real offer for 14 days or 50 qualified product views.
+First reconcile the two unknown provider calls against billing. Then close one
+named, decision-critical gap using stronger evidence rather than another generic
+scan. Valid next paths are:
 
-The commercial gate is three independent paying buyers and positive net cash
-contribution. A weak result must be diagnosed across reach, audience, creative,
-listing, value, catalogue, price, checkout, fulfilment, and demand before revise
-or stop. During that measurement window, Jarvis may begin extracting the proven
-Digital Product Kit behind the approved Portfolio Controller and Venture Kit
-interfaces, but Pantheon must not launch a second live venture before first
-proof.
+- a measured research-service trial that materially beats the public baseline;
+- a Daniel-submitted opportunity examined against the same gates; or
+- a bounded direct buyer-intent method for one parked case.
+
+Pantheon reopens an investment case only when attributable evidence changes a
+mandatory criterion. If nothing qualifies, it reports no investment again. If
+one case clears all gates, the next goal implements that opportunity's exact
+Venture Kit and the pending Venture Factory boundary; it still does not publish,
+spend externally, contact customers, or create accounts without the applicable
+protected action.

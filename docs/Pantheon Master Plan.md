@@ -1,6 +1,6 @@
 # Pantheon Master Plan
 
-Last updated: 2026-07-24
+Last updated: 2026-07-27
 Status: active source of truth
 Owner: Daniel
 Technical steward: Jarvis (Codex)
@@ -17,37 +17,34 @@ low operator effort. Internal activity, documents, traces, and elaborate
 workflows are useful only when they improve demand evidence, offer quality,
 distribution, conversion, fulfilment, feedback, or unit economics.
 
-## First Commercial Proof
+## Current Commercial Gate
 
-The first proof is deliberately narrow:
+Pantheon's destination is a dynamic multi-venture commercial operating system,
+not a digital-product or Gumroad application. One active operating venture
+remains the safety limit until Pantheon proves three independent paying buyers
+and positive net cash contribution, but opportunity selection now happens in a
+separate pre-venture Portfolio workspace.
 
-- one active digital-product venture;
-- one commercial test at a time;
-- Gumroad Direct for initial checkout and delivery;
-- a faceless and voiceless public brand;
-- at least three independent paying customers;
-- positive cash contribution after fees, refunds, external spend, and tools;
-- normal operator involvement no higher than eight hours per week;
-- no second venture until the first loop proves itself.
+The active completed foundation directive is
+`docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`.
+It implemented the Commercial Constitution, 60-record knowledge library,
+Portfolio Controller v1, comparable demand and finance review, final Sol
+investment review, service-trial controls, Runtime Supervisor, and the first
+formal Venture Kit registry.
 
-The active detailed execution directive is
-`docs/plans/PANTHEON-FULL-JOURNEY-PROOF-AND-FIRST-PRODUCT-2026-07-22.md`.
-It implements the first-revenue strategy through an isolated Luna-only
-rehearsal followed by one clean production-intent journey. Daniel increased the
-combined proof ceiling from A$15 to A$30 on 2026-07-24; both journeys completed
-within that ceiling with no publication or account action.
-The broader foundation directive remains
-`docs/plans/FOUNDATION-TO-FIRST-REVENUE-EXECUTION-PLAN-2026-07-14.md`.
-The active worker-operations contract is
-`docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md`.
+Two bounded live evidence rounds completed on 2026-07-27. Pantheon compared ten
+opportunity hypotheses and six finalists, then selected no investment. The
+historical Job Search package is parked: its engineering files remain evidence,
+but it is not an active commercial venture and must not be published merely
+because it already exists.
 
-The approved post-proof architecture is
-`docs/plans/PANTHEON-MULTI-VENTURE-FOUNDATION-AND-VENTURE-KITS-2026-07-22.md`.
-It preserves Pantheon as one deterministic commercial kernel while adding a
-Portfolio Controller, Venture Factory, versioned Venture Kits, capability-based
-team assembly, and initially three isolated venture lanes. It begins after the
-current journey reaches `Ready to publish`; extraction work should use the real
-market-measurement window rather than delaying the first buyer test.
+`digital_product_v1` is one registered, non-universal kit. Generic commercial
+logic has no Gumroad-first or digital-product-first channel assumption. The
+approved multi-venture roadmap remains
+`docs/plans/PANTHEON-MULTI-VENTURE-FOUNDATION-AND-VENTURE-KITS-2026-07-22.md`;
+Portfolio Controller and the first registry boundary are now implemented, while
+Venture Factory, a structurally different second kit, and concurrent isolated
+venture lanes remain future gates.
 
 ## Operating Model
 
@@ -153,13 +150,17 @@ request makes no model call.
 
 ## Operator Experience
 
-The cockpit has five stable sections:
+The cockpit has six stable sections:
 
 - Command Center: business position, Important Work, next money move, current
   test, team pulse, cash, and system health.
+- Portfolio: opportunity spaces, comparable evidence, investment cases,
+  commercial knowledge, and justified research-service trials.
+- Full Journey: a venture-kit workspace retained for exact supported production
+  journeys. It cannot bypass Portfolio or begin production without an approved
+  investment case.
 - Decisions: consequential choices, with Reviews, Suggestions, and History kept
   separate.
-- Business Tests: Plan, Ready, Running, and Results.
 - AI Team: every worker plus truthful Live Runs for genuine provider execution.
 - System: health, queue, spend, connections, outputs, and activity.
 
@@ -177,8 +178,9 @@ technical details rather than the primary operator flow.
 
 All operator money is labelled explicitly in Australian dollars. Activity hides
 duplicate internal notification records and translates runtime actors into
-business language. Connections shows only the current first-revenue services:
-the OpenAI AI Team, separately governed live research, and Gumroad Direct.
+business language. Connections shows only services required by the current
+Portfolio or active venture; no checkout, marketplace, or channel is a generic
+Pantheon default.
 
 ## Safety And Autonomy
 
@@ -227,70 +229,52 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
 - Provider cost states are reserved, estimated incurred, unknown, reconciled,
   or released. Estimates are never displayed as actual spend.
 - The pre-revenue monthly AI and tool cap is A$100.
-- A no-tool worker run is capped at A$1 unless Daniel approves a different exact
-  scope.
-- A read-only live research run is capped at A$2.
-- An optional market test is capped at A$25 and never starts automatically.
+- Every provider task has an exact recorded ceiling selected before dispatch.
+  A$1 remains the routine no-tool default, while Portfolio stages use their
+  explicitly priced bounded scope rather than an implicit global allowance.
+- Read-only research, paid data services, and market tests each require their
+  own exact cap. A research-service trial may not exceed A$25 per service or the
+  remaining monthly mandate.
+- Unknown post-dispatch outcomes remain counted as possible exposure until
+  provider billing is reconciled.
 
 ## Roadmap
 
 ### Now
 
-- Preserve the completed isolated rehearsal in `data/journey-rehearsal/` and the
-  completed production-intent journey in `data/runtime.sqlite`. Both reached
-  `Ready to publish` through the complete fixed-team journey on
-  `gpt-5.6-luna`.
-- Treat the rehearsal as recoverable engineering evidence, not cockpit clutter.
-  Its clean rerun completed 24 model calls, produced the four-item Niche
-  Freelancer Client-Onboarding OS catalogue, and passed final quality at 92.
-- Treat the production journey as the active commercial package. It completed
-  18 Luna model calls, four approved read-only searches, one approved image
-  generation, and selected the Job Search Evidence Tracker and Interview
-  Learning System. Its five-item customer package passed final quality at 92.
-- Keep the result honest: Pantheon proved the journey, files, controls,
-  recovery, and operator path. It has not yet proved buyer demand, revenue,
-  positive contribution, or repeatable autonomy.
-- Record the proof ledger at A$17.39 of the amended A$30 ceiling: A$16.57
-  carried from the rehearsal sequence and A$0.82 estimated for the production
-  run. These are exposure estimates pending provider reconciliation, not
-  settled costs.
-- Preserve the contract and presentation corrections learned from real failures:
-  unsupported product promises fail before build, incomplete listing and
-  distribution outputs receive at most one correction, reviewed files are
-  explicitly quality-certified, and the operator pack is rendered from current
-  runtime truth rather than stale model wording.
-- Use the repaired Windows launchers as the only normal lifecycle path. They own
-  and stop exact Pantheon instances on ports 5051 and 5052 and refuse to kill
-  unrelated Node processes. The desktop-user proof now passes with the OpenAI
-  key loaded only from Pantheon's Windows-protected LocalAppData store; no
-  repeated environment setup is required.
-- Apply the independent audit selectively. Preserve the current kernel, freeze
-  new frameworks, keep valid deferred debt visible, and return immediately to
-  the commercial journey after correctness, recovery, dependency, and lifecycle
-  hardening.
+- Keep the Portfolio result at `No investment selected`. Two bounded rounds
+  compared ten hypotheses and six finalists; none cleared every mandatory
+  demand, entry, economics, channel, operating, and downside gate.
+- Keep the historical Job Search package parked and out of current operator
+  truth. Its files prove an engineering capability, not an investable business.
+- Keep all 11 workers visible and on standby. No production, publication,
+  customer contact, advertising, account action, or money movement is
+  authorised.
+- Run Pantheon through the Windows control shell: Stopped means no Pantheon
+  process, Standby keeps only the lightweight dashboard control service, and
+  Working loads the full runtime.
+- Hold July Portfolio exposure at A$16.54: A$4.54 of known incurred estimates
+  from this foundation, A$10.00 of conservative unknown exposure from two
+  post-dispatch timeouts, and A$2.00 carried from earlier July runtime work.
+  None of those estimates is a settled provider invoice.
 
 ### Next
 
-- Daniel reviews the completed Job Search Evidence Tracker package and its
-  concise publication brief. Gumroad account creation, private KYC, upload, and
-  publication remain separate protected operator actions.
-- After publication approval, use no more than three compliant organic posts
-  across no more than two evidence-selected channels, then measure for 14 days
-  or 50 qualified product views. Do not activate paid advertising during the
-  first organic test.
-- Continue on three independent paid buyers and positive cash contribution;
-  otherwise diagnose reach, offer, price, catalogue, conversion, and demand
-  before revising once or pausing.
-- Reconcile OpenAI estimates against provider billing before presenting them as
-  actual model spend.
-- During the market-measurement window, begin the approved Multi-Venture
-  Foundation extraction: define the Venture Kit interface and Portfolio
-  Controller from the proven journey without launching a second live venture.
+- Reconcile the two unknown OpenAI calls against provider billing without
+  retrying them.
+- Close one decision-critical gap through stronger evidence: a measured
+  research-service trial, a Daniel-submitted idea, or a bounded direct
+  buyer-intent method. Do not repeat another generic broad scan.
+- Reopen an investment case only when attributable new evidence changes a
+  mandatory criterion. If no candidate qualifies, retain the cash and report no
+  investment again.
+- After a case clears every gate, implement only the Venture Kit required by
+  that opportunity. Venture Factory creates an inactive venture; production and
+  every external action remain separate gates.
 
 ### Later
 
-- Execute the approved Multi-Venture Foundation plan. Extract the current
-  digital-product sequence into Kit 1, prove a structurally different Kit 2,
+- Complete Venture Factory, prove a structurally different second Venture Kit,
   then replace the one-active-venture safety constraint with three tested,
   isolated venture lanes. Do not copy the runtime or hard-code every business
   into the current journey.
@@ -306,13 +290,14 @@ the OpenAI AI Team, separately governed live research, and Gumroad Direct.
 ## Release Gates
 
 Status: the clean first-use and fixed-team engineering foundation was satisfied
-on 2026-07-18. The complete Full Journey engineering proof was satisfied on
-2026-07-24: 259 isolated tests, correctness lint, encrypted recovery proof,
-native Windows launcher tests, a completed isolated rehearsal, a completed
-production-intent journey, independent file inspection, and a signed Chrome
-operator-path check all passed. The production package is `Ready to publish`.
+on 2026-07-18, and the Full Journey remained historical engineering proof from
+2026-07-24. The Commercial Intelligence Foundation completed its live
+commercial path on 2026-07-27 with a truthful no-investment result. Its final
+release record is
+`docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`.
 Publication, buyer results, positive cash contribution, capability promotion,
-and every consequential external action retain separate gates.
+Venture Factory, concurrent lanes, and every consequential external action
+retain separate gates.
 
 Foundation is releasable only when:
 
@@ -330,8 +315,16 @@ Foundation is releasable only when:
 ## Durable Records
 
 - `docs/Pantheon Build Log.md`: current decisions, proof, and next work.
+- `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`:
+  completed foundation scope, live result, cost truth, and next gate.
+- `docs/commercial/COMMERCIAL-CONSTITUTION.md`: shared commercial decision
+  doctrine for Pantheon workers and Jarvis.
+- `docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`: exact
+  live Portfolio and release evidence.
+- `docs/plans/PANTHEON-MULTI-VENTURE-FOUNDATION-AND-VENTURE-KITS-2026-07-22.md`:
+  active long-range Portfolio, Venture Factory, kit, and isolated-lane roadmap.
 - `docs/plans/PANTHEON-FULL-JOURNEY-PROOF-AND-FIRST-PRODUCT-2026-07-22.md`:
-  active Luna-only rehearsal and production-intent execution contract.
+  completed historical Luna-only engineering proof.
 - `docs/reviews/PANTHEON-INDEPENDENT-AUDIT-2026-07-21.md`: exact independent
   Fable/Claude audit retained as evidence.
 - `docs/reviews/PANTHEON-INDEPENDENT-AUDIT-RECONCILIATION-2026-07-22.md`:

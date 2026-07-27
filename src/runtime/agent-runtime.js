@@ -1652,7 +1652,7 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     tools: sdkTools,
     handoffs: [],
     modelSettings: {
-      maxTokens: Math.min(6000, Number(requestBody.max_output_tokens || 1200)),
+      maxTokens: Math.min(8000, Number(requestBody.max_output_tokens || 1200)),
       toolChoice: capabilityPlan.toolChoice,
       parallelToolCalls: capabilityPlan.parallelToolCalls,
       store: tracePolicy.providerResponseStored,

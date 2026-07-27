@@ -335,7 +335,7 @@ test("full journey proves discovery through a quality-passed Gumroad-ready produ
     }
     if (stage === "finance_analysis") {
       assert.equal(task.payload.liveSpendRequest.deadlineMs, 120000);
-      assert.equal(task.payload.liveSpendRequest.maxOutputTokens, 2400);
+      assert.equal(task.payload.liveSpendRequest.maxOutputTokens, 4000);
       return sdkResult(workerOutput("Finance Agent", {
         price: "Test A$29 initially, with a justified A$39 complete-bundle ceiling.",
         marginLogic: "Revenue less Gumroad fees, refunds, model usage, allocated tools, and any approved advertising must remain positive in AUD.",

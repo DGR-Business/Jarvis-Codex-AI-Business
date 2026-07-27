@@ -5,13 +5,21 @@ const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 const { spendCostId } = require("./runtime/stable-id");
 
-const LATEST_SCHEMA_VERSION = 21;
+const LATEST_SCHEMA_VERSION = 23;
 
 const REQUIRED_SCHEMA_SHAPE = Object.freeze({
   tasks: ["id", "workflow_id", "venture_id", "claim_token", "outcome_status"],
   approvals: ["id", "workflow_id", "venture_id", "task_id", "scope_hash", "consumed_at"],
   task_attempts: ["id", "task_id", "claim_token", "status", "outcome_status"],
-  model_calls: ["id", "task_id", "provider_request_id", "cost_status", "outcome_status"],
+  model_calls: [
+    "id",
+    "task_id",
+    "provider_request_id",
+    "cost_status",
+    "outcome_status",
+    "error",
+    "completed_at",
+  ],
   commercial_results: [
     "id",
     "venture_id",
@@ -46,6 +54,35 @@ const REQUIRED_SCHEMA_SHAPE = Object.freeze({
   commercial_diagnoses: ["id", "experiment_id", "status", "primary_constraint", "dimensions"],
   operating_mandates: ["id", "period_start", "period_end", "budget_cap_cents", "status"],
   supervisor_cycles: ["id", "status", "trigger_type", "next_action_type", "created_at"],
+  commercial_knowledge: [
+    "id",
+    "source_id",
+    "knowledge_class",
+    "domain",
+    "proposition",
+    "confidence",
+    "review_date",
+    "status",
+    "version",
+  ],
+  commercial_decision_cases: [
+    "id",
+    "status",
+    "recommendation",
+    "criteria",
+    "missing_evidence",
+    "decision_hash",
+  ],
+  service_trials: ["id", "service_name", "status", "cap_cents", "hypothesis", "retention_thresholds"],
+  venture_kits: ["id", "version", "status", "business_models", "acceptance_criteria"],
+  capability_assurance_records: [
+    "id",
+    "capability_key",
+    "proof_kind",
+    "source_framework",
+    "source_record_id",
+    "status",
+  ],
   data_retention_policy_activations: [
     "id",
     "policy_id",
@@ -2126,6 +2163,223 @@ function applyFullJourneyMigration(db) {
   }
 }
 
+function applyCommercialIntelligenceMigration(db) {
+  if (migrationApplied(db, 22)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS commercial_knowledge_sources (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        publisher TEXT NOT NULL,
+        url TEXT NOT NULL,
+        source_tier INTEGER NOT NULL CHECK(source_tier BETWEEN 1 AND 4),
+        source_type TEXT NOT NULL,
+        jurisdiction TEXT NOT NULL DEFAULT 'global',
+        published_at TEXT,
+        reviewed_at TEXT NOT NULL,
+        expires_at TEXT,
+        methodology TEXT NOT NULL DEFAULT '',
+        licence TEXT NOT NULL DEFAULT '',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_commercial_knowledge_sources_url
+        ON commercial_knowledge_sources(url);
+
+      CREATE TABLE IF NOT EXISTS commercial_knowledge (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        knowledge_class TEXT NOT NULL
+          CHECK(knowledge_class IN ('doctrine', 'market_evidence', 'proven_learning')),
+        domain TEXT NOT NULL,
+        title TEXT NOT NULL,
+        proposition TEXT NOT NULL,
+        applicability TEXT NOT NULL,
+        limitations TEXT NOT NULL,
+        contrary_evidence TEXT NOT NULL DEFAULT '',
+        confidence TEXT NOT NULL CHECK(confidence IN ('high', 'medium', 'low')),
+        jurisdiction TEXT NOT NULL DEFAULT 'global',
+        tags TEXT NOT NULL DEFAULT '[]',
+        effective_at TEXT,
+        review_date TEXT NOT NULL,
+        expires_at TEXT,
+        status TEXT NOT NULL DEFAULT 'active'
+          CHECK(status IN ('draft', 'active', 'superseded', 'retired')),
+        version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+        supersedes_id TEXT,
+        source_quote_hash TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (source_id) REFERENCES commercial_knowledge_sources(id),
+        FOREIGN KEY (supersedes_id) REFERENCES commercial_knowledge(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_commercial_knowledge_class_domain
+        ON commercial_knowledge(knowledge_class, domain, status, review_date);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS commercial_knowledge_fts USING fts5(
+        knowledge_id UNINDEXED,
+        title,
+        proposition,
+        applicability,
+        limitations,
+        tags,
+        tokenize = 'porter unicode61'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS trg_commercial_knowledge_fts_insert
+      AFTER INSERT ON commercial_knowledge BEGIN
+        INSERT INTO commercial_knowledge_fts
+          (knowledge_id, title, proposition, applicability, limitations, tags)
+        VALUES
+          (new.id, new.title, new.proposition, new.applicability, new.limitations, new.tags);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_commercial_knowledge_fts_update
+      AFTER UPDATE ON commercial_knowledge BEGIN
+        DELETE FROM commercial_knowledge_fts WHERE knowledge_id = old.id;
+        INSERT INTO commercial_knowledge_fts
+          (knowledge_id, title, proposition, applicability, limitations, tags)
+        VALUES
+          (new.id, new.title, new.proposition, new.applicability, new.limitations, new.tags);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_commercial_knowledge_fts_delete
+      AFTER DELETE ON commercial_knowledge BEGIN
+        DELETE FROM commercial_knowledge_fts WHERE knowledge_id = old.id;
+      END;
+
+      CREATE TABLE IF NOT EXISTS commercial_decision_cases (
+        id TEXT PRIMARY KEY,
+        opportunity_id TEXT,
+        venture_id TEXT,
+        round_id TEXT,
+        status TEXT NOT NULL
+          CHECK(status IN ('draft', 'researching', 'ready_for_review', 'decided', 'parked', 'rejected')),
+        stage TEXT NOT NULL,
+        recommendation TEXT NOT NULL
+          CHECK(recommendation IN ('advance', 'park', 'reject', 'research_more', 'no_investment')),
+        model_route TEXT NOT NULL DEFAULT '{}',
+        buyer TEXT NOT NULL DEFAULT '',
+        problem TEXT NOT NULL DEFAULT '',
+        offer TEXT NOT NULL DEFAULT '',
+        evidence_summary TEXT NOT NULL DEFAULT '{}',
+        economics TEXT NOT NULL DEFAULT '{}',
+        channel_strategy TEXT NOT NULL DEFAULT '{}',
+        alternatives TEXT NOT NULL DEFAULT '{}',
+        criteria TEXT NOT NULL DEFAULT '{}',
+        missing_evidence TEXT NOT NULL DEFAULT '[]',
+        confidence TEXT NOT NULL DEFAULT 'low'
+          CHECK(confidence IN ('high', 'medium', 'low')),
+        rationale TEXT NOT NULL DEFAULT '',
+        next_action TEXT NOT NULL DEFAULT '',
+        decision_hash TEXT NOT NULL,
+        reviewed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (opportunity_id) REFERENCES opportunities(id),
+        FOREIGN KEY (venture_id) REFERENCES ventures(id),
+        FOREIGN KEY (round_id) REFERENCES opportunity_rounds(id)
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_commercial_decision_case_hash
+        ON commercial_decision_cases(decision_hash);
+
+      CREATE INDEX IF NOT EXISTS idx_commercial_decision_case_status
+        ON commercial_decision_cases(status, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS service_trials (
+        id TEXT PRIMARY KEY,
+        service_name TEXT NOT NULL,
+        vendor TEXT NOT NULL,
+        status TEXT NOT NULL
+          CHECK(status IN ('proposed', 'approved', 'running', 'completed', 'cancelled', 'retained', 'rejected')),
+        hypothesis TEXT NOT NULL,
+        baseline TEXT NOT NULL DEFAULT '{}',
+        trial_start TEXT,
+        trial_end TEXT,
+        cap_cents INTEGER NOT NULL CHECK(cap_cents BETWEEN 0 AND 2500),
+        actual_cost_cents INTEGER,
+        evidence_quality_metrics TEXT NOT NULL DEFAULT '{}',
+        retention_thresholds TEXT NOT NULL DEFAULT '{}',
+        result TEXT NOT NULL DEFAULT '{}',
+        decision TEXT NOT NULL DEFAULT '',
+        delegated_vendor_capability INTEGER NOT NULL DEFAULT 0 CHECK(delegated_vendor_capability IN (0, 1)),
+        renewal_at TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS venture_kits (
+        id TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK(version > 0),
+        status TEXT NOT NULL CHECK(status IN ('draft', 'active', 'retired')),
+        name TEXT NOT NULL,
+        business_models TEXT NOT NULL DEFAULT '[]',
+        eligibility_rules TEXT NOT NULL DEFAULT '{}',
+        evidence_requirements TEXT NOT NULL DEFAULT '{}',
+        capability_requirements TEXT NOT NULL DEFAULT '[]',
+        channel_policy TEXT NOT NULL DEFAULT '{}',
+        acceptance_criteria TEXT NOT NULL DEFAULT '{}',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (id, version)
+      );
+
+      CREATE TABLE IF NOT EXISTS capability_assurance_records (
+        id TEXT PRIMARY KEY,
+        capability_key TEXT NOT NULL,
+        proof_kind TEXT NOT NULL
+          CHECK(proof_kind IN ('fixture', 'rehearsal', 'comparison', 'live', 'operational')),
+        source_framework TEXT NOT NULL,
+        source_record_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        input_hash TEXT,
+        output_hash TEXT,
+        provider TEXT,
+        model TEXT,
+        trace_id TEXT,
+        cost_cents INTEGER,
+        verdict TEXT NOT NULL DEFAULT '',
+        criteria TEXT NOT NULL DEFAULT '{}',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        occurred_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(source_framework, source_record_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_capability_assurance_capability
+        ON capability_assurance_records(capability_key, occurred_at DESC, created_at DESC);
+    `);
+    recordMigration(db, 22, "commercial-intelligence-foundation");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function applyRuntimeStopEvidenceMigration(db) {
+  if (migrationApplied(db, 23)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    addColumn(db, "model_calls", "error TEXT");
+    addColumn(db, "model_calls", "completed_at TEXT");
+    recordMigration(db, 23, "runtime-stop-evidence");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2941,6 +3195,8 @@ function migrate(db) {
   applyPantheonCommercialOperatingModelMigration(db);
   applyRetentionActivationLedgerMigration(db);
   applyFullJourneyMigration(db);
+  applyCommercialIntelligenceMigration(db);
+  applyRuntimeStopEvidenceMigration(db);
 }
 
 function putSetting(db, key, value) {
@@ -3008,8 +3264,8 @@ function seedDatabase(db, options = {}) {
     longTermMode: "weekly digest plus important exceptions",
   });
   putSetting(db, "commercial.pilot", {
-    businessModel: "digital_product",
-    platform: "gumroad_direct",
+    businessModel: "evidence_selected",
+    platform: "evidence_selected",
     oneActiveVenture: true,
     successBuyers: 3,
     requirePositiveCashContribution: true,
@@ -3023,12 +3279,12 @@ function seedDatabase(db, options = {}) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       "venture-digital-products",
-      "Digital Products",
+      "First Venture",
       1,
       "validating",
-      "The sole active venture until one digital-product offer proves three independent buyers and positive cash contribution.",
+      "The sole active venture until one evidence-selected offer proves three independent buyers and positive cash contribution.",
       toJson({
-        channel: "Gumroad Direct plus bounded organic distribution",
+        channel: "Evidence-selected distribution",
         publicIdentity: "faceless_and_voiceless",
         successThreshold: "3 independent paid buyers and positive cash contribution",
       }),
@@ -3036,7 +3292,7 @@ function seedDatabase(db, options = {}) {
       ts,
       "validating",
       1,
-      "digital_product",
+      "unselected",
     ],
   );
 
@@ -3231,6 +3487,8 @@ function seedDatabase(db, options = {}) {
 
 module.exports = {
   LATEST_SCHEMA_VERSION,
+  applyCommercialIntelligenceMigration,
+  applyRuntimeStopEvidenceMigration,
   applyStableSpendCostIdMigration,
   all,
   fromJson,

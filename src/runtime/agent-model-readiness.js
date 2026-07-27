@@ -680,8 +680,7 @@ function queueAgentModelComparisonPacket(db, agentId, options = {}) {
     noSpendOccurred: true,
     openAiConnected: false,
   };
-  const activeVenture = get(db, "SELECT id FROM ventures WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1")
-    || get(db, "SELECT id FROM ventures WHERE id = 'venture-digital-products'");
+  const activeVenture = get(db, "SELECT id FROM ventures WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 1");
   if (!activeVenture) throw new Error("An active venture is required before a model comparison can be prepared.");
 
   run(

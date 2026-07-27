@@ -151,7 +151,8 @@ function parseGumroadCsv(csvText) {
 }
 
 function importGumroadCsv(db, input, options = {}) {
-  const ventureId = input.ventureId || "venture-digital-products";
+  const ventureId = String(input.ventureId || "").trim();
+  if (!ventureId) throw new Error("A venture ID is required for a Gumroad sales import.");
   const venture = get(db, "SELECT id FROM ventures WHERE id = ?", [ventureId]);
   if (!venture) throw new Error(`Venture not found: ${ventureId}`);
   const key = privacyKey(options);
@@ -292,7 +293,10 @@ function importGumroadCsv(db, input, options = {}) {
   };
 }
 
-function getGumroadSalesState(db, ventureId = "venture-digital-products") {
+function getGumroadSalesState(db, ventureId) {
+  if (!String(ventureId || "").trim()) {
+    throw new Error("A venture ID is required to read Gumroad sales.");
+  }
   const sales = all(
     db,
     `SELECT id, product_name, sold_at, currency, gross_cents, platform_fee_cents,

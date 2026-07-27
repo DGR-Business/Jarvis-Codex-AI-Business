@@ -407,6 +407,9 @@ function Get-PantheonRuntimeStatus {
   if (-not $health) {
     return [pscustomobject]@{ port = $Port; state = "unhealthy"; ready = $false; pid = [int]$metadata.pid; instanceId = [string]$metadata.instanceId; detail = "The exact Pantheon process is running but its health endpoint is unavailable." }
   }
+  if ($metadata.PSObject.Properties.Name -contains "mode" -and [string]$metadata.mode -eq "standby") {
+    return [pscustomobject]@{ port = $Port; state = "standby"; ready = $true; pid = [int]$metadata.pid; instanceId = [string]$metadata.instanceId; detail = "The lightweight control shell is available; business workers and scheduling are stopped." }
+  }
   if ($health.ok -eq $true) {
     return [pscustomobject]@{ port = $Port; state = "ready"; ready = $true; pid = [int]$metadata.pid; instanceId = [string]$metadata.instanceId; detail = "Pantheon is healthy and operations-ready." }
   }

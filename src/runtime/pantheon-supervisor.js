@@ -273,6 +273,67 @@ function markJourneyAttention(db, task, summary) {
   });
 }
 
+function markPortfolioAttention(db, task, summary) {
+  const payload = task?.payload && typeof task.payload === "object"
+    ? task.payload
+    : fromJson(task?.payload, {});
+  const commercial = payload?.liveSpendRequest?.parameters?.pantheonCommercial || {};
+  if (commercial.supervisorOwned !== true || !commercial.roundId) return null;
+  const round = get(db, "SELECT * FROM opportunity_rounds WHERE id = ?", [commercial.roundId]);
+  if (!round || !["researching", "validating", "checking_economics", "investment_review"].includes(round.status)) {
+    return round;
+  }
+  const correctionNumber = Number(payload?.liveSpendRequest?.parameters?.retry?.number || 0);
+  const outcomeUnknown = task.outcome_status === "unknown";
+  if (!outcomeUnknown && correctionNumber < 1) return round;
+  const timestamp = now();
+  const status = outcomeUnknown ? "stopped_unknown_outcome" : "stopped_after_correction";
+  const metadata = {
+    ...fromJson(round.metadata, {}),
+    outcome: status,
+    stoppedTaskId: task.id,
+    stoppedWorkerId: task.agent,
+    stoppedReason: summary,
+    stoppedAt: timestamp,
+    providerOutcomeUnknown: outcomeUnknown,
+    correctionLimitReached: !outcomeUnknown,
+  };
+  run(
+    db,
+    "UPDATE opportunity_rounds SET status = ?, metadata = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+    [status, toJson(metadata), timestamp, timestamp, round.id],
+  );
+  if (task.workflow_id) {
+    run(db, "UPDATE workflows SET status = 'failed', updated_at = ? WHERE id = ?", [timestamp, task.workflow_id]);
+    run(db, "UPDATE commands SET status = 'failed', updated_at = ? WHERE workflow_id = ?", [timestamp, task.workflow_id]);
+  }
+  insertEvent(db, {
+    level: "error",
+    actor: "pantheon-supervisor",
+    type: outcomeUnknown
+      ? "portfolio.round_stopped_unknown_outcome"
+      : "portfolio.round_stopped_after_correction",
+    entityType: "opportunity_round",
+    entityId: round.id,
+    message: outcomeUnknown
+      ? "Pantheon stopped the portfolio round because the paid provider outcome could not be confirmed."
+      : "Pantheon stopped the portfolio round after its single corrected attempt did not pass.",
+    metadata: {
+      taskId: task.id,
+      workerId: task.agent,
+      correctionNumber,
+      summary,
+      noAutomaticRetry: true,
+    },
+  });
+  return get(db, "SELECT * FROM opportunity_rounds WHERE id = ?", [round.id]);
+}
+
+function markPantheonAttention(db, task, summary) {
+  return markJourneyAttention(db, task, summary)
+    || markPortfolioAttention(db, task, summary);
+}
+
 function operatorBoundary(task, approval) {
   if (!task) return null;
   if (task.status === "needs_attention") {
@@ -389,7 +450,7 @@ async function runPantheonSupervisorCycle(db, options = {}) {
       const boundary = operatorBoundary(task, approval);
       if (boundary) {
         if (boundary.status === "needs_attention") {
-          markJourneyAttention(db, task, boundary.summary);
+          markPantheonAttention(db, task, boundary.summary);
         }
         const state = getOpportunityState(db);
         const cycle = finishCycle(db, cycleId, {
@@ -457,7 +518,7 @@ async function runPantheonSupervisorCycle(db, options = {}) {
       });
       actions.push({ type: "worker_run", taskId: refreshedTask.id, workerId: refreshedTask.agent, status: result.status });
       if (result.status !== "completed") {
-        markJourneyAttention(
+        markPantheonAttention(
           db,
           get(db, "SELECT * FROM tasks WHERE id = ?", [refreshedTask.id]),
           result.error || `Pantheon stopped at ${refreshedTask.title}.`,
@@ -515,7 +576,7 @@ async function runPantheonSupervisorCycle(db, options = {}) {
         });
       }
     } else if (task) {
-      markJourneyAttention(db, task, error.message);
+      markPantheonAttention(db, task, error.message);
     }
     const cycle = finishCycle(db, cycleId, {
       ventureId: task?.venture_id || null,
@@ -563,5 +624,6 @@ function getPantheonSupervisorState(db) {
 
 module.exports = {
   getPantheonSupervisorState,
+  markPortfolioAttention,
   runPantheonSupervisorCycle,
 };

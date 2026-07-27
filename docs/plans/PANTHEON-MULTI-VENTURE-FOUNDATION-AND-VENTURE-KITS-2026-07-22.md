@@ -1,8 +1,10 @@
 # Pantheon Multi-Venture Foundation And Venture Kits
 
 Date: 2026-07-22
-Status: approved future execution plan; begins after the current Full Journey
-reaches `Ready to publish` and enters its real market-measurement period
+Last reviewed: 2026-07-27
+Status: active long-range roadmap; Portfolio Controller and the first registry
+boundary are implemented, while Venture Factory, Kit 2, and concurrent venture
+lanes remain gated
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 
@@ -17,9 +19,11 @@ must provide one reliable commercial kernel and allow each venture to own the
 workflow, specialist team, tools, channels, production methods, economics,
 rules, records, schedules, and learning appropriate to that business.
 
-The first digital-product venture is the vertical proof and the first Venture
-Kit. It is evidence from which the reusable boundary will be extracted; it is
-not the permanent workflow for every future venture.
+The historical digital-product journey is the vertical engineering proof and
+`digital_product_v1` is the first registered Venture Kit. It is evidence from
+which the reusable boundary is being extracted; it is not the permanent
+workflow for every future venture and is not currently authorised for market
+launch.
 
 ## Clarified Destination
 
@@ -58,8 +62,9 @@ multi-venture platform:
 - `digital_product_v1` is the only implemented Venture Kit;
 - production assumes locally rendered digital files and a Gumroad-ready store;
 - the Phase 1 team and handoffs are fixed;
-- portfolio-level discovery currently occurs inside an already-created digital
-  venture rather than creating the venture after business-model selection;
+- Portfolio Controller now compares opportunities in a separate pre-venture
+  workspace, but Venture Factory cannot yet create a supported venture from an
+  approved case;
 - platform adapters, credentials, budgets, schedules, and operational health are
   not yet isolated into concurrent venture lanes.
 
@@ -267,7 +272,24 @@ internal orchestration language.
 
 ## Implementation Phases
 
-### Phase 0 - Complete The Vertical Proof
+### 2026-07-27 Progress
+
+Pantheon has now:
+
+- completed the Full Journey engineering proof without treating its product as
+  commercial validation;
+- registered `digital_product_v1` behind an explicit non-universal
+  `VentureKitRegistry`;
+- implemented Portfolio Controller v1 above venture creation;
+- compared ten hypotheses and six finalists through two bounded live evidence
+  rounds; and
+- selected no investment because no case cleared every commercial gate.
+
+The next step is not a second kit or concurrent lane. It is stronger evidence
+for one parked case or a new submitted opportunity, followed by Venture Factory
+only when an investment case genuinely passes.
+
+### Phase 0 - Complete The Vertical Proof (engineering complete; commercial proof open)
 
 - Finish the isolated Luna-only Full Journey rehearsal.
 - Inspect every output and reach `Ready to publish` without external action.
@@ -275,10 +297,10 @@ internal orchestration language.
 - Publish only through Daniel's separate protected action.
 - Start the real buyer test and collect outcomes.
 
-**Gate:** one coherent commercial path works end to end. Abstraction does not
-replace this proof.
+**Gate:** one coherent production path works end to end. That engineering gate
+passed; real buyer, revenue, and positive-contribution proof remains open.
 
-### Phase 1 - Extract Digital Product Kit V1
+### Phase 1 - Extract Digital Product Kit V1 (registry boundary implemented)
 
 - Identify every digital-product and Gumroad assumption in the journey,
   production, opportunity, dashboard, and agent contracts.
@@ -288,10 +310,11 @@ replace this proof.
 - Make the generic journey executor load a kit version rather than import a
   digital-product sequence.
 
-**Gate:** the current digital journey produces equivalent outputs through the
-kit interface and all existing safety tests remain green.
+**Gate:** registration, eligibility, and safety checks pass. Loading the entire
+journey graph from the kit rather than the fixed executor remains pending and
+should occur only when a selected opportunity needs this kit.
 
-### Phase 2 - Add Portfolio Controller And Venture Factory
+### Phase 2 - Add Portfolio Controller And Venture Factory (Portfolio complete; Factory pending)
 
 - Move broad cross-model discovery above venture creation.
 - Add candidate-to-kit matching and unsupported-opportunity retention.
@@ -299,8 +322,9 @@ kit interface and all existing safety tests remain green.
 - Add venture-specific namespaces, policy, integration requirements, and initial
   commercial cases.
 
-**Gate:** Pantheon can propose and instantiate a supported venture without
-editing seed data or core runtime code and without starting an external action.
+**Gate:** Pantheon can now propose and reject opportunities without editing seed
+data or starting an external action. Instantiating an approved supported venture
+through Venture Factory remains pending because no case has passed.
 
 ### Phase 3 - Prove A Structurally Different Second Kit
 

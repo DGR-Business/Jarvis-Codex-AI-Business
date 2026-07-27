@@ -19,6 +19,7 @@ const { supersededRetryTaskIds } = require("./monitor");
 const { getOpportunityState } = require("./pantheon-opportunities");
 const { getProductionState } = require("./pantheon-production");
 const { currentOperatorJourney } = require("./pantheon-journey");
+const { getPortfolioState } = require("./portfolio-controller");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -350,6 +351,7 @@ function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
     [],
   ), ["payload"]);
   const resolvedTaskIds = supersededRetryTaskIds(db);
+  const unknownOutcomeTasks = [];
   for (const task of unknownTasks) {
     if (!belongsToCurrentJourney(task.payload, currentJourneyId)) continue;
     if (resolvedTaskIds.has(task.id)) continue;
@@ -378,6 +380,14 @@ function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
         knownReviewedRetry
         && canPrepareReviewedRetry(task, latestAttempt?.error_kind)
       );
+    if (
+      task.outcome_status === "unknown"
+      && !preDispatchRecovery.available
+      && !knownReviewedRetry
+    ) {
+      unknownOutcomeTasks.push(task);
+      continue;
+    }
     const issueSummary = /provider tool activity was missing/i.test(String(task.error || ""))
       ? "Pantheon did not recognise the web-research record returned by OpenAI."
       : /invalid output|unterminated string/i.test(String(task.error || ""))
@@ -418,11 +428,39 @@ function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
       } : null,
     });
   }
+  if (unknownOutcomeTasks.length) {
+    const taskIds = unknownOutcomeTasks.map((task) => task.id);
+    const unknownCost = Number(get(
+      db,
+      `SELECT COALESCE(SUM(amount_cents), 0) AS cents
+       FROM costs
+       WHERE status = 'unknown'
+         AND task_id IN (${taskIds.map(() => "?").join(", ")})`,
+      taskIds,
+    )?.cents || 0);
+    items.push({
+      id: unknownOutcomeTasks[0].id,
+      type: "unknown_outcomes_summary",
+      title: `${unknownOutcomeTasks.length} earlier AI call${unknownOutcomeTasks.length === 1 ? "" : "s"} need billing reconciliation`,
+      risk: "medium",
+      recommendation: `Pantheon stopped these timed-out calls and did not retry them. ${unknownCost > 0 ? `A$${(unknownCost / 100).toFixed(2)} remains counted as possible cost until provider billing is reconciled.` : "Their final provider cost is still unknown."}`,
+      expectedUpside: "The completed commercial review is preserved; this is an accounting check, not another business decision.",
+      workflowId: unknownOutcomeTasks[0].workflow_id,
+      action: null,
+    });
+  }
   const urgent = parseRows(all(
     db,
     "SELECT * FROM messages WHERE status = 'open' AND severity = 'urgent' ORDER BY created_at DESC LIMIT 10",
   ));
   for (const message of urgent) {
+    if (
+      unknownOutcomeTasks.length
+      && (
+        ["cost", "unknown_outcome"].includes(message.metadata?.category)
+        || message.metadata?.outcomeUnknown === true
+      )
+    ) continue;
     if (message.task_id) {
       const messageTask = get(db, "SELECT payload FROM tasks WHERE id = ?", [message.task_id]);
       if (messageTask && !belongsToCurrentJourney(fromJson(messageTask.payload, {}), currentJourneyId)) continue;
@@ -497,7 +535,11 @@ function testStatus(status) {
 function currentTest(db, ventureId) {
   const row = get(
     db,
-    "SELECT * FROM commercial_experiments WHERE venture_id = ? AND status IN ('ready', 'running') ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1",
+    `SELECT * FROM commercial_experiments
+     WHERE venture_id = ?
+       AND status IN ('ready', 'running')
+       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
+     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
     [ventureId],
   );
   return row ? { ...row, status: testStatus(row.status), metadata: fromJson(row.metadata) } : null;
@@ -533,6 +575,7 @@ function digestWithCurrentAttention(db, digest, work, ventureId, currentJourneyI
     `SELECT name, status, expected_metric
      FROM commercial_experiments
      WHERE venture_id = ? AND status IN ('ready', 'running')
+       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
      ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
     [ventureId],
   );
@@ -579,20 +622,27 @@ function teamState(db, ventureId, currentJourneyId = latestOperatorJourneyId(db)
       db,
       `SELECT agent_runs.*, tasks.title AS task_title, tasks.status AS task_status
        FROM agent_runs LEFT JOIN tasks ON tasks.id = agent_runs.task_id
-       WHERE agent_runs.agent_id = ? AND (agent_runs.venture_id = ? OR agent_runs.venture_id IS NULL)
+       WHERE agent_runs.agent_id = ?
+         AND (agent_runs.venture_id = ? OR agent_runs.venture_id = 'venture-portfolio-controller' OR agent_runs.venture_id IS NULL)
        ORDER BY agent_runs.started_at DESC LIMIT 1`,
       [definition.id, ventureId],
     );
     const activeTask = parseRows(all(
       db,
       `SELECT * FROM tasks
-       WHERE venture_id = ? AND agent = ?
+       WHERE (venture_id = ? OR venture_id = 'venture-portfolio-controller') AND agent = ?
          AND status IN ('running','queued','blocked','waiting_approval','needs_attention')
        ORDER BY updated_at DESC LIMIT 20`,
       [ventureId, definition.id],
     ), ["payload", "result"]).find((task) => (
       belongsToCurrentJourney(task.payload, currentJourneyId)
       && !resolvedTaskIds.has(task.id)
+      && (() => {
+        const roundId = task.payload?.liveSpendRequest?.parameters?.pantheonCommercial?.roundId;
+        if (!roundId) return true;
+        const round = get(db, "SELECT status FROM opportunity_rounds WHERE id = ?", [roundId]);
+        return !["completed", "no_investment", "stopped_unknown_outcome", "stopped_after_correction"].includes(round?.status);
+      })()
     )) || null;
     const agentCapabilities = capabilities
       .filter((item) => item.agent_id === definition.id)
@@ -683,6 +733,7 @@ function getCockpitState(db) {
   const queueCount = operationalTasks.filter((task) => ["planned", "queued", "running"].includes(task.status)).length;
   const failedCount = operationalTasks.filter((task) => ["failed", "needs_attention"].includes(task.status)).length;
   const activeRuns = getAgentRunsState(db, { state: "active", limit: 10 }).runs;
+  const portfolio = getPortfolioState(db);
   return {
     generatedAt: new Date().toISOString(),
     activeVenture: commercial.venture,
@@ -734,6 +785,13 @@ function getCockpitState(db) {
       cataloguePlan: opportunity.cataloguePlans[0] || null,
       mandate: opportunity.mandate,
       production,
+      portfolio: {
+        activeRound: portfolio.activeRound,
+        evidenceRoundCount: portfolio.evidenceRoundCount,
+        technicalFailureCount: portfolio.technicalFailureCount,
+        selectedInvestmentCase: portfolio.selectedInvestmentCase,
+        nextAction: portfolio.nextAction,
+      },
     },
   };
 }
@@ -790,7 +848,10 @@ function getBusinessTestsState(db) {
   const production = getProductionState(db);
   const experiments = parseRows(all(
     db,
-    "SELECT * FROM commercial_experiments WHERE venture_id = ? ORDER BY updated_at DESC",
+    `SELECT * FROM commercial_experiments
+     WHERE venture_id = ?
+       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
+     ORDER BY updated_at DESC`,
     [commercial.venture.id],
   )).map((experiment) => ({ ...experiment, status: testStatus(experiment.status) }));
   const tests = { candidate: [], ready: [], running: [], completed: [], cancelled: [] };

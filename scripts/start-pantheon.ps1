@@ -5,6 +5,7 @@ param(
   [switch]$NoOpen,
   [switch]$SystemProof,
   [switch]$JourneyRehearsal,
+  [string]$OperatorUrlFile,
   [ValidateRange(2, 120)]
   [int]$StartupTimeoutSeconds = 30,
   [ValidateRange(2, 180)]
@@ -104,7 +105,9 @@ $runtimeNames = @(
   "PANTHEON_BACKUP_PASSPHRASE",
   "PANTHEON_SCHEDULER_ENABLED",
   "PANTHEON_SCHEDULER_POLL_SECONDS",
-  "PANTHEON_SCHEDULER_MAX_JOBS_PER_TICK"
+  "PANTHEON_SCHEDULER_MAX_JOBS_PER_TICK",
+  "PANTHEON_STANDBY_URL",
+  "PANTHEON_STANDBY_HANDOFF_TOKEN"
 )
 
 $runtimeEnvironment = @{}
@@ -450,6 +453,15 @@ if ($health.ok -ne $true -and -not $JourneyRehearsal) {
 }
 
 $operatorUrl = "$dashboardUrl#bootstrap=$bootstrapToken"
+if (-not [string]::IsNullOrWhiteSpace($OperatorUrlFile)) {
+  $handoffPath = [IO.Path]::GetFullPath($OperatorUrlFile)
+  $allowedRoot = [IO.Path]::GetFullPath($tmpRoot).TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+  if (-not $handoffPath.StartsWith($allowedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Pantheon refused to write an operator handoff outside its local temporary state directory."
+  }
+  New-Item -ItemType Directory -Path (Split-Path -Parent $handoffPath) -Force | Out-Null
+  [IO.File]::WriteAllText($handoffPath, $operatorUrl, (New-Object Text.UTF8Encoding($false)))
+}
 if (-not $NoOpen) {
   Start-Process $operatorUrl
 }

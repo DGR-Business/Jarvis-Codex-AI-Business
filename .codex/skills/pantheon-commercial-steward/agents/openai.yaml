@@ -1,0 +1,7 @@
+interface:
+  display_name: "Pantheon Commercial Steward"
+  short_description: "Apply Pantheon's evidence-led business rules"
+  default_prompt: "Use $pantheon-commercial-steward to review this Pantheon change for commercial value, evidence quality, simplicity, and operating fit."
+
+policy:
+  allow_implicit_invocation: true

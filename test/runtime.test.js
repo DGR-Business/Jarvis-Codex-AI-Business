@@ -4182,7 +4182,7 @@ test("Agents SDK invalid structured output is recorded as a known provider respo
       worker: "demand_validator",
       provider: "openai-agents-sdk",
       model: "gpt-5.6-luna",
-      maxInputTokens: 12000,
+      maxInputTokens: 32000,
       maxOutputTokens: 1000,
     });
     decideApproval(db, requested.approval.id, "approved", "approve invalid-output classification proof");
@@ -4241,7 +4241,7 @@ test("Agents SDK invalid structured output is recorded as a known provider respo
     assert.equal(
       retry.task.payload.liveSpendRequest.maxInputTokens,
       Math.max(
-        12000,
+        32000,
         retry.task.payload.liveSpendRequest.executionDescriptor.worstCaseCost.materializedInputTokens,
       ),
     );
@@ -4370,7 +4370,7 @@ test("dashboard recovery prepares and completes a new exact Luna attempt without
       worker: "demand_validator",
       provider: "openai-agents-sdk",
       model: "gpt-5.6-luna",
-      maxInputTokens: 12000,
+      maxInputTokens: 32000,
       maxOutputTokens: 1000,
       proofMode: true,
     };
