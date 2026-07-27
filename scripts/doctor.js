@@ -129,18 +129,34 @@ function checkRenderer() {
     if (path.isAbsolute(candidate.command) && !fs.existsSync(candidate.command)) continue;
     const probe = spawnSync(
       candidate.command,
-      [...candidate.prefix, "-c", "import reportlab,sys; print(sys.version_info[0]); print(reportlab.Version)"],
+      [
+        ...candidate.prefix,
+        "-c",
+        [
+          "import openpyxl,PIL,reportlab,sys",
+          "print(sys.version_info[0])",
+          "print(reportlab.Version)",
+          "print(openpyxl.__version__)",
+          "print(PIL.__version__)",
+        ].join(";"),
+      ],
       { encoding: "utf8", windowsHide: true },
     );
     if (probe.status === 0) {
       const lines = String(probe.stdout || "").trim().split(/\r?\n/);
-      return result("PDF renderer", "pass", `Python ${lines[0] || "3"} and ReportLab ${lines[1] || "available"} are available.`);
+      return result(
+        "PDF renderer",
+        "pass",
+        `Python ${lines[0] || "3"}, ReportLab ${lines[1] || "available"}, `
+          + `openpyxl ${lines[2] || "available"}, and Pillow ${lines[3] || "available"} are available.`,
+      );
     }
   }
   return result(
     "PDF renderer",
     "fail",
-    "No usable Python 3 runtime with ReportLab was found. Set PANTHEON_PYTHON "
+    "No usable Python 3 runtime with Pantheon's pinned ReportLab, openpyxl, and Pillow dependencies was found. "
+      + "Install requirements-runtime.txt and set PANTHEON_PYTHON "
       + "(or the legacy JARVIS_PYTHON alias) to the approved runtime.",
   );
 }

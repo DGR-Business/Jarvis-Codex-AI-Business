@@ -115,6 +115,7 @@ function normalizeProductBlueprintForFactory(blueprint) {
 }
 
 function resolvePython() {
+  if (process.env.PANTHEON_PYTHON) return process.env.PANTHEON_PYTHON;
   if (process.env.JARVIS_PYTHON) return process.env.JARVIS_PYTHON;
   const candidates = [];
   const dependencyRoot = path.resolve(path.dirname(process.execPath), "..", "..");

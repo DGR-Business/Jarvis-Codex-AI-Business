@@ -20,11 +20,22 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Use Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-runtime.txt
       - name: Install locked dependencies
         run: npm.cmd ci
+      - name: Install rendering dependencies
+        run: python -m pip install --disable-pip-version-check --requirement requirements-runtime.txt
       - name: Lint correctness rules
         run: npm.cmd run lint
       - name: Run isolated test suite
+        # Launcher tests intentionally exercise Windows PowerShell 5.1. Running
+        # npm from the same shell preserves its system module discovery paths.
+        shell: powershell
         run: npm.cmd test
       - name: Audit runtime dependencies
         # The Agents SDK currently loads its MCP package despite declaring it
