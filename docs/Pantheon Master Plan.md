@@ -30,7 +30,10 @@ The active completed foundation directive is
 It implemented the Commercial Constitution, 60-record knowledge library,
 Portfolio Controller v1, comparable demand and finance review, final Sol
 investment review, service-trial controls, Runtime Supervisor, and the first
-formal Venture Kit registry.
+formal Venture Kit registry. Its private Windows CI release gate passed on
+implementation commit `a6db9c4` after the clean runner exposed and verified
+repairs for explicit Python rendering prerequisites and wrapped launcher-lock
+contention.
 
 Two bounded live evidence rounds completed on 2026-07-27. Pantheon compared ten
 opportunity hypotheses and six finalists, then selected no investment. The
@@ -292,8 +295,9 @@ Pantheon default.
 Status: the clean first-use and fixed-team engineering foundation was satisfied
 on 2026-07-18, and the Full Journey remained historical engineering proof from
 2026-07-24. The Commercial Intelligence Foundation completed its live
-commercial path on 2026-07-27 with a truthful no-investment result. Its final
-release record is
+commercial path on 2026-07-27 with a truthful no-investment result. Local,
+clean-install, browser, recovery, lifecycle, and private Windows CI gates all
+passed. Its final release record is
 `docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`.
 Publication, buyer results, positive cash contribution, capability promotion,
 Venture Factory, concurrent lanes, and every consequential external action

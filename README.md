@@ -8,8 +8,11 @@ monitoring, maintaining, and improving Pantheon.
 
 Double-click `START PANTHEON.cmd` in this folder.
 
-It starts the full local runtime and scheduler, waits until Pantheon is ready,
-and opens the dashboard at `http://127.0.0.1:5051/`.
+It starts Pantheon's lightweight Standby control shell and opens the dashboard
+at `http://127.0.0.1:5050/`. Standby keeps the cockpit available without
+loading the scheduler, Agents SDK workers, or writable business runtime. Use
+**Start working** in the dashboard when Pantheon needs the full runtime on port
+5051, and **Return to standby** when the work is finished.
 
 Normal startup loads the OpenAI key from the Windows-user-protected credential
 at `%LOCALAPPDATA%\Pantheon\openai-credential.json`. The file contains only
@@ -33,11 +36,11 @@ rehearsal is genuinely running.
 
 Double-click `STOP PANTHEON.cmd`.
 
-It stops every launcher-owned Pantheon production or rehearsal instance. It
-verifies the exact executable, process start time, Windows owner, instance,
-listener, and port before stopping anything, so unrelated Node programs are
-left alone. Runtime logs and temporary ownership records stay under the ignored
-`tmp/` folder and never enter Git.
+It stops the Standby shell, Working runtime, and every launcher-owned Pantheon
+rehearsal instance. It verifies the exact executable, process start time,
+Windows owner, instance, listener, and port before stopping anything, so
+unrelated Node programs are left alone. Runtime logs and temporary ownership
+records stay under the ignored `tmp/` folder and never enter Git.
 
 ## Check And Back Up
 
@@ -47,9 +50,14 @@ left alone. Runtime logs and temporary ownership records stay under the ignored
   source, database, artifact, operator-pack, and private-reference recovery set
   in the configured OneDrive folder.
 
+Pantheon's locked JavaScript dependencies require Node.js 24. PDF, spreadsheet,
+and storefront rendering use the pinned Python packages in
+`requirements-runtime.txt`. Doctor verifies the complete renderer rather than
+assuming a Python installation is usable.
+
 ## Project Direction
 
 The living roadmap is in `docs/Pantheon Master Plan.md`. Meaningful build
 history and proof results are in `docs/Pantheon Build Log.md`. The current
 release evidence and honest capability limits are in
-`docs/proofs/2026-07-18-pantheon-release-proof.md`.
+`docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`.

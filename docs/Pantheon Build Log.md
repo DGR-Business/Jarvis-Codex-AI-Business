@@ -1101,6 +1101,19 @@ and restored independently into `C:\tmp\pantheon-restore-proof-20260727-0520`.
 The restored SQLite database passed quick check, integrity check, and zero
 foreign-key violations.
 
+The private GitHub release check was allowed to fail honestly and then repaired
+from its exact evidence. The first run exposed missing `openpyxl`, Pillow, and
+ReportLab packages plus a PowerShell 7 module path inherited by Windows
+PowerShell 5.1 tests. Pantheon now pins those renderer dependencies and runs
+launcher tests from the intended shell. The next run passed 267 of 268 tests
+and exposed a genuine concurrent-start race: PowerShell wrapped expected
+port-lock contention inside a method-invocation exception. The launcher now
+walks that exception chain, retries only expected Windows file contention, and
+retains exact process-ownership checks. After 268 local passes and five extra
+concurrency stress runs, private GitHub Actions run `30244872549` passed every
+step for implementation commit `a6db9c4`, including the critical dependency
+audit and cleanup.
+
 The exact plan and live evidence are:
 
 - `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`;

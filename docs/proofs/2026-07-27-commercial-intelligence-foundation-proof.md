@@ -1,7 +1,7 @@
 # Commercial Intelligence Foundation Proof
 
 Date: 2026-07-27
-Status: live commercial path and local release gates complete; remote CI pending
+Status: live commercial path and release gates complete
 
 ## Proven
 
@@ -105,5 +105,20 @@ is reconciled. Pantheon performed no automatic retry after either timeout.
   and integrity check returned `ok` with zero foreign-key violations.
 - Weekly Jarvis engineering and commercial audit: active for Sunday 18:00
   Brisbane time, without paid-call or protected-action authority.
-- GitHub branch and CI: pending the explicit repository transmission approval
-  required by the GitHub safety layer.
+- The first remote run truthfully failed because the clean GitHub Windows image
+  lacked Pantheon's Python rendering packages and inherited a PowerShell 7
+  module path into Windows PowerShell 5.1 launcher tests. CI now installs the
+  pinned `requirements-runtime.txt` set and runs those tests from Windows
+  PowerShell 5.1.
+- The next run passed 267 of 268 tests and exposed one real concurrent-start
+  race: PowerShell wrapped expected lock contention inside a method-invocation
+  exception. The launcher now recognises only the expected wrapped
+  `IOException` or `UnauthorizedAccessException`, waits for the exact
+  port-scoped lock, and still fails unrelated errors immediately.
+- Local verification after that correction passed 268 of 268 tests plus five
+  additional concurrent lifecycle stress runs.
+- Private GitHub Actions run
+  `https://github.com/DGR-Business/Jarvis-Codex-AI-Business/actions/runs/30244872549`
+  passed every gate for commit `a6db9c4`: checkout, Node 24, Python 3.13,
+  locked npm installation, pinned rendering dependencies, lint, 268 isolated
+  tests, critical dependency audit, and cleanup.
