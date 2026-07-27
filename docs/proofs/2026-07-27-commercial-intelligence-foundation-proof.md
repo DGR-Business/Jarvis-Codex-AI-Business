@@ -122,3 +122,10 @@ is reconciled. Pantheon performed no automatic retry after either timeout.
   passed every gate for commit `a6db9c4`: checkout, Node 24, Python 3.13,
   locked npm installation, pinned rendering dependencies, lint, 268 isolated
   tests, critical dependency audit, and cleanup.
+- Exact release-head run `30246016896` and pull-request run `30246872222`
+  passed before PR #1 merged six commits into private `main` at `476f0ad`.
+- The first post-merge run `30247599151` reached the workflow's 20-minute
+  ceiling while output was still advancing beyond test 243 of 268. GitHub
+  cancelled the job without a test failure. The test matrix remains unchanged;
+  the bounded Windows job ceiling is now 30 minutes to accommodate observed
+  hosted-runner variance.

@@ -296,8 +296,10 @@ Status: the clean first-use and fixed-team engineering foundation was satisfied
 on 2026-07-18, and the Full Journey remained historical engineering proof from
 2026-07-24. The Commercial Intelligence Foundation completed its live
 commercial path on 2026-07-27 with a truthful no-investment result. Local,
-clean-install, browser, recovery, lifecycle, and private Windows CI gates all
-passed. Its final release record is
+clean-install, browser, recovery, lifecycle, release-head, and pull-request CI
+gates passed. The first post-merge `main` run reached its 20-minute job ceiling
+while tests were still advancing, so the suite remains intact and the bounded
+Windows ceiling is now 30 minutes. Its final release record is
 `docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`.
 Publication, buyer results, positive cash contribution, capability promotion,
 Venture Factory, concurrent lanes, and every consequential external action
