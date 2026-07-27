@@ -223,6 +223,7 @@ test("model routing selects Luna, Terra, and Sol before approval without automat
   const sol = selectModelRoute({ modelClass: "research-high" });
   const escalated = selectModelRoute({ modelClass: "reasoning-medium", qualityEscalation: true });
   const proof = selectModelRoute({ modelClass: "research-high", qualityEscalation: true, proofMode: true });
+  const lockedSol = selectModelRoute({ model: "gpt-5.6-sol", modelLocked: true });
 
   assert.equal(luna.model, "gpt-5.6-luna");
   assert.equal(luna.tier, "luna");
@@ -235,6 +236,8 @@ test("model routing selects Luna, Terra, and Sol before approval without automat
   assert.equal(proof.model, "gpt-5.6-luna");
   assert.equal(proof.tier, "luna");
   assert.equal(proof.proofMode, true);
+  assert.equal(lockedSol.tier, "sol");
+  assert.match(lockedSol.reason, /^Sol is locked for this exact capped run/);
   assert.equal(escalated.automaticFallbackAllowed, false);
   assert.equal(escalated.selectedBeforeApproval, true);
 });

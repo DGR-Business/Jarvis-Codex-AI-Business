@@ -16,7 +16,13 @@ const { processApprovalReply } = require("../src/runtime/approval-replies");
 const { collectLiveSources } = require("../src/adapters/research");
 const { runOnce, runUntilBlocked } = require("../src/runtime/orchestrator");
 const { getDashboardState } = require("../src/runtime/state");
-const { getAgentRunDetail, getAiTeamState, getCockpitState, getDecisionsState } = require("../src/runtime/cockpit-state");
+const {
+  getAgentRunDetail,
+  getAiTeamState,
+  getCockpitState,
+  getDecisionsState,
+  getSystemState,
+} = require("../src/runtime/cockpit-state");
 const { createCommandPlan } = require("../src/runtime/planner");
 const { createApp, createRuntime } = require("../src/server");
 const { getLiveAiWorkerReadiness } = require("../src/runtime/live-ai-worker-readiness");
@@ -3357,10 +3363,22 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
       rawResponses: [
         {
           responseId: "resp_live_worker_test",
-          usage: { input_tokens: 900, output_tokens: 420, total_tokens: 1320 },
+          usage: {
+            input_tokens: 900,
+            output_tokens: 420,
+            total_tokens: 1320,
+            input_tokens_details: { cached_tokens: 100, cache_write_tokens: 50 },
+          },
         },
       ],
-      runContext: { usage: { inputTokens: 900, outputTokens: 420, totalTokens: 1320 } },
+      runContext: {
+        usage: {
+          inputTokens: 900,
+          outputTokens: 420,
+          totalTokens: 1320,
+          inputTokensDetails: [{ cached_tokens: 100, cache_write_tokens: 50 }],
+        },
+      },
       lastAgent: { name: "Demand Validator" },
       interruptions: [],
     };
@@ -3472,6 +3490,9 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
     assert.equal(modelCall.status, "completed");
     assert.equal(modelCall.input_tokens, 900);
     assert.equal(modelCall.output_tokens, 420);
+    assert.equal(modelCall.metadata.tokenUsage.cachedInputTokens, 100);
+    assert.equal(modelCall.metadata.tokenUsage.cacheWriteInputTokens, 50);
+    assert.equal(modelCall.metadata.pricingEstimate.cacheWriteInputTokens, 50);
     assert.equal(modelCall.metadata.provider, "openai-agents-sdk");
     assert.equal(modelCall.metadata.sdkRunner, true);
     assert.equal(modelCall.metadata.agentSdkTraceId, capturedRequest.traceId);
@@ -4429,6 +4450,11 @@ test("dashboard recovery prepares and completes a new exact Luna attempt without
         [requested.task.id, preparedPayload.result.task.id],
       ).count,
       2,
+    );
+    assert.equal(
+      getSystemState(db).checks.items.some((item) => item.taskId === requested.task.id),
+      false,
+      "A failed attempt with a completed exact retry remains in history but must not look like current operator work.",
     );
   } finally {
     if (app) {

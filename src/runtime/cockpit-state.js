@@ -1410,6 +1410,7 @@ function operatorConnectionsState(db) {
 }
 
 function agentSystemChecks(db) {
+  const resolvedTaskIds = supersededRetryTaskIds(db);
   const receiptRows = all(
     db,
     `SELECT receipts.*, agents.name AS worker_name, tasks.title AS task_title
@@ -1425,7 +1426,9 @@ function agentSystemChecks(db) {
        AND receipts.status IN ('needs_review', 'incomplete')
      ORDER BY receipts.created_at DESC
      LIMIT 50`,
-  ).map((row) => ({
+  )
+    .filter((row) => !(row.status === "needs_review" && resolvedTaskIds.has(row.task_id)))
+    .map((row) => ({
     id: row.id,
     kind: "agent_receipt",
     severity: row.status === "incomplete" ? "error" : "warning",
@@ -1441,7 +1444,7 @@ function agentSystemChecks(db) {
     runId: row.run_id,
     taskId: row.task_id,
     createdAt: row.created_at,
-  }));
+    }));
   const missingRows = all(
     db,
     `SELECT runs.id AS run_id, runs.task_id, runs.completed_at, agents.name AS worker_name,

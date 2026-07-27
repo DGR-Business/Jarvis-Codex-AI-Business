@@ -1,7 +1,7 @@
 # Commercial Intelligence Foundation Proof
 
 Date: 2026-07-27
-Status: live commercial path and release gates complete
+Status: release gates, targeted diligence, and signed provider reconciliation complete
 
 ## Proven
 
@@ -31,18 +31,46 @@ content, and a fresh Job Search benchmark. The freelancer service was strongest
 but remained parked because the exact offer, buyer demand, channel fit, and net
 contribution were not supported.
 
+Pantheon then ranked the retained cases and opened one targeted diligence round
+for a Social Media Manager Client-Control and Profitability System. The buyer,
+problem, offer, channel hypothesis, alternatives, public evidence, and exact
+decision gap were fixed before any model call. Demand, Finance, and Sol all
+completed through the Agents SDK. The case passed 9 of 10 gates but remains
+parked because verified economics and direct willingness to pay for the exact
+offer are still missing.
+
 ## Calls and Cost
 
-- Provider attempts: 21.
-- Known outcomes: 19.
-- Unknown post-dispatch outcomes: 2.
-- Known incurred estimate: A$4.54.
-- Conservative unknown exposure: A$10.00.
-- Foundation exposure: A$14.54.
-- Full July runtime exposure after this proof: A$16.54.
+- Portfolio provider attempts: 21.
+- Previously known outcomes: 19.
+- Reconciled post-dispatch outcomes: 2 aborted requests.
+- Remaining unknown provider outcomes: 0.
 
-Unknown exposure is not actual spend. It remains visible until provider billing
-is reconciled. Pantheon performed no automatic retry after either timeout.
+The authoritative Platform exports record:
+
+- first aborted Sol call: 105,329 input, 10,299 output, 9,834 cached-read,
+  9,834 cache-write tokens, and 9 web searches; A$1.41;
+- second aborted Sol call: 88,726 input, 12,795 output, 9,618 cached-read,
+  9,618 cache-write tokens, and 7 web searches; A$1.37; and
+- earlier invalid-output Terra call: 26,631 input, 5,200 output, 9,522
+  cache-write tokens, and 2 web searches; A$0.27.
+
+The signed CSV hashes are retained in the private runtime reconciliation
+records. Costs use official token and web-search rates and the verified
+A$1.57675 cash-paid-per-US-dollar-credit conversion. Pantheon performed no
+automatic retry and accepted no output from these three failed calls.
+
+The targeted continuation added three known calls:
+
+- Terra Demand Validator: 26,266 input and 2,498 output tokens, A$0.20
+  estimated, trace `trace_2f3d761c056c4fc8abf523ba0f33a046`;
+- Terra Finance: 9,514 input and 2,734 output tokens, A$0.11 estimated, trace
+  `trace_4897a8fe6a94402ca84fa78b4a7f5119`;
+- Sol Commercial Investment Review: 9,742 input and 1,239 output tokens,
+  A$0.14 estimated, trace `trace_e0092ec0c82d48289431e616d6a634a3`.
+
+The continuation total is A$0.45. Current July runtime exposure is A$8.44:
+A$3.10 reconciled provider usage and A$5.34 ordinary incurred estimates.
 
 ## Corrections
 
@@ -56,6 +84,20 @@ is reconciled. Pantheon performed no automatic retry after either timeout.
 - Completed alternatives are terminally parked or rejected.
 - Duplicate timeout findings collapse into one operator accounting note while
   full technical evidence remains in System.
+- A future Finance kill rule can no longer be misread as a present rejection;
+  investment gates use the explicit structured Finance decision.
+- Targeted diligence reuses the original three-candidate comparison without
+  repeating broad discovery.
+- Future targeted model context contains only the exact baseline evidence and a
+  parent link, avoiding duplicated prior archives.
+- An exact dashboard worker action now applies its completed supervised result
+  without requiring a second `Continue research` click.
+- Locked route explanations identify Luna, Terra, or Sol correctly.
+- Reconciliation now captures provider cache-write tokens and exact hosted-tool
+  counts, appends a new immutable receipt, and distinguishes a fully audited
+  failed execution from successful work.
+- System Checks hides failed attempts only after an exact retry or recovery has
+  completed. Their records remain visible in AI Team and Activity.
 
 ## Not Proven
 
@@ -66,6 +108,8 @@ is reconciled. Pantheon performed no automatic retry after either timeout.
   two rounds.
 - Multi-venture execution, Venture Factory, a second Venture Kit, and concurrent
   venture lanes remain future work.
+- The targeted case has no direct buyer-intent, purchase, format-acceptance,
+  support, refund, acquisition-cost, or realised contribution result.
 
 ## Release Evidence
 
@@ -129,3 +173,31 @@ is reconciled. Pantheon performed no automatic retry after either timeout.
   cancelled the job without a test failure. The test matrix remains unchanged;
   the bounded Windows job ceiling is now 30 minutes to accommodate observed
   hosted-runner variance.
+- After targeted-diligence hardening, the complete isolated suite passed 270 of
+  270 tests and zero-warning lint. The dependency audit still reports no high
+  or critical finding; six moderate transitive `@hono/node-server` findings
+  remain pending a compatible Agents SDK dependency update.
+- Fresh encrypted recovery set
+  `pantheon-recovery-set-2026-07-27T11-30-18-310Z.jbackup` authenticated 875
+  files and a coherent SQLite snapshot. Quick check and integrity check
+  returned `ok` with zero foreign-key violations. Operations-ready Doctor
+  passed through the protected Windows recovery profile.
+- Chrome completed the signed targeted path from Command Center through Demand,
+  Finance, Sol, source inspection, and final `No investment selected` state.
+  No publication, account action, customer contact, paid research service, or
+  other external business action occurred.
+- Final exact-head verification passed 271 of 271 isolated tests, zero-warning
+  lint, and `git diff --check`. The high-severity dependency audit found no
+  high or critical vulnerability; six moderate transitive
+  `@hono/node-server` findings remain pending an upstream-compatible Agents SDK
+  update.
+- Pantheon Doctor passed every operations-readiness gate through the
+  Windows-protected recovery profile. The verified owned runtime restarted
+  cleanly on port 5051 with the latest code, reported zero monitor findings,
+  and exposed no unresolved execution-record issue across 48 immutable
+  receipts.
+- The final signed Chrome review showed the current A$8.44 exposure, 9 of 10
+  investment requirements, the explicit `More evidence needed` decision,
+  complete source access, and no horizontal overflow at the connected desktop
+  viewport. The investment drawer now distinguishes immutable analysis
+  recorded at review time from current Pantheon spending.

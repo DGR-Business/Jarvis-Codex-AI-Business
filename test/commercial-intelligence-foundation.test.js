@@ -28,6 +28,7 @@ const {
   getPortfolioState,
   parkJobSearchProduct,
   startPortfolioDiscovery,
+  startTargetedInvestmentReview,
 } = require("../src/runtime/portfolio-controller");
 const { currentOperatorJourney } = require("../src/runtime/pantheon-journey");
 const { getProductionState } = require("../src/runtime/pantheon-production");
@@ -512,6 +513,316 @@ test("Portfolio Controller completes five-space discovery, three comparisons, fi
     assert.equal(all(runtime.db, "SELECT id FROM catalogue_plans WHERE venture_id = 'venture-portfolio-controller'").length, 0);
     assert.equal(all(runtime.db, "SELECT id FROM tasks WHERE venture_id = 'venture-portfolio-controller' AND agent IN ('offer_architect', 'product_builder')").length, 0);
     assert.equal(getOpportunityState(runtime.db).rounds.find((round) => round.id === roundId).status, "completed");
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("a future finance kill rule does not become a present rejection", () => {
+  const runtime = runtimeDb("finance-kill-rule");
+  try {
+    ensurePortfolioController(runtime.db);
+    const started = startPortfolioDiscovery(runtime.db);
+    const roundId = started.round.id;
+    const scout = commercialTask(runtime.db, roundId, "opportunity_scout");
+    completeTask(runtime.db, scout.id, {
+      summary: "Five opportunity spaces were compared.",
+      recommendation: "Validate the top three.",
+      confidence: "medium",
+      roleOutput: { opportunities: [1, 2, 3, 4, 5].map(candidate) },
+      toolActivity: sourceActivity("kill-rule-scout"),
+    });
+
+    for (let index = 1; index <= 3; index += 1) {
+      const validator = commercialTask(runtime.db, roundId, "demand_validator");
+      completeTask(runtime.db, validator.id, {
+        summary: `Opportunity ${index} has attributable buyer and purchase signals.`,
+        operatorDecision: "approve",
+        confidence: "medium",
+        pilotRecommendation: {
+          verdict: "approve",
+          evidence: [
+            `${index * 10} paid orders were observed in the marketplace sample`,
+            `${index * 20} verified customer reviews describe the buyer problem`,
+          ],
+          counterevidence: ["The sample does not reveal total market revenue."],
+          assumptions: ["Public observations may not equal realised seller economics."],
+          smallestTest: `Run a 14-day paid-intent test for opportunity ${index} with a real checkout signal and no public automation.`,
+          metric: "At least three independent paid buyers with positive net cash contribution.",
+          killRule: "Stop after the defined qualified exposure with zero sales and no strong buyer evidence.",
+          priceChannelHypothesis: `Test A$39 through the evidence-selected channel for opportunity ${index}.`,
+        },
+        toolActivity: sourceActivity(`kill-rule-${index}`),
+      });
+    }
+
+    const finance = commercialTask(runtime.db, roundId, "finance_analysis");
+    completeTask(runtime.db, finance.id, {
+      summary: "The economics are quantified but still need a verified marketplace fee schedule.",
+      operatorDecision: "needs_evidence",
+      confidence: "medium",
+      risks: ["Acquisition cost remains unverified", "Refunds may reduce contribution"],
+      roleOutput: {
+        price: "A$39.00 per sale",
+        marginLogic: "A$39 revenue less A$12 variable cost equals A$27 provisional contribution.",
+        breakEven: "A$270 fixed cost divided by A$27 provisional contribution equals 10 sales.",
+        costCap: "A$25 validation cap and A$100 monthly operating mandate.",
+        financialRisk: "Actual marketplace fees and acquisition cost remain unverified.",
+        decisionSignal: "Gather the missing fee evidence; stop only if verified contribution becomes negative.",
+      },
+    });
+
+    const selected = get(
+      runtime.db,
+      "SELECT * FROM opportunities WHERE round_id = ? AND title = 'Opportunity 1'",
+      [roundId],
+    );
+    const storedMetadata = fromJson(selected.metadata, {});
+    assert.equal(storedMetadata.finance.decision, "needs_evidence");
+
+    const assessment = assessInvestmentCase(runtime.db, selected.id);
+    assert.equal(assessment.economics.decision, "needs_evidence");
+    assert.equal(assessment.economics.denied, false);
+    assert.equal(assessment.criteria.economics.passed, false);
+    assert.equal(assessment.recommendation, "research_more");
+    assert.deepEqual(
+      assessment.criteria.economics.missing,
+      ["finance approval based on verified economics"],
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("targeted diligence reuses the fair comparison and queues Demand, Finance, then Sol only", () => {
+  const runtime = runtimeDb("targeted-diligence");
+  const timestamp = now();
+  try {
+    ensurePortfolioController(runtime.db);
+    run(
+      runtime.db,
+      `INSERT INTO opportunity_rounds
+       (id, venture_id, status, mode, prompt, geography, language, max_candidates,
+        started_at, completed_at, created_by, metadata, created_at, updated_at)
+       VALUES ('round-target-source', 'venture-digital-products', 'no_investment',
+        'portfolio_discovery', 'Compare three candidates.', 'Australia', 'English', 5,
+        ?, ?, 'Pantheon', ?, ?, ?)`,
+      [
+        timestamp,
+        timestamp,
+        toJson({
+          portfolioControllerV1: true,
+          validationCompletedIds: ["opp-target-source", "opp-target-alt-1", "opp-target-alt-2"],
+          outcome: "No candidate qualified before targeted diligence.",
+        }),
+        timestamp,
+        timestamp,
+      ],
+    );
+    const opportunities = [
+      {
+        id: "opp-target-source",
+        title: "Freelancer operations templates",
+        model: "digital marketplace product",
+        buyer: "Freelance social media managers serving several retained clients",
+        problem: "Client approvals, scope changes, and delivery records become scattered across tools.",
+        offer: "A workflow-first operations pack linking intake, approval, scope, delivery, and profitability records.",
+        channel: "Etsy Australia",
+        score: 75,
+      },
+      {
+        id: "opp-target-alt-1",
+        title: "Alternative service",
+        model: "productized service",
+        buyer: "Independent consultants",
+        problem: "Client setup takes too much billable time.",
+        offer: "A fixed-scope onboarding implementation service.",
+        channel: "Direct referrals",
+        score: 68,
+      },
+      {
+        id: "opp-target-alt-2",
+        title: "Alternative POD offer",
+        model: "print on demand",
+        buyer: "Nursing graduates",
+        problem: "Generic milestone gifts lack relevant identity cues.",
+        offer: "A personalised milestone gift collection.",
+        channel: "Etsy",
+        score: 61,
+      },
+    ];
+    for (const opportunity of opportunities) {
+      run(
+        runtime.db,
+        `INSERT INTO opportunities
+         (id, round_id, venture_id, source_type, status, title, business_model,
+          buyer, problem, offer_direction, geography, language, channel,
+          demand_score, supply_gap_score, economics_score, channel_fit_score,
+          execution_fit_score, risk_score, overall_score, confidence,
+          recommendation, smallest_validation, evidence_ids, metadata,
+          created_at, updated_at)
+         VALUES (?, 'round-target-source', 'venture-digital-products',
+          'model_hypothesis', 'parked', ?, ?, ?, ?, ?, 'Australia', 'English', ?,
+          75, 70, 72, 74, 80, 30, ?, 'medium', 'Needs targeted evidence',
+          'Run one bounded, evidence-backed market test with a clear stop rule.',
+          '[]', ?, ?, ?)`,
+        [
+          opportunity.id,
+          opportunity.title,
+          opportunity.model,
+          opportunity.buyer,
+          opportunity.problem,
+          opportunity.offer,
+          opportunity.channel,
+          opportunity.score,
+          toJson({
+            competitionEvidence: ["Competitor A", "Competitor B", "Free substitute C"],
+            risks: ["Crowded marketplace", "Acquisition cost remains unknown"],
+          }),
+          timestamp,
+          timestamp,
+        ],
+      );
+    }
+    run(
+      runtime.db,
+      "UPDATE opportunities SET evidence_ids = ? WHERE id = 'opp-target-source'",
+      [toJson(["evidence-from-broad-discovery"])],
+    );
+
+    const started = startTargetedInvestmentReview(runtime.db, {
+      sourceOpportunityId: "opp-target-source",
+      decisionGap: "Whether a workflow-first pack can command non-commodity pricing despite strong marketplace competition.",
+      title: "Social media manager client-control operations pack",
+      offerDirection: "An Excel-based client-control system covering intake, approvals, scope changes, delivery records, and per-client profitability.",
+      buyer: "Freelance social media managers serving two or more retained clients",
+      problem: "Approvals, scope changes, delivery records, and client profitability are fragmented across messages and generic templates.",
+      channel: "Etsy Australia, with other channels considered only after economics review",
+      smallestValidation: "Compare the exact workflow against twenty marketplace listings, then run a bounded paid-intent test only if the entry position survives.",
+      demandEvidence: [
+        "Verified marketplace reviews show buyers pay for social-media-manager workflow bundles.",
+        "Recent practitioner discussions repeatedly describe lost approvals and scope-control problems.",
+      ],
+      competitionEvidence: [
+        "High-review Canva starter bundles compete at discounted mid-market prices.",
+        "A premium onboarding workflow bundle offers more than ninety editable pages.",
+        "A narrow approval-tracker listing exists but has no recorded sales yet.",
+      ],
+      risks: ["Entrenched high-review marketplace sellers", "A narrow workflow may be substituted by free spreadsheets"],
+      publicEvidence: [
+        {
+          sourceUrl: "https://example.com/marketplace-sample",
+          title: "Marketplace starter-kit sample",
+          claim: "A sample of 20 marketplace listings contains multiple paid-review signals and strong discounting.",
+          sampleSize: 20,
+          confidence: "medium",
+        },
+        {
+          sourceUrl: "https://example.org/buyer-problem",
+          title: "Buyer workflow discussion",
+          claim: "Practitioners describe scattered approvals, unclear scope, and time-consuming client onboarding.",
+          sampleSize: 12,
+          confidence: "medium",
+        },
+        {
+          sourceUrl: "https://example.net/channel-fees",
+          title: "Marketplace fee policy",
+          claim: "The marketplace charges transaction, payment-processing, and per-listing fees that must enter contribution calculations.",
+          confidence: "high",
+        },
+      ],
+    });
+    assert.equal(started.started, true);
+    assert.equal(started.round.mode, "targeted_diligence");
+    assert.equal(started.round.metadata.productionBlocked, true);
+    assert.equal(started.opportunity.metadata.targetedReview.parentOpportunityId, "opp-target-source");
+    assert.equal(started.opportunity.metadata.targetedReview.parentEvidenceCount, 1);
+    assert.deepEqual(
+      started.opportunity.evidence_ids,
+      started.opportunity.metadata.targetedReview.baselineEvidenceIds,
+    );
+    assert.equal(started.opportunity.evidence_ids.length, 3);
+    assert.equal(started.queued.task.payload.liveSpendRequest.model, "gpt-5.6-terra");
+
+    const demand = commercialTask(runtime.db, started.round.id, "demand_validator");
+    completeTask(runtime.db, demand.id, {
+      summary: "The exact workflow has attributable paid-review and buyer-problem evidence.",
+      operatorDecision: "approve",
+      confidence: "medium",
+      pilotRecommendation: {
+        verdict: "approve",
+        evidence: [
+          "Twenty paid marketplace reviews support demand for complete workflow bundles.",
+          "Twelve practitioners described approval and scope-control problems.",
+        ],
+        counterevidence: ["A narrow approval-only listing has no recorded sales."],
+        assumptions: ["Review counts are lower-bound behavioural signals, not unit sales."],
+        smallestTest: "Run a fourteen-day paid-intent test for the exact client-control workflow without public automation.",
+        metric: "At least three independent paid buyers with positive net cash contribution.",
+        killRule: "Stop after fifty qualified views with zero sales and no stronger buyer evidence.",
+        priceChannelHypothesis: "Test A$39 on Etsy Australia and retain the channel only if contribution remains positive.",
+      },
+      toolActivity: sourceActivity("targeted-demand"),
+    });
+
+    const finance = commercialTask(runtime.db, started.round.id, "finance_analysis");
+    completeTask(runtime.db, finance.id, {
+      summary: "The bounded case has positive provisional contribution.",
+      operatorDecision: "approve",
+      confidence: "medium",
+      recommendation: "Advance only to final investment review.",
+      risks: ["Acquisition cost remains unverified", "Refunds may reduce contribution"],
+      roleOutput: {
+        price: "A$39.00 per sale",
+        marginLogic: "A$39 revenue less A$4.25 channel fees and A$4.75 reserves equals A$30 contribution before acquisition.",
+        breakEven: "A$150 fixed build cost divided by A$30 contribution equals 5 sales.",
+        costCap: "A$25 validation cap inside the A$100 monthly mandate.",
+        financialRisk: "Stop if verified fees, refunds, support, and acquisition remove positive contribution.",
+        decisionSignal: "Approve final review; production remains blocked.",
+      },
+    });
+
+    assert.equal(
+      all(
+        runtime.db,
+        `SELECT id FROM tasks
+         WHERE json_extract(payload, '$.liveSpendRequest.parameters.pantheonCommercial.roundId') = ?
+           AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonCommercial.step') = 'offer_architecture'`,
+        [started.round.id],
+      ).length,
+      0,
+    );
+    const finalReview = commercialTask(runtime.db, started.round.id, "commercial_investment_review");
+    assert.equal(finalReview.payload.liveSpendRequest.model, "gpt-5.6-sol");
+    completeTask(runtime.db, finalReview.id, {
+      summary: "Advance this candidate to its exact venture-kit goal; all mandatory gates pass.",
+      operatorDecision: "approve",
+      confidence: "medium",
+      roleOutput: {
+        moneyMove: "Implement the exact venture kit in the next goal.",
+        whyNow: "The targeted evidence closes the decision gap.",
+        expectedUpside: "A positive-contribution test is supportable but not yet proven.",
+        costRisk: "The first real-world test remains capped.",
+        decisionNeeded: "No production action in this goal.",
+        successMetric: "Three independent paid buyers and positive contribution.",
+        stopRule: "Stop on the recorded kill rule.",
+        specialistNeeded: false,
+        specialistWorker: "",
+        specialistObjective: "",
+        specialistExpectedOutput: "",
+        specialistMode: "",
+        specialistContextClasses: [],
+        specialistReason: "",
+      },
+    });
+
+    const completedRound = get(runtime.db, "SELECT status FROM opportunity_rounds WHERE id = ?", [started.round.id]);
+    const completedState = getPortfolioState(runtime.db);
+    const selectedCase = completedState.selectedInvestmentCase;
+    assert.equal(completedRound.status, "completed");
+    assert.equal(selectedCase.recommendation, "advance");
+    assert.equal(selectedCase.round_id, started.round.id);
+    assert.equal(completedState.nextAction.label, "Investment case ready");
   } finally {
     closeRuntime(runtime);
   }

@@ -107,16 +107,69 @@ different candidate merely to finish the goal.
 ## Provider and Cost Truth
 
 - 21 Portfolio provider attempts were recorded.
-- 19 have known outcomes and A$4.54 combined incurred estimates.
-- Two Scout requests timed out after dispatch. Their exact outcome and billing
-  are unknown, so Pantheon holds A$10.00 of conservative possible exposure and
-  did not retry them.
-- This goal therefore added A$14.54 of exposure, not A$14.54 of settled spend.
-- July's complete dashboard exposure is A$16.54 under the A$100 mandate.
+- Signed OpenAI Platform activity, web-search, daily-cost, and trace records
+  reconciled the two previously unknown Scout calls. Both requests ran for
+  roughly 120 seconds, consumed metered tokens and web searches, then ended
+  with `Request was aborted`; neither returned usable output.
+- The exact per-call allocations are A$1.41 and A$1.37. A separate invalid
+  Terra structured-output call was corrected from an A$1.60 estimate to A$0.27
+  using the same signed exports and its matching 57.93-second trace.
+- Pantheon did not retry any of those calls or treat them as commercial
+  evidence. Their failed execution records are complete and remain historical.
 - One Demand Validator and one Finance response were known but truncated. Each
   used its single explicit compact correction and then passed.
 - No provider fallback, production, publishing, customer contact, account
   action, advertising, agreement, legal decision, or money movement occurred.
+
+## Targeted Diligence Continuation
+
+Jarvis ranked the retained cases by decision value, evidence gap, acquisition
+cost uncertainty, execution fit, and commercial upside. Pantheon selected one
+exact gap for further diligence:
+
+- buyer: freelance social media managers with two or more retained clients;
+- problem: fragmented intake, approvals, scope changes, delivery proof, and
+  per-client profitability;
+- offer hypothesis: an Excel-based linked client-control and profitability
+  system;
+- decision gap: whether this workflow-first offer can command non-commodity
+  pricing and positive contribution despite established discounted Canva,
+  Notion, spreadsheet, and software substitutes.
+
+The public baseline recorded seven attributable observations covering the Etsy
+category, two direct listing examples, current Etsy fee rules, Australian
+payment processing, practitioner workflow evidence, and the disclosed
+limitations of third-party Etsy sales estimates. Pantheon did not buy a
+research service because the available service explicitly estimates sales that
+Etsy does not disclose; it would not have closed the decision gap reliably.
+
+Demand Validator and Finance ran on Terra, followed by the required Sol
+Commercial Investment Review. All three Agents SDK calls returned known
+outcomes and passed their recorded structural evaluations:
+
+- Demand Validator: 26,266 input tokens, 2,498 output tokens, A$0.20 estimated;
+- Finance: 9,514 input tokens, 2,734 output tokens, A$0.11 estimated;
+- Sol investment review: 9,742 input tokens, 1,239 output tokens, A$0.14
+  estimated.
+
+The continuation added A$0.45 of known incurred estimates. After signed
+provider reconciliation, July dashboard exposure is A$8.44: A$3.10 of
+reconciled usage and A$5.34 of ordinary incurred estimates. No provider outcome
+remains unknown.
+
+The case passed 9 of 10 mandatory gates. Pantheon retained a medium-confidence
+`research_more` decision because fee-only contribution is positive at a
+provisional AU$24.95-AU$29.95 price, but willingness to pay for the exact offer,
+Excel acceptance, acquisition cost, support and refund load, build effort, and
+realised all-in contribution remain unverified. Production did not start.
+
+The browser proof also exposed a needless second operator click after an exact
+approved worker completed. The exact-task route now applies a completed
+supervisor-owned result in the same action. Future targeted rounds retain only
+their focused baseline evidence in model context and link to the parent
+opportunity instead of duplicating the entire prior evidence archive. Locked
+model explanations now name the actual model tier rather than always saying
+Luna.
 
 ## Outcome and Next Gate
 
@@ -130,8 +183,10 @@ tests, the critical dependency audit, and job cleanup. The release review also
 fixed a genuine hosted-Windows launcher race by recognising wrapped file-lock
 contention without weakening process ownership or readiness checks.
 
-The next commercial goal must close a decision-critical evidence gap through
-better market evidence, a measured research-service trial, a Daniel-submitted
-idea, or a bounded direct buyer-intent method. It must not run another generic
-broad scan or build a product until new evidence justifies reopening an
-investment case.
+The next commercial goal, if Daniel approves it, should create only the
+smallest functional validation sample and a measurement-ready buyer-intent
+test for the 9-of-10 case. Publication, account action, customer contact, and
+spend remain separate protected actions. Pantheon should require at least three
+paid orders from 100 qualified visits, no format- or clarity-driven refunds,
+and positive actual all-in contribution before reopening the investment case
+or implementing a full Venture Kit.
