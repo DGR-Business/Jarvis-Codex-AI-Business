@@ -89,15 +89,50 @@ function items(value, max = 6) {
   return Array.isArray(value) ? value.filter(Boolean).map((item) => compact(item, 500)).slice(0, max) : [];
 }
 
+function canonicalOperatorDeliverables(deliverables) {
+  const newest = [...deliverables]
+    .filter((item) => item.format !== "pdf")
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.updated_at || left.created_at || "") || 0;
+      const rightTime = Date.parse(right.updated_at || right.created_at || "") || 0;
+      return rightTime - leftTime;
+    });
+  const distinct = new Map();
+  for (const item of newest) {
+    const key = `${item.human_name || item.title || item.id}:${item.format || ""}`.toLowerCase();
+    if (!distinct.has(key)) distinct.set(key, item);
+  }
+  const formatPriority = new Map([
+    ["application/zip", 0],
+    ["text/markdown", 1],
+    ["image/png", 2],
+    ["image/jpeg", 2],
+    ["application/json", 3],
+  ]);
+  return [...distinct.values()].sort((left, right) => {
+    const leftPriority = formatPriority.get(left.format) ?? 4;
+    const rightPriority = formatPriority.get(right.format) ?? 4;
+    if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+    const leftTime = Date.parse(left.updated_at || left.created_at || "") || 0;
+    const rightTime = Date.parse(right.updated_at || right.created_at || "") || 0;
+    return rightTime - leftTime;
+  });
+}
+
 function taskOutput(task) {
   const result = task.result || {};
   return result.output && typeof result.output === "object" ? result.output : result;
 }
 
 function decisionTask(tasks) {
-  return tasks.find((task) => task.kind === "live_ai_worker_execution" && task.status === "completed")
-    || [...tasks].reverse().find((task) => task.status === "completed" && taskOutput(task).summary)
-    || tasks[0]
+  const newestFirst = [...tasks].sort((left, right) => {
+    const leftTime = Date.parse(left.completed_at || left.updated_at || left.created_at || "") || 0;
+    const rightTime = Date.parse(right.completed_at || right.updated_at || right.created_at || "") || 0;
+    return rightTime - leftTime;
+  });
+  return newestFirst.find((task) => task.kind === "live_ai_worker_execution" && task.status === "completed")
+    || newestFirst.find((task) => task.status === "completed" && taskOutput(task).summary)
+    || newestFirst.at(-1)
     || null;
 }
 
@@ -130,7 +165,35 @@ function packMode(tasks) {
     : "Prepared locally for your review. No publishing, customer contact, account changes, or money movement occurred.";
 }
 
-function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, workflow, command, scorecard, tasks, deliverables, costs = [] }) {
+function transformPresentationStrings(value, transform) {
+  if (typeof transform !== "function") return value;
+  if (typeof value === "string") return transform(value);
+  if (Array.isArray(value)) return value.map((item) => transformPresentationStrings(item, transform));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, transformPresentationStrings(item, transform)]),
+    );
+  }
+  return value;
+}
+
+function buildOperatorPackPayload({
+  approvalPackId,
+  humanName,
+  generatedAt,
+  workflow,
+  command,
+  scorecard,
+  tasks,
+  deliverables,
+  costs = [],
+  authoritativeExposureCents = null,
+  decisionOverride = {},
+  commercialCaseOverride = {},
+  actionsOverride = null,
+  workTaskIdsOverride = null,
+  presentationTransform = null,
+}) {
   const leadTask = decisionTask(tasks);
   const output = leadTask ? taskOutput(leadTask) : {};
   const business = output.businessDecision || output.business_decision || {};
@@ -151,15 +214,35 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
   const totalReconciledCents = costs
     .filter((cost) => cost.status === "reconciled")
     .reduce((sum, cost) => sum + Number(cost.amount_cents || 0), 0);
+  const trackedExposureCents = Number.isInteger(authoritativeExposureCents)
+    ? Math.max(0, authoritativeExposureCents)
+    : totalEstimatedCents;
+  const costRisk = Number.isInteger(authoritativeExposureCents)
+    ? `Current tracked pre-publication AI and tool exposure is A$${(trackedExposureCents / 100).toFixed(2)} estimated or committed. Exact provider billing remains pending. No new external spend is authorized by this brief.`
+    : compact(output.details?.["Cost/risk"] || output.costRisk || (totalEstimatedCents ? "Provider cost is still an estimate pending reconciliation." : "No new paid execution is proposed in this brief."), 500);
 
+  const eligibleWork = tasks
+    .filter((item) => item.status === "completed" || item.status === "needs_attention")
+    .filter((item) => item.agent !== "jarvis");
+  const requestedWork = Array.isArray(workTaskIdsOverride) && workTaskIdsOverride.length
+    ? workTaskIdsOverride
+      .map((id) => eligibleWork.find((task) => task.id === id))
+      .filter(Boolean)
+    : [...eligibleWork]
+      .sort((left, right) => {
+        const leftTime = Date.parse(left.completed_at || left.updated_at || left.created_at || "") || 0;
+        const rightTime = Date.parse(right.completed_at || right.updated_at || right.created_at || "") || 0;
+        return rightTime - leftTime;
+      });
   const distinctWork = new Map();
-  for (const task of tasks
-    .filter((task) => task.status === "completed" || task.status === "needs_attention")
-  ) {
-    distinctWork.set(`${task.agent || "team"}:${task.title || task.kind}`, task);
+  for (const task of requestedWork) {
+    const key = task.agent || task.kind || task.id;
+    if (!distinctWork.has(key)) distinctWork.set(key, task);
   }
-  const work = [...distinctWork.values()]
-    .slice(-6)
+  const selectedWork = [...distinctWork.values()].slice(0, 9);
+  const work = (Array.isArray(workTaskIdsOverride) && workTaskIdsOverride.length
+    ? selectedWork
+    : selectedWork.reverse())
     .map((task) => {
       const taskResult = taskOutput(task);
       return {
@@ -170,7 +253,7 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
       };
     });
 
-  const outputs = deliverables
+  const outputs = canonicalOperatorDeliverables(deliverables)
     .filter((item) => item.id !== approvalPackId && item.format !== "pdf")
     .slice(0, 6)
     .map((item) => ({
@@ -180,7 +263,7 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
       summary: compact(item.summary || item.excerpt, 700),
     }));
 
-  return {
+  const payload = {
     schema: "jarvis_operator_decision_brief_v2",
     approvalPackId,
     humanName,
@@ -193,24 +276,26 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
       preparedBy: leadTask ? humanWorker(leadTask.agent) : "Pantheon AI Team",
     },
     decision: {
-      headline: moneyMove,
-      recommendation,
-      verdict: output.operatorDecision || scorecard?.verdict || "needs_evidence",
-      confidence: output.confidence || scorecard?.confidence || "low",
-      whyNow: compact(output.details?.["Expected upside"] || business.evidenceSummary || scorecard?.recommendation, 700),
-      expectedUpside: compact(output.details?.["Expected upside"] || output.expectedUpside || "Upside is not yet quantified.", 500),
-      costRisk: compact(output.details?.["Cost/risk"] || output.costRisk || (totalEstimatedCents ? "Provider cost is still an estimate pending reconciliation." : "No new paid execution is proposed in this brief."), 500),
-      approvalQuestion: "Should Pantheon proceed with this exact next step?",
+      headline: compact(decisionOverride.headline || moneyMove, 1200),
+      recommendation: compact(decisionOverride.recommendation || recommendation, 1200),
+      verdict: decisionOverride.verdict || output.operatorDecision || scorecard?.verdict || "needs_evidence",
+      confidence: decisionOverride.confidence || output.confidence || scorecard?.confidence || "low",
+      whyNow: compact(decisionOverride.whyNow || output.details?.["Expected upside"] || business.evidenceSummary || scorecard?.recommendation, 700),
+      expectedUpside: compact(decisionOverride.expectedUpside || output.details?.["Expected upside"] || output.expectedUpside || "Upside is not yet quantified.", 500),
+      costRisk,
+      approvalQuestion: compact(decisionOverride.approvalQuestion || "Should Pantheon proceed with this exact next step?", 500),
     },
     commercialCase: {
-      buyer: compact(business.buyer || workflow.metadata?.buyer || "Buyer still needs confirmation.", 500),
-      problem: compact(business.problem || workflow.metadata?.problem || "Problem evidence is still being established.", 500),
-      offer: compact(business.offer || workflow.metadata?.offer || workflow.metadata?.subject || workflow.title, 500),
-      channel: humanChannel(business.channel || workflow.metadata?.channel || ""),
-      priceChannelHypothesis: compact(output.pilotRecommendation?.priceChannelHypothesis || output.priceChannelHypothesis || "Price and channel need a bounded market test.", 600),
-      smallestTest: compact(output.pilotRecommendation?.smallestTest || output.smallestTest || moneyMove, 600),
-      successMetric: compact(output.pilotRecommendation?.metric || output.metric || business.successMetric || "Record a measurable buyer signal.", 500),
-      stopRule: compact(output.pilotRecommendation?.killRule || output.killRule || business.killCriteria || "Stop or revise when the declared evidence threshold is not met.", 500),
+      buyer: compact(commercialCaseOverride.buyer || business.buyer || workflow.metadata?.buyer || "Buyer still needs confirmation.", 500),
+      problem: compact(commercialCaseOverride.problem || business.problem || workflow.metadata?.problem || "Problem evidence is still being established.", 500),
+      offer: compact(commercialCaseOverride.offer || business.offer || workflow.metadata?.offer || workflow.metadata?.subject || workflow.title, 500),
+      channel: commercialCaseOverride.channel
+        ? compact(commercialCaseOverride.channel, 500)
+        : humanChannel(business.channel || workflow.metadata?.channel || ""),
+      priceChannelHypothesis: compact(commercialCaseOverride.priceChannelHypothesis || output.pilotRecommendation?.priceChannelHypothesis || output.priceChannelHypothesis || "Price and channel need a bounded market test.", 600),
+      smallestTest: compact(commercialCaseOverride.smallestTest || output.pilotRecommendation?.smallestTest || output.smallestTest || moneyMove, 600),
+      successMetric: compact(commercialCaseOverride.successMetric || output.pilotRecommendation?.metric || output.metric || business.successMetric || "Record a measurable buyer signal.", 500),
+      stopRule: compact(commercialCaseOverride.stopRule || output.pilotRecommendation?.killRule || output.killRule || business.killCriteria || "Stop or revise when the declared evidence threshold is not met.", 500),
     },
     evidence: {
       for: evidence.length ? evidence : ["No supporting evidence was summarised yet."],
@@ -230,7 +315,7 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
     } : null,
     economics: {
       expectedProfitCents: Number(workflow.expected_profit_cents || 0),
-      estimatedCostCents: totalEstimatedCents,
+      estimatedCostCents: trackedExposureCents,
       reconciledCostCents: totalReconciledCents,
       currency: "AUD",
     },
@@ -238,12 +323,13 @@ function buildOperatorPackPayload({ approvalPackId, humanName, generatedAt, work
     outputs,
     nextActions,
     originalInstruction: compact(command.raw_text || workflow.metadata?.originalInstruction || "", 1800),
-    actions: [
+    actions: actionsOverride || [
       { id: "approve", label: "Approve this next step", effect: "Pantheon may queue only the exact safe step described in this brief." },
       { id: "changes", label: "Request changes", effect: "Return the work with your direction; no outside action occurs." },
       { id: "deny", label: "Stop this direction", effect: "Pause or close this direction without external action." },
     ],
   };
+  return transformPresentationStrings(payload, presentationTransform);
 }
 
 function resolvePython() {
@@ -281,10 +367,12 @@ function generateApprovalPack(db, workflowId, options = {}) {
   const command = get(db, "SELECT * FROM commands WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 1", [workflowId]) || {};
   const tasks = parseRows(all(db, "SELECT * FROM tasks WHERE workflow_id = ? ORDER BY priority ASC, created_at ASC", [workflowId]));
   const deliverables = parseRows(all(db, "SELECT * FROM deliverables WHERE workflow_id = ? ORDER BY created_at ASC", [workflowId]));
-  const scorecard = getWorkflowScorecard(db, workflowId);
+  const scorecard = Object.prototype.hasOwnProperty.call(options, "scorecardOverride")
+    ? options.scorecardOverride
+    : getWorkflowScorecard(db, workflowId);
   const costs = parseRows(all(db, "SELECT * FROM costs WHERE workflow_id = ? ORDER BY occurred_at ASC", [workflowId]), ["metadata"]);
   const ts = now();
-  const humanName = approvalPackName(workflow, deliverables);
+  const humanName = options.humanName || approvalPackName(workflow, deliverables);
   const approvalPackId = `deliv_pdf_${slugForId(workflowId)}`;
   const outDir = outputDirectory(options);
   fs.mkdirSync(outDir, { recursive: true });
@@ -298,12 +386,22 @@ function generateApprovalPack(db, workflowId, options = {}) {
     approvalPackId,
     humanName,
     generatedAt: ts,
-    workflow,
+    workflow: options.workflowStatus ? { ...workflow, status: options.workflowStatus } : workflow,
     command,
     scorecard,
     tasks,
     deliverables: operatorDeliverables,
     costs,
+    authoritativeExposureCents: Number.isInteger(options.authoritativeExposureCents)
+      ? options.authoritativeExposureCents
+      : null,
+    decisionOverride: options.decisionOverride || {},
+    commercialCaseOverride: options.commercialCaseOverride || {},
+    actionsOverride: Array.isArray(options.actionsOverride) ? options.actionsOverride : null,
+    workTaskIdsOverride: Array.isArray(options.workTaskIdsOverride) ? options.workTaskIdsOverride : null,
+    presentationTransform: typeof options.presentationTransform === "function"
+      ? options.presentationTransform
+      : null,
   });
   fs.writeFileSync(payloadPath, JSON.stringify(payload, null, 2), "utf8");
 

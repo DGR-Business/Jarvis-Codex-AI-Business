@@ -20,6 +20,7 @@ const store = {
 
 const viewConfig = {
   cockpit: { title: "Command Center", kicker: "Business overview", endpoint: "/api/cockpit" },
+  journey: { title: "Full Journey", kicker: "Research to ready to publish", endpoint: "/api/journey" },
   decisions: { title: "Decisions", kicker: "Your attention", endpoint: "/api/decisions" },
   tests: { title: "Business Tests", kicker: "Evidence to revenue", endpoint: "/api/tests" },
   "ai-team": { title: "AI Team", kicker: "Workers and capability", endpoint: "/api/ai-team" },
@@ -92,6 +93,23 @@ function humanStatus(value) {
     operating_normally: "Operating normally",
     researching: "Researching opportunities",
     validating: "Checking demand",
+    starting: "Starting",
+    waiting_for_operator: "Waiting for your decision",
+    candidate_selection: "Choosing the strongest opportunity",
+    finance_analysis: "Checking the numbers",
+    offer_architecture: "Designing the offer",
+    product_build: "Building customer files",
+    storefront_visuals: "Creating storefront visuals",
+    quality_review: "Checking product quality",
+    conversion_copy: "Writing the listing",
+    distribution_plan: "Planning the launch",
+    chief_brief: "Preparing your final brief",
+    launch_decision: "Ready for your decision",
+    ready_to_publish: "Ready to publish",
+    stopped_after_correction: "Stopped after a quality issue",
+    stopped_unknown_outcome: "Stopped because the result is uncertain",
+    cancelled: "Stopped",
+    completed: "Complete",
     checking_economics: "Checking the numbers",
     structuring_offer: "Designing the offer",
     needs_direction: "Needs a new direction",
@@ -191,9 +209,23 @@ function safeExternalUrl(value) {
   }
 }
 
+function externalDomain(value) {
+  const safe = safeExternalUrl(value);
+  if (!safe) return null;
+  return new URL(safe).hostname.replace(/^www\./, "");
+}
+
 function compact(value, max = 180) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function operatorFriendlyQualityCopy(value) {
+  return String(value || "")
+    .replace(/exposed workbook fields/gi, "workbook customers would receive")
+    .replace(/Agency Delivery Bundle representation/gi, "Agency Delivery Bundle description")
+    .replace(/regenerate or revalidate affected manifest and previews/gi, "rebuild its product record and previews")
+    .replace(/return for quality approval/gi, "run the independent quality check again");
 }
 
 async function fetchJson(url, options = {}, retry = 0) {
@@ -267,17 +299,23 @@ function setPage(view) {
 }
 
 async function loadView(view = store.view, options = {}) {
+  const requestedView = view;
   store.view = view;
   setPage(view);
   if (!options.silent) {
     $("#view").innerHTML = '<div class="loading-state"><span></span><p>Loading business state...</p></div>';
   }
   try {
-    store.data[view] = await fetchJson(viewConfig[view].endpoint);
+    const data = await fetchJson(viewConfig[requestedView].endpoint);
+    store.data[requestedView] = data;
+    if (store.view !== requestedView) return data;
     renderView();
+    return data;
   } catch (error) {
-    $("#view").innerHTML = `<div class="empty-state">${icon("triangle-alert")}<h3>Could not load this section</h3><p>${escapeHtml(error.message)}</p></div>`;
-    refreshIcons();
+    if (store.view === requestedView) {
+      $("#view").innerHTML = `<div class="empty-state">${icon("triangle-alert")}<h3>Could not load this section</h3><p>${escapeHtml(error.message)}</p></div>`;
+      refreshIcons();
+    }
     throw error;
   }
 }
@@ -318,9 +356,18 @@ function decisionReviewButton(item, className = "primary-button") {
 
 function renderCommandBand(data) {
   const discovery = data.commercialDiscovery || {};
+  const journey = data.currentJourney;
+  const journeyStopped = ["cancelled", "stopped_after_correction", "stopped_unknown_outcome"].includes(journey?.status);
   const active = discovery.activeRound;
   const currentTask = discovery.currentTask;
-  const progress = active
+  const journeyProgress = journey
+    ? `<div class="discovery-progress">
+        <span class="status-dot ${journey.currentTask?.status === "running" ? "working" : "waiting-to-start"}"></span>
+        <div><strong>${escapeHtml(humanStatus(journey.activeStage))}</strong><p>${escapeHtml(journey.currentTask?.title || (journeyStopped ? "No further work will start automatically; review the recorded result first." : "Pantheon is ready for the next verified journey step."))}</p></div>
+        ${badge(journey.currentTask?.status || journey.status)}
+      </div>`
+    : "";
+  const discoveryProgress = !journey && active
     ? `<div class="discovery-progress">
         <span class="status-dot ${currentTask?.status === "running" ? "working" : "waiting-to-start"}"></span>
         <div><strong>${escapeHtml(humanStatus(active.status))}</strong><p>${escapeHtml(currentTask?.title || active.prompt)}</p></div>
@@ -331,24 +378,29 @@ function renderCommandBand(data) {
     : "";
   return `<section class="command-band">
     <div>
-      <span class="section-label">${active ? "Commercial work" : "Do this next"}</span>
-      <h2>${active ? "Pantheon is moving the venture forward" : "Start with a broad opportunity scan"}</h2>
-      <p>${active ? "Pantheon will continue internal work and stop at the next genuine decision or protected action." : "Pantheon will research across suitable online business models, then narrow the strongest options by demand, economics and execution fit."}</p>
-      <textarea id="command-text" aria-label="Business idea" placeholder="Optional: describe a particular business idea for Pantheon to review"></textarea>
+      <span class="section-label">${journey ? "Full business journey" : active ? "Commercial work" : "Do this next"}</span>
+      <h2>${journey ? `Pantheon ${journeyStopped ? "stopped at" : "is at"} ${escapeHtml(humanStatus(journey.activeStage))}` : active ? "Pantheon is moving the venture forward" : "Start with a broad opportunity scan"}</h2>
+      <p>${journey ? "This status comes from the active journey record. Open it to see the current worker, verified outputs, cost and one next action." : active ? "Pantheon will continue internal work and stop at the next genuine decision or protected action." : "Pantheon will research across suitable online business models, then narrow the strongest options by demand, economics and execution fit."}</p>
+      ${journey ? "" : `<textarea id="command-text" aria-label="Business idea" placeholder="Optional: describe a particular business idea for Pantheon to review"></textarea>`}
     </div>
     <div class="command-controls">
-      ${active
+      ${journey
+        ? `<button type="button" class="primary-button" data-view="journey">${icon("route")}Open full journey</button>`
+        : active
         ? `<button type="button" class="secondary-button" data-view="tests">${icon("search")}View opportunities</button>`
         : `<button type="button" class="primary-button" data-action="start-discovery" data-mode="broad">${icon("radar")}Find opportunities</button>
            <button type="button" class="secondary-button" data-action="start-discovery" data-mode="idea">${icon("lightbulb")}Review my idea</button>`}
     </div>
-    ${progress}
+    ${journeyProgress || discoveryProgress}
   </section>`;
 }
 
-function renderImportantWork(items, commercialWorkExists = false) {
+function renderImportantWork(items, commercialWorkExists = false, journeyStatus = null) {
   if (!items.length) {
     if (!commercialWorkExists) return "";
+    if (["cancelled", "stopped_after_correction", "stopped_unknown_outcome"].includes(journeyStatus)) {
+      return `<section class="priority-panel clear"><div class="priority-header"><div><span class="eyebrow">Important work</span><h2>No decision is waiting</h2><p>Review the stopped journey before starting another proof.</p></div>${badge("Proof stopped", "coral")}</div></section>`;
+    }
     return `<section class="priority-panel clear"><div class="priority-header"><div><span class="eyebrow">Important work</span><h2>Pantheon is working without needing you</h2></div>${badge("No action needed", "mint")}</div></section>`;
   }
   const onlyWaitingToStart = items.every((item) => item.type === "queued_work");
@@ -381,9 +433,21 @@ function renderCockpit() {
   const spend = data.spend;
   const test = data.currentTest;
   const discovery = data.commercialDiscovery || {};
+  const journey = data.currentJourney;
   const topOpportunity = discovery.topOpportunity;
   const productionPlan = discovery.production?.plans?.[0] || null;
-  const nextMoneyMove = productionPlan?.status === "waiting_for_build_decision"
+  const journeyMoneyMove = journey?.status === "stopped_after_correction"
+    ? "Review the recorded product-quality finding before starting a clean proof."
+    : journey?.status === "stopped_unknown_outcome"
+      ? "Reconcile the uncertain AI result before starting any further paid work."
+      : journey?.status === "waiting_for_operator" || journey?.status === "needs_attention"
+        ? "Complete the one journey decision shown in Important Work."
+        : journey?.status === "running"
+          ? `Pantheon is completing ${humanStatus(journey.activeStage).toLowerCase()}.`
+          : journey?.status === "completed" || journey?.activeStage === "ready_to_publish"
+            ? "Review the complete publication-ready package and its final brief."
+            : null;
+  const nextMoneyMove = journeyMoneyMove || (productionPlan?.status === "waiting_for_build_decision"
     ? `Decide whether Pantheon should build the ${productionPlan.target_item_count}-product catalogue.`
     : productionPlan?.status === "quality_review"
       ? "Pantheon is checking the finished product files before launch preparation."
@@ -399,7 +463,7 @@ function renderCockpit() {
     ? `Decide whether Pantheon should build the ${topOpportunity.title} catalogue.`
     : discovery.activeRound
       ? `${humanStatus(discovery.activeRound.status)} for ${discovery.activeRound.prompt}.`
-      : data.nextMoneyMove;
+      : data.nextMoneyMove);
   const importantDecisions = data.importantWork.filter((item) => item.type === "decision").length;
   const decisionCount = $("#decision-count");
   decisionCount.textContent = importantDecisions;
@@ -411,7 +475,7 @@ function renderCockpit() {
   $("#view").innerHTML = `<div class="view-stack">
     ${data.health?.proofMode ? `<section class="surface-block accent"><span class="eyebrow">System proof mode</span><h2>Luna-only testing is active</h2><p>Pantheon is checking workflow mechanics with the lowest-cost model. These results cannot authorize consequential or external work.</p></section>` : ""}
     ${renderCommandBand(data)}
-    ${renderImportantWork(data.importantWork, Boolean(discovery.activeRound || productionPlan || test))}
+    ${renderImportantWork(data.importantWork, Boolean(discovery.activeRound || productionPlan || test || journey), journey?.status)}
     <section class="money-move">
       <span class="move-icon">${icon("move-right")}</span>
       <div><span class="eyebrow">Next money move</span><h2>${escapeHtml(nextMoneyMove)}</h2><p>Pantheon keeps internal work moving and stops only for a material choice, setup need, or protected external action.</p></div>
@@ -835,8 +899,260 @@ function renderSystem() {
   $("#view").innerHTML = `<div class="view-stack">${systemTabs()}<section><div class="system-toolbar"><button class="secondary-button" data-action="run-next"${runnableWork ? "" : " disabled"}>${icon("play")}${runnableWork ? "Run next internal step" : "No internal step ready"}</button><button class="secondary-button" data-action="maintenance">${icon("wrench")}Run maintenance now</button></div>${renderSystemPanel(data)}</section></div>`;
 }
 
+const journeyStageDetails = {
+  opportunity_scout: ["Market discovery", "Opportunity Scout"],
+  demand_validation: ["Demand checks", "Demand Validator"],
+  candidate_selection: ["Opportunity selection", "Pantheon"],
+  finance_analysis: ["Commercial numbers", "Finance Agent"],
+  offer_architecture: ["Offer design", "Offer Architect"],
+  product_build: ["Customer product files", "Product Builder"],
+  storefront_visuals: ["Storefront visuals", "Product Builder"],
+  quality_review: ["Independent quality check", "Quality Reviewer"],
+  conversion_copy: ["Gumroad listing", "Copy and Conversion Agent"],
+  distribution_plan: ["Launch plan", "Distribution Agent"],
+  chief_brief: ["Final operator brief", "Chief of Staff"],
+  launch_decision: ["Publication decision", "Daniel"],
+  ready_to_publish: ["Ready to publish", "Daniel"],
+};
+
+const terminalJourneyStatuses = new Set([
+  "completed",
+  "cancelled",
+  "stopped_after_correction",
+  "stopped_unknown_outcome",
+]);
+
+function journeyTaskStage(task) {
+  const parameters = task?.payload?.liveSpendRequest?.parameters || {};
+  return parameters.pantheonCommercial?.step === "demand_validator"
+    ? "demand_validation"
+    : parameters.pantheonCommercial?.step
+      || parameters.pantheonProduction?.stage
+      || null;
+}
+
+function journeyTaskOutcome(stage, task) {
+  if (!task) return null;
+  if (task.status !== "completed") return task.status;
+  const output = task.result?.output || {};
+  if (stage === "quality_review" && output.operatorDecision && output.operatorDecision !== "approve") {
+    return "changes_required";
+  }
+  if (stage === "storefront_visuals" && output.operatorDecision === "revise") {
+    return "changes_required";
+  }
+  return "completed";
+}
+
+function renderJourney() {
+  const data = store.data.journey;
+  const journey = data.journey;
+  const protection = data.prerequisites?.dataProtection;
+  if (!journey) {
+    const protectionReady = protection?.status === "active";
+    $("#view").innerHTML = `<div class="view-stack">
+      <section class="journey-start">
+        ${sectionHeading("Prove the complete business journey", "Pantheon will research broadly, compare three viable digital-product opportunities, build the strongest range, check it, and prepare the complete Gumroad package.")}
+        <label class="field-label" for="journey-prompt">Optional direction</label>
+        <textarea id="journey-prompt" rows="4" placeholder="Leave blank for a broad commercial scan, or describe a market or problem you want included."${protectionReady ? "" : " disabled"}></textarea>
+        <div class="journey-start-footer">
+          <div><strong>${protectionReady ? "Luna only" : "One safety decision first"}</strong><span>${escapeHtml(protectionReady
+            ? "Maximum combined exposure A$30.00. No account, publishing, customer contact, advertising, or money movement."
+            : protection?.nextAction || "Review the data-protection plan before live research begins.")}</span></div>
+          ${protectionReady
+            ? `<button class="primary-button" data-action="start-journey">${icon("play")}Start the full journey</button>`
+            : protection?.canPrepareDecision
+              ? `<button class="primary-button" data-action="prepare-retention-decision">${icon("shield-check")}Review data protection</button>`
+              : `<button class="primary-button" data-view="decisions">${icon("circle-check-big")}Open the safety decision</button>`}
+        </div>
+      </section>
+    </div>`;
+    return;
+  }
+
+  const activeIndex = data.stages.indexOf(journey.active_stage);
+  const currentTask = data.currentTask;
+  const taskByStage = new Map(
+    (data.tasks || [])
+      .filter((task) => task.status !== "superseded")
+      .map((task) => [journeyTaskStage(task), task]),
+  );
+  const currentTaskStage = journeyTaskStage(currentTask);
+  if (currentTask && currentTaskStage) taskByStage.set(currentTaskStage, currentTask);
+  const activeStageLatestTask = taskByStage.get(journey.active_stage);
+  const exposure = data.exposure || {};
+  const selection = journey.metadata?.selectionRationale || "";
+  const selectedId = journey.selected_opportunity_id || journey.metadata?.selectedOpportunityId;
+  const selected = (data.candidates || []).find((candidate) => candidate.id === selectedId);
+  const needsAttention = journey.status === "needs_attention";
+  const waitingDecision = journey.status === "waiting_for_operator";
+  const finished = journey.status === "completed";
+  const qualityTask = taskByStage.get("quality_review");
+  const qualityChangesRequired = journeyTaskOutcome("quality_review", qualityTask) === "changes_required";
+  const qualityOutput = qualityTask?.result?.output || {};
+  const qualityRoleOutput = qualityOutput.roleOutput || {};
+  const qualityFinding = operatorFriendlyQualityCopy(qualityOutput.summary
+    || qualityRoleOutput.riskFindings?.[0]
+    || "The product package did not match an approved customer promise.");
+  const qualityNextStep = operatorFriendlyQualityCopy(qualityRoleOutput.operatorRecommendation
+    || "Correct the product description or delivered files, then run the independent quality check again.");
+  const qualityRevision = Number(
+    qualityTask?.payload?.liveSpendRequest?.parameters?.pantheonProduction?.revisionNumber || 0,
+  );
+  const qualityCorrectionAvailable = qualityRevision < 1;
+  const currentCorrectionNumber = Math.max(
+    Number(currentTask?.payload?.liveSpendRequest?.parameters?.retry?.number || 0),
+    Number(currentTask?.payload?.liveSpendRequest?.parameters?.pantheonProduction?.revisionNumber || 0),
+  );
+  const correctionLimit = Math.max(0, Number(journey.metadata?.correctionLimitPerStage || 1));
+  const legacyExhaustedQualityStop = needsAttention
+    && journey.active_stage === "quality_review"
+    && qualityChangesRequired
+    && !qualityCorrectionAvailable
+    && !journey.metadata?.currentTaskId;
+  const legacyExhaustedWorkerStop = needsAttention
+    && currentCorrectionNumber > 0
+    && currentCorrectionNumber >= correctionLimit;
+  const stoppedAfterCorrection = journey.status === "stopped_after_correction"
+    || legacyExhaustedQualityStop
+    || legacyExhaustedWorkerStop;
+  const terminalStopped = (terminalJourneyStatuses.has(journey.status) && !finished)
+    || legacyExhaustedQualityStop
+    || legacyExhaustedWorkerStop;
+  const protectionBlock = protection?.status !== "active"
+    && /data protection|sensitive records|provider-side storage/i.test(String(
+      journey.metadata?.blocker || currentTask?.setup_block_reason || "",
+    ));
+  const decisionReviewLabel = needsAttention
+    ? "Review what needs attention"
+    : journey.active_stage === "product_build"
+      ? "Review the catalogue build"
+      : journey.active_stage === "launch_decision"
+        ? "Review the publication decision"
+        : "Review this decision";
+  const currentAction = finished
+    ? `<span class="badge mint">${icon("check")}Complete</span>`
+    : terminalStopped
+      ? `<button class="primary-button" data-action="restart-journey">${icon("rotate-cw")}Start a clean rehearsal</button>`
+    : protectionBlock && protection?.canPrepareDecision
+      ? `<button class="primary-button" data-action="prepare-retention-decision">${icon("shield-check")}Review data protection</button>`
+    : protectionBlock
+        ? `<button class="primary-button" data-view="decisions">${icon("circle-check-big")}Open the safety decision</button>`
+    : data.correction?.kind === "prepare_known_ai_retry"
+      ? `<button class="primary-button" data-action="prepare-known-ai-retry" data-id="${escapeHtml(data.correction.taskId)}">${icon("rotate-cw")}${escapeHtml(data.correction.label)}</button>`
+    : needsAttention && activeStageLatestTask?.status === "completed"
+      ? `<button class="primary-button" data-action="continue-journey" data-id="${escapeHtml(journey.id)}">${icon("check-check")}Apply the completed correction</button>`
+    : qualityChangesRequired && journey.active_stage === "quality_review"
+      ? `<button class="primary-button" data-action="continue-journey" data-id="${escapeHtml(journey.id)}">${icon(qualityCorrectionAvailable ? "wrench" : "refresh-cw")}${qualityCorrectionAvailable ? "Prepare one correction" : "Review the corrected package"}</button>`
+    : needsAttention || waitingDecision
+      ? `<button class="primary-button" data-view="decisions">${icon("circle-check-big")}${decisionReviewLabel}</button>`
+      : currentTask?.status === "running"
+        ? `<button class="secondary-button" data-action="refresh">${icon("refresh-cw")}Refresh progress</button>`
+        : `<button class="primary-button" data-action="continue-journey" data-id="${escapeHtml(journey.id)}">${icon("play")}Continue this stage</button>`;
+
+  const stageRows = data.stages.map((stage, index) => {
+    const task = taskByStage.get(stage);
+    const taskOutcome = journeyTaskOutcome(stage, task);
+    const status = taskOutcome === "changes_required"
+      ? "changes_required"
+      : stage === "candidate_selection"
+      ? selectedId ? "completed" : index < activeIndex ? "completed" : stage === journey.active_stage ? journey.status : "planned"
+      : stage === "launch_decision" || stage === "ready_to_publish"
+        ? index < activeIndex || (finished && stage === "ready_to_publish") ? "completed" : stage === journey.active_stage ? journey.status : "planned"
+        : taskOutcome || (index < activeIndex ? "completed" : stage === journey.active_stage ? journey.status : "planned");
+    const detail = journeyStageDetails[stage] || [humanStatus(stage), "Pantheon"];
+    return `<div class="journey-stage ${stage === journey.active_stage ? "active" : ""} ${status === "completed" ? "done" : ""} ${status === "changes_required" ? "changes-required" : ""}">
+      <span class="journey-stage-marker">${status === "completed" ? icon("check") : index + 1}</span>
+      <div><strong>${escapeHtml(detail[0])}</strong><small>${escapeHtml(detail[1])}</small></div>
+      ${badge(status)}
+    </div>`;
+  }).join("");
+
+  const candidateRows = (data.candidates || []).slice(0, 5).map((candidate) => {
+    const isSelected = candidate.id === selectedId;
+    const sourceDomains = [...new Set((candidate.sources || []).map((source) => externalDomain(source.source_url)).filter(Boolean))];
+    const sourceSummary = sourceDomains.length
+      ? `Evidence: ${sourceDomains.slice(0, 3).join(", ")}${sourceDomains.length > 3 ? ` +${sourceDomains.length - 3}` : ""}`
+      : "No attributable source link recorded yet";
+    const productSummary = isSelected && data.currentProduct
+      ? `${candidate.buyer} | Current product: ${data.currentProduct.title}. ${data.currentProduct.customerPromise || data.currentProduct.deliveryFormat}`
+      : `${candidate.buyer} | Original research direction: ${candidate.business_model}`;
+    return `<article class="plain-row">
+      <div><h3>${escapeHtml(candidate.title)}</h3><p>${escapeHtml(productSummary)}</p><small>${escapeHtml(sourceSummary)}</small></div>
+      <div class="candidate-score"><strong>${Number(candidate.overall_score || 0)}</strong><small>Discovery score</small>${badge(isSelected ? "Selected" : candidate.status)}</div>
+    </article>`;
+  }).join("");
+  const outputs = (data.outputs || []).filter((item) => item.file_path).slice(-10).reverse();
+  const outputRows = outputs.map((item) => `<article class="plain-row">
+    <div><h3>${escapeHtml(item.human_name || item.title)}</h3><p>${escapeHtml(item.summary || humanStatus(item.status))}</p></div>
+    <div class="work-actions">
+      ${canPreview(item.format, item.file_path) ? `<button class="secondary-button" data-action="open-pdf" data-id="${escapeHtml(item.id)}" data-title="${escapeHtml(item.human_name || item.title)}">${icon("file-search")}Preview</button>` : ""}
+      <a class="text-button" href="/api/deliverables/${encodeURIComponent(item.id)}/file" target="_blank" rel="noopener">${icon("download")}Open file</a>
+    </div>
+  </article>`).join("");
+  const journeySummary = terminalStopped
+    ? stoppedAfterCorrection
+      ? `This rehearsal stopped because the corrected product package still had a material quality issue. No incomplete files were accepted. ${money(exposure.totalCents || 0)} remains recorded against the ${money(journey.budget_cap_cents || 0)} proof limit.`
+      : journey.status === "cancelled"
+        ? `This journey was closed without another model call. Its evidence and ${money(exposure.totalCents || 0)} exposure remain recorded, and a clean rehearsal can now begin.`
+        : `Pantheon stopped because the provider outcome could not be confirmed. It did not retry automatically. ${money(exposure.totalCents || 0)} remains recorded against the ${money(journey.budget_cap_cents || 0)} proof limit.`
+    : qualityChangesRequired
+    ? qualityCorrectionAvailable
+      ? "The independent review found specific product and preview changes. Pantheon can prepare one bounded correction from those findings."
+      : "The independent review found verifiable issues in the corrected package. Pantheon will apply the result to the exact package hashes and stop unless a repaired package requires a new independent check."
+    : needsAttention && activeStageLatestTask?.status === "completed"
+      ? "The corrected AI result passed its checks and is safely stored. Apply it to the commercial record before the next stage begins."
+    : needsAttention
+    ? data.correction?.summary || journey.metadata?.blocker || "Pantheon stopped safely and needs review."
+    : selection || (selected
+      ? `${selected.title} is moving through one verified stage at a time.`
+      : "Pantheon is building evidence before choosing what to make.");
+  const qualityFindingBlock = qualityChangesRequired
+    ? `<section class="quality-stop-summary">
+        <div><span class="eyebrow">Why it stopped</span><h2>The product did not fully match its promise</h2><p>${escapeHtml(qualityFinding)}</p></div>
+        <div><span class="eyebrow">What must change</span><p>${escapeHtml(qualityNextStep)}</p></div>
+      </section>`
+    : "";
+
+  $("#view").innerHTML = `<div class="view-stack">
+    <section class="stage-callout ${needsAttention || terminalStopped ? "coral" : waitingDecision ? "amber" : "mint"} journey-now">
+      <div><span class="eyebrow">${escapeHtml(journey.mode === "rehearsal" ? "ISOLATED REHEARSAL" : "PRODUCTION-INTENT JOURNEY")}</span>
+      <h2>${escapeHtml(humanStatus(journey.active_stage))}</h2>
+      <p>${escapeHtml(journeySummary)}</p></div>
+      ${currentAction}
+    </section>
+    <section class="metric-grid">
+      <div class="metric sky"><span>${terminalStopped ? "Stopped at" : "Current worker"}</span><strong>${escapeHtml(currentTask ? humanStatus(currentTask.agent) : journeyStageDetails[journey.active_stage]?.[1] || "Pantheon")}</strong><small>${escapeHtml(terminalStopped ? humanStatus(journey.status) : currentTask ? humanStatus(currentTask.status) : humanStatus(journey.status))}</small></div>
+      <div class="metric mint"><span>Journey exposure</span><strong>${money(exposure.totalCents || 0)}</strong><small>of ${money(journey.budget_cap_cents)} maximum</small></div>
+      <div class="metric amber"><span>Opportunities retained</span><strong>${Number((data.candidates || []).length)}</strong><small>Three receive comparable validation</small></div>
+      <div class="metric"><span>Files retained</span><strong>${Number((data.outputs || []).length)}</strong><small>Each output remains tied to its source run</small></div>
+    </section>
+    ${qualityFindingBlock}
+    <section>${sectionHeading("Journey progress", "One specialist completes and records each bounded stage before Pantheon advances.")}
+      <div class="journey-stage-list">${stageRows}</div>
+    </section>
+    <div class="two-column">
+      <section>${sectionHeading(selected ? "Selected opportunity and product" : "Opportunity shortlist", selection || "Pantheon keeps all findings and explains the eventual choice.")}
+        ${candidateRows ? `<div class="plain-list">${candidateRows}</div>` : emptyState("Research has not completed yet", "The shortlist will appear after the Opportunity Scout finishes.", "search")}
+      </section>
+      <section>${sectionHeading("Journey controls", "The model and action limits are fixed to this exact run.")}
+        <div class="control-facts">
+          <div><span>Model</span><strong>${escapeHtml(journey.model)} | locked</strong></div>
+          <div><span>Outside actions</span><strong>Not allowed</strong></div>
+          <div><span>Correction limit</span><strong>One per stage</strong></div>
+          <div><span>Started</span><strong>${escapeHtml(shortDate(journey.started_at))}</strong></div>
+        </div>
+      </section>
+    </div>
+    <section>${sectionHeading("Files and review outputs", "Customer files, previews, listing material and the final operator brief appear here as they are genuinely created.")}
+      ${outputRows ? `<div class="plain-list">${outputRows}</div>` : emptyState("No files yet", "Files will appear only after a worker creates and Pantheon retains them.", "files")}
+    </section>
+  </div>`;
+}
+
 function renderView() {
   if (store.view === "cockpit") renderCockpit();
+  else if (store.view === "journey") renderJourney();
   else if (store.view === "decisions") renderDecisions();
   else if (store.view === "tests") renderTests();
   else if (store.view === "ai-team") renderAiTeam();
@@ -849,6 +1165,14 @@ async function refreshLiveRuns() {
   if (store.runPollBusy) return;
   store.runPollBusy = true;
   try {
+    if (store.view === "journey") {
+      store.data.journey = await fetchJson("/api/journey");
+      if (store.view === "journey") {
+        renderJourney();
+        refreshIcons();
+      }
+      return;
+    }
     if (store.view === "cockpit") {
       store.data.cockpit = await fetchJson("/api/cockpit");
       if (store.view === "cockpit") {
@@ -874,8 +1198,11 @@ async function refreshLiveRuns() {
 
 function syncLiveRunPolling() {
   const cockpitHasActiveRun = store.view === "cockpit" && Boolean(store.data.cockpit?.activeRuns?.length);
+  const journeyHasActiveRun = store.view === "journey"
+    && store.data.journey?.currentTask?.status === "running";
   const shouldPoll = store.runRequestActive
     || cockpitHasActiveRun
+    || journeyHasActiveRun
     || (store.view === "ai-team" && store.aiTeamTab === "runs");
   if (!shouldPoll && store.runPollTimer) {
     clearInterval(store.runPollTimer);
@@ -1113,6 +1440,10 @@ function runReviewBody(data) {
     : researchAttempted
       ? "Attempted; no usable sources"
       : "Not used";
+  const reviewedRecordCount = process.businessContext?.sections?.reduce(
+    (total, section) => total + Number(section.recordCount || 0),
+    0,
+  ) || process.suppliedEvidence?.length || 0;
   const sources = execution.sources?.length
     ? `<div class="evidence-list">${execution.sources.map((source) => {
         const url = safeExternalUrl(source.url);
@@ -1155,7 +1486,7 @@ function runReviewBody(data) {
     ${errorSection}
     ${qualitySection}
     <section class="run-fact-strip">
-      <div><span>Evidence reviewed</span><strong>${process.suppliedEvidence?.length || 0} supplied item${process.suppliedEvidence?.length === 1 ? "" : "s"}</strong></div>
+      <div><span>Records reviewed</span><strong>${reviewedRecordCount} business record${reviewedRecordCount === 1 ? "" : "s"}</strong></div>
       <div><span>Web research</span><strong>${escapeHtml(researchLabel)}</strong></div>
       <div><span>External action</span><strong>${execution.externalEffects.length ? "Recorded" : "None"}</strong></div>
       <div><span>Estimated cost</span><strong>${escapeHtml(providerCost)}</strong></div>
@@ -1212,8 +1543,15 @@ async function showDetail(kind, id, options = {}) {
     const aiCheck = Boolean(item.provider || item.model || item.worker);
     const liveResearch = item.tools?.some((tool) => ["research_adapter", "live_web_with_approval"].includes(tool));
     const handoffDecision = item.decisionKind === "handoff";
+    const qualityReview = ["quality_reviewer", "quality reviewer"]
+      .includes(String(item.worker || "").trim().toLowerCase());
+    const finalQualityRecheck = qualityReview && (
+      item.finalQualityRecheck === true
+      || Number(item.correctionNumber || 0) > 0
+    );
     const catalogueBuild = item.decisionActionKind === "catalogue_build";
     const launchReadiness = item.decisionActionKind === "launch_readiness";
+    const dataProtection = item.decisionActionKind === "data_protection";
     const assignment = item.assignment
       ? detailSection("What the AI will review", `<p class="lead-copy">${escapeHtml(item.assignment.question || "The question was not stated.")}</p><div class="review-facts simple"><div><span>Intended buyer</span><strong>${escapeHtml(item.assignment.buyer || "Not stated")}</strong></div><div><span>Evidence supplied</span><strong>${escapeHtml(String(item.assignment.evidenceCount || 0))} item${Number(item.assignment.evidenceCount || 0) === 1 ? "" : "s"}</strong></div></div>`)
       : "";
@@ -1230,7 +1568,9 @@ async function showDetail(kind, id, options = {}) {
     const pricedBound = item.pricedWorstCaseCostCents
       ? ` The current priced upper estimate is ${money(item.pricedWorstCaseCostCents)}; final usage is recorded after the run.`
       : "";
-    const whatHappens = catalogueBuild
+    const whatHappens = dataProtection
+      ? "Pantheon will activate these local record-handling rules for future work. No records will be deleted."
+      : catalogueBuild
       ? `Pantheon will create and retain the complete ${item.productBuild?.productCount || "planned"}-product catalogue, then run an independent quality review. The files stay local until a later launch decision.`
       : launchReadiness
         ? "Pantheon will mark the finished package ready for the separate Gumroad publishing action. It will not create an account, complete KYC, publish, post, contact anyone, or spend money."
@@ -1238,17 +1578,21 @@ async function showDetail(kind, id, options = {}) {
       ? "Pantheon will turn the reviewed result into the next internal work step. Nothing will be published or sent outside Pantheon."
       : liveResearch
         ? `${item.worker || "The Demand Validator"} will search current public sources for buyer demand, alternatives, pricing signals, and a suitable audience. It will return the evidence and recommendation here for your review.`
+        : qualityReview
+          ? finalQualityRecheck
+            ? "This is the final independent content recheck after Pantheon used its one permitted product correction. If the corrected files still have a material defect, Pantheon stops. A cut-off or malformed AI answer is recorded separately and can be retried only after a new cost decision."
+            : "The Quality Reviewer will inspect the exact product files. If it finds one fixable defect, Pantheon may make its single permitted internal correction and recheck it automatically within the journey's total spending limit. It stops if the corrected package still fails."
         : aiCheck
           ? `${item.worker || "The AI worker"} will complete this one check and return the result for your review.`
           : "Pantheon will carry out only the work described in this decision.";
     const limits = item.effects?.length
-      ? `Only these approved effects are allowed: ${item.effects.join(", ")}.`
+      ? `Only these approved effects are allowed: ${item.effects.map((effect) => String(effect).replace(/\.*$/, "")).join(", ")}.`
       : "It cannot publish, contact anyone, change an account, sign anything, or move money.";
     const costStatement = Number(item.maxCostCents || 0) > 0
       ? `The absolute cost limit is ${money(item.maxCostCents)}.${pricedBound}`
       : "No provider spend is approved by this decision.";
     const productBuild = item.productBuild
-      ? detailSection("What will be built", `<div class="review-facts"><div><span>Products</span><strong>${escapeHtml(String(item.productBuild.productCount))}</strong></div><div><span>Expected formats</span><strong>${escapeHtml(item.productBuild.formats.join(", ") || "Defined in the build plan")}</strong></div></div><p>${escapeHtml(item.productBuild.qualityBar || "Every file must be complete and customer-usable.")}</p>`)
+      ? detailSection("What will be built", `<div class="review-facts"><div><span>Products</span><strong>${escapeHtml(String(item.productBuild.productCount))}</strong></div><div><span>Expected formats</span><strong>${escapeHtml(item.productBuild.formats.join(", ") || "Defined in the build plan")}</strong></div></div>${item.productBuild.items?.length ? `<ol class="catalogue-decision-list">${item.productBuild.items.map((product) => `<li><strong>${escapeHtml(product.title)}</strong>${product.priceCents ? `<span>${money(product.priceCents)}</span>` : ""}</li>`).join("")}</ol>` : ""}<p>${escapeHtml(item.productBuild.qualityBar || "Every file must be complete and customer-usable.")}</p>`)
       : "";
     const technical = [businessContext, execution, productBuild, detailSection("Exact limits", `<p>${escapeHtml(costStatement)}<br>Risk level: ${escapeHtml(humanStatus(item.risk))}.<br>${escapeHtml(limits)}${item.tracePolicy?.providerTraceContent ? "<br>The approved non-personal input and output will be available in the OpenAI trace." : ""}</p>`)].join("");
     openDrawer(item.title, "Your decision", `<div class="review-workspace">
@@ -1269,7 +1613,9 @@ async function showDetail(kind, id, options = {}) {
   const source = kind === "review" ? store.data.decisions?.reviews : store.data.cockpit?.importantWork;
   const item = source?.find((entry) => entry.id === id);
   const retryAction = item?.action?.kind === "prepare_known_ai_retry"
-    ? `<div class="drawer-footer-copy"><strong>Prepare one corrected attempt</strong><span>This creates a separate cost decision. It does not call OpenAI yet.</span></div><button class="primary-button" data-action="prepare-known-ai-retry" data-id="${escapeHtml(item.id)}">${icon("rotate-cw")}${escapeHtml(item.action.label)}</button>`
+    ? item.type === "pre_dispatch_recovery"
+      ? `<div class="drawer-footer-copy"><strong>Try this stage again</strong><span>The local problem is fixed. This prepares a fresh exact decision and does not call OpenAI yet.</span></div><button class="primary-button" data-action="prepare-known-ai-retry" data-id="${escapeHtml(item.id)}">${icon("rotate-cw")}${escapeHtml(item.action.label)}</button>`
+      : `<div class="drawer-footer-copy"><strong>Prepare one corrected attempt</strong><span>This creates a separate cost decision. It does not call OpenAI yet.</span></div><button class="primary-button" data-action="prepare-known-ai-retry" data-id="${escapeHtml(item.id)}">${icon("rotate-cw")}${escapeHtml(item.action.label)}</button>`
     : "";
   const body = [
     detailSection("What happened", `<p>${escapeHtml(item?.summary || item?.recommendation || "No additional detail is available.")}</p>`),
@@ -1387,16 +1733,29 @@ async function handleAction(button) {
     if (button.dataset.mode === "idea" && !text) {
       throw new Error("Describe the business idea you want Pantheon to review.");
     }
-    const payload = await withRunPolling(() => postJson("/api/pantheon/discovery", button.dataset.mode === "idea"
-      ? { idea: text, runNow: true }
-      : { prompt: text || undefined, runNow: true }));
-    const supervisor = payload.supervisor;
-    toast(supervisor?.status === "needs_attention"
-      ? "Pantheon stopped safely because this work needs review."
-      : supervisor?.status === "waiting_for_operator"
-        ? supervisor.cycle?.summary || "Pantheon needs one setup or policy decision before continuing."
-        : "Pantheon started the commercial research.");
-    return loadView("tests", { silent: true });
+    const payload = await postJson("/api/pantheon/journeys", button.dataset.mode === "idea"
+      ? { idea: text }
+      : { prompt: text || undefined });
+    toast(payload.alreadyRunning
+      ? "The current full journey is already open."
+      : "Pantheon prepared the complete Luna journey. Continue when you are ready to run the first specialist.");
+    return loadView("journey", { silent: true });
+  }
+  if (action === "start-journey") {
+    const prompt = $("#journey-prompt")?.value.trim() || undefined;
+    const payload = await postJson("/api/pantheon/journeys", { prompt });
+    toast(payload.alreadyRunning ? "The current full journey is already open." : "The full Luna journey is ready. Continue when you are ready to run the first specialist.");
+    return loadView("journey", { silent: true });
+  }
+  if (action === "restart-journey") {
+    const payload = await postJson("/api/pantheon/journeys", { mode: "rehearsal", force: true });
+    toast(`A clean Luna rehearsal is ready. ${money(payload.state?.exposure?.totalCents || 0)} of earlier proof exposure remains counted.`);
+    return loadView("journey", { silent: true });
+  }
+  if (action === "continue-journey") {
+    const payload = await withRunPolling(() => postJson(`/api/pantheon/journeys/${encodeURIComponent(button.dataset.id)}/continue`, {}));
+    toast(payload.result?.cycle?.summary || `Journey: ${humanStatus(payload.state?.journey?.status || "complete")}.`);
+    return loadView("journey", { silent: true });
   }
   if (action === "run-pantheon") {
     const payload = await withRunPolling(() => postJson("/api/pantheon/run", { maxSteps: 1 }));
@@ -1422,9 +1781,7 @@ async function handleAction(button) {
   }
   if (action === "prepare-retention-decision") {
     await postJson("/api/system/retention/prepare-decision", {});
-    store.view = "decisions";
     store.decisionTab = "approvals";
-    syncNavigation();
     return loadView("decisions", { silent: true });
   }
   if (action === "run-next") {
@@ -1444,7 +1801,9 @@ async function handleAction(button) {
     closeDrawer();
     await loadView("decisions", { silent: true });
     if (payload.result?.approval?.id) await showDetail("decision", payload.result.approval.id);
-    toast("The corrected Luna retry is ready for your exact cost decision. OpenAI has not been called yet.");
+    toast(payload.result?.technicalRecovery
+      ? "A fresh decision for the same stage is ready. OpenAI has not been called yet."
+      : "The corrected Luna retry is ready for your exact cost decision. OpenAI has not been called yet.");
     return;
   }
   if (action === "review-agent-run") {

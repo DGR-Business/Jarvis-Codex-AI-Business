@@ -155,6 +155,13 @@ function getAccountingSummary(db, options = {}) {
   const month = options.month || new Date().toISOString().slice(0, 7);
   const entries = all(db, "SELECT * FROM accounting_entries ORDER BY occurred_at DESC, created_at DESC")
     .map(hydrate);
+  const reversedEntryIds = new Set(
+    entries.map((entry) => entry.reverses_entry_id).filter(Boolean),
+  );
+  const currentEntries = entries.filter((entry) => (
+    Number(entry.effect_sign || 1) === 1
+    && !reversedEntryIds.has(entry.id)
+  ));
   const cashPaidCents = entries
     .filter((entry) => entry.status === "reconciled"
       && CASH_ENTRY_TYPES.has(entry.entry_type)
@@ -169,7 +176,8 @@ function getAccountingSummary(db, options = {}) {
     cashPaidCents,
     recurringMonthlyCents,
     entryCount: entries.length,
-    recent: entries.slice(0, Number(options.limit || 8)),
+    currentEntryCount: currentEntries.length,
+    recent: currentEntries.slice(0, Number(options.limit || 8)),
   };
 }
 

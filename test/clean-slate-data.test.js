@@ -264,6 +264,9 @@ test("reconciled accounting is append-only and corrections use signed reversal r
     const summary = getAccountingSummary(runtime.db, { month: "2026-07" });
     assert.equal(summary.cashPaidCents, 800);
     assert.equal(summary.entryCount, 3);
+    assert.equal(summary.currentEntryCount, 1);
+    assert.equal(summary.recent.length, 1);
+    assert.equal(summary.recent[0].description, "Corrected reconciled charge");
   } finally {
     closeRuntime(runtime);
   }

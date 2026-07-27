@@ -87,6 +87,12 @@ const {
 const { getOpportunityState, startOpportunityRound } = require("./runtime/pantheon-opportunities");
 const { getPantheonSupervisorState, runPantheonSupervisorCycle } = require("./runtime/pantheon-supervisor");
 const { applyPantheonHandoffDecision, getProductionState } = require("./runtime/pantheon-production");
+const {
+  getJourneyState,
+  isTerminalJourneyStatus,
+  journeyById,
+  startPantheonJourney,
+} = require("./runtime/pantheon-journey");
 
 const PUBLIC_DIR = path.join(CONFIG.rootDir, "public");
 const MONITOR_JOB_ID = "job-monitor-cycle";
@@ -662,6 +668,11 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/api/journey") {
+        jsonResponse(res, 200, getJourneyState(db, url.searchParams.get("id")));
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/api/production") {
         jsonResponse(res, 200, getProductionState(db));
         return;
@@ -1102,6 +1113,56 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "POST" && url.pathname === "/api/pantheon/journeys") {
+        const body = await readBody(req);
+        const journeyInput = {
+          mode: body.mode || CONFIG.journeyMode,
+          prompt: body.prompt,
+          idea: body.idea,
+          geography: body.geography,
+          language: body.language,
+          model: CONFIG.lunaModel,
+          budgetCapCents: Math.min(
+            CONFIG.journeyBudgetCapCents,
+            Number(body.budgetCapCents || CONFIG.journeyBudgetCapCents),
+          ),
+          source: "dashboard-full-journey",
+          createdBy: "Daniel",
+          force: body.force === true,
+        };
+        if (body.carriedExposureCents !== undefined) {
+          journeyInput.carriedExposureCents = Number(body.carriedExposureCents);
+        }
+        const result = startPantheonJourney(db, journeyInput);
+        broadcastState();
+        jsonResponse(res, result.alreadyRunning ? 200 : 202, result);
+        return;
+      }
+
+      const journeyContinue = routeMatch(url.pathname, "/api/pantheon/journeys/:id/continue");
+      if (req.method === "POST" && journeyContinue) {
+        const journey = journeyById(db, journeyContinue.id);
+        if (!journey) {
+          jsonResponse(res, 404, { error: "This Pantheon journey was not found." });
+          return;
+        }
+        if (isTerminalJourneyStatus(journey.status)) {
+          jsonResponse(res, 409, { error: "This journey is already finished.", state: getJourneyState(db, journey.id) });
+          return;
+        }
+        const result = await runPantheonSupervisorCycle(db, {
+          triggerType: "manual",
+          triggerId: journey.id,
+          startedBy: "dashboard-full-journey",
+          workflowId: journey.workflow_id,
+          ventureId: journey.venture_id,
+          maxSteps: 2,
+        });
+        broadcastState();
+        jsonResponse(res, 200, { result, state: getJourneyState(db, journey.id) });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/pantheon/run") {
         const body = await readBody(req);
         const result = await runPantheonSupervisorCycle(db, {
@@ -1357,7 +1418,7 @@ function createApp(options = {}) {
           ? await runOnce(db, { taskId: result.approvedTaskIds[0], claimant: "dashboard_approval" })
           : null;
         const approvedTask = result.approvedTaskIds?.length
-          ? get(db, "SELECT payload FROM tasks WHERE id = ?", [result.approvedTaskIds[0]])
+          ? get(db, "SELECT payload, workflow_id, venture_id FROM tasks WHERE id = ?", [result.approvedTaskIds[0]])
           : null;
         const approvedPayload = fromJson(approvedTask?.payload, {});
         const isPantheonWork = Boolean(
@@ -1365,12 +1426,14 @@ function createApp(options = {}) {
           || approvedPayload.liveSpendRequest?.parameters?.pantheonProduction,
         );
         const pantheonContinuation = decision === "approved"
-          && execution?.status === "completed"
+          && execution
           && isPantheonWork
           ? await runPantheonSupervisorCycle(db, {
             triggerType: "operator_approval",
             triggerId: approvalDecision.id,
             startedBy: "dashboard",
+            workflowId: approvedTask.workflow_id,
+            ventureId: approvedTask.venture_id,
             maxSteps: 10,
           })
           : null;

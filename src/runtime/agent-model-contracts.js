@@ -68,6 +68,129 @@ const FIELD_TYPES = {
       },
     },
   },
+  catalogueArray: {
+    json: {
+      type: "array",
+      minItems: 3,
+      maxItems: 12,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string" },
+          buyerSegment: { type: "string" },
+          outcome: { type: "string" },
+          format: { type: "string" },
+          includedTools: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 5 },
+          differentiation: { type: "string" },
+          priceCents: { type: "number" },
+        },
+        required: [
+          "title",
+          "buyerSegment",
+          "outcome",
+          "format",
+          "includedTools",
+          "differentiation",
+          "priceCents",
+        ],
+      },
+    },
+  },
+  productBlueprint: {
+    json: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        schema: { type: "string", enum: ["pantheon.product-blueprint.v3"] },
+        packageTitle: { type: "string" },
+        customerPromise: { type: "string" },
+        setupSteps: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 6 },
+        disclaimers: { type: "array", items: { type: "string" }, maxItems: 3 },
+        catalogueItems: {
+          type: "array",
+          minItems: 3,
+          maxItems: 6,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              id: { type: "string" },
+              title: { type: "string" },
+              purpose: { type: "string" },
+              instructions: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 5 },
+              columns: {
+                type: "array",
+                minItems: 4,
+                maxItems: 12,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    type: {
+                      type: "string",
+                      enum: ["text", "date", "currency", "number", "percent", "status", "boolean"],
+                    },
+                    guidance: { type: "string" },
+                    options: {
+                      type: "array",
+                      maxItems: 12,
+                      items: { type: "string" },
+                      description: "For status fields, list every allowed dropdown value. Use [] for every other field type.",
+                    },
+                  },
+                  required: ["name", "type", "guidance", "options"],
+                },
+              },
+              sampleRows: {
+                type: "array",
+                minItems: 1,
+                maxItems: 3,
+                items: {
+                  type: "array",
+                  minItems: 4,
+                  maxItems: 12,
+                  items: { type: "string" },
+                },
+              },
+              calculations: {
+                type: "array",
+                maxItems: 6,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    target: {
+                      type: "string",
+                      description: "Exact copy of one column.name in this same catalogue item.",
+                    },
+                    operation: {
+                      type: "string",
+                      enum: ["multiply", "sum", "subtract", "percent_of"],
+                    },
+                    inputs: {
+                      type: "array",
+                      minItems: 2,
+                      maxItems: 6,
+                      items: {
+                        type: "string",
+                        description: "Exact copy of one input column.name in this same catalogue item.",
+                      },
+                      description: "For percent_of, use exactly [numerator column name, denominator column name].",
+                    },
+                  },
+                  required: ["target", "operation", "inputs"],
+                },
+              },
+            },
+            required: ["id", "title", "purpose", "instructions", "columns", "sampleRows", "calculations"],
+          },
+        },
+      },
+      required: ["schema", "packageTitle", "customerPromise", "setupSteps", "disclaimers", "catalogueItems"],
+    },
+  },
 };
 
 const WORKER_CONTRACTS = {
@@ -130,6 +253,7 @@ const WORKER_CONTRACTS = {
       testHypothesis: "string",
       successMetric: "string",
       stopRule: "string",
+      catalogueItems: "catalogueArray",
     },
   },
   product_builder: {
@@ -151,9 +275,13 @@ const WORKER_CONTRACTS = {
     label: "Copy and Conversion Agent",
     focusKeys: ["buyer", "problem", "offer", "channel", "desiredAction"],
     fields: {
+      productTitle: "string",
       headline: "string",
       description: "string",
       callToAction: "string",
+      includedFiles: "stringArray",
+      tags: "stringArray",
+      faq: "stringArray",
       messageVariants: "stringArray",
       claimChecks: "stringArray",
       trackingNote: "string",
@@ -219,6 +347,24 @@ const WORKER_CONTRACTS = {
   },
 };
 
+const PRODUCT_BUILDER_VISUAL_FIELDS = Object.freeze({
+  productFormat: "string",
+  productionMethod: "string",
+  limitations: "stringArray",
+  approvalNeeded: "string",
+  channelFit: "string",
+});
+
+const PRODUCT_BUILDER_FILE_FIELDS = {
+  productFormat: "string",
+  productionMethod: "string",
+  qualityChecks: "stringArray",
+  limitations: "stringArray",
+  approvalNeeded: "string",
+  channelFit: "string",
+  productBlueprint: "productBlueprint",
+};
+
 function compactText(value, max = 1200) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
@@ -241,7 +387,7 @@ function jsonField(type) {
   return { ...(FIELD_TYPES[type] || FIELD_TYPES.string).json };
 }
 
-function zodField(z, type) {
+function zodField(z, type, options = {}) {
   if (type === "number") return z.number();
   if (type === "boolean") return z.boolean();
   if (type === "stringArray") return z.array(z.string()).max(5);
@@ -270,13 +416,67 @@ function zodField(z, type) {
       confidence: z.enum(["low", "medium", "high"]),
     }).strict()).min(3).max(5);
   }
+  if (type === "catalogueArray") {
+    return z.array(z.object({
+      title: z.string(),
+      buyerSegment: z.string(),
+      outcome: z.string(),
+      format: z.string(),
+      includedTools: z.array(z.string()).min(1).max(5),
+      differentiation: z.string(),
+      priceCents: z.number(),
+    }).strict()).min(3).max(12);
+  }
+  if (type === "productBlueprint") {
+    const approvedIds = Array.isArray(options.productBuildSpec?.catalogueItems)
+      ? options.productBuildSpec.catalogueItems.map((item) => String(item.id || "")).filter(Boolean)
+      : [];
+    const column = z.object({
+      name: z.string(),
+      type: z.enum(["text", "date", "currency", "number", "percent", "status", "boolean"]),
+      guidance: z.string(),
+      options: z.array(z.string()).max(12)
+        .describe("For status fields, list every allowed dropdown value. Use [] for every other field type."),
+    }).strict();
+    const calculation = z.object({
+      target: z.string().describe("Exact copy of one column.name in this same catalogue item."),
+      operation: z.enum(["multiply", "sum", "subtract", "percent_of"]),
+      inputs: z.array(
+        z.string().describe("Exact copy of one input column.name in this same catalogue item."),
+      ).min(2).max(6).describe("For percent_of, use exactly [numerator column name, denominator column name]."),
+    }).strict();
+    const item = z.object({
+      id: approvedIds.length ? z.enum(approvedIds) : z.string(),
+      title: z.string(),
+      purpose: z.string(),
+      instructions: z.array(z.string()).min(2).max(5),
+      columns: z.array(column).min(4).max(12),
+      sampleRows: z.array(z.array(z.string()).min(4).max(12)).min(1).max(3),
+      calculations: z.array(calculation).max(6),
+    }).strict();
+    const itemList = z.array(item);
+    return z.object({
+      schema: z.literal("pantheon.product-blueprint.v3"),
+      packageTitle: z.string(),
+      customerPromise: z.string(),
+      setupSteps: z.array(z.string()).min(3).max(6),
+      disclaimers: z.array(z.string()).max(3),
+      catalogueItems: approvedIds.length
+        ? itemList.min(approvedIds.length).max(approvedIds.length)
+        : itemList.min(3).max(6),
+    }).strict();
+  }
   return z.string();
 }
 
 function workerOutputJsonSchema(workerId) {
   const contract = contractFor(workerId);
+  return outputJsonSchemaForFields(contract.fields);
+}
+
+function outputJsonSchemaForFields(fields) {
   const workProperties = Object.fromEntries(
-    Object.entries(contract.fields).map(([name, type]) => [name, jsonField(type)]),
+    Object.entries(fields).map(([name, type]) => [name, jsonField(type)]),
   );
   return {
     type: "object",
@@ -302,8 +502,12 @@ function workerOutputJsonSchema(workerId) {
 
 function workerOutputZodSchema(z, workerId) {
   const contract = contractFor(workerId);
+  return outputZodSchemaForFields(z, contract.fields);
+}
+
+function outputZodSchemaForFields(z, fields, options = {}) {
   const work = Object.fromEntries(
-    Object.entries(contract.fields).map(([name, type]) => [name, zodField(z, type)]),
+    Object.entries(fields).map(([name, type]) => [name, zodField(z, type, options)]),
   );
   return z.object({
     summary: z.string(),
@@ -315,6 +519,32 @@ function workerOutputZodSchema(z, workerId) {
     confidence: z.enum(["low", "medium", "high"]),
     work: z.object(work).strict(),
   }).strict();
+}
+
+function productBuilderFileOutputJsonSchema(productBuildSpec = null) {
+  const schema = structuredClone(outputJsonSchemaForFields(PRODUCT_BUILDER_FILE_FIELDS));
+  const approvedIds = Array.isArray(productBuildSpec?.catalogueItems)
+    ? productBuildSpec.catalogueItems.map((item) => String(item.id || "")).filter(Boolean)
+    : [];
+  if (approvedIds.length) {
+    const itemList = schema.properties.work.properties.productBlueprint.properties.catalogueItems;
+    itemList.minItems = approvedIds.length;
+    itemList.maxItems = approvedIds.length;
+    itemList.items.properties.id.enum = approvedIds;
+  }
+  return schema;
+}
+
+function productBuilderFileOutputZodSchema(z, productBuildSpec = null) {
+  return outputZodSchemaForFields(z, PRODUCT_BUILDER_FILE_FIELDS, { productBuildSpec });
+}
+
+function productBuilderVisualOutputJsonSchema() {
+  return outputJsonSchemaForFields(PRODUCT_BUILDER_VISUAL_FIELDS);
+}
+
+function productBuilderVisualOutputZodSchema(z) {
+  return outputZodSchemaForFields(z, PRODUCT_BUILDER_VISUAL_FIELDS);
 }
 
 function demandValidatorPilotOutputSchema(z) {
@@ -369,7 +599,8 @@ function assignmentBrief(payload) {
   return {
     objective: compactText(brief.objective, 800),
     deliverable: compactText(brief.deliverable, 800),
-    assetPrompt: compactText(brief.assetPrompt, 2400),
+    assetPrompt: compactText(brief.assetPrompt, 12000),
+    requiredCorrections: list(brief.requiredCorrections, 6),
     constraints: list(brief.constraints, 6),
     acceptanceCriteria: list(brief.acceptanceCriteria, 6),
   };
@@ -418,7 +649,8 @@ function buildWorkerModelPacket(db, task, agentDefinition) {
   const scorecard = get(db, "SELECT * FROM venture_scorecards WHERE workflow_id = ?", [task.workflow_id]);
   const ventureId = task.venture_id || workflow?.venture_id || null;
   const venture = ventureId ? get(db, "SELECT * FROM ventures WHERE id = ?", [ventureId]) : null;
-  const recentWork = all(
+  const currentTruthOnly = payload.liveSpendRequest?.parameters?.pantheonProduction?.currentTruthOnly === true;
+  const recentWork = currentTruthOnly ? [] : all(
     db,
     `SELECT title, agent, status, result
      FROM tasks
@@ -467,7 +699,13 @@ function buildWorkerModelPacket(db, task, agentDefinition) {
     assignmentBrief: assignmentBrief(payload),
     suppliedEvidenceFixture: payload.pilotFixture || null,
     approvedAssetInputs: approvedAssetDescriptors(db, task, payload, workerId),
+    approvedProductBuildSpec: workerId === "product_builder"
+      ? parsed(payload.liveSpendRequest?.parameters?.productBuildSpec, null)
+      : null,
     qualityReviewTargets: approvedDeliverableReviewTargets(db, task, payload, workerId),
+    qualityReviewPacket: workerId === "quality_reviewer"
+      ? parsed(payload.liveSpendRequest?.parameters?.qualityReviewPacket, null)
+      : null,
     relevantCompletedWork: recentWork,
     evidenceRules: {
       liveEvidenceOnlyWhenSupplied: true,
@@ -575,6 +813,10 @@ module.exports = {
   demandValidatorPilotOutputSchema,
   normalizeWorkerOutput,
   outputSchemaName,
+  productBuilderFileOutputJsonSchema,
+  productBuilderFileOutputZodSchema,
+  productBuilderVisualOutputJsonSchema,
+  productBuilderVisualOutputZodSchema,
   workerOutputJsonSchema,
   workerOutputZodSchema,
 };

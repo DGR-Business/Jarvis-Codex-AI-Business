@@ -10,6 +10,8 @@ const {
   buildWorkerModelPacket,
   normalizeWorkerOutput,
   outputSchemaName,
+  productBuilderFileOutputJsonSchema,
+  productBuilderVisualOutputJsonSchema,
   workerOutputJsonSchema,
 } = require("../runtime/agent-model-contracts");
 const { bindModelCallToAttempt } = require("../runtime/agent-execution-evidence");
@@ -274,6 +276,16 @@ function getRecentTasks(db, workflowId) {
 function buildWorkerPrompt(task, agentDefinition, policy) {
   const requested = task.payload || {};
   const requestedTools = requested.liveSpendRequest?.tools || [];
+  const requiredCorrections = Array.isArray(requested.workBrief?.requiredCorrections)
+    ? requested.workBrief.requiredCorrections
+      .filter(Boolean)
+      .map((item) => compactText(item, 700))
+      .slice(0, 6)
+    : [];
+  const productFileFactoryRun = agentDefinition.id === "product_builder"
+    && requestedTools.includes("product_file_factory");
+  const productVisualRun = agentDefinition.id === "product_builder"
+    && requestedTools.includes("image_generation_spend");
   const hardStops = agentDefinition.approval_policy?.mustPauseFor || [];
   const chiefInstruction = agentDefinition.id === "chief_of_staff"
     ? requested.chiefOrchestration?.enabled === true
@@ -281,9 +293,13 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
       : "This is not a specialist-assignment run. Set specialistNeeded=false and leave the specialist text fields empty with an empty specialistContextClasses list."
     : null;
   const qualityInstruction = agentDefinition.id === "quality_reviewer"
-    ? "Review only qualityReviewTargets. They contain the exact output frozen for this approval. If that list is empty, do not pass the work. Use claimSafety='safe' only when the supplied material supports its material claims."
+    ? "Review only qualityReviewTargets, qualityReviewPacket, and approvedAssetInputs. They contain the exact files, complete package facts, and visuals frozen for this approval. If qualityReviewTargets or qualityReviewPacket is empty, do not pass the work. Keep the strict result compact: one short sentence in each text field and at most three short items in each array, with no repeated finding. Return riskFindings and missingEvidence as explicit arrays, including empty arrays when none exist. In claimSafety, begin with Safe, Revise, or Unsafe and briefly explain why; do not return only the label."
     : null;
-  const outputInstruction = requested.pilotFixture
+  const outputInstruction = productFileFactoryRun
+    ? "Return the exact Product Builder fields in strict JSON. The productBlueprint must match every ID in approvedProductBuildSpec, define complete customer-facing contents, and include practical fields, instructions, realistic sample records, and a calculations array for every item. Keep each text field concise and do not repeat explanations. Do not claim files already exist. Pantheon will render and validate the files deterministically from this blueprint after your answer passes schema validation."
+    : productVisualRun
+      ? "After creating the one approved image, return the exact compact Product Builder visual fields in strict JSON. Keep every text field to one short sentence and limitations to at most two short items. Do not repeat the image prompt or describe work that was not completed."
+    : requested.pilotFixture
     ? "For this controlled Demand Validator pilot, return only the concise supplied-evidence recommendation fields requested by the output schema. Use no more than two short items in each list and one short paragraph per text field. Do not repeat the same judgement in a generic businessDecision object."
     : `Return the shared recommendation fields plus the exact ${agentDefinition.name} role fields inside work. Do not add a generic businessDecision object or fields that are not in the supplied schema.`;
   const evidenceInstruction = requested.pilotFixture
@@ -291,6 +307,13 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
     : requestedTools.some((toolId) => ["research_adapter", "live_web_with_approval"].includes(toolId))
       ? "Use the approved web search before deciding. Search directly for current buyer language, competing alternatives, price signals, or a reachable audience relevant to this exact buyer and problem. A calculator, weather, time, or unrelated query does not satisfy this assignment. Base any live-evidence claim on attributable source URLs returned in this run. If no usable source URL is returned, state that the research is incomplete and do not recommend advancing on live evidence."
       : null;
+  const correctionInstruction = requiredCorrections.length
+    ? [
+      "This is a reviewed correction attempt. The following checks are mandatory and take priority over inherited drafting preferences:",
+      ...requiredCorrections.map((item, index) => `${index + 1}. ${item}`),
+      "Implement each correction in the structured result. Do not merely acknowledge, explain, or restate it.",
+    ].join("\n")
+    : null;
   return [
     `Worker: ${agentDefinition.name}`,
     `Role: ${agentDefinition.role}`,
@@ -306,6 +329,7 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
     evidenceInstruction,
     chiefInstruction,
     qualityInstruction,
+    correctionInstruction,
     outputInstruction,
   ].filter(Boolean).join("\n");
 }
@@ -314,6 +338,12 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
   const approvedRequest = task.payload?.liveSpendRequest || {};
   const requestContext = buildWorkerModelPacket(db, task, agentDefinition);
   const tracePolicy = approvedRequest.tracePolicy || {};
+  const productFileFactoryRun = agentDefinition.id === "product_builder"
+    && Array.isArray(approvedRequest.tools)
+    && approvedRequest.tools.includes("product_file_factory");
+  const productVisualRun = agentDefinition.id === "product_builder"
+    && Array.isArray(approvedRequest.tools)
+    && approvedRequest.tools.includes("image_generation_spend");
 
   return {
     model: approvedRequest.model || environmentValue("liveModel", CONFIG.liveModel),
@@ -327,7 +357,11 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
       {
         role: "user",
         content: [
-          "Return one operator-ready business decision in strict JSON.",
+          productFileFactoryRun
+            ? "Design the exact approved product package once. Return the strict Product Builder JSON; Pantheon will render real local files from productBlueprint after validation."
+            : productVisualRun
+              ? "Create the one approved storefront image, then return one compact Product Builder visual result in strict JSON."
+              : "Return one operator-ready business decision in strict JSON.",
           "Worker-specific business packet:",
           JSON.stringify(requestContext, null, 2),
         ].join("\n"),
@@ -338,7 +372,11 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
         type: "json_schema",
         name: outputSchemaName(agentDefinition.id),
         strict: true,
-        schema: workerOutputJsonSchema(agentDefinition.id),
+        schema: productFileFactoryRun
+          ? productBuilderFileOutputJsonSchema(approvedRequest.parameters?.productBuildSpec)
+          : productVisualRun
+            ? productBuilderVisualOutputJsonSchema()
+            : workerOutputJsonSchema(agentDefinition.id),
       },
     },
     metadata: {
@@ -785,48 +823,49 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
   try {
     response = await callOpenAIResponses(requestBody, { ...options, deadlineMs });
   } catch (error) {
-    if (!error.providerDispatchStatus) {
-      error = providerError(error, "outcome_unknown", { providerRequestStarted: true });
+    let failure = error;
+    if (!failure.providerDispatchStatus) {
+      failure = providerError(failure, "outcome_unknown", { providerRequestStarted: true });
     }
-    error.agentRunId = options.agentRunId || null;
-    error.taskAttemptId = options.taskClaim?.attemptId || null;
-    error.modelCallId = dispatchCall.id;
-    recordLiveWorkerFailureCost(db, task, error);
+    failure.agentRunId = options.agentRunId || null;
+    failure.taskAttemptId = options.taskClaim?.attemptId || null;
+    failure.modelCallId = dispatchCall.id;
+    recordLiveWorkerFailureCost(db, task, failure);
     const failedCall = recordLiveWorkerModelCall(db, task, null, estimateCents, requestBody.model, "failed", {
       modelCallId: dispatchCall.id,
       agentRunId: options.agentRunId || null,
       taskAttemptId: options.taskClaim?.attemptId || null,
-      error: error.message,
-      outcomeUnknown: error.outcomeUnknown === true,
-      errorKind: error.outcomeUnknown === true ? "provider_outcome_unknown" : "provider_rejected",
-      providerDispatchStatus: error.providerDispatchStatus,
-      httpStatus: error.httpStatus || null,
+      error: failure.message,
+      outcomeUnknown: failure.outcomeUnknown === true,
+      errorKind: failure.outcomeUnknown === true ? "provider_outcome_unknown" : "provider_rejected",
+      providerDispatchStatus: failure.providerDispatchStatus,
+      httpStatus: failure.httpStatus || null,
     });
-    error.modelCallId = failedCall.id;
-    error.providerReceipt = {
+    failure.modelCallId = failedCall.id;
+    failure.providerReceipt = {
       modelCallId: failedCall.id,
       providerRequestId: null,
       provider: LIVE_AI_WORKER_PROVIDER,
-      status: error.providerDispatchStatus,
+      status: failure.providerDispatchStatus,
       deadlineMs,
     };
-    error.incurredEstimateCents = 0;
+    failure.incurredEstimateCents = 0;
     insertEvent(db, {
       level: "error",
       actor: "ai-worker-adapter",
       type: "live_ai_worker.failed",
       entityType: "task",
       entityId: task.id,
-      message: `Live AI worker failed before usable output was captured: ${error.message}`,
+      message: `Live AI worker failed before usable output was captured: ${failure.message}`,
       metadata: {
         workflowId: task.workflow_id,
         taskId: task.id,
         modelCallId: failedCall.id,
-        outcomeUnknown: error.outcomeUnknown === true,
-        providerDispatchStatus: error.providerDispatchStatus,
+        outcomeUnknown: failure.outcomeUnknown === true,
+        providerDispatchStatus: failure.providerDispatchStatus,
       },
     });
-    throw error;
+    throw failure;
   }
 
   const { text, annotations } = outputTextAndAnnotations(response);

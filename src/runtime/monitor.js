@@ -60,14 +60,41 @@ function supersededRetryTaskIds(db) {
        AND evals.status = 'passed'
        AND receipts.status = 'complete'`,
   ).map((row) => row.id));
+  const localRecoveryTasks = all(
+    db,
+    `SELECT id, status, payload
+     FROM tasks
+     WHERE kind IN (
+       'local_product_output_recovery',
+       'local_commercial_output_recovery',
+       'local_production_output_recovery'
+     )`,
+  ).map((task) => ({ ...task, payload: fromJson(task.payload, {}) }));
+  const recoveredSourceTaskIds = new Set(localRecoveryTasks
+    .filter((task) => task.status === "completed")
+    .map((task) => task.payload?.recovery?.sourceTaskId)
+    .filter(Boolean));
   const superseded = new Set();
-  for (const taskId of successfulTaskIds) {
+  const addRetryAncestors = (taskId) => {
     const seen = new Set([taskId]);
     let parentId = parentByTaskId.get(taskId);
     while (parentId && !seen.has(parentId)) {
       superseded.add(parentId);
       seen.add(parentId);
       parentId = parentByTaskId.get(parentId);
+    }
+  };
+  for (const taskId of successfulTaskIds) {
+    addRetryAncestors(taskId);
+  }
+  for (const sourceTaskId of recoveredSourceTaskIds) {
+    superseded.add(sourceTaskId);
+    addRetryAncestors(sourceTaskId);
+  }
+  for (const recoveryTask of localRecoveryTasks) {
+    const sourceTaskId = recoveryTask.payload?.recovery?.sourceTaskId;
+    if (sourceTaskId && recoveredSourceTaskIds.has(sourceTaskId)) {
+      superseded.add(recoveryTask.id);
     }
   }
   return superseded;

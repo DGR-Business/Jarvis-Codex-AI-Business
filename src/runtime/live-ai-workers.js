@@ -45,6 +45,7 @@ const CHIEF_ASSIGNMENT_SCHEMAS = new Set([
 const SUPPLIED_EVIDENCE_EXPECTED_OUTPUT = "A structured recommendation with evidence, counterevidence, assumptions, price/channel hypothesis, smallest test, metric, stop rule, confidence and risks.";
 const SUPPLIED_EVIDENCE_EXPECTED_METRIC = "Deterministic scope, source, structure and cost checks pass; Daniel separately judges commercial usefulness.";
 const SUPPLIED_EVIDENCE_TRACE_PURPOSE = "Make the supplied fixture and structured recommendation reviewable in OpenAI traces while retaining the local audit record.";
+const MAX_WORK_BRIEF_ASSET_PROMPT_CHARS = 12000;
 
 function safeId(value) {
   return stableIdSegment(value, 72, "workflow");
@@ -98,10 +99,17 @@ function cleanWorkBrief(value) {
   const list = (input, maxItems = 6) => (
     Array.isArray(input) ? input.filter(Boolean).map((item) => string(item, 500)).filter(Boolean).slice(0, maxItems) : []
   );
+  const assetPrompt = String(value.assetPrompt || "").replace(/\s+/g, " ").trim();
+  if (assetPrompt.length > MAX_WORK_BRIEF_ASSET_PROMPT_CHARS) {
+    throw new Error(
+      `The worker asset context is ${assetPrompt.length} characters, above the ${MAX_WORK_BRIEF_ASSET_PROMPT_CHARS}-character review limit. Supply a concise complete context instead of clipping structured business records.`,
+    );
+  }
   const brief = {
     objective: string(value.objective, 800),
     deliverable: string(value.deliverable, 800),
-    assetPrompt: string(value.assetPrompt, 2400),
+    assetPrompt,
+    requiredCorrections: list(value.requiredCorrections),
     constraints: list(value.constraints),
     acceptanceCriteria: list(value.acceptanceCriteria),
   };
@@ -123,6 +131,11 @@ function requestedToolControls(options = {}) {
     deadlineMs: Number(options.deadlineMs || (hasImageGeneration ? 180000 : hasSearch ? 120000 : 60000)),
   };
 }
+
+const LOCAL_CONTEXT_TOOLS = new Set([
+  "product_file_factory",
+  "visual_asset_review",
+]);
 
 function stableWorkerPacketHash(packet) {
   const copy = JSON.parse(JSON.stringify(packet || {}));
@@ -391,6 +404,9 @@ function refreshOptionsForTask(task, trigger) {
     worker: payload.requestedWorker || request.worker?.id || task.agent,
     estimatedCostCents: Number(request.maxCostCents || request.estimatedCostCents || task.cost_budget_cents),
     requestedBy: trigger || "runtime-policy-refresh",
+    model: isPilotFixture ? undefined : request.model,
+    modelLocked: request.modelRoute?.modelLocked === true
+      || request.parameters?.modelRoute?.modelLocked === true,
     taskTitle: task.title,
     approvalTitle: request.title,
     reason: request.reason,
@@ -430,12 +446,74 @@ function refreshOptionsForTask(task, trigger) {
   };
 }
 
+function preDispatchRecoveryStatus(db, taskInput) {
+  const task = hydrateTask(taskInput);
+  if (
+    !task
+    || task.kind !== "live_ai_worker_execution"
+    || task.status !== "failed"
+    || task.outcome_status !== "failed_before_effect"
+  ) {
+    return { available: false, reason: "This work did not finish as a verified pre-dispatch failure." };
+  }
+  const attempt = get(
+    db,
+    "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+    [task.id],
+  );
+  const attemptMetadata = fromJson(attempt?.metadata, {});
+  const taskModelCalls = Number(get(
+    db,
+    "SELECT COUNT(*) AS count FROM model_calls WHERE task_id = ?",
+    [task.id],
+  )?.count || 0);
+  const taskCosts = Number(get(
+    db,
+    `SELECT COUNT(*) AS count FROM costs
+     WHERE task_id = ? AND status NOT IN ('released', 'cancelled') AND amount_cents > 0`,
+    [task.id],
+  )?.count || 0);
+  const unresolvedReservations = Number(get(
+    db,
+    `SELECT COUNT(*) AS count FROM budget_reservations
+     WHERE task_id = ? AND status IN ('reserved', 'incurred_estimate', 'unknown')`,
+    [task.id],
+  )?.count || 0);
+  const available = Boolean(
+    attempt
+    && attempt.outcome_status === "failed_before_effect"
+    && !attempt.provider_dispatched_at
+    && !attempt.provider_dispatch_model_call_id
+    && !attempt.provider_request_id
+    && attemptMetadata.providerCallOccurred !== true
+    && taskModelCalls === 0
+    && taskCosts === 0
+    && unresolvedReservations === 0
+  );
+  return {
+    available,
+    attempt,
+    reason: available
+      ? "Pantheon stopped locally before any provider call or spend."
+      : "Pantheon cannot prove that this failure happened before provider dispatch and spend.",
+    evidence: {
+      taskModelCalls,
+      taskCosts,
+      unresolvedReservations,
+      providerDispatchedAt: attempt?.provider_dispatched_at || null,
+      providerRequestId: attempt?.provider_request_id || null,
+      providerCallOccurred: attemptMetadata.providerCallOccurred === true,
+    },
+  };
+}
+
 function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
   const task = hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]));
   if (!task || task.kind !== "live_ai_worker_execution") {
     throw new Error("This recovery action is only available for a recorded AI worker run.");
   }
-  if (task.agent !== "demand_validator") {
+  const journeyTask = Boolean(task.payload?.liveSpendRequest?.parameters?.pantheonJourney?.journeyId);
+  if (task.agent !== "demand_validator" && !journeyTask) {
     throw new Error("The first dashboard recovery path is limited to Demand Validator system tests.");
   }
 
@@ -500,12 +578,20 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
   const reviewedQualityShortfall = task.status === "completed"
     && task.outcome_status === "known"
     && ["failed", "needs_review"].includes(evaluation?.status);
-  if (!knownResultFailure && !reviewedQualityShortfall) {
+  const failedBeforeEffect = task.status === "failed"
+    && task.outcome_status === "failed_before_effect";
+  if (!knownResultFailure && !reviewedQualityShortfall && !failedBeforeEffect) {
     throw new Error("This AI result is not in a reviewed state that permits a safe corrected attempt.");
   }
 
   let retryReason;
-  if (knownResultFailure) {
+  let requiredCorrections;
+  if (failedBeforeEffect) {
+    const recovery = preDispatchRecoveryStatus(db, task);
+    if (!recovery.available) throw new Error(recovery.reason);
+    requiredCorrections = [];
+    retryReason = "Pantheon failed locally before any provider call or spend. Reissue the exact work under a fresh single-use approval.";
+  } else if (knownResultFailure) {
     if (
       !attempt
       || attempt.outcome_status !== "known_provider_result_needs_review"
@@ -520,7 +606,15 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
     if (!receipt || receipt.attempt_id !== attempt.id) {
       throw new Error("The reviewed provider result does not have an exact immutable execution receipt.");
     }
-    retryReason = task.error || modelMetadata.error || "The reviewed provider result could not be accepted locally.";
+    const findings = evaluation ? fromJson(evaluation.findings, []) : [];
+    requiredCorrections = [
+      task.error || modelMetadata.error || "The reviewed provider result could not be accepted locally.",
+      ...findings,
+    ].filter(Boolean);
+    retryReason = [
+      requiredCorrections[0],
+      findings.length ? `Pantheon evidence check: ${findings.join(" ")}` : "",
+    ].filter(Boolean).join(" ");
   } else {
     if (
       !attempt
@@ -535,6 +629,9 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
       throw new Error("Pantheon cannot prove a completed provider result and local evidence check for this retry.");
     }
     const findings = fromJson(evaluation.findings, []);
+    requiredCorrections = findings.length
+      ? findings
+      : [`Pantheon evidence check status: ${evaluation.status}.`];
     retryReason = findings.length
       ? `Pantheon evidence check: ${findings.join(" ")}`
       : `Pantheon evidence check status: ${evaluation.status}.`;
@@ -586,55 +683,209 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
       status: "prepared",
       existing: true,
       priorTaskId: task.id,
-      retryNumber: Number(existingPrepared.payload?.liveSpendRequest?.parameters?.retry?.number || 1),
+      retryNumber: Number(existingPrepared.payload?.liveSpendRequest?.parameters?.retry?.sequence || 1),
       task: existingPrepared,
       approval,
       model: existingPrepared.payload?.liveSpendRequest?.model || null,
       maxCostCents: Number(existingPrepared.cost_budget_cents || 0),
     };
   }
-  const retryNumber = 1 + relatedTasks.reduce((maximum, candidate) => Math.max(
+  const retrySequence = 1 + relatedTasks.reduce((maximum, candidate) => Math.max(
     maximum,
-    Number(candidate.payload?.liveSpendRequest?.parameters?.retry?.number || 0),
+    Number(candidate.payload?.liveSpendRequest?.parameters?.retry?.sequence || 0),
     Number(String(candidate.id).match(/_retry_(\d+)$/)?.[1] || 0),
   ), 0);
-  if (retryNumber > 5) {
-    throw new Error("Five reviewed attempts have already been prepared. Stop and reassess this test before spending again.");
+  const correctionNumber = failedBeforeEffect
+    ? 0
+    : 1 + relatedTasks.reduce((maximum, candidate) => {
+      const retry = candidate.payload?.liveSpendRequest?.parameters?.retry || {};
+      if (retry.technicalRecovery === true) return maximum;
+      return Math.max(maximum, Number(retry.number || 0));
+    }, 0);
+  const retryLimit = journeyTask ? 1 : 5;
+  const technicalRecoveryCount = relatedTasks.filter(
+    (candidate) => candidate.payload?.liveSpendRequest?.parameters?.retry?.technicalRecovery === true,
+  ).length;
+  if (failedBeforeEffect && technicalRecoveryCount >= 3) {
+    throw new Error("Three local pre-dispatch recoveries have failed. Jarvis must repair the underlying fault before another approval is prepared.");
+  }
+  if (!failedBeforeEffect && correctionNumber > retryLimit) {
+    throw new Error(journeyTask
+      ? "This journey stage has used its one targeted correction. Stop and reassess before spending again."
+      : "Five reviewed attempts have already been prepared. Stop and reassess this test before spending again.");
   }
 
   const baseRequestKey = String(requestKeyForTask(rootTask) || `reviewed_${rootTask.id}`).replace(/_retry_\d+$/, "");
   const retryOptions = refreshOptionsForTask(task, "operator-dashboard");
-  retryOptions.requestKey = `${stableIdSegment(baseRequestKey, 55, "reviewed_task")}_retry_${retryNumber}`;
+  retryOptions.requestKey = `${stableIdSegment(baseRequestKey, 55, "reviewed_task")}_retry_${retrySequence}`;
   retryOptions.requestedBy = "operator-dashboard";
   retryOptions.proofMode = options.proofMode === true
     || task.payload?.systemProof === true
     || CONFIG.systemProofMode === true;
-  retryOptions.maxOutputTokens = Math.max(2400, Number(retryOptions.maxOutputTokens || 0));
+  if (!failedBeforeEffect) {
+    retryOptions.maxOutputTokens = Math.max(2400, Number(retryOptions.maxOutputTokens || 0));
+  }
+  const priorWorkBrief = retryOptions.workBrief && typeof retryOptions.workBrief === "object"
+    ? retryOptions.workBrief
+    : {};
+  retryOptions.workBrief = failedBeforeEffect
+    ? priorWorkBrief
+    : {
+      ...priorWorkBrief,
+      requiredCorrections,
+    };
+  const productBuilderTools = Array.isArray(retryOptions.tools) ? retryOptions.tools : [];
+  if (
+    !failedBeforeEffect
+    && task.agent === "product_builder"
+    && productBuilderTools.includes("product_file_factory")
+  ) {
+    retryOptions.maxOutputTokens = Math.max(8000, retryOptions.maxOutputTokens);
+    retryOptions.maxTurns = 1;
+    retryOptions.maxToolCalls = 0;
+    retryOptions.deadlineMs = Math.max(180000, Number(retryOptions.deadlineMs || 0));
+    retryOptions.workBrief = {
+      ...retryOptions.workBrief,
+      assetPrompt: [
+        "This is the single corrected Product Builder attempt. Resolve every item in requiredCorrections exactly; acknowledgement without implementing the missing field, formula, option, instruction, or status is a failure.",
+        "Return one corrected strict productBlueprint for the exact approved catalogue. Pantheon will render, hash, reopen, preview, and package the customer files locally after validation.",
+        "Resolve every claim-alignment finding exactly. Each customer-facing promise must be visibly implemented by a field, instruction, formula, checklist, validation option, or status; otherwise narrow the purpose to a literal functional description.",
+        "Keep the blueprint compact: one short sentence per purpose, instruction, and field guide; one realistic sample row unless a second is essential; no repeated explanation.",
+        "Use the calculations array only for supported row-level calculator logic. Supported operations are sum, subtract, multiply, and percent_of using columns from the same row and item. Never use grouping, cross-row totals, SUMIF or SUMIFS logic, lookups, counts, running totals, or date arithmetic; make aggregate totals user-entered reviewed fields instead.",
+        "Every calculation target and input must exactly copy a column.name from the same item with no explanatory prose; percent_of requires exactly [numerator column name, denominator column name]. Put actual editable wording in an Email Body, Message Copy, Script Text, or Script Wording field when scripts are promised.",
+        "Every column must return options: [] for non-status fields and the complete 2-12 value dropdown for status fields. Every item needs a dedicated Status or workflow-status field with a recognised successful value. Copy each sample status value character-for-character from that field's options; never append punctuation, translations, symbols, or commentary.",
+        "For a promised sequence of up to three steps, include every step as a sample row and as a declared option. The Dashboard must use the dedicated workflow-status field, not a tone, timing, service, or sequence selector.",
+        priorWorkBrief.assetPrompt,
+      ].filter(Boolean).join(" "),
+      constraints: [
+        "Do not claim that files already exist or were created by the model.",
+        "Return only the strict structured blueprint requested by the output schema.",
+        "Do not use unmeasured promises such as better, fewer, faster, improved, reduced, guaranteed, or completed outcomes.",
+        "Confirmation, verification, approval, completeness, and file-organization claims require an explicit matching mechanism.",
+        ...(Array.isArray(priorWorkBrief.constraints) ? priorWorkBrief.constraints : []),
+      ],
+      acceptanceCriteria: [
+        "Every requiredCorrections item is visibly resolved in the returned blueprint.",
+        "Every exact approved catalogue item is represented once in the corrected blueprint.",
+        "Every approved offer and returned purpose passes Pantheon's deterministic claim-to-product preflight.",
+        "Every promised selector exposes its complete option set, every sample status value exactly equals one declared option, and every Dashboard metric uses a dedicated workflow-status field.",
+        "Every calculation is row-level, uses a supported operation, and references exact same-item column names only.",
+        ...(Array.isArray(priorWorkBrief.acceptanceCriteria) ? priorWorkBrief.acceptanceCriteria : []),
+      ],
+    };
+  } else if (!failedBeforeEffect && task.agent === "offer_architect") {
+    retryOptions.workBrief = {
+      ...retryOptions.workBrief,
+      assetPrompt: [
+        "Resolve every item in requiredCorrections exactly in this corrected offer.",
+        "Resolve every cited offer and catalogue claim-alignment finding exactly. If a promise or outcome says calculate, the matching includedTools entry must name the relevant fields and explicitly say sum, subtract, multiply, or percent_of. Otherwise narrow the promise to a literal function.",
+        priorWorkBrief.assetPrompt,
+      ].filter(Boolean).join(" "),
+      constraints: [
+        "Do not repeat an unsupported calculation claim. Tie each calculation to named fields and one explicit supported operation in includedTools.",
+        ...(Array.isArray(priorWorkBrief.constraints) ? priorWorkBrief.constraints : []),
+      ],
+      acceptanceCriteria: [
+        "Every requiredCorrections item is visibly resolved in the returned offer.",
+        "Every calculation claim has an exact field-and-operation mechanism that Product Builder can implement.",
+        ...(Array.isArray(priorWorkBrief.acceptanceCriteria) ? priorWorkBrief.acceptanceCriteria : []),
+      ],
+    };
+  } else if (!failedBeforeEffect && task.agent === "quality_reviewer") {
+    retryOptions.maxOutputTokens = Math.max(5000, retryOptions.maxOutputTokens);
+    retryOptions.maxTurns = 1;
+    retryOptions.maxToolCalls = 0;
+    retryOptions.workBrief = {
+      ...retryOptions.workBrief,
+      assetPrompt: [
+        "Resolve every item in requiredCorrections exactly in this corrected quality review.",
+        "Return one compact strict quality-review result for the exact unchanged evidence packet. Use short factual sentences, no repeated findings, at most six risk findings, and at most six missing-evidence items.",
+        priorWorkBrief.assetPrompt,
+      ].filter(Boolean).join(" "),
+      constraints: [
+        "Do not repeat evidence or explain the same defect in multiple fields.",
+        "Do not claim visual, formula, file-opening, or usability checks beyond the exact supplied evidence packet.",
+        ...(Array.isArray(priorWorkBrief.constraints) ? priorWorkBrief.constraints : []),
+      ],
+      acceptanceCriteria: [
+        "Every requiredCorrections item is visibly resolved in the returned review.",
+        "The strict structured response completes without truncation and gives one unambiguous approve, revise, or deny verdict.",
+        ...(Array.isArray(priorWorkBrief.acceptanceCriteria) ? priorWorkBrief.acceptanceCriteria : []),
+      ],
+    };
+  } else if (!failedBeforeEffect && task.agent === "distribution_operator") {
+    retryOptions.maxOutputTokens = Math.max(4000, retryOptions.maxOutputTokens);
+    retryOptions.maxTurns = 1;
+    retryOptions.maxToolCalls = 0;
+    retryOptions.workBrief = {
+      ...retryOptions.workBrief,
+      assetPrompt: [
+        "The prior structured launch plan was truncated. Return one complete, compact correction and resolve every item in requiredCorrections exactly.",
+        "Use no more than six short channel steps and six short evidence items. Keep every other field to one concise paragraph or sentence.",
+        priorWorkBrief.assetPrompt,
+      ].filter(Boolean).join(" "),
+      constraints: [
+        "Return the complete strict structured response within the available output limit; do not repeat the product context or explain the same step twice.",
+        ...(Array.isArray(priorWorkBrief.constraints) ? priorWorkBrief.constraints : []),
+      ],
+      acceptanceCriteria: [
+        "The strict structured response completes without truncation.",
+        "Every requiredCorrections item is resolved in the returned launch plan.",
+        ...(Array.isArray(priorWorkBrief.acceptanceCriteria) ? priorWorkBrief.acceptanceCriteria : []),
+      ],
+    };
+  } else if (
+    !failedBeforeEffect
+    && task.agent === "product_builder"
+    && productBuilderTools.includes("image_generation_spend")
+  ) {
+    retryOptions.maxOutputTokens = Math.max(2400, retryOptions.maxOutputTokens);
+    retryOptions.maxTurns = 2;
+    retryOptions.maxToolCalls = 1;
+    retryOptions.deadlineMs = Math.max(180000, Number(retryOptions.deadlineMs || 0));
+    retryOptions.workBrief = {
+      ...retryOptions.workBrief,
+      assetPrompt: [
+        "Resolve every item in requiredCorrections exactly in this corrected visual run.",
+        "Create exactly one approved image, then return the compact strict visual-result JSON. Keep every text field to one short sentence and limitations to at most two short items.",
+        priorWorkBrief.assetPrompt,
+      ].filter(Boolean).join(" "),
+    };
+  }
   retryOptions.parameters = {
     ...(retryOptions.parameters || {}),
     retry: {
-      number: retryNumber,
+      number: correctionNumber,
+      sequence: retrySequence,
       priorTaskId: task.id,
       reason: retryReason,
       operatorAuthorized: true,
       sourceAttemptId: attempt.id,
-      sourceModelCallId: modelCall.id,
+      sourceModelCallId: modelCall?.id || null,
       sourceEvaluationId: evaluation?.id || null,
       sourceReceiptId: receipt?.id || null,
+      technicalRecovery: failedBeforeEffect,
+      consumesCorrection: !failedBeforeEffect,
     },
   };
 
   const prepared = requestLiveAiWorker(db, task.workflow_id, retryOptions);
   insertEvent(db, {
     actor: "operator-dashboard",
-    type: "live_ai_worker.reviewed_retry_prepared",
+    type: failedBeforeEffect
+      ? "live_ai_worker.pre_dispatch_recovery_prepared"
+      : "live_ai_worker.reviewed_retry_prepared",
     entityType: "task",
     entityId: prepared.task.id,
-    message: "A corrected Demand Validator retry was prepared for an exact operator decision. No provider call occurred.",
+    message: failedBeforeEffect
+      ? `A fresh ${task.agent.replaceAll("_", " ")} decision was prepared after a verified local pre-dispatch failure.`
+      : `A corrected ${task.agent.replaceAll("_", " ")} attempt was prepared for an exact operator decision. No provider call occurred.`,
     metadata: {
       priorTaskId: task.id,
       retryTaskId: prepared.task.id,
-      retryNumber,
+      retrySequence,
+      correctionNumber,
+      technicalRecovery: failedBeforeEffect,
       approvalId: prepared.approval?.id || null,
       model: prepared.task.payload?.liveSpendRequest?.model || null,
       maxCostCents: prepared.estimatedCostCents,
@@ -647,7 +898,9 @@ function prepareReviewedLiveAiWorkerRetry(db, taskId, options = {}) {
   return {
     status: "prepared",
     priorTaskId: task.id,
-    retryNumber,
+    retryNumber: retrySequence,
+    correctionNumber,
+    technicalRecovery: failedBeforeEffect,
     task: prepared.task,
     approval: prepared.approval,
     model: prepared.task.payload?.liveSpendRequest?.model || null,
@@ -891,6 +1144,10 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       ...toolControls,
     },
   );
+  const commercialContextScope = options.parameters?.pantheonCommercial || {};
+  const productionContextScope = options.parameters?.pantheonProduction || {};
+  const productBuildContextScope = options.parameters?.productBuildSpec || {};
+  const journeyContextScope = options.parameters?.pantheonJourney || {};
   const contextSnapshot = contextException
     ? null
     : buildAgentContextSnapshot(db, {
@@ -901,6 +1158,16 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
       purpose: options.contextPurpose || expectedOutput,
       recordClasses: options.contextClasses,
       includePersonalData: options.includePersonalData === true,
+      journeyId: journeyContextScope.journeyId
+        || commercialContextScope.journeyId
+        || productionContextScope.journeyId,
+      roundId: commercialContextScope.roundId
+        || productionContextScope.roundId,
+      opportunityId: productBuildContextScope.opportunityId
+        || commercialContextScope.opportunityId
+        || productionContextScope.opportunityId,
+      planId: productBuildContextScope.planId
+        || productionContextScope.planId,
     });
   const tracePolicy = normalizeTracePolicy(
     contextSnapshot?.includePersonalData
@@ -949,6 +1216,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     highConsequence: options.highConsequence === true,
     qualityEscalation: options.qualityEscalation === true,
     proofMode,
+    modelLocked: options.modelLocked === true,
     routeHistory,
   });
   const modelRoute = {
@@ -958,10 +1226,11 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     historySignature: routeSignature.historySignature,
   };
   const model = modelRoute.model;
-  const maxInputTokens = toolControls.tools.length
+  const hasHostedTool = toolControls.tools.some((toolId) => !LOCAL_CONTEXT_TOOLS.has(toolId));
+  const maxInputTokens = hasHostedTool
     ? Number(options.maxInputTokens || CONFIG.liveModelToolMaxInputTokens)
     : options.maxInputTokens;
-  if (toolControls.tools.length && maxInputTokens > CONFIG.liveModelToolMaxInputTokens) {
+  if (hasHostedTool && maxInputTokens > CONFIG.liveModelToolMaxInputTokens) {
     throw new Error("Live execution is blocked because the requested input ceiling exceeds the approved hosted-tool limit.");
   }
   const payload = {
@@ -1045,6 +1314,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
           automaticFallbackAllowed: false,
           automaticRetryAllowed: false,
           proofMode,
+          modelLocked: modelRoute.modelLocked === true,
         },
       },
       maxTurns: toolControls.maxTurns,
@@ -1316,6 +1586,7 @@ module.exports = {
   MIN_LIVE_AI_WORKER_BUDGET_CENTS,
   SUPPLIED_EVIDENCE_CONTEXT_EXCEPTION,
   createLiveAiWorkerSmokeTest,
+  preDispatchRecoveryStatus,
   prepareReviewedLiveAiWorkerRetry,
   refreshOutdatedLiveAiWorkerApproval,
   refreshOutdatedLiveAiWorkerApprovals,

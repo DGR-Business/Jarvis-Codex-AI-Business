@@ -28,18 +28,27 @@ console.error = (...values) => writeLog(errorLog, values);
 let runtime = null;
 let ending = false;
 
+function closeLog(stream) {
+  return new Promise((resolve) => {
+    if (stream.closed || stream.destroyed) return resolve();
+    stream.end(resolve);
+  });
+}
+
 async function shutdown(exitCode = 0) {
   if (ending) return;
   ending = true;
+  const forcedExit = setTimeout(() => process.exit(exitCode || 1), 10_000);
+  forcedExit.unref();
   try {
     await runtime?.server?.shutdown?.();
   } catch (error) {
     writeLog(errorLog, [error?.stack || error]);
     exitCode = 1;
   } finally {
-    standardLog.end();
-    errorLog.end();
-    process.exitCode = exitCode;
+    await Promise.all([closeLog(standardLog), closeLog(errorLog)]);
+    clearTimeout(forcedExit);
+    process.exit(exitCode);
   }
 }
 
@@ -56,6 +65,7 @@ process.on("SIGTERM", () => shutdown(0));
 
 require("../src/server").startServer({ port }).then((started) => {
   runtime = started;
+  runtime.server.once("close", () => setImmediate(() => shutdown(0)));
 }).catch((error) => {
   writeLog(errorLog, [error?.stack || error]);
   process.exit(1);

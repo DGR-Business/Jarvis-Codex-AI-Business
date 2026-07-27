@@ -73,10 +73,18 @@ function blockedTasks(db, workflowId) {
 
 async function markBlocked(db, task, approval, metadata = {}) {
   const ts = now();
+  const previousResult = task.result && typeof task.result === "object"
+    ? task.result
+    : fromJson(task.result, {});
   run(
     db,
     `UPDATE tasks SET status = 'blocked', approval_id = ?, result = ?, updated_at = ? WHERE id = ?`,
-    [approval.id || task.approval_id || null, toJson({ blockedBy: approval.id, approvalStatus: approval.status, ...metadata }), ts, task.id],
+    [
+      approval.id || task.approval_id || null,
+      toJson({ ...previousResult, blockedBy: approval.id, approvalStatus: approval.status, ...metadata }),
+      ts,
+      task.id,
+    ],
   );
   run(
     db,
@@ -432,6 +440,10 @@ async function runOnce(db, options = {}) {
   let approvalId = null;
   let approval = null;
   let reservation = null;
+  let executionResult = null;
+  let executionError = null;
+  try {
+    executionResult = await (async () => {
   try {
   const taskApproval = task.approval_id ? get(db, "SELECT * FROM approvals WHERE id = ?", [task.approval_id]) : null;
   const taskApprovalPayload = fromJson(taskApproval?.payload, {});
@@ -483,7 +495,12 @@ async function runOnce(db, options = {}) {
   }
 
   if (spendGate.required) {
-    reservation = reserveBudget(db, task, approval, spendGate.estimatedCostCents);
+    reservation = reserveBudget(
+      db,
+      task,
+      approval,
+      spendGate.reservationCostCents ?? spendGate.estimatedCostCents,
+    );
   }
   const approvedPayload = approval?.payload && typeof approval.payload === "object"
     ? approval.payload
@@ -726,23 +743,33 @@ async function runOnce(db, options = {}) {
       metadata: { retries, maxRetries: task.max_retries, workflowId: task.workflow_id, outcomeUnknown, providerCallOccurred, providerReceipt, incurredEstimateCents },
     });
     return { status, task, error: error.message, retries, providerReceipt };
-  } finally {
-    const completedAttempt = get(
-      db,
-      "SELECT completed_at FROM task_attempts WHERE id = ?",
-      [claim.attemptId],
-    );
-    if (completedAttempt?.completed_at) {
-      try {
-        const receipt = finalizeAgentExecutionReceipt(db, { attemptId: claim.attemptId });
-        if (receipt.status === "incomplete") {
-          throw new Error(`Execution receipt is incomplete: ${receipt.missing_fields.join(", ") || "missing exact evidence"}.`);
-        }
-      } catch (receiptError) {
-        return markReceiptFinalizationNeedsAttention(db, claim, task, receiptError);
+  }
+    })();
+  } catch (error) {
+    executionError = error;
+  }
+
+  let receiptFailureResult = null;
+  const completedAttempt = get(
+    db,
+    "SELECT completed_at FROM task_attempts WHERE id = ?",
+    [claim.attemptId],
+  );
+  if (completedAttempt?.completed_at) {
+    try {
+      const receipt = finalizeAgentExecutionReceipt(db, { attemptId: claim.attemptId });
+      if (receipt.status === "incomplete") {
+        throw new Error(`Execution receipt is incomplete: ${receipt.missing_fields.join(", ") || "missing exact evidence"}.`);
       }
+    } catch (receiptError) {
+      receiptFailureResult = markReceiptFinalizationNeedsAttention(db, claim, task, receiptError);
     }
   }
+  if (executionError) {
+    if (receiptFailureResult) executionError.receiptFailureResult = receiptFailureResult;
+    throw executionError;
+  }
+  return receiptFailureResult || executionResult;
 }
 
 function getWorkflowStatus(db, workflowId) {

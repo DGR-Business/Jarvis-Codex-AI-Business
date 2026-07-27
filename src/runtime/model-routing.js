@@ -174,6 +174,9 @@ function reasonForRoute(tier, modelClass, options = {}) {
   if (options.proofMode === true) {
     return "Luna is being used for a supervised system proof that checks the workflow, not the quality of the final business judgement.";
   }
+  if (options.modelLocked === true) {
+    return "Luna is locked for this exact capped full-journey run; no automatic model escalation or fallback is allowed.";
+  }
   if (options.routeHistory?.decision === "escalate") {
     return "Sol was selected before approval because the latest reviewed result for this exact worker, capability, and tool set failed or needs review.";
   }
@@ -197,8 +200,11 @@ function reasonForRoute(tier, modelClass, options = {}) {
 function selectModelRoute(options = {}) {
   const modelClass = String(options.modelClass || "reasoning-medium");
   const explicitModel = String(options.model || "").trim();
+  const modelLocked = options.modelLocked === true;
   const forcedTier = options.proofMode === true
     ? "luna"
+    : modelLocked
+      ? null
     : options.routeHistory?.decision === "escalate"
     || options.qualityEscalation === true
     || options.highConsequence === true
@@ -224,6 +230,7 @@ function selectModelRoute(options = {}) {
     automaticFallbackAllowed: false,
     automaticRetryAllowed: false,
     proofMode: options.proofMode === true,
+    modelLocked,
     routeHistory: options.routeHistory || null,
   };
 }

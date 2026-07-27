@@ -9,10 +9,21 @@ const { createBackup } = require("../src/runtime/backup");
 const {
   assessOperationsReady,
   checkBackupConfiguration,
+  checkPricingFreshness,
   checkRecoverySet,
 } = require("../scripts/doctor");
 
 const PASSPHRASE = "pantheon-doctor-passphrase-32-characters";
+
+test("pricing freshness warns only after the configured review window", () => {
+  const fresh = checkPricingFreshness({ now: "2026-07-22T00:00:00.000Z", maxAgeDays: 30 });
+  assert.equal(fresh.status, "pass");
+
+  const stale = checkPricingFreshness({ now: "2026-09-01T00:00:00.000Z", maxAgeDays: 30 });
+  assert.equal(stale.status, "warn");
+  assert.match(stale.message, /older than 30 days/i);
+  assert.ok(stale.details.stale.length > 0);
+});
 
 function fixtureRoot(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `pantheon-doctor-${name}-`));

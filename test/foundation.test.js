@@ -305,7 +305,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -342,7 +342,7 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 20);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 21);
   } finally {
     closeRuntime(runtime);
   }
@@ -425,6 +425,8 @@ test("approved data protection plan activates exact checks without deleting reco
     const decision = getDecisionsState(db).approvals.find((item) => item.id === approval.id);
     assert.equal(decision.noDeletion, true);
     assert.equal(decision.policySummary.length, 7);
+    assert.equal(decision.approveLabel, "Activate this protection plan");
+    assert.equal(decision.decisionActionKind, "data_protection");
 
     decideApproval(db, approval.id, "approved", "Approve the plain-language data plan.", {
       expectedScopeHash: approval.scope_hash,

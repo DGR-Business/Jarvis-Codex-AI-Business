@@ -120,7 +120,7 @@ function normalizedTools(tools) {
     web_search: "web_search",
     image_generation_spend: "image_generation",
     image_generation: "image_generation",
-    product_file_factory: "code_interpreter",
+    product_file_factory: "",
     code_interpreter: "code_interpreter",
     visual_asset_review: "",
   };

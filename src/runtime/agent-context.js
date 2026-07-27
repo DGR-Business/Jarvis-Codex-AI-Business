@@ -154,21 +154,71 @@ function ventureSection(db, ventureId) {
   return records;
 }
 
-function evidenceSection(db, ventureId) {
-  const evidence = all(
-    db,
-    `SELECT * FROM commercial_evidence
-     WHERE venture_id = ? AND is_demo = 0
-     ORDER BY captured_at DESC, created_at DESC LIMIT ?`,
-    [ventureId, MAX_RECORDS_PER_CLASS],
-  ).map((row) => record("commercial_evidence", row, {
+function evidenceSection(db, ventureId, options = {}) {
+  const opportunityId = String(options.opportunityId || "").trim();
+  const opportunity = opportunityId
+    ? get(db, "SELECT * FROM opportunities WHERE id = ? AND venture_id = ?", [opportunityId, ventureId])
+    : null;
+  const opportunityMetadata = opportunity ? fromJson(opportunity.metadata, {}) : {};
+  const evidenceIds = opportunity ? uniqueList(fromJson(opportunity.evidence_ids, [])) : [];
+  const opportunityRecord = opportunity
+    ? record("opportunities", opportunity, {
+      title: `Demand validation for ${opportunity.title}`,
+      summary: opportunityMetadata.validation?.recommendation || opportunity.recommendation,
+      facts: {
+        buyer: opportunity.buyer,
+        problem: opportunity.problem,
+        offerDirection: opportunity.offer_direction,
+        channel: opportunity.channel,
+        score: Number(opportunity.overall_score || 0),
+        confidence: opportunity.confidence,
+        status: opportunity.status,
+        validation: opportunityMetadata.validation || null,
+      },
+      provenance: {
+        roundId: opportunity.round_id,
+        validationTaskId: opportunityMetadata.validation?.taskId || null,
+      },
+    })
+    : null;
+  const evidenceRows = evidenceIds.length
+    ? all(
+      db,
+      `SELECT * FROM commercial_evidence
+       WHERE venture_id = ? AND is_demo = 0
+         AND id IN (${evidenceIds.map(() => "?").join(", ")})
+       ORDER BY captured_at DESC, created_at DESC LIMIT ?`,
+      [ventureId, ...evidenceIds, MAX_RECORDS_PER_CLASS - 1],
+    )
+    : all(
+      db,
+      `SELECT * FROM commercial_evidence
+       WHERE venture_id = ? AND is_demo = 0
+       ORDER BY captured_at DESC, created_at DESC LIMIT ?`,
+      [ventureId, MAX_RECORDS_PER_CLASS],
+    );
+  const evidence = evidenceRows.map((row) => record("commercial_evidence", row, {
     summary: row.summary,
+    facts: {
+      claim: row.claim,
+      metric: row.metric,
+      measuredValue: row.measured_value,
+      measuredUnit: row.measured_unit,
+      market: row.market,
+      geography: row.geography,
+      observedAt: row.observed_at,
+      sampleSize: row.sample_size,
+      confidence: row.confidence,
+    },
     provenance: {
       sourceType: row.source_type,
       sourceUrl: row.source_url || null,
       verifiedAt: row.verified_at || null,
     },
   }));
+  if (opportunityRecord) {
+    return [opportunityRecord, ...evidence].slice(0, MAX_RECORDS_PER_CLASS);
+  }
   const sources = all(
     db,
     `SELECT sources.*, runs.provider, runs.mode, runs.status AS run_status
@@ -262,24 +312,43 @@ function financeSection(db, ventureId) {
   return [...records, ...recent];
 }
 
-function productionSection(db, ventureId) {
-  const packages = all(
-    db,
-    `SELECT * FROM work_packages
-     WHERE venture_id = ?
-     ORDER BY updated_at DESC LIMIT ?`,
-    [ventureId, 4],
-  ).map((row) => record("work_packages", row, {
+function productionSection(db, ventureId, options = {}) {
+  const workflowId = String(options.workflowId || "").trim();
+  const packages = (workflowId
+    ? all(
+      db,
+      `SELECT * FROM work_packages
+       WHERE venture_id = ? AND workflow_id = ?
+       ORDER BY updated_at DESC LIMIT ?`,
+      [ventureId, workflowId, 4],
+    )
+    : all(
+      db,
+      `SELECT * FROM work_packages
+       WHERE venture_id = ?
+       ORDER BY updated_at DESC LIMIT ?`,
+      [ventureId, 4],
+    )).map((row) => record("work_packages", row, {
     summary: row.decision_needed,
     facts: { kind: row.kind, status: row.status, ownerGroup: row.owner_group, artifactId: row.artifact_id },
   }));
-  const deliverables = all(
-    db,
-    `SELECT * FROM deliverables
-     WHERE venture_id = ?
-     ORDER BY updated_at DESC LIMIT ?`,
-    [ventureId, MAX_RECORDS_PER_CLASS - Math.min(packages.length, 4)],
-  ).map((row) => {
+  const deliverables = (workflowId
+    ? all(
+      db,
+      `SELECT * FROM deliverables
+       WHERE venture_id = ? AND workflow_id = ?
+         AND status <> 'superseded'
+       ORDER BY updated_at DESC LIMIT ?`,
+      [ventureId, workflowId, MAX_RECORDS_PER_CLASS - Math.min(packages.length, 4)],
+    )
+    : all(
+      db,
+      `SELECT * FROM deliverables
+       WHERE venture_id = ?
+         AND status <> 'superseded'
+       ORDER BY updated_at DESC LIMIT ?`,
+      [ventureId, MAX_RECORDS_PER_CLASS - Math.min(packages.length, 4)],
+    )).map((row) => {
     const sections = all(
       db,
       `SELECT task_id, sequence, content, updated_at
@@ -331,14 +400,23 @@ function customerSection(db, ventureId) {
   }));
 }
 
-function operationsSection(db, ventureId) {
-  const tasks = all(
-    db,
-    `SELECT * FROM tasks
-     WHERE venture_id = ? AND status NOT IN ('completed', 'cancelled')
-     ORDER BY priority ASC, updated_at DESC LIMIT ?`,
-    [ventureId, 5],
-  ).map((row) => record("tasks", row, {
+function operationsSection(db, ventureId, options = {}) {
+  const workflowId = String(options.workflowId || "").trim();
+  const tasks = (workflowId
+    ? all(
+      db,
+      `SELECT * FROM tasks
+       WHERE venture_id = ? AND workflow_id = ? AND status NOT IN ('completed', 'cancelled')
+       ORDER BY priority ASC, updated_at DESC LIMIT ?`,
+      [ventureId, workflowId, 5],
+    )
+    : all(
+      db,
+      `SELECT * FROM tasks
+       WHERE venture_id = ? AND status NOT IN ('completed', 'cancelled')
+       ORDER BY priority ASC, updated_at DESC LIMIT ?`,
+      [ventureId, 5],
+    )).map((row) => record("tasks", row, {
     summary: row.error || row.setup_block_reason || "",
     facts: {
       worker: row.agent,
@@ -425,11 +503,11 @@ function genericRecordForModel(row, options = {}) {
 function classRecords(db, ventureId, className, generic, options = {}) {
   let built = [];
   if (className === "venture") built = ventureSection(db, ventureId);
-  if (className === "evidence") built = evidenceSection(db, ventureId);
+  if (className === "evidence") built = evidenceSection(db, ventureId, options);
   if (className === "finance") built = financeSection(db, ventureId);
-  if (className === "production") built = productionSection(db, ventureId);
+  if (className === "production") built = productionSection(db, ventureId, options);
   if (className === "customer") built = customerSection(db, ventureId);
-  if (className === "operations") built = operationsSection(db, ventureId);
+  if (className === "operations") built = operationsSection(db, ventureId, options);
   if (className === "learning") built = learningSection(db, ventureId);
 
   const matching = generic.filter((row) => row.record_class === className);
@@ -456,9 +534,19 @@ function buildAgentContextSnapshot(db, input = {}) {
   const profile = contextProfile(agentId, input.recordClasses);
   const includePersonalData = input.includePersonalData === true;
   const generic = ventureRecords(db, ventureId);
+  const contextScope = {
+    workflowId: String(input.workflowId || "").trim() || null,
+    journeyId: String(input.journeyId || "").trim() || null,
+    roundId: String(input.roundId || "").trim() || null,
+    opportunityId: String(input.opportunityId || "").trim() || null,
+    planId: String(input.planId || "").trim() || null,
+  };
   const sections = {};
   for (const className of profile.selected) {
-    sections[className] = classRecords(db, ventureId, className, generic, { includePersonalData });
+    sections[className] = classRecords(db, ventureId, className, generic, {
+      includePersonalData,
+      ...contextScope,
+    });
   }
   const recordRefs = Object.values(sections)
     .flatMap((section) => section.records)
@@ -473,10 +561,13 @@ function buildAgentContextSnapshot(db, input = {}) {
     accessProfile: profile.name,
     purpose: text(input.purpose || "Complete the exact assigned business task.", 600),
     recordClasses: profile.selected,
+    contextScope,
     includePersonalData,
     dataPolicy: {
       taskScoped: true,
       exactVentureOnly: true,
+      workflowScopedOperationalRecords: Boolean(contextScope.workflowId),
+      selectedOpportunityEvidenceOnly: Boolean(contextScope.opportunityId),
       credentialsExcluded: true,
       directCustomerIdentifiersExcluded: !includePersonalData,
       localOnlyRecordsExcluded: true,
@@ -612,6 +703,7 @@ function contextForModel(snapshot) {
     purpose: snapshot.purpose,
     recordClasses: snapshot.recordClasses,
     recordCount: snapshot.recordCount,
+    contextScope: snapshot.contextScope,
     dataPolicy: snapshot.dataPolicy,
     sections: snapshot.sections,
   };

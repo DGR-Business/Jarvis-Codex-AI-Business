@@ -3,6 +3,19 @@
 Date: 2026-07-17
 Status: accepted operating direction; implementation remains gated
 
+## Current Status Update - 2026-07-22
+
+The implementation boundary later in this decision records the state on
+2026-07-17 and is historical. It is superseded where it says that model routing,
+retention approval, Product Builder, or Quality Reviewer are not implemented or
+not proved. Luna/Terra/Sol routing is now implemented, the data-protection plan
+is active, and the fixed specialists are connected through the bounded Full
+Journey. Dynamic workers, remote/mobile operation, publishing, account actions,
+customer contact, and money movement remain gated.
+
+The current execution contract is
+`docs/plans/PANTHEON-FULL-JOURNEY-PROOF-AND-FIRST-PRODUCT-2026-07-22.md`.
+
 ## Decision
 
 Jarvis will use a fixed, supervised 11-worker roster for Autonomous Agent
@@ -107,8 +120,8 @@ Not implemented or not yet proved by this decision:
 
 ## Review Trigger
 
-Review this decision after the first accepted live-web Demand Validator proof
-and the retention/privacy decision, or before any proposal to:
+Review this decision after the first complete production-intent journey, or
+before any proposal to:
 
 - add or remove a worker;
 - let a worker create another worker or choose unapproved tools;

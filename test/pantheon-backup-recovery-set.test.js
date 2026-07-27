@@ -6,6 +6,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { DatabaseSync } = require("node:sqlite");
 const {
+  backupKeyId,
   createBackup,
   readEncryptedHeader,
   requiredPassphrase,
@@ -40,6 +41,10 @@ function createRecoveryFixture(name) {
   fs.writeFileSync(
     path.join(privateOperatorRoot, "operator-reference.txt"),
     "PRIVATE-KYC-REFERENCE-MARKER\n",
+  );
+  fs.writeFileSync(
+    path.join(privateOperatorRoot, "runtime-credentials.json"),
+    JSON.stringify({ backupPassphraseProtected: "CIRCULAR-RECOVERY-SECRET-MARKER" }),
   );
 
   const db = new DatabaseSync(dbPath);
@@ -89,6 +94,7 @@ test("one encrypted recovery set restores source, database, artifacts, packs and
     const header = readEncryptedHeader(backup.destinationPath).header;
     assert.equal(header.setId, backup.setId);
     assert.equal(header.manifestSha256, backup.manifestSha256);
+    assert.equal(header.keyId, backupKeyId(PASSPHRASE));
     assert.equal(
       fs.readFileSync(backup.destinationPath).includes(Buffer.from("PRIVATE-KYC-REFERENCE-MARKER")),
       false,
@@ -122,6 +128,7 @@ test("one encrypted recovery set restores source, database, artifacts, packs and
       fs.readFileSync(path.join(restoredRoot, "private", "operator-reference.txt"), "utf8"),
       "PRIVATE-KYC-REFERENCE-MARKER\n",
     );
+    assert.equal(fs.existsSync(path.join(restoredRoot, "private", "runtime-credentials.json")), false);
     assert.equal(fs.existsSync(path.join(restoredRoot, ".pantheon-recovery", "manifest.json")), true);
     assert.equal(fs.existsSync(path.join(restoredRoot, ".pantheon-recovery", "restore-verification.json")), true);
 

@@ -1,19 +1,19 @@
 [CmdletBinding()]
 param(
   [switch]$UseCurrentProcess,
-  [switch]$Disconnect
+  [switch]$Disconnect,
+  [switch]$RemoveUserEnvironmentKey
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
-$privateRoot = Join-Path $root "private"
-$credentialPath = Join-Path $privateRoot "runtime-credentials.json"
+. (Join-Path $PSScriptRoot "pantheon-credential-store.ps1")
+$credentialPath = Get-PantheonOpenAICredentialPath
 
 if ($Disconnect) {
   if (Test-Path -LiteralPath $credentialPath) {
     Remove-Item -LiteralPath $credentialPath -Force
   }
-  Write-Host "The standalone OpenAI connection has been removed."
+  Write-Host "Pantheon's protected OpenAI connection has been removed."
   exit 0
 }
 
@@ -35,24 +35,10 @@ try {
   [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
 }
 
-New-Item -ItemType Directory -Path $privateRoot -Force | Out-Null
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$aclTool = Get-Command icacls.exe -ErrorAction Stop
-& $aclTool.Source $privateRoot /inheritance:r /grant:r "${identity}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
-if ($LASTEXITCODE -ne 0) {
-  throw "The private credential folder permissions could not be restricted to this Windows account."
+$credentialPath = Write-PantheonOpenAICredential -ApiKey $secureKey
+if ($RemoveUserEnvironmentKey) {
+  [Environment]::SetEnvironmentVariable("OPENAI_API_KEY", $null, "User")
 }
-
-$profile = [ordered]@{
-  version = 2
-  openAiApiKeyProtected = ConvertFrom-SecureString $secureKey
-  enableLiveModels = $true
-  enableLiveResearch = $true
-  enableImageGeneration = $true
-  configuredAt = [DateTime]::UtcNow.ToString("o")
-}
-$temporaryPath = "$credentialPath.tmp"
-$profile | ConvertTo-Json | Set-Content -LiteralPath $temporaryPath -Encoding utf8
-Move-Item -LiteralPath $temporaryPath -Destination $credentialPath -Force
 
 Write-Host "OpenAI is securely connected for Pantheon on this Windows account. Internal AI work remains budget-controlled and consequential outside actions stay protected."
+Write-Host "Protected credential: $credentialPath"

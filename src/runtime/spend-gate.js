@@ -41,6 +41,18 @@ function amountForRequest(task, request) {
   return Math.max(0, Number(request.maxCostCents || request.estimatedCostCents || task.cost_budget_cents || 0));
 }
 
+function reservationAmountForRequest(task, request) {
+  const hardCapCents = amountForRequest(task, request);
+  const pricedWorstCaseCents = Math.max(
+    0,
+    Number(request.executionDescriptor?.worstCaseCost?.amountCents || 0),
+  );
+  if (pricedWorstCaseCents > 0 && pricedWorstCaseCents <= hardCapCents) {
+    return pricedWorstCaseCents;
+  }
+  return hardCapCents;
+}
+
 function riskForAmount(cents) {
   if (cents >= 2500) return "high";
   if (cents >= 500) return "medium";
@@ -198,6 +210,7 @@ function getSpendApprovalState(db, task, options = {}) {
     approvalInvalidReason: scopeValidation.valid ? null : scopeValidation.reason,
     scopeHash: scopedApproval?.scope_hash || null,
     estimatedCostCents: amountForRequest(task, request),
+    reservationCostCents: reservationAmountForRequest(task, request),
     currency: CONFIG.currency,
     type: request.type || "ai_work",
     provider: request.provider || "not_selected",
@@ -491,6 +504,7 @@ function ensureSpendApproval(db, task, options = {}) {
     approved: true,
     approval,
     estimatedCostCents: amountCents,
+    reservationCostCents: reservationAmountForRequest(task, request),
     state: getSpendApprovalState(db, { ...task, approval_id: approval.id }, options),
   };
 }

@@ -27,8 +27,9 @@ meaningful foundation changes so future sessions do not depend on chat history.
 - Server: `src/server.js`, localhost dashboard on `PORT` or `5051`.
 - Database: `data/runtime.sqlite`, generated locally and ignored by Git.
 - Dashboard: `public/`, a code-native operator console.
-- Tests: `npm.cmd test` on Windows PowerShell, or
-  `node --test --test-isolation=none`.
+- Tests: always use `npm.cmd test` on Windows PowerShell. For a focused run,
+  use `npm.cmd test -- test/<name>.test.js`; the wrapper isolates credentials,
+  database state, artifacts, approval packs, backups, and temporary files.
 
 ## Operating Rules
 
@@ -89,7 +90,8 @@ meaningful foundation changes so future sessions do not depend on chat history.
 
 After runtime changes:
 
-1. Run `npm.cmd test` or the equivalent Node test command.
+1. Run `npm.cmd test`, including for focused test files, so the isolated test
+   wrapper is always active.
 2. Start `npm.cmd start` or `node src/server.js`.
 3. Check `GET /api/health`.
 4. Click through the dashboard proof path in a real browser: run the monitor,

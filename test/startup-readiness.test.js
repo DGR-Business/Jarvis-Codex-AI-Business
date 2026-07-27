@@ -11,6 +11,16 @@ const { ensureSchedulerJobs } = require("../src/runtime/scheduler");
 const { createApp, startServer } = require("../src/server");
 const { get, openDatabase, run, seedDatabase, toJson } = require("../src/db");
 
+test("the Windows launcher refreshes Pantheon when runtime source changes", () => {
+  const launcher = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "start-pantheon.ps1"),
+    "utf8",
+  );
+  assert.match(launcher, /runtimeSourceFingerprint/);
+  assert.match(launcher, /PANTHEON_RUNTIME_SOURCE=/);
+  assert.match(launcher, /Refreshing Pantheon with the current approved connections and limits/);
+});
+
 function makeRuntime(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `jarvis-startup-${name}-`));
   const db = openDatabase(path.join(root, "runtime.sqlite"));

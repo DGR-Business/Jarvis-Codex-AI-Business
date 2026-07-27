@@ -47,13 +47,13 @@ const CAPABILITIES = {
     maxDeadlineMs: 180_000,
   },
   product_file_factory: {
-    kind: "hosted_tool",
-    sdkName: "code_interpreter",
+    kind: "runtime_transform",
+    sdkName: "product_file_factory",
     workerIds: ["product_builder"],
-    maxCostCents: 1000,
-    maxToolCalls: 8,
-    maxTurns: 8,
-    maxDeadlineMs: 300_000,
+    maxCostCents: 200,
+    maxToolCalls: 0,
+    maxTurns: 1,
+    maxDeadlineMs: 180_000,
   },
   visual_asset_review: {
     kind: "model_input",
@@ -141,16 +141,7 @@ function capabilityOptions(toolId, request) {
       partialImages: 0,
     };
   }
-  if (toolId === "product_file_factory") {
-    const memoryLimit = ["1g", "4g"].includes(args.memoryLimit) ? args.memoryLimit : "1g";
-    return {
-      includeOutputs: true,
-      container: {
-        type: "auto",
-        memory_limit: memoryLimit,
-      },
-    };
-  }
+  if (toolId === "product_file_factory") return { renderer: "pantheon-local-digital-product-factory-v1" };
   if (toolId === "visual_asset_review") {
     const assetIds = uniqueList(args.assetIds || taskAssetIds(request)).slice(0, 4);
     if (!assetIds.length) throw new Error("Visual review requires one or more exact approved asset IDs.");

@@ -317,7 +317,7 @@ test("stale recovery never retries an attempt after provider dispatch was record
 test("migrations install receipt immutability, exact attempt bindings, and provider receipt repair", () => {
   const runtime = makeRuntime();
   try {
-    assert.equal(get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version, 20);
+    assert.equal(get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version, 21);
     assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 12").name, "agent-operations-evidence-and-receipts");
     assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 16").name, "exact-agent-execution-evidence-bindings");
     assert.equal(get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 17").name, "provider-request-attempt-receipt-backfill");

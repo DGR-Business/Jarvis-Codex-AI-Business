@@ -6,17 +6,28 @@ const { DatabaseSync } = require("node:sqlite");
 
 const { buildWorkerPrompt } = require("../src/adapters/live-ai-worker");
 const {
+  productBuilderVisualOutputJsonSchema,
+} = require("../src/runtime/agent-model-contracts");
+const {
   sourceTaskCompletedLiveResearch,
 } = require("../src/runtime/demand-interest-test");
 const {
   isReviewedRetryableErrorKind,
 } = require("../src/runtime/live-ai-retry-policy");
+const { classifyInternalApproval } = require("../src/runtime/pantheon-policy");
 
 const DEMAND_VALIDATOR = {
   id: "demand_validator",
   name: "Demand Validator",
   role: "Demand research specialist",
   instructions: "Test whether current evidence supports demand.",
+  approval_policy: { mustPauseFor: ["publishing", "customer contact"] },
+};
+const PRODUCT_BUILDER = {
+  id: "product_builder",
+  name: "Product Builder",
+  role: "Digital product production specialist",
+  instructions: "Create exact approved customer files.",
   approval_policy: { mustPauseFor: ["publishing", "customer contact"] },
 };
 const POLICY = {
@@ -50,6 +61,68 @@ test("controlled fixture prompt remains isolated from live evidence", () => {
   assert.match(prompt, /Reason only over suppliedEvidenceFixture/i);
   assert.match(prompt, /Never infer live demand from a controlled test example/i);
   assert.doesNotMatch(prompt, /Use the approved web search before deciding/i);
+});
+
+test("Product Builder file runs use one strict blueprint and deterministic local rendering", () => {
+  const prompt = buildWorkerPrompt({
+    payload: {
+      expectedOutput: "A real manifest and customer bundle.",
+      liveSpendRequest: { tools: ["product_file_factory"] },
+    },
+  }, PRODUCT_BUILDER, {
+    allowedTools: ["product_file_factory"],
+    blockedTools: ["publishing", "customer_contact"],
+  });
+
+  assert.match(prompt, /productBlueprint must match every ID/i);
+  assert.match(prompt, /render and validate the files deterministically/i);
+  assert.match(prompt, /strict JSON/i);
+  assert.doesNotMatch(prompt, /Return the shared recommendation fields/i);
+});
+
+test("reviewed Product Builder corrections remain explicit even after a long inherited brief", () => {
+  const requiredCorrection = "Interview Preparation Workbook needs a dedicated Preparation Status field with Not Started, In Progress, Ready for Review, Completed, and Post-Interview options.";
+  const prompt = buildWorkerPrompt({
+    payload: {
+      expectedOutput: "A corrected product blueprint.",
+      workBrief: {
+        assetPrompt: "Inherited product guidance. ".repeat(200),
+        requiredCorrections: [requiredCorrection],
+      },
+      liveSpendRequest: { tools: ["product_file_factory"] },
+    },
+  }, PRODUCT_BUILDER, {
+    allowedTools: ["product_file_factory"],
+    blockedTools: ["publishing", "customer_contact"],
+  });
+
+  assert.match(prompt, /reviewed correction attempt/i);
+  assert.match(prompt, /Interview Preparation Workbook needs a dedicated Preparation Status field/i);
+  assert.match(prompt, /Do not merely acknowledge, explain, or restate it/i);
+});
+
+test("Product Builder visual runs use a compact structured result after one image", () => {
+  const prompt = buildWorkerPrompt({
+    payload: {
+      expectedOutput: "One truthful storefront image.",
+      liveSpendRequest: { tools: ["image_generation_spend"] },
+    },
+  }, PRODUCT_BUILDER, {
+    allowedTools: ["image_generation_spend"],
+    blockedTools: ["publishing", "customer_contact"],
+  });
+  const schema = productBuilderVisualOutputJsonSchema();
+
+  assert.match(prompt, /After creating the one approved image/i);
+  assert.match(prompt, /one short sentence/i);
+  assert.deepEqual(schema.properties.work.required, [
+    "productFormat",
+    "productionMethod",
+    "limitations",
+    "approvalNeeded",
+    "channelFit",
+  ]);
+  assert.equal(Object.hasOwn(schema.properties.work.properties, "catalogueCoverage"), false);
 });
 
 test("completed live research cannot recursively prepare the same research step", () => {
@@ -153,4 +226,77 @@ test("reviewed retry policy uses one consistent allow-list", () => {
   }
   assert.equal(isReviewedRetryableErrorKind("provider_outcome_unknown"), false);
   assert.equal(isReviewedRetryableErrorKind("failed_before_provider_dispatch"), false);
+});
+
+test("internal AI work reserves the priced worst case while preserving its hard ceiling", () => {
+  const classification = classifyInternalApproval({
+    id: "approval-priced-bound",
+    status: "pending",
+    risk_level: "medium",
+    scope_hash: "scope-priced-bound",
+    payload: JSON.stringify({
+      liveSpendRequest: true,
+      type: "live_ai_worker",
+      tools: ["research_adapter"],
+      effects: [],
+      maxCostCents: 500,
+      estimatedCostCents: 500,
+      worstCaseCostCents: 35,
+      executionDescriptor: {
+        descriptorHash: "descriptor-priced-bound",
+        externalEffects: [],
+      },
+    }),
+  });
+
+  assert.equal(classification.eligible, true);
+  assert.equal(classification.amountCents, 35);
+  assert.equal(classification.hardCapCents, 500);
+  assert.equal(classification.pricedWorstCaseCents, 35);
+});
+
+test("a reviewed Product Builder correction preserves the exact tool contract", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "src", "runtime", "live-ai-workers.js"),
+    "utf8",
+  );
+  assert.match(source, /requiredCorrections = \[/);
+  assert.match(source, /single corrected Product Builder attempt/);
+  assert.match(source, /Resolve every item in requiredCorrections exactly/);
+  assert.match(
+    source,
+    /productBuilderTools\.includes\("product_file_factory"\)[\s\S]*?retryOptions\.maxTurns = 1/,
+  );
+  assert.match(source, /Pantheon will render, hash, reopen, preview, and package the customer files locally/);
+  assert.match(source, /Copy each sample status value character-for-character from that field's options/);
+  assert.match(source, /supported row-level calculator logic/);
+  assert.match(source, /Never use grouping, cross-row totals, SUMIF or SUMIFS/);
+  assert.match(source, /with no explanatory prose/);
+  assert.match(
+    source,
+    /productBuilderTools\.includes\("image_generation_spend"\)[\s\S]*?retryOptions\.maxTurns = 2/,
+  );
+  assert.match(source, /return the compact strict visual-result JSON/i);
+  assert.doesNotMatch(source, /Finish creating and saving every approved file with Code Interpreter/);
+});
+
+test("reviewed corrections carry exact findings and calculation guidance into Offer Architect", () => {
+  const retrySource = fs.readFileSync(
+    path.join(__dirname, "..", "src", "runtime", "live-ai-workers.js"),
+    "utf8",
+  );
+  const commercialSource = fs.readFileSync(
+    path.join(__dirname, "..", "src", "runtime", "pantheon-opportunities.js"),
+    "utf8",
+  );
+
+  assert.match(retrySource, /Pantheon evidence check: \$\{findings\.join\(" "\)\}/);
+  assert.match(
+    retrySource,
+    /task\.agent === "offer_architect"[\s\S]*?sum, subtract, multiply, or percent_of/,
+  );
+  assert.match(
+    commercialSource,
+    /every matching included tool must name the relevant fields and an explicit operation using sum, subtract, multiply, or percent_of/i,
+  );
 });

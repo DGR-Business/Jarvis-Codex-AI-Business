@@ -1,0 +1,33 @@
+name: Pantheon checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+      - name: Use Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm.cmd ci
+      - name: Lint correctness rules
+        run: npm.cmd run lint
+      - name: Run isolated test suite
+        run: npm.cmd test
+      - name: Audit runtime dependencies
+        # The Agents SDK currently loads its MCP package despite declaring it
+        # optional. Keep advisories visible and fail closed on critical issues
+        # until a compatible upstream release removes the current transitive set.
+        run: npm.cmd audit --omit=dev --audit-level=critical

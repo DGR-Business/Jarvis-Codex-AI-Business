@@ -18,6 +18,7 @@ const { decideApproval } = require("../src/runtime/approvals");
 const { runOnce } = require("../src/runtime/orchestrator");
 const {
   getOpportunityState,
+  pendingCommercialTask,
   projectCompletedCommercialTask,
   queueCommercialWorker,
   startOpportunityRound,
@@ -235,6 +236,7 @@ function financeOutput() {
 }
 
 function offerOutput(options = {}) {
+  const catalogueCount = Number(options.catalogueCount || 5);
   return {
     summary: "A minimum credible catalogue was designed for the validated buyer and channel; no product files or public actions have occurred.",
     recommendation: "Review the venture choice before any protected build begins.",
@@ -258,8 +260,27 @@ function offerOutput(options = {}) {
       smallestTest: "Launch only after build and quality review, then measure qualified views and sales.",
       successMetric: "Three independent paid buyers and positive net cash contribution.",
       stopRule: "Diagnose reach, offer, value, price, listing and checkout before pausing.",
+      catalogueItems: Array.from({ length: catalogueCount }, (_, index) => ({
+        title: `${options.cataloguePrefix || "Focused Workflow Product"} ${index + 1}`,
+        buyerSegment: options.buyer || "Operators with a repeated workflow problem",
+        outcome: `Complete the distinct workflow need represented by product ${index + 1}.`,
+        format: "Evidence-appropriate digital or physical product specification",
+        includedTools: [`Focused tool ${index + 1}`, "Setup guidance"],
+        differentiation: `Distinct use case ${index + 1}; this is not a renamed copy of another catalogue item.`,
+        priceCents: 2900,
+      })),
     },
   };
+}
+
+function expectedCatalogueCount(businessModel) {
+  const descriptor = String(businessModel || "").toLowerCase();
+  if (descriptor.includes("print on demand") || descriptor.includes("pod")) return 12;
+  if (descriptor.includes("art")) return 8;
+  if (descriptor.includes("affiliate")) return 10;
+  if (descriptor.includes("amazon") || descriptor.includes("white label")) return 3;
+  if (descriptor.includes("course") || descriptor.includes("guide")) return 4;
+  return 5;
 }
 
 function projectTask(db, task, output) {
@@ -390,7 +411,10 @@ async function driveRoundToOffer(db, businessModel, options = {}) {
   const financeProjection = projectTask(db, financeTask, financeOutput());
   const offerTask = commercialTask(db, roundId, "offer_architecture", selected.id);
   const deliverablesBeforeOffer = Number(get(db, "SELECT COUNT(*) AS count FROM deliverables").count);
-  const offerProjection = projectTask(db, offerTask, offerOutput());
+  const offerProjection = projectTask(db, offerTask, offerOutput({
+    catalogueCount: expectedCatalogueCount(businessModel),
+    cataloguePrefix: businessModel,
+  }));
   return {
     started,
     roundId,
@@ -739,5 +763,42 @@ test("supervisor stops at idle, setup, attention and active-cycle boundaries", a
     assert.equal(attention.cycle.task_id, task.id);
   } finally {
     closeRuntime(attentionRuntime);
+  }
+});
+
+test("stopped historical work cannot intercept a fresh commercial round", async () => {
+  const runtime = runtimeDb("supervisor-terminal-history");
+  try {
+    const first = await startRound(runtime.db);
+    const firstTask = commercialTask(runtime.db, first.round.id, "opportunity_scout");
+    const ts = now();
+    run(
+      runtime.db,
+      "UPDATE tasks SET status = 'needs_attention', error = ?, updated_at = ? WHERE id = ?",
+      ["Preserved unknown provider outcome.", ts, firstTask.id],
+    );
+    run(
+      runtime.db,
+      "UPDATE workflows SET status = 'failed', updated_at = ? WHERE id = ?",
+      [ts, first.round.metadata.workflowId],
+    );
+    run(
+      runtime.db,
+      "UPDATE opportunity_rounds SET status = 'stopped_unknown_outcome', updated_at = ? WHERE id = ?",
+      [ts, first.round.id],
+    );
+
+    const second = startOpportunityRound(runtime.db, {
+      prompt: "Start a fresh commercial opportunity scan.",
+      source: "pantheon-commercial-spine-test",
+      force: true,
+    });
+    const pending = pendingCommercialTask(runtime.db);
+
+    assert.notEqual(second.round.id, first.round.id);
+    assert.equal(pending.id, second.queued.task.id);
+    assert.equal(pending.status, "queued");
+  } finally {
+    closeRuntime(runtime);
   }
 });

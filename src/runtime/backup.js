@@ -35,6 +35,15 @@ function requiredPassphrase(value = preferredEnvironment("BACKUP_PASSPHRASE")) {
   return value;
 }
 
+function backupKeyId(passphrase) {
+  return `pbk-${crypto
+    .createHash("sha256")
+    .update("pantheon-backup-key-v1\0", "utf8")
+    .update(requiredPassphrase(passphrase), "utf8")
+    .digest("hex")
+    .slice(0, 20)}`;
+}
+
 function sha256File(filePath) {
   const hash = crypto.createHash("sha256");
   const fd = fs.openSync(filePath, "r");
@@ -69,6 +78,9 @@ function validateHeader(header) {
   if (!Number.isSafeInteger(header.payloadBytes) || header.payloadBytes < 0) throw new Error("Invalid backup payload size.");
   if (!/^[a-f0-9]{64}$/i.test(String(header.payloadSha256 || ""))) throw new Error("Invalid backup payload hash.");
   if (!Number.isFinite(Date.parse(header.createdAt))) throw new Error("Invalid backup creation time.");
+  if (header.keyId !== undefined && !/^pbk-[a-f0-9]{20}$/i.test(String(header.keyId))) {
+    throw new Error("Invalid backup key identifier.");
+  }
   const salt = Buffer.from(String(header.salt || ""), "base64");
   const iv = Buffer.from(String(header.iv || ""), "base64");
   if (salt.length !== 16 || iv.length !== 12) throw new Error("Invalid backup encryption parameters.");
@@ -174,6 +186,7 @@ async function encryptFile(sourcePath, destinationPath, options = {}) {
     keyDerivation: "scrypt",
     createdAt: options.createdAt || new Date().toISOString(),
     kind: options.kind || "file",
+    keyId: backupKeyId(passphrase),
     payloadBytes: fs.statSync(sourcePath).size,
     payloadSha256: sha256File(sourcePath),
     salt: salt.toString("base64"),
@@ -277,9 +290,11 @@ function createSourceArchive(sourceRoot, archivePath, options = {}) {
   return archivePath;
 }
 
-function copyDirectoryContents(source, destination) {
+function copyDirectoryContents(source, destination, options = {}) {
   fs.mkdirSync(destination, { recursive: true });
+  const excludedNames = new Set(options.excludedNames || []);
   for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    if (excludedNames.has(entry.name)) continue;
     if (entry.isSymbolicLink()) {
       throw new Error(`Managed backup data cannot contain symbolic links: ${path.join(source, entry.name)}`);
     }
@@ -512,8 +527,12 @@ async function createRecoverySetArchive(sourceRoot, archivePath, options = {}) {
 
     const restoredPrivateRoot = path.join(stageRoot, "private");
     fs.mkdirSync(restoredPrivateRoot, { recursive: true });
-    const privateOperatorReferencesPresent = fs.existsSync(privateOperatorRoot);
-    if (privateOperatorReferencesPresent) copyDirectoryContents(privateOperatorRoot, restoredPrivateRoot);
+    if (fs.existsSync(privateOperatorRoot)) {
+      copyDirectoryContents(privateOperatorRoot, restoredPrivateRoot, {
+        excludedNames: ["runtime-credentials.json"],
+      });
+    }
+    const privateOperatorReferencesPresent = fs.readdirSync(restoredPrivateRoot).length > 0;
 
     const inventory = inventoryDirectory(stageRoot);
     const components = {
@@ -1083,6 +1102,7 @@ function pruneBackups(destinationRoot = CONFIG.backupDestination, options = {}) 
 
 module.exports = {
   authenticateEncryptedBackup,
+  backupKeyId,
   createBackup,
   createArtifactArchive,
   createDatabaseSnapshot,

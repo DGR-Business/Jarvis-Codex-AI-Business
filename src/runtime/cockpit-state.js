@@ -14,9 +14,11 @@ const { getRetentionPolicyState } = require("./retention-policy");
 const { unsafeTaskReason } = require("./scheduler");
 const { spendCostId } = require("./stable-id");
 const { canPrepareReviewedRetry } = require("./live-ai-retry-policy");
+const { preDispatchRecoveryStatus } = require("./live-ai-workers");
 const { supersededRetryTaskIds } = require("./monitor");
 const { getOpportunityState } = require("./pantheon-opportunities");
 const { getProductionState } = require("./pantheon-production");
+const { currentOperatorJourney } = require("./pantheon-journey");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -24,6 +26,23 @@ function parseRows(rows, fields = ["metadata"]) {
     for (const field of fields) parsed[field] = fromJson(parsed[field], field.endsWith("s") ? [] : {});
     return parsed;
   });
+}
+
+function journeyIdForTaskPayload(payload = {}) {
+  const parameters = payload?.liveSpendRequest?.parameters || {};
+  return parameters.pantheonJourney?.journeyId
+    || parameters.pantheonCommercial?.journeyId
+    || parameters.pantheonProduction?.journeyId
+    || null;
+}
+
+function latestOperatorJourneyId(db) {
+  return currentOperatorJourney(db)?.id || null;
+}
+
+function belongsToCurrentJourney(payload, currentJourneyId) {
+  const journeyId = journeyIdForTaskPayload(payload);
+  return !journeyId || !currentJourneyId || journeyId === currentJourneyId;
 }
 
 function humanTaskStatus(status) {
@@ -80,8 +99,13 @@ function decisionCard(approval) {
   const controlledDemandCheck = workerId === "demand_validator" && Boolean(fixture);
   const production = liveRequest.parameters?.pantheonProduction || null;
   const productBuildSpec = liveRequest.parameters?.productBuildSpec || null;
+  const dataProtectionPlan = approval.scope === "data_retention_policy";
   const catalogueBuild = production?.stage === "product_build"
     && production.operatorChoiceRequired === true;
+  const qualityReview = production?.stage === "quality_review"
+    || workerId === "quality_reviewer";
+  const correctionNumber = Number(production?.revisionNumber || 0);
+  const finalQualityRecheck = qualityReview && correctionNumber > 0;
   const maxCostCents = Number(payload.estimatedCostCents || payload.maxCostCents || 0);
   return {
     id: approval.id,
@@ -122,6 +146,9 @@ function decisionCard(approval) {
     model: liveRequest.model || scope.model || payload.model || null,
     modelRoute,
     worker: payload.worker?.name || liveRequest.worker?.name || payload.requestedWorker || null,
+    productionStage: production?.stage || null,
+    correctionNumber,
+    finalQualityRecheck,
     effects: approval.expectedEffects,
     tools,
     maxTurns: Number(scope.maxTurns || liveRequest.maxTurns || 0),
@@ -142,15 +169,32 @@ function decisionCard(approval) {
     tracePolicy: payload.tracePolicy || null,
     policySummary: Array.isArray(payload.policySummary) ? payload.policySummary : null,
     noDeletion: payload.noDeletion === true,
-    attentionLabel: catalogueBuild ? "Product build ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
-    primaryActionLabel: catalogueBuild ? "Review catalogue build" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
-    approveLabel: catalogueBuild ? "Build this catalogue" : null,
-    decisionActionKind: catalogueBuild ? "catalogue_build" : null,
+    attentionLabel: catalogueBuild ? "Product build ready" : finalQualityRecheck ? "Final quality recheck ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
+    primaryActionLabel: catalogueBuild ? "Review catalogue build" : finalQualityRecheck ? "Review final quality recheck" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
+    approveLabel: catalogueBuild
+      ? "Build this catalogue"
+      : finalQualityRecheck
+        ? "Start final quality recheck"
+      : dataProtectionPlan
+        ? "Activate this protection plan"
+        : null,
+    decisionActionKind: catalogueBuild
+      ? "catalogue_build"
+      : dataProtectionPlan
+        ? "data_protection"
+        : null,
     productBuild: catalogueBuild ? {
       productCount: Number(productBuildSpec?.catalogueItems?.length || 0),
       profile: productBuildSpec?.profile || null,
       formats: productBuildSpec?.allowedFormats || [],
       qualityBar: productBuildSpec?.qualityBar || null,
+      items: (productBuildSpec?.catalogueItems || []).map((item) => ({
+        id: item.id || null,
+        title: item.title || "Untitled product",
+        audience: item.audience || null,
+        offer: item.offer || null,
+        priceCents: Number(item.priceCents || 0),
+      })),
     } : null,
     decisionPrompt: catalogueBuild
       ? "Review what Pantheon will create, the cost ceiling, and what remains locked."
@@ -275,11 +319,15 @@ function taskExecutionPresentation(task) {
   };
 }
 
-function importantWork(db) {
+function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
   const riskRank = { high: 0, medium: 1, low: 2 };
   const consequentialChoices = [
-    ...pendingApprovals(db).map(decisionCard),
-    ...pendingHandoffs(db).map(handoffCard),
+    ...pendingApprovals(db)
+      .filter((approval) => belongsToCurrentJourney(approval.taskPayload, currentJourneyId))
+      .map(decisionCard),
+    ...pendingHandoffs(db)
+      .filter((handoff) => belongsToCurrentJourney(handoff.source_task_payload, currentJourneyId))
+      .map(handoffCard),
   ].sort((left, right) => (
     (riskRank[left.risk] ?? 3) - (riskRank[right.risk] ?? 3)
     || String(left.requestedAt || "").localeCompare(String(right.requestedAt || ""))
@@ -287,7 +335,13 @@ function importantWork(db) {
   const items = [];
   const unknownTasks = parseRows(all(
     db,
-    "SELECT id, venture_id, workflow_id, title, kind, agent, status, outcome_status, error, payload, result, created_at, updated_at, '{}' AS metadata FROM tasks WHERE outcome_status = 'unknown' OR status = 'needs_attention' ORDER BY updated_at DESC",
+    `SELECT id, venture_id, workflow_id, title, kind, agent, status, outcome_status,
+            error, payload, result, created_at, updated_at, '{}' AS metadata
+     FROM tasks
+     WHERE outcome_status = 'unknown'
+        OR status = 'needs_attention'
+        OR (status = 'failed' AND outcome_status = 'failed_before_effect')
+     ORDER BY updated_at DESC`,
     [],
   ), ["payload", "result"]);
   const completedPilotTasks = parseRows(all(
@@ -295,7 +349,10 @@ function importantWork(db) {
     "SELECT id, payload, created_at FROM tasks WHERE kind = 'live_ai_worker_execution' AND status = 'completed' ORDER BY created_at DESC",
     [],
   ), ["payload"]);
+  const resolvedTaskIds = supersededRetryTaskIds(db);
   for (const task of unknownTasks) {
+    if (!belongsToCurrentJourney(task.payload, currentJourneyId)) continue;
+    if (resolvedTaskIds.has(task.id)) continue;
     const fixtureId = task.payload?.pilotFixture?.id;
     const correctedRun = fixtureId
       ? completedPilotTasks.find((candidate) => (
@@ -303,19 +360,24 @@ function importantWork(db) {
         && Date.parse(candidate.created_at) > Date.parse(task.created_at)
       ))
       : null;
-    const knownDemandRetry = task.status === "needs_attention"
+    const journeyId = task.payload?.liveSpendRequest?.parameters?.pantheonJourney?.journeyId;
+    const preDispatchRecovery = preDispatchRecoveryStatus(db, task);
+    const knownReviewedRetry = task.status === "needs_attention"
       && task.outcome_status === "known_provider_result_needs_review"
       && task.kind === "live_ai_worker_execution"
-      && task.agent === "demand_validator";
-    const latestAttempt = knownDemandRetry
+      && (task.agent === "demand_validator" || Boolean(journeyId));
+    const latestAttempt = knownReviewedRetry
       ? get(
         db,
         "SELECT error_kind FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
         [task.id],
       )
       : null;
-    const reviewedRetryAvailable = knownDemandRetry
-      && canPrepareReviewedRetry(task, latestAttempt?.error_kind);
+    const reviewedRetryAvailable = preDispatchRecovery.available
+      || (
+        knownReviewedRetry
+        && canPrepareReviewedRetry(task, latestAttempt?.error_kind)
+      );
     const issueSummary = /provider tool activity was missing/i.test(String(task.error || ""))
       ? "Pantheon did not recognise the web-research record returned by OpenAI."
       : /invalid output|unterminated string/i.test(String(task.error || ""))
@@ -323,28 +385,36 @@ function importantWork(db) {
         : "The AI call finished, but Pantheon could not safely accept the local result.";
     items.push({
       id: task.id,
-      type: knownDemandRetry ? "known_ai_result" : "unknown_outcome",
+      type: preDispatchRecovery.available
+        ? "pre_dispatch_recovery"
+        : knownReviewedRetry ? "known_ai_result" : "unknown_outcome",
       title: correctedRun ? `${task.title}: first call billing check` : task.title,
-      risk: knownDemandRetry ? "medium" : "high",
-      summary: knownDemandRetry
-        ? `${issueSummary} The software issue has been reviewed; a new attempt still needs your separate approval.`
-        : undefined,
+      risk: preDispatchRecovery.available || knownReviewedRetry ? "medium" : "high",
+      summary: preDispatchRecovery.available
+        ? "Pantheon stopped locally before contacting OpenAI. No API cost occurred."
+        : knownReviewedRetry
+          ? `${issueSummary} Pantheon can prepare one corrected attempt; a new model call still needs its own exact approval.`
+          : undefined,
       recommendation: correctedRun
         ? "The corrected run completed successfully. Reconcile only the first call's final provider charge; do not run it again."
-        : knownDemandRetry
+        : preDispatchRecovery.available
+          ? "Prepare a fresh exact decision and run the same stage again."
+          : knownReviewedRetry
           ? reviewedRetryAvailable
             ? "Prepare one corrected Luna retry, then review its exact cost limit before it can run."
             : "Keep this result stopped while Jarvis reviews the exact failure record. Another paid call is not available yet."
           : "Check the provider outcome and reconcile any cost before deciding whether another attempt is justified.",
       expectedUpside: correctedRun
         ? "Keeps the cost record accurate without reopening completed work."
-        : knownDemandRetry
+        : preDispatchRecovery.available
+          ? "Resumes the journey without hiding the failed attempt or spending automatically."
+          : knownReviewedRetry
           ? "Tests the repaired path without publishing, customer contact or automatic spend."
           : "Prevents duplicate work, duplicate spend and contradictory state.",
       workflowId: task.workflow_id,
       action: reviewedRetryAvailable ? {
         kind: "prepare_known_ai_retry",
-        label: "Prepare one corrected retry",
+        label: preDispatchRecovery.available ? "Try this stage again" : "Prepare one corrected retry",
       } : null,
     });
   }
@@ -353,6 +423,10 @@ function importantWork(db) {
     "SELECT * FROM messages WHERE status = 'open' AND severity = 'urgent' ORDER BY created_at DESC LIMIT 10",
   ));
   for (const message of urgent) {
+    if (message.task_id) {
+      const messageTask = get(db, "SELECT payload FROM tasks WHERE id = ?", [message.task_id]);
+      if (messageTask && !belongsToCurrentJourney(fromJson(messageTask.payload, {}), currentJourneyId)) continue;
+    }
     if (items.some((item) => item.id === message.task_id || item.title === message.subject)) continue;
     items.push({
       id: message.id,
@@ -390,6 +464,7 @@ function importantWork(db) {
      LIMIT 3`,
   ), ["payload", "result"]);
   for (const task of waitingTasks) {
+    if (!belongsToCurrentJourney(task.payload, currentJourneyId)) continue;
     if (items.some((item) => item.id === task.id)) continue;
     const execution = taskExecutionPresentation(task);
     items.push({
@@ -428,28 +503,66 @@ function currentTest(db, ventureId) {
   return row ? { ...row, status: testStatus(row.status), metadata: fromJson(row.metadata) } : null;
 }
 
-function digestWithCurrentAttention(digest, work) {
+function digestWithCurrentAttention(db, digest, work, ventureId, currentJourneyId = null) {
   if (!digest) return null;
   const importantItems = work.length;
-  const attentionSentence = importantItems
-    ? `${importantItems} item${importantItems === 1 ? " needs" : "s need"} operator attention.`
-    : "No consequential exception needs operator attention.";
-  const summary = String(digest.summary || "").replace(
-    /(?:\d+ items? (?:needs|need) operator attention\.|No consequential exception needs operator attention\.)$/,
-    attentionSentence,
+  const completedWork = Number(currentJourneyId
+    ? get(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM tasks
+       WHERE status = 'completed'
+         AND completed_at >= ? AND completed_at < ?
+         AND COALESCE(
+           json_extract(payload, '$.liveSpendRequest.parameters.pantheonJourney.journeyId'),
+           json_extract(payload, '$.liveSpendRequest.parameters.pantheonCommercial.journeyId'),
+           json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.journeyId')
+         ) = ?`,
+      [digest.period_start, digest.period_end, currentJourneyId],
+    )?.count || 0
+    : get(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM tasks
+       WHERE venture_id = ? AND status = 'completed'
+         AND completed_at >= ? AND completed_at < ?`,
+      [ventureId, digest.period_start, digest.period_end],
+    )?.count || 0);
+  const currentTest = get(
+    db,
+    `SELECT name, status, expected_metric
+     FROM commercial_experiments
+     WHERE venture_id = ? AND status IN ('ready', 'running')
+     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
+    [ventureId],
   );
+  const independentBuyers = Number(digest.metrics?.independentBuyers || 0);
+  const summary = [
+    `${completedWork} internal work item${completedWork === 1 ? "" : "s"} completed this week.`,
+    `${independentBuyers} independent paying buyer${independentBuyers === 1 ? "" : "s"} recorded.`,
+    currentTest
+      ? `The current business test is ${String(currentTest.status).replace(/[_-]+/g, " ")}.`
+      : "No real-world business test is running yet.",
+    importantItems
+      ? `${importantItems} item${importantItems === 1 ? " needs" : "s need"} operator attention.`
+      : "No consequential exception needs operator attention.",
+  ].join(" ");
   return {
     ...digest,
     status: importantItems ? "attention_needed" : "on_track",
     summary,
     metrics: {
       ...(digest.metrics || {}),
+      completedWork,
+      currentTest: currentTest
+        ? { name: currentTest.name, status: currentTest.status, metric: currentTest.expected_metric }
+        : null,
       liveImportantItems: importantItems,
     },
   };
 }
 
-function teamState(db, ventureId) {
+function teamState(db, ventureId, currentJourneyId = latestOperatorJourneyId(db)) {
   ensureCapabilityAutonomy(db);
   const definitions = listAgentDefinitions(db);
   const capabilities = parseRows(all(db, "SELECT * FROM capability_autonomy ORDER BY capability_key"));
@@ -460,6 +573,7 @@ function teamState(db, ventureId) {
     control: ["finance_analyst", "customer_voice_agent", "growth_analyst", "quality_reviewer"],
   };
   const groupByAgent = Object.fromEntries(Object.entries(groups).flatMap(([group, ids]) => ids.map((id) => [id, group])));
+  const resolvedTaskIds = supersededRetryTaskIds(db);
   return definitions.map((definition) => {
     const latestRun = get(
       db,
@@ -469,11 +583,17 @@ function teamState(db, ventureId) {
        ORDER BY agent_runs.started_at DESC LIMIT 1`,
       [definition.id, ventureId],
     );
-    const activeTask = get(
+    const activeTask = parseRows(all(
       db,
-      "SELECT * FROM tasks WHERE venture_id = ? AND agent = ? AND status IN ('running','queued','blocked','waiting_approval','needs_attention') ORDER BY updated_at DESC LIMIT 1",
+      `SELECT * FROM tasks
+       WHERE venture_id = ? AND agent = ?
+         AND status IN ('running','queued','blocked','waiting_approval','needs_attention')
+       ORDER BY updated_at DESC LIMIT 20`,
       [ventureId, definition.id],
-    );
+    ), ["payload", "result"]).find((task) => (
+      belongsToCurrentJourney(task.payload, currentJourneyId)
+      && !resolvedTaskIds.has(task.id)
+    )) || null;
     const agentCapabilities = capabilities
       .filter((item) => item.agent_id === definition.id)
       .sort((left, right) => (
@@ -544,11 +664,24 @@ function getCockpitState(db) {
   const commercial = commercialFoundationState(db);
   const opportunity = getOpportunityState(db);
   const production = getProductionState(db);
-  const team = teamState(db, commercial.venture.id);
-  const work = importantWork(db);
+  const currentJourney = currentOperatorJourney(db);
+  const currentJourneyId = currentJourney?.id || null;
+  const journeyTask = currentJourney?.metadata?.currentTaskId
+    ? get(
+      db,
+      "SELECT id, title, agent, status, outcome_status, error, updated_at FROM tasks WHERE id = ?",
+      [currentJourney.metadata.currentTaskId],
+    )
+    : null;
+  const team = teamState(db, commercial.venture.id, currentJourneyId);
+  const work = importantWork(db, currentJourneyId);
   const test = currentTest(db, commercial.venture.id);
-  const queue = get(db, "SELECT COUNT(*) AS count FROM tasks WHERE status IN ('planned','queued','running')");
-  const failed = get(db, "SELECT COUNT(*) AS count FROM tasks WHERE status IN ('failed','needs_attention')");
+  const operationalTasks = parseRows(all(
+    db,
+    "SELECT status, payload FROM tasks WHERE status IN ('planned','queued','running','failed','needs_attention')",
+  ), ["payload"]).filter((task) => belongsToCurrentJourney(task.payload, currentJourneyId));
+  const queueCount = operationalTasks.filter((task) => ["planned", "queued", "running"].includes(task.status)).length;
+  const failedCount = operationalTasks.filter((task) => ["failed", "needs_attention"].includes(task.status)).length;
   const activeRuns = getAgentRunsState(db, { state: "active", limit: 10 }).runs;
   return {
     generatedAt: new Date().toISOString(),
@@ -568,16 +701,31 @@ function getCockpitState(db) {
       agents: team,
     },
     health: {
-      label: Number(failed?.count || 0) > 0
+      label: failedCount > 0
         ? "Needs attention"
-        : Number(queue?.count || 0) > 0
+        : queueCount > 0
           ? "Work waiting"
           : "Operating normally",
-      queuedWork: Number(queue?.count || 0),
+      queuedWork: queueCount,
       importantItems: work.length,
       proofMode: CONFIG.systemProofMode === true,
     },
-    weeklyDigest: digestWithCurrentAttention(getLatestDigest(db, commercial.venture.id), work),
+    weeklyDigest: digestWithCurrentAttention(
+      db,
+      getLatestDigest(db, commercial.venture.id),
+      work,
+      commercial.venture.id,
+      currentJourneyId,
+    ),
+    currentJourney: currentJourney ? {
+      id: currentJourney.id,
+      mode: currentJourney.mode,
+      status: currentJourney.status,
+      activeStage: currentJourney.active_stage,
+      model: currentJourney.model,
+      updatedAt: currentJourney.updated_at,
+      currentTask: journeyTask,
+    } : null,
     commercialDiscovery: {
       activeRound: opportunity.activeRound,
       latestRound: opportunity.latestRound,
@@ -1488,6 +1636,68 @@ function elapsedMilliseconds(startedAt, completedAt) {
   return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : null;
 }
 
+function productionRecommendationDisplay(db, task, output, recommendation) {
+  const production = task?.payload?.liveSpendRequest?.parameters?.pantheonProduction || {};
+  if (!production.planId) return recommendation;
+  const plan = get(
+    db,
+    "SELECT opportunity_id, price_floor_cents FROM catalogue_plans WHERE id = ?",
+    [production.planId],
+  );
+  if (!plan) return recommendation;
+  const opportunity = get(
+    db,
+    "SELECT channel FROM opportunities WHERE id = ?",
+    [production.opportunityId || plan.opportunity_id],
+  );
+  const priceCents = Number(plan.price_floor_cents || 0);
+  const fixed = (priceCents / 100).toFixed(2);
+  const compact = fixed.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  const variants = [...new Set([fixed, compact])]
+    .sort((left, right) => right.length - left.length)
+    .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const normalize = (value) => {
+    if (typeof value !== "string" || !priceCents) return value;
+    const foreignPrefix = new RegExp(
+      `\\b(?:US\\$|USD\\s*)(${variants})(?!\\d|\\.\\d)`,
+      "gi",
+    );
+    const foreignSuffix = new RegExp(
+      `(^|[^\\d.])(${variants})\\s*USD\\b`,
+      "gi",
+    );
+    const barePrice = new RegExp(
+      `(^|[^A-Za-z])\\$(${variants})(?!\\d|\\.\\d)`,
+      "g",
+    );
+    return value
+      .replace(foreignPrefix, (_match, amount) => `A$${amount}`)
+      .replace(foreignSuffix, (_match, prefix, amount) => `${prefix}A$${amount}`)
+      .replace(barePrice, (_match, prefix, amount) => `${prefix}A$${amount}`);
+  };
+  const normalizeList = (value) => (
+    Array.isArray(value) ? value.map((item) => normalize(item)) : value
+  );
+  const suppliedPriceChannel = normalize(recommendation.priceChannelHypothesis || "");
+  const missingPriceChannel = !String(suppliedPriceChannel || "").trim()
+    || /^(?:not stated|unknown|n\/a)\.?$/i.test(String(suppliedPriceChannel).trim());
+  const channel = output.businessDecision?.channel || opportunity?.channel || "the approved channel";
+  return {
+    ...recommendation,
+    evidence: normalizeList(recommendation.evidence || []),
+    counterevidence: normalizeList(recommendation.counterevidence || []),
+    assumptions: normalizeList(recommendation.assumptions || []),
+    priceChannelHypothesis: missingPriceChannel && priceCents
+      ? `Test at A$${fixed} through ${channel}.`
+      : suppliedPriceChannel,
+    smallestTest: normalize(recommendation.smallestTest || ""),
+    metric: normalize(recommendation.metric || ""),
+    killRule: normalize(recommendation.killRule || ""),
+    risks: normalizeList(recommendation.risks || output.risks || []),
+  };
+}
+
 function getAgentRunDetail(db, id) {
   const runRecord = get(db, "SELECT * FROM agent_runs WHERE id = ?", [id]);
   if (!runRecord) return null;
@@ -1519,8 +1729,12 @@ function getAgentRunDetail(db, id) {
   const approvalId = task?.payload?.liveSpendRequest?.approvalId || null;
   const approval = approvalId ? get(db, "SELECT id, status, scope_hash, requested_at, decided_at, consumed_at FROM approvals WHERE id = ?", [approvalId]) : null;
   const receiptResult = context.receipt?.receipt?.task?.result || null;
-  const output = receiptResult?.output || task?.result?.output || {};
-  const recommendation = output.pilotRecommendation || {
+  const output = receiptResult?.output
+    || task?.result?.output
+    || runMetadata.localReviewOutput
+    || runMetadata.localStructuredOutput
+    || {};
+  const rawRecommendation = output.pilotRecommendation || {
     evidence: output.evidence || [],
     counterevidence: output.counterevidence || [],
     assumptions: output.assumptions || [],
@@ -1531,6 +1745,12 @@ function getAgentRunDetail(db, id) {
     confidence: output.confidence || "",
     risks: output.risks || [],
   };
+  const recommendation = productionRecommendationDisplay(
+    db,
+    task,
+    output,
+    rawRecommendation,
+  );
   const approvedTracePolicy = task?.payload?.liveSpendRequest?.tracePolicy || null;
   const tracePolicy = context.protectedRehearsal
     ? {
@@ -1623,7 +1843,9 @@ function getAgentRunDetail(db, id) {
       status: runRecord.status,
       executionKind: context.kind,
       executionLabel: executionLabel(context.kind),
-      summary: output.summary || runRecord.output_summary || "No result summary was captured.",
+      summary: productionRecommendationDisplay(db, task, output, {
+        priceChannelHypothesis: output.summary || runRecord.output_summary || "No result summary was captured.",
+      }).priceChannelHypothesis,
       error: runError || null,
       startedAt: runRecord.started_at,
       completedAt: runRecord.completed_at,
@@ -1633,20 +1855,30 @@ function getAgentRunDetail(db, id) {
       explanation: "This is a structured account of the evidence, judgement and result. It does not expose hidden private model chain-of-thought.",
       question: fixture?.question || task?.title || task?.payload?.subject || "No question was recorded.",
       buyer: fixture?.buyer || output.businessDecision?.buyer || "No buyer was recorded.",
-      hypothesis: fixture?.hypothesis || output.businessDecision?.continuousImprovement?.hypothesis || "No hypothesis was recorded.",
+      hypothesis: productionRecommendationDisplay(db, task, output, {
+        priceChannelHypothesis: fixture?.hypothesis
+          || output.businessDecision?.continuousImprovement?.hypothesis
+          || "No hypothesis was recorded.",
+      }).priceChannelHypothesis,
       suppliedEvidence,
       businessContext,
       supportingEvidence: recommendation.evidence || [],
       counterevidence: recommendation.counterevidence || [],
       assumptions: recommendation.assumptions || [],
-      conclusion: output.summary || runRecord.output_summary || "No conclusion was captured.",
+      conclusion: productionRecommendationDisplay(db, task, output, {
+        priceChannelHypothesis: output.summary || runRecord.output_summary || "No conclusion was captured.",
+      }).priceChannelHypothesis,
       priceChannelHypothesis: recommendation.priceChannelHypothesis || "Not stated.",
       smallestTest: recommendation.smallestTest || "Not stated.",
       metric: recommendation.metric || "Not stated.",
       stopRule: recommendation.killRule || "Not stated.",
       confidence: recommendation.confidence || output.confidence || "not stated",
       risks: recommendation.risks || output.risks || [],
-      nextAction: output.nextAction || recommendation.smallestTest || "Review before continuing.",
+      nextAction: productionRecommendationDisplay(db, task, output, {
+        priceChannelHypothesis: output.nextAction
+          || recommendation.smallestTest
+          || "Review before continuing.",
+      }).priceChannelHypothesis,
       operatorDecision: output.operatorDecision || "needs_evidence",
     },
     review: review ? {

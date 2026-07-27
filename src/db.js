@@ -5,7 +5,7 @@ const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 const { spendCostId } = require("./runtime/stable-id");
 
-const LATEST_SCHEMA_VERSION = 20;
+const LATEST_SCHEMA_VERSION = 21;
 
 const REQUIRED_SCHEMA_SHAPE = Object.freeze({
   tasks: ["id", "workflow_id", "venture_id", "claim_token", "outcome_status"],
@@ -2083,6 +2083,49 @@ function applyRetentionActivationLedgerMigration(db) {
   }
 }
 
+function applyFullJourneyMigration(db) {
+  if (migrationApplied(db, 21)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS pantheon_journeys (
+        id TEXT PRIMARY KEY,
+        venture_id TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK(mode IN ('rehearsal', 'production')),
+        status TEXT NOT NULL,
+        active_stage TEXT NOT NULL,
+        model TEXT NOT NULL,
+        model_locked INTEGER NOT NULL DEFAULT 1 CHECK(model_locked IN (0, 1)),
+        budget_cap_cents INTEGER NOT NULL CHECK(budget_cap_cents > 0),
+        carried_exposure_cents INTEGER NOT NULL DEFAULT 0 CHECK(carried_exposure_cents >= 0),
+        round_id TEXT,
+        workflow_id TEXT,
+        selected_opportunity_id TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (venture_id) REFERENCES ventures(id),
+        FOREIGN KEY (round_id) REFERENCES opportunity_rounds(id),
+        FOREIGN KEY (workflow_id) REFERENCES workflows(id),
+        FOREIGN KEY (selected_opportunity_id) REFERENCES opportunities(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pantheon_journeys_status
+        ON pantheon_journeys(status, updated_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_pantheon_journeys_round
+        ON pantheon_journeys(round_id);
+    `);
+    recordMigration(db, 21, "pantheon-full-commercial-journey");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2897,6 +2940,7 @@ function migrate(db) {
   applyStableSpendCostIdMigration(db);
   applyPantheonCommercialOperatingModelMigration(db);
   applyRetentionActivationLedgerMigration(db);
+  applyFullJourneyMigration(db);
 }
 
 function putSetting(db, key, value) {
