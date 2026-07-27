@@ -107,7 +107,7 @@ function makeLauncherWorkspace(name) {
   return root;
 }
 
-function runPowerShell(script, args, cwd, capture = false, extraEnv = {}) {
+function runPowerShell(script, args, cwd, capture = false, extraEnv = {}, resolveOnExit = false) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       powershell,
@@ -132,7 +132,7 @@ function runPowerShell(script, args, cwd, capture = false, extraEnv = {}) {
       child.stderr.on("data", (chunk) => { stderr += chunk; });
     }
     child.on("error", reject);
-    child.on("close", (code) => {
+    child.on(capture && resolveOnExit ? "exit" : "close", (code) => {
       resolve({ code, stdout, stderr });
     });
   });
@@ -305,10 +305,27 @@ test("Windows launchers are PowerShell 5.1 compatible, idempotent, and stop prod
   try {
     const startScript = path.join(root, "scripts", "start-pantheon.ps1");
     const concurrent = await Promise.all([
-      runPowerShell(startScript, ["-Port", productionPort, "-NoOpen", "-ReadyTimeoutSeconds", "5"], root),
-      runPowerShell(startScript, ["-Port", productionPort, "-NoOpen", "-ReadyTimeoutSeconds", "5"], root),
+      runPowerShell(
+        startScript,
+        ["-Port", productionPort, "-NoOpen", "-ReadyTimeoutSeconds", "5"],
+        root,
+        true,
+        {},
+        true,
+      ),
+      runPowerShell(
+        startScript,
+        ["-Port", productionPort, "-NoOpen", "-ReadyTimeoutSeconds", "5"],
+        root,
+        true,
+        {},
+        true,
+      ),
     ]);
-    assert.deepEqual(concurrent.map((result) => result.code), [0, 0], concurrent.map((result) => result.stderr).join("\n"));
+    const concurrentDiagnostics = concurrent
+      .map((result, index) => `start ${index + 1}:\n${result.stdout}\n${result.stderr}`)
+      .join("\n");
+    assert.deepEqual(concurrent.map((result) => result.code), [0, 0], concurrentDiagnostics);
 
     const productionMetadataPath = path.join(root, "tmp", `pantheon-server-${productionPort}.json`);
     const productionMetadata = JSON.parse(fs.readFileSync(productionMetadataPath, "utf8"));

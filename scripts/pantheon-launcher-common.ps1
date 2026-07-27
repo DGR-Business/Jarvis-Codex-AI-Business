@@ -28,7 +28,20 @@ function Enter-PantheonLauncherLock {
         [IO.FileAccess]::ReadWrite,
         [IO.FileShare]::None
       )
-    } catch [IO.IOException] {
+    } catch {
+      $contentionError = $_.Exception
+      $retryableContention = $false
+      while ($contentionError) {
+        if (
+          $contentionError -is [IO.IOException] -or
+          $contentionError -is [System.UnauthorizedAccessException]
+        ) {
+          $retryableContention = $true
+          break
+        }
+        $contentionError = $contentionError.InnerException
+      }
+      if (-not $retryableContention) { throw }
       if ([DateTime]::UtcNow -ge $deadline) {
         throw "Pantheon launcher operation for port $Port is already in progress. Wait a moment and try again."
       }
