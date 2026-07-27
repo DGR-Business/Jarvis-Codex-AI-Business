@@ -1128,6 +1128,123 @@ The exact plan and live evidence are:
 - `docs/commercial/COMMERCIAL-CONSTITUTION.md`; and
 - `docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`.
 
+## 2026-07-27 Targeted Evidence-to-Investment Decision
+
+Jarvis ranked the retained opportunities and selected one decision-critical gap
+without running a third generic discovery round. Pantheon tested a Social Media
+Manager Client-Control and Profitability System for freelance social media
+managers with two or more retained clients.
+
+Seven attributable public-baseline observations covered adjacent Etsy demand,
+competitor depth and discounting, a premium workflow bundle, adverse evidence
+from a narrow approval tracker, current Etsy and Australian payment fees,
+practitioner workflow pain, and the disclosed uncertainty in third-party sales
+estimates. No research-service trial was purchased because available Etsy sales
+estimates could not provide decision-grade unit-sales truth.
+
+The real Agents SDK path completed:
+
+- Terra Demand Validator: A$0.20 estimated;
+- Terra Finance and Unit Economics: A$0.11 estimated; and
+- Sol Commercial Investment Review: A$0.14 estimated.
+
+All three calls returned known outcomes and passed their structural
+evaluations. The final case passed 9 of 10 commercial gates. Pantheon chose
+`research_more`, parked the opportunity, and started no production. Adjacent
+buyer activity and positive fee-only contribution are supported; direct
+willingness to pay, Excel acceptance, acquisition cost, support and refund
+load, build effort, and realised all-in contribution are not.
+
+The live browser path revealed that an exact approved worker could complete but
+leave its result waiting for a second projection click. The dashboard exact-task
+route now applies that completed supervisor-owned result in the same action.
+Targeted diligence also stopped duplicating the parent opportunity's full
+evidence archive in each new model context, and locked model explanations now
+name the actual selected tier. A regression test prevents future Finance stop
+rules from being mistaken for present rejection decisions.
+
+Verification passed 270 of 270 isolated tests, zero-warning lint, and the
+high-severity dependency audit. Six moderate transitive
+`@hono/node-server` findings remain documented; npm's complete automatic fix
+would install a breaking Agents SDK version and was not applied.
+
+Fresh encrypted recovery set
+`pantheon-recovery-set-2026-07-27T11-30-18-310Z.jbackup` authenticated 875
+files and a coherent SQLite snapshot. Quick check and integrity check returned
+`ok` with zero foreign-key violations. Pantheon Doctor then passed every
+operations-readiness gate through the Windows-protected recovery profile; its
+only warning was the expected occupied dashboard port while Pantheon was
+running.
+
+## 2026-07-27 Signed Provider Reconciliation
+
+Jarvis used the signed-in OpenAI Platform to export one-minute model activity,
+web-search usage, and daily cost records, then matched the three questionable
+Opportunity Scout calls by exact minute, worker, duration, and runtime trace.
+The private exports remain outside Git; their SHA-256 hashes and pricing
+evidence are stored in the runtime reconciliation records.
+
+The two previously unknown Sol calls were genuinely metered and both ended
+after roughly 120 seconds with `Request was aborted`. Their exact allocations
+are A$1.41 and A$1.37, replacing A$10.00 of conservative possible exposure.
+The earlier Terra call returned unusable truncated JSON; its matching
+57.93-second Platform trace and usage corrected the A$1.60 estimate to A$0.27.
+No output from any of the three calls was accepted and no retry was made.
+
+Pantheon now records cached reads, cache writes, token totals, hosted web-search
+counts, Platform trace IDs, corrected failure kinds, and exact AUD allocations
+when authoritative provider evidence is supplied. Each reconciliation appends
+a new immutable execution receipt. A failed run can therefore have a complete
+audit record without being represented as successful work. System Checks now
+hides only failures superseded by an exact completed retry or recovery; the
+historical records remain available in AI Team and Activity.
+
+The verified conversion is A$1.57675 per usable US-dollar API credit, calculated
+from A$63.07 cash paid for US$40 of usable credits including purchase tax. It is
+saved in the Windows user environment for future Pantheon launches.
+
+Current July runtime exposure is A$8.44: A$3.10 reconciled provider usage and
+A$5.34 ordinary incurred estimates. There are no unknown provider outcomes and
+the independent runtime monitor reports zero current exceptions.
+
+## 2026-07-27 Evidence-to-Investment Goal Closeout
+
+Pantheon completed the bounded evidence-to-investment decision without forcing
+a product build. The Social Media Manager Client-Control and Profitability
+System remains parked at 9 of 10 commercial requirements. Adjacent marketplace
+demand, recurring buyer pain, competition, a provisional price, fee-only
+contribution, channel evidence, and a bounded validation path are supported.
+Direct willingness to pay for the exact Excel-based offer, format acceptance,
+real acquisition cost, support load, refunds, and all-in contribution are not.
+
+The final exact-head local verification passed 271 of 271 isolated tests,
+zero-warning lint, `git diff --check`, and the high-severity dependency audit.
+The audit found no high or critical vulnerability. Six moderate transitive
+`@hono/node-server` findings remain documented because npm's complete automatic
+remedy would install a breaking Agents SDK version.
+
+Pantheon Doctor passed every operations-readiness gate through the protected
+Windows recovery profile. The owned runtime then stopped and restarted cleanly
+on port 5051 with the latest code. Its health endpoint reported the scheduler
+running, current monitoring complete, zero findings, paid AI armed, and
+external actions locked.
+
+Signed Chrome verification confirmed:
+
+- Command Center reports `No investment selected`, no operator interruption,
+  and A$8.44 used or committed;
+- Portfolio retains 11 opportunity spaces and the targeted case at 9 of 10;
+- System Health reports every approved AI path ready and external actions
+  locked;
+- System Checks reports all 48 immutable execution receipts complete, zero
+  unresolved execution-record issues, and zero current monitor findings; and
+- the investment drawer preserves historical analysis while explicitly
+  directing current system costs to System > Spend, so system-wide AI charges
+  cannot be mistaken for venture break-even costs.
+
+No product production, publication, customer contact, account action, legal
+acceptance, paid research service, advertising, or money movement occurred.
+
 ## Accounting Position
 
 - ChatGPT Pro active monthly commitment: A$100.00.
@@ -1140,11 +1257,11 @@ The exact plan and live evidence are:
 - Pantheon release-proof provider usage: A$1.13 pending reconciliation.
 - Full Journey production-intent exposure: A$0.82 estimated; combined rehearsal
   and production proof exposure: A$17.39 estimated.
-- Commercial Intelligence Foundation: A$4.54 known incurred estimate plus
-  A$10.00 conservative unknown exposure.
-- July runtime exposure after the Portfolio proof: A$16.54. This is the active
-  monthly-cap figure and remains an estimate until provider billing is
-  reconciled.
+- Commercial Intelligence Foundation and targeted review: A$3.05 reconciled
+  usage for the three audited failed calls plus the remaining successful-call
+  estimates.
+- July runtime exposure after signed reconciliation: A$8.44, comprising A$3.10
+  reconciled usage and A$5.34 ordinary incurred estimates.
 
 These records remain in the active accounting and cost ledgers after pilot work
 is removed. Historical workflows, approvals, packs, model calls, and runs remain
@@ -1188,17 +1305,13 @@ review.
 
 ## Next Best Work
 
-First reconcile the two unknown provider calls against billing. Then close one
-named, decision-critical gap using stronger evidence rather than another generic
-scan. Valid next paths are:
+If Daniel approves the next commercial goal, prepare only the smallest
+functional sample and measurement-ready buyer-intent test for the 9-of-10
+Social Media Manager case. Choose the channel from evidence rather than
+defaulting to Etsy, and retain separate protection for account action,
+publication, customer contact, and spend.
 
-- a measured research-service trial that materially beats the public baseline;
-- a Daniel-submitted opportunity examined against the same gates; or
-- a bounded direct buyer-intent method for one parked case.
-
-Pantheon reopens an investment case only when attributable evidence changes a
-mandatory criterion. If nothing qualifies, it reports no investment again. If
-one case clears all gates, the next goal implements that opportunity's exact
-Venture Kit and the pending Venture Factory boundary; it still does not publish,
-spend externally, contact customers, or create accounts without the applicable
-protected action.
+Pantheon reopens the investment case only if 100 qualified visits produce at
+least 3 completed paid orders, no format- or clarity-driven refunds, and
+positive actual all-in cash contribution. A full catalogue and exact Venture
+Kit begin only after that evidence changes the failed economics criterion.

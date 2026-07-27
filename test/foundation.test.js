@@ -18,8 +18,9 @@ const { decideApproval } = require("../src/runtime/approvals");
 const { consumeApproval, ensureApprovalScope, validateApprovalScope } = require("../src/runtime/approval-scope");
 const { promoteCapability, recordCapabilityReview } = require("../src/runtime/capability-autonomy");
 const { createCommercialExperiment } = require("../src/runtime/commercial-results");
-const { demandValidatorPilotOutputSchema } = require("../src/runtime/agent-runtime");
+const { __sdkUsageForTests, demandValidatorPilotOutputSchema } = require("../src/runtime/agent-runtime");
 const { ensureAiTeam } = require("../src/runtime/ai-team");
+const { ensureAgentTools } = require("../src/runtime/agent-tools");
 const { recordAiPilotReviewDecision } = require("../src/runtime/ai-pilot-review");
 const { getAccountingSummary, recordAccountingEntry } = require("../src/runtime/accounting-ledger");
 const { reconcileProviderUsageBatch, reserveBudget, reservedThisMonth, resolveReservation } = require("../src/runtime/cost-ledger");
@@ -151,12 +152,35 @@ test("Terra token pricing remains an AUD estimate separate from the approved cap
   const estimate = estimateModelUsageAud("gpt-5.6-terra", {
     input_tokens: 1000,
     cached_input_tokens: 100,
+    cache_write_input_tokens: 200,
     output_tokens: 1000,
   }, { audPerUsd: 1.579, fallbackCents: 100 });
   assert.equal(estimate.method, "published_token_price_converted_to_aud");
   assert.equal(estimate.amountCents, 3);
   assert.equal(estimate.audPerUsd, 1.579);
+  assert.equal(estimate.usdAmount, 0.0174);
+  assert.equal(estimate.cacheWriteInputTokens, 200);
   assert.equal(estimateModelUsageAud("unknown-model", { input_tokens: 1 }, { fallbackCents: 100 }).amountCents, 100);
+});
+
+test("Agents SDK usage aggregates cached reads and cache writes across model requests", () => {
+  const usage = __sdkUsageForTests({
+    runContext: {
+      usage: {
+        inputTokens: 1200,
+        outputTokens: 300,
+        totalTokens: 1500,
+        inputTokensDetails: [
+          { cached_tokens: 100, cache_write_tokens: 50 },
+          { cached_tokens: 80, cache_write_tokens: 40 },
+        ],
+      },
+    },
+  });
+  assert.equal(usage.cached_input_tokens, 180);
+  assert.equal(usage.cache_write_input_tokens, 90);
+  assert.equal(usage.cached_input_tokens_known, true);
+  assert.equal(usage.cache_write_input_tokens_known, true);
 });
 
 test("observed hosted-tool costs use published prices and the runtime AUD conversion", () => {
@@ -846,6 +870,8 @@ test("cost reservations keep estimates, unknown outcomes, reconciliation, and re
 test("aggregate provider usage reconciliation updates exact runtime records atomically", () => {
   const runtime = runtimeDb("provider-usage-reconciliation");
   try {
+    ensureAiTeam(runtime.db);
+    ensureAgentTools(runtime.db);
     const firstPlan = createCommandPlan(runtime.db, {
       text: "First controlled provider call",
       source: "test",
@@ -886,7 +912,7 @@ test("aggregate provider usage reconciliation updates exact runtime records atom
           amount,
           ts,
           task.venture_id,
-          `response-reconcile-${sequence}`,
+          sequence === 1 ? null : `response-reconcile-${sequence}`,
           status,
           status === "unknown" ? 0 : amount,
           status === "unknown" ? "unknown" : "known",
@@ -931,6 +957,84 @@ test("aggregate provider usage reconciliation updates exact runtime records atom
     }
     run(
       runtime.db,
+      `INSERT INTO agent_runs
+       (id, agent_id, workflow_id, task_id, venture_id, mode, status, input_summary,
+        output_summary, model_call_id, estimated_cost_cents, actual_cost_cents,
+        approval_required, eval_status, metadata, started_at, completed_at)
+       VALUES ('run-reconcile-1', ?, ?, ?, ?, 'openai-agents-sdk', 'failed',
+        'Reconcile a failed provider call.', 'The provider call failed.', 'model-reconcile-1',
+        100, 0, 1, 'not_evaluated', ?, ?, ?)`,
+      [
+        firstTask.agent,
+        firstTask.workflow_id,
+        firstTask.id,
+        firstTask.venture_id,
+        toJson({ taskTitle: firstTask.title }),
+        ts,
+        ts,
+      ],
+    );
+    run(
+      runtime.db,
+      `UPDATE task_attempts
+       SET agent_run_id = 'run-reconcile-1',
+           provider_dispatched_at = ?,
+           provider_dispatch_model_call_id = 'model-reconcile-1',
+           error_kind = 'provider_outcome_unknown'
+       WHERE id = 'attempt-reconcile-1'`,
+      [ts],
+    );
+    run(
+      runtime.db,
+      `UPDATE model_calls
+       SET attempt_id = 'attempt-reconcile-1',
+           metadata = ?
+       WHERE id = 'model-reconcile-1'`,
+      [toJson({
+        provider: "openai-agents-sdk",
+        taskAttemptId: "attempt-reconcile-1",
+        tokenUsage: {
+          status: "unknown",
+          inputTokens: null,
+          outputTokens: null,
+          totalTokens: null,
+          cachedInputTokens: null,
+          cacheWriteInputTokens: null,
+        },
+      })],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO agent_trace_events
+       (id, run_id, sequence, type, title, detail, metadata, ts)
+       VALUES ('trace-reconcile-failed', 'run-reconcile-1', 1, 'run_failed',
+        'Worker failed', 'Provider outcome was reconciled later.', '{}', ?)`,
+      [ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO agent_eval_results
+       (id, run_id, agent_id, task_id, attempt_id, status, score, criteria, findings,
+        metadata, evaluator_version, subject_hash, created_at)
+       VALUES ('eval-reconcile-failed', 'run-reconcile-1', ?, ?,
+        'attempt-reconcile-1', 'failed', 0, '[]', '[]', '{}',
+        'local-structural-v2', 'reconciled-failure', ?)`,
+      [firstTask.agent, firstTask.id, ts],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO agent_tool_invocations
+       (id, agent_id, run_id, task_id, workflow_id, attempt_id, tool_id,
+        requested_mode, status, decision, permission, risk_level, input_summary,
+        output_summary, metadata, requested_at)
+       VALUES ('tool-reconcile-search', ?, 'run-reconcile-1', ?, ?,
+        'attempt-reconcile-1', 'research_adapter', 'live', 'needs_review',
+        'provider_activity_missing', 'approval_required', 'medium',
+        'Search the public web.', 'Provider activity was not yet verified.', '{}', ?)`,
+      [firstTask.agent, firstTask.id, firstTask.workflow_id, ts],
+    );
+    run(
+      runtime.db,
       `INSERT INTO messages
        (id, task_id, severity, status, subject, body, created_at, metadata, venture_id)
        VALUES ('msg-provider-reconcile', ?, 'urgent', 'open', ?, ?, ?, '{}', ?)`,
@@ -954,6 +1058,18 @@ test("aggregate provider usage reconciliation updates exact runtime records atom
         workflowStatus: "failed",
         workflowStep: "Initial provider call reconciled as a known technical failure.",
         allocationMethod: "aggregate_total_less_known_success_estimate",
+        exactPerCallAllocation: true,
+        agentSdkTraceId: `trace_${"a".repeat(32)}`,
+        errorKind: "provider_aborted_reconciled",
+        inputTokens: 100,
+        outputTokens: 50,
+        cachedInputTokens: 20,
+        cacheWriteInputTokens: 10,
+        toolUsage: [{
+          toolId: "research_adapter",
+          providerTool: "web_search",
+          callCount: 2,
+        }],
       },
       {
         taskId: secondTask.id,
@@ -1028,6 +1144,23 @@ test("aggregate provider usage reconciliation updates exact runtime records atom
     );
     assert.equal(get(runtime.db, "SELECT cost_status FROM model_calls WHERE id = 'model-reconcile-2'").cost_status, "reconciled");
     assert.equal(get(runtime.db, "SELECT actual_cost_cents FROM model_calls WHERE id = 'model-reconcile-2'").actual_cost_cents, 2);
+    const firstModel = get(runtime.db, "SELECT input_tokens, output_tokens, error_kind, metadata FROM model_calls WHERE id = 'model-reconcile-1'");
+    assert.equal(firstModel.input_tokens, 100);
+    assert.equal(firstModel.output_tokens, 50);
+    assert.equal(firstModel.error_kind, "provider_aborted_reconciled");
+    assert.equal(JSON.parse(firstModel.metadata).tokenUsage.status, "reconciled");
+    assert.equal(JSON.parse(firstModel.metadata).tokenUsage.cacheWriteInputTokens, 10);
+    const reconciledTool = get(runtime.db, "SELECT status, decision, metadata FROM agent_tool_invocations WHERE id = 'tool-reconcile-search'");
+    assert.equal(reconciledTool.status, "allowed");
+    assert.equal(reconciledTool.decision, "provider_activity_reconciled");
+    assert.equal(JSON.parse(reconciledTool.metadata).providerObservation.callCount, 2);
+    const firstReceipt = get(
+      runtime.db,
+      "SELECT status, missing_fields, warnings FROM agent_run_receipts WHERE attempt_id = 'attempt-reconcile-1' ORDER BY sequence DESC LIMIT 1",
+    );
+    assert.equal(firstReceipt.status, "complete");
+    assert.deepEqual(JSON.parse(firstReceipt.missing_fields), []);
+    assert.deepEqual(JSON.parse(firstReceipt.warnings), []);
     const secondResult = JSON.parse(get(runtime.db, "SELECT result FROM tasks WHERE id = ?", [secondTask.id]).result);
     assert.equal(secondResult.cost.actualCents, 2);
     assert.equal(secondResult.cost.exactBillingPending, false);
@@ -1037,7 +1170,7 @@ test("aggregate provider usage reconciliation updates exact runtime records atom
     run(runtime.db, "UPDATE messages SET status = 'open', resolved_at = NULL WHERE id = 'msg-provider-reconcile'");
     const tracedAllocations = allocations.map((allocation, index) => ({
       ...allocation,
-      responseId: `response-reconcile-${index + 1}`,
+      ...(index === 0 ? {} : { responseId: `response-reconcile-${index + 1}` }),
       agentSdkTraceId: `trace_${String(index + 1).repeat(32)}`,
     }));
     const repeated = reconcileProviderUsageBatch(runtime.db, {
@@ -1056,6 +1189,14 @@ test("aggregate provider usage reconciliation updates exact runtime records atom
     assert.equal(JSON.parse(tracedModelCall.metadata).agentSdkTraceId, `trace_${"2".repeat(32)}`);
     const tracedTask = get(runtime.db, "SELECT result FROM tasks WHERE id = ?", [secondTask.id]);
     assert.equal(JSON.parse(tracedTask.result).providerTrace.id, `trace_${"2".repeat(32)}`);
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM agent_run_receipts WHERE attempt_id = 'attempt-reconcile-1'").count,
+      2,
+    );
+    assert.equal(
+      get(runtime.db, "SELECT status FROM agent_run_receipts WHERE attempt_id = 'attempt-reconcile-1' ORDER BY sequence DESC LIMIT 1").status,
+      "complete",
+    );
     assert.equal(collectFindings(runtime.db).some((finding) => finding.title.includes("failed task")), false);
   } finally {
     closeRuntime(runtime);

@@ -175,7 +175,8 @@ function reasonForRoute(tier, modelClass, options = {}) {
     return "Luna is being used for a supervised system proof that checks the workflow, not the quality of the final business judgement.";
   }
   if (options.modelLocked === true) {
-    return "Luna is locked for this exact capped full-journey run; no automatic model escalation or fallback is allowed.";
+    const label = MODEL_TIERS[tier]?.label || "The selected model";
+    return `${label} is locked for this exact capped run; no automatic model escalation or fallback is allowed.`;
   }
   if (options.routeHistory?.decision === "escalate") {
     return "Sol was selected before approval because the latest reviewed result for this exact worker, capability, and tool set failed or needs review.";

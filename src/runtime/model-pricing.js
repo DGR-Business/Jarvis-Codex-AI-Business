@@ -4,6 +4,7 @@ const MODEL_PRICING_USD_PER_MILLION = {
   "gpt-5.6-luna": {
     input: 1,
     cachedInput: 0.1,
+    cacheWriteInput: 1.25,
     output: 6,
     maxInputTokens: 922000,
     maxOutputTokens: 128000,
@@ -16,6 +17,7 @@ const MODEL_PRICING_USD_PER_MILLION = {
   "gpt-5.6-terra": {
     input: 2.5,
     cachedInput: 0.25,
+    cacheWriteInput: 3.125,
     output: 15,
     maxInputTokens: 922000,
     maxOutputTokens: 128000,
@@ -28,6 +30,7 @@ const MODEL_PRICING_USD_PER_MILLION = {
   "gpt-5.6-sol": {
     input: 5,
     cachedInput: 0.5,
+    cacheWriteInput: 6.25,
     output: 30,
     maxInputTokens: 922000,
     maxOutputTokens: 128000,
@@ -40,6 +43,7 @@ const MODEL_PRICING_USD_PER_MILLION = {
   "gpt-5.5": {
     input: 5,
     cachedInput: 0.5,
+    cacheWriteInput: 6.25,
     output: 30,
     maxInputTokens: 922000,
     maxOutputTokens: 128000,
@@ -338,6 +342,18 @@ function estimateModelUsageAud(model, usage = {}, options = {}) {
   const inputTokens = Math.max(0, Number(usage.input_tokens || 0));
   const outputTokens = Math.max(0, Number(usage.output_tokens || 0));
   const cachedInputTokens = Math.min(inputTokens, Math.max(0, Number(usage.cached_input_tokens || 0)));
+  const cacheWriteInputTokens = Math.min(
+    inputTokens - cachedInputTokens,
+    Math.max(
+      0,
+      Number(
+        usage.cache_write_input_tokens
+        ?? usage.input_cache_write_tokens
+        ?? usage.cacheWriteInputTokens
+        ?? 0,
+      ),
+    ),
+  );
   if (!pricing || !audPerUsd || inputTokens + outputTokens === 0) {
     return {
       amountCents: fallbackCents,
@@ -346,10 +362,11 @@ function estimateModelUsageAud(model, usage = {}, options = {}) {
       model,
     };
   }
-  const uncachedInputTokens = inputTokens - cachedInputTokens;
+  const uncachedInputTokens = inputTokens - cachedInputTokens - cacheWriteInputTokens;
   const usd = (
     uncachedInputTokens * pricing.input
     + cachedInputTokens * pricing.cachedInput
+    + cacheWriteInputTokens * pricing.cacheWriteInput
     + outputTokens * pricing.output
   ) / 1_000_000;
   const aud = usd * audPerUsd;
@@ -360,6 +377,7 @@ function estimateModelUsageAud(model, usage = {}, options = {}) {
     model,
     inputTokens,
     cachedInputTokens,
+    cacheWriteInputTokens,
     outputTokens,
     usdAmount: Number(usd.toFixed(8)),
     audAmount: Number(aud.toFixed(8)),

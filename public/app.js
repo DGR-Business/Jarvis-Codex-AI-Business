@@ -1801,7 +1801,7 @@ async function showDetail(kind, id, options = {}) {
     openDrawer(item.offer || item.problem || "Commercial investment case", "Investment review", `<div class="review-workspace">
       <section class="result-hero"><div><span class="eyebrow">Pantheon recommendation</span><h3>${escapeHtml(humanStatus(item.recommendation))}</h3><p>${escapeHtml(item.rationale)}</p></div>${badge(item.recommendation)}</section>
       ${detailSection("Decision requirements", `<div class="investment-criteria">${criteria.map(([key, criterion]) => `<article class="${criterion.passed ? "passed" : "failed"}"><span>${icon(criterion.passed ? "check" : "x")}</span><div><strong>${escapeHtml(criterionLabels[key] || humanStatus(key))}</strong><p>${escapeHtml(criterion.reason)}</p></div></article>`).join("")}</div>`)}
-      ${detailSection("Economics", `<div class="review-facts"><div><span>Price</span><strong>${escapeHtml(item.economics?.price || "Not established")}</strong></div><div><span>Margin</span><strong>${escapeHtml(item.economics?.marginLogic || "Not established")}</strong></div><div><span>Break-even</span><strong>${escapeHtml(item.economics?.breakEven || "Not established")}</strong></div><div><span>Cost limit</span><strong>${escapeHtml(item.economics?.costCap || "Not established")}</strong></div></div>`)}
+      ${detailSection("Economics", `<div class="review-facts"><div><span>Price</span><strong>${escapeHtml(item.economics?.price || "Not established")}</strong></div><div><span>Margin</span><strong>${escapeHtml(item.economics?.marginLogic || "Not established")}</strong></div><div><span>Break-even</span><strong>${escapeHtml(item.economics?.breakEven || "Not established")}</strong></div><div><span>Cost limit</span><strong>${escapeHtml(item.economics?.costCap || "Not established")}</strong></div></div><p>This preserves the analysis recorded at review time. Only costs explicitly tied to this venture count toward its break-even; current Pantheon spending is shown in System &gt; Spend.</p>`)}
       ${detailSection("Market evidence", sourceLinks.length ? `<div class="evidence-list">${sourceLinks.map((url) => `<article><strong>${escapeHtml(externalDomain(url) || "Market source")}</strong><small><a href="${escapeHtml(safeExternalUrl(url) || "#")}" target="_blank" rel="noreferrer">Open source</a></small></article>`).join("")}</div>` : "<p>No attributable market source is retained. This case cannot pass direct demand without it.</p>")}
       ${detailSection("What happens next", `<p>${escapeHtml(item.next_action)}</p>`)}
       ${item.missing_evidence?.length ? detailDisclosure("Evidence still missing", detailList(item.missing_evidence)) : ""}
@@ -2127,8 +2127,11 @@ async function handleAction(button) {
   }
   if (action === "run-task") {
     const payload = await withRunPolling(() => postJson(`/api/tasks/${encodeURIComponent(button.dataset.id)}/run`, {}));
+    const incorporated = payload.continuation?.actions?.some((item) => item.type === "result_projected");
     toast(payload.result?.status === "completed"
-      ? "That work item completed."
+      ? incorporated
+        ? "That work completed and Pantheon applied the result."
+        : "That work item completed."
       : payload.result?.message || `Work item: ${humanStatus(payload.result?.status || "complete")}.`);
     return loadView(store.view, { silent: true });
   }

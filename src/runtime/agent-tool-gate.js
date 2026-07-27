@@ -474,7 +474,7 @@ function recordAgentToolObservation(db, invocationId, observation = {}) {
       ? "provider_activity_interrupted"
     : missing
       ? "provider_activity_missing"
-      : invocation.decision;
+      : observation.decision || invocation.decision;
   const outputSummary = String(
     observation.outputSummary
       || (failed

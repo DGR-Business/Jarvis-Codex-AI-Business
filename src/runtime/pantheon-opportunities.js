@@ -462,6 +462,7 @@ function createRoundRecords(db, input, venture) {
   const workflowId = `wf_commercial_discovery_${randomId()}`;
   const commandId = `cmd_commercial_discovery_${randomId()}`;
   const portfolioControllerV1 = input.portfolioControllerV1 === true;
+  const targetedInvestmentReview = input.targetedInvestmentReview === true;
   const prompt = String(
     input.prompt
       || input.idea
@@ -469,7 +470,13 @@ function createRoundRecords(db, input, venture) {
         ? "Explore at least five distinct lawful online-business opportunity spaces across different business models. Find evidence-backed buyer problems and rank the strongest candidates without favouring Pantheon's existing digital-product kit."
         : "Find the strongest evidence-backed online business opportunities Pantheon can execute."),
   ).trim();
-  const mode = input.idea ? "operator_idea" : portfolioControllerV1 ? "portfolio_discovery" : "broad_discovery";
+  const mode = targetedInvestmentReview
+    ? "targeted_diligence"
+    : input.idea
+      ? "operator_idea"
+      : portfolioControllerV1
+        ? "portfolio_discovery"
+        : "broad_discovery";
   const metadata = {
     workflowId,
     commandId,
@@ -481,6 +488,9 @@ function createRoundRecords(db, input, venture) {
     journeyModel: input.model || null,
     journeyModelLocked: input.modelLocked === true,
     portfolioControllerV1,
+    targetedInvestmentReview,
+    sourceOpportunityId: input.sourceOpportunityId || null,
+    decisionGap: input.decisionGap || null,
     minimumOpportunitySpaces: portfolioControllerV1 ? 5 : null,
     finalistCount: portfolioControllerV1 ? 3 : null,
     productionBlocked: portfolioControllerV1,
@@ -1157,12 +1167,39 @@ function projectFinanceResult(db, task, round, opportunity, output) {
       taskId: task.id,
       summary: output.summary || "",
       recommendation: output.recommendation || output.nextAction || "",
+      decision: output.operatorDecision || "needs_evidence",
       work: output.roleOutput || {},
       risks: output.risks || [],
       confidence: output.confidence || "low",
     },
   };
   run(db, "UPDATE opportunities SET metadata = ?, updated_at = ? WHERE id = ?", [toJson(metadata), now(), opportunity.id]);
+  if (round.metadata.targetedInvestmentReview === true) {
+    const denied = String(output.operatorDecision || "").toLowerCase() === "deny";
+    run(
+      db,
+      "UPDATE opportunities SET status = ?, updated_at = ? WHERE id = ?",
+      [denied ? "finance_rejected" : "economics_checked", now(), opportunity.id],
+    );
+    const investmentCase = persistInvestmentCase(db, opportunity.id);
+    updateRound(db, round.id, {
+      status: "investment_review",
+      metadata: {
+        financeTaskId: task.id,
+        financeCompletedIds: [opportunity.id],
+        investmentCaseIds: [investmentCase.id],
+        selectedOpportunityId: opportunity.id,
+        selectedInvestmentCaseId: investmentCase.id,
+        productionBlocked: true,
+      },
+    });
+    run(
+      db,
+      "UPDATE opportunities SET status = 'selected_for_investment_review', updated_at = ? WHERE id = ?",
+      [now(), opportunity.id],
+    );
+    return queueCommercialInvestmentReview(db, investmentCase.id);
+  }
   if (round.metadata.portfolioControllerV1 === true) {
     const denied = String(output.operatorDecision || "").toLowerCase() === "deny";
     run(
@@ -1663,6 +1700,7 @@ function getOpportunityState(db) {
 
 module.exports = {
   ACTIVE_ROUND_STATES,
+  createRoundRecords,
   getOpportunityState,
   pendingCommercialTask,
   projectCompletedCommercialTask,

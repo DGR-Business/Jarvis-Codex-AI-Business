@@ -95,6 +95,7 @@ const {
   ensurePortfolioController,
   getPortfolioState,
   startPortfolioDiscovery,
+  startTargetedInvestmentReview,
 } = require("./runtime/portfolio-controller");
 const {
   getCommercialConstitution,
@@ -730,6 +731,14 @@ function createApp(options = {}) {
       if (req.method === "POST" && url.pathname === "/api/portfolio/discovery") {
         const body = await readBody(req);
         const result = startPortfolioDiscovery(db, body || {});
+        broadcastState();
+        jsonResponse(res, result.started ? 202 : 409, result);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/portfolio/targeted-review") {
+        const body = await readBody(req);
+        const result = startTargetedInvestmentReview(db, body || {});
         broadcastState();
         jsonResponse(res, result.started ? 202 : 409, result);
         return;
@@ -1372,14 +1381,26 @@ function createApp(options = {}) {
 
       const taskRun = routeMatch(url.pathname, "/api/tasks/:id/run");
       if (req.method === "POST" && taskRun) {
-        const task = get(db, "SELECT id, workflow_id FROM tasks WHERE id = ?", [taskRun.id]);
+        const task = get(db, "SELECT id, workflow_id, payload FROM tasks WHERE id = ?", [taskRun.id]);
         if (!task) {
           jsonResponse(res, 404, { error: "Work item not found." });
           return;
         }
         const result = await runOnce(db, { taskId: taskRun.id, workflowId: task.workflow_id, claimant: "dashboard_exact_task" });
+        const parameters = fromJson(task.payload, {}).liveSpendRequest?.parameters || {};
+        const supervisorOwned = parameters.pantheonCommercial?.supervisorOwned === true
+          || parameters.pantheonProduction?.supervisorOwned === true;
+        const continuation = result.status === "completed" && supervisorOwned
+          ? await runPantheonSupervisorCycle(db, {
+            triggerType: "manual",
+            triggerId: task.id,
+            startedBy: "dashboard_exact_task",
+            workflowId: task.workflow_id,
+            maxSteps: 1,
+          })
+          : null;
         broadcastState();
-        jsonResponse(res, 200, { result });
+        jsonResponse(res, 200, { result, continuation });
         return;
       }
 

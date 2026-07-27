@@ -1,5 +1,15 @@
+const crypto = require("node:crypto");
 const CONFIG = require("../config");
-const { all, fromJson, get, insertEvent, now, run, toJson } = require("../db");
+const {
+  all,
+  fromJson,
+  get,
+  insertEvent,
+  now,
+  randomId,
+  run,
+  toJson,
+} = require("../db");
 const { ensureCapabilityAssurance, getCapabilityAssuranceState } = require("./capability-assurance");
 const {
   commercialKnowledgeState,
@@ -7,7 +17,13 @@ const {
   getCommercialConstitution,
 } = require("./commercial-knowledge");
 const { listInvestmentCases } = require("./commercial-investment-review");
-const { getOpportunityState, startOpportunityRound } = require("./pantheon-opportunities");
+const {
+  createRoundRecords,
+  getOpportunityState,
+  queueCommercialWorker,
+  startOpportunityRound,
+} = require("./pantheon-opportunities");
+const { recordEvidence } = require("./venture-case");
 const { ensureVentureKitRegistry, listVentureKits } = require("./venture-kit-registry");
 
 const MAX_BOUNDED_DISCOVERY_ROUNDS = 2;
@@ -322,6 +338,257 @@ function portfolioRounds(db) {
   ).map((row) => ({ ...row, metadata: fromJson(row.metadata, {}) }));
 }
 
+function targetedDiligenceRounds(db) {
+  return all(
+    db,
+    `SELECT * FROM opportunity_rounds
+     WHERE mode = 'targeted_diligence'
+     ORDER BY created_at DESC`,
+  ).map((row) => ({ ...row, metadata: fromJson(row.metadata, {}) }));
+}
+
+function portfolioWorkRounds(db) {
+  return [...portfolioRounds(db), ...targetedDiligenceRounds(db)]
+    .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
+}
+
+function activePortfolioWorkRound(db) {
+  return portfolioWorkRounds(db).find((round) => [
+    "researching",
+    "validating",
+    "checking_economics",
+    "investment_review",
+  ].includes(round.status)) || null;
+}
+
+function startTargetedInvestmentReview(db, input = {}) {
+  ensurePortfolioController(db);
+  const sourceOpportunityId = String(input.sourceOpportunityId || "").trim();
+  const decisionGap = String(input.decisionGap || "").trim();
+  const title = String(input.title || "").trim();
+  const offerDirection = String(input.offerDirection || "").trim();
+  const competitionEvidence = Array.isArray(input.competitionEvidence)
+    ? input.competitionEvidence.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const demandEvidence = Array.isArray(input.demandEvidence)
+    ? input.demandEvidence.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const publicEvidence = Array.isArray(input.publicEvidence) ? input.publicEvidence : [];
+  if (!sourceOpportunityId || decisionGap.length < 20) {
+    throw new Error("Targeted diligence requires an existing opportunity and one decision-critical evidence gap.");
+  }
+  if (title.length < 8 || offerDirection.length < 20) {
+    throw new Error("Targeted diligence requires a specific reviewed opportunity title and offer direction.");
+  }
+  if (competitionEvidence.length < 3 || demandEvidence.length < 2 || publicEvidence.length < 3) {
+    throw new Error("Targeted diligence requires three competitor observations, two demand observations, and three attributable public sources.");
+  }
+  const invalidEvidence = publicEvidence.find((item) => (
+    !/^https?:\/\//i.test(String(item?.sourceUrl || ""))
+    || String(item?.claim || "").trim().length < 20
+    || String(item?.title || "").trim().length < 3
+  ));
+  if (invalidEvidence) {
+    throw new Error("Every targeted-diligence source needs an exact public URL, title, and decision-relevant claim.");
+  }
+  const active = activePortfolioWorkRound(db);
+  if (active) {
+    return { started: false, reason: "already_running", round: active, state: getPortfolioState(db) };
+  }
+
+  const source = get(db, "SELECT * FROM opportunities WHERE id = ?", [sourceOpportunityId]);
+  if (!source) throw new Error(`Opportunity not found: ${sourceOpportunityId}`);
+  const sourceRound = get(db, "SELECT * FROM opportunity_rounds WHERE id = ?", [source.round_id]);
+  if (!sourceRound) throw new Error(`Source opportunity round not found: ${source.round_id}`);
+  const sourceRoundMetadata = fromJson(sourceRound.metadata, {});
+  const comparisonCompletedIds = Array.isArray(sourceRoundMetadata.validationCompletedIds)
+    ? sourceRoundMetadata.validationCompletedIds
+    : [];
+  if (comparisonCompletedIds.length < 3) {
+    throw new Error("Targeted diligence requires a prior three-candidate comparison.");
+  }
+
+  const prompt = String(
+    input.prompt
+      || `Close only this decision gap for ${title}: ${decisionGap}. Re-check demand and economics without repeating broad discovery.`,
+  ).trim();
+  const round = createRoundRecords(
+    db,
+    {
+      targetedInvestmentReview: true,
+      sourceOpportunityId,
+      decisionGap,
+      prompt,
+      geography: input.geography || source.geography || "global",
+      language: input.language || source.language || "English",
+      source: input.source || "jarvis_targeted_diligence",
+      createdBy: input.createdBy || "Jarvis",
+    },
+    { id: source.venture_id },
+  );
+  const baselineEvidenceIds = [];
+  for (const evidence of publicEvidence) {
+    const fingerprint = crypto
+      .createHash("sha256")
+      .update(`${evidence.sourceUrl}\n${evidence.claim}`)
+      .digest("hex")
+      .slice(0, 16);
+    const id = `evidence_targeted_${fingerprint}`;
+    if (!get(db, "SELECT id FROM commercial_evidence WHERE id = ?", [id])) {
+      recordEvidence(db, {
+        id,
+        ventureId: source.venture_id,
+        sourceType: "source_link",
+        sourceId: round.id,
+        sourceUrl: evidence.sourceUrl,
+        title: evidence.title,
+        claim: evidence.claim,
+        summary: evidence.summary || "",
+        metric: evidence.metric || "",
+        measuredValue: evidence.measuredValue ?? null,
+        measuredUnit: evidence.measuredUnit || "",
+        market: evidence.market || "",
+        geography: evidence.geography || input.geography || source.geography || "",
+        observedAt: evidence.observedAt || now(),
+        sampleSize: evidence.sampleSize ?? null,
+        publisher: evidence.publisher || "",
+        extractionMethod: evidence.extractionMethod || "Jarvis public-data review",
+        confidence: evidence.confidence || "medium",
+        verified: true,
+        metadata: {
+          targetedDiligence: true,
+          sourceOpportunityId,
+          decisionGap,
+          limitations: Array.isArray(evidence.limitations) ? evidence.limitations : [],
+        },
+      });
+    }
+    baselineEvidenceIds.push(id);
+  }
+
+  const sourceMetadata = fromJson(source.metadata, {});
+  const {
+    validation: _priorValidation,
+    finance: _priorFinance,
+    ...retainedMetadata
+  } = sourceMetadata;
+  const sourceEvidenceIds = fromJson(source.evidence_ids, []);
+  const opportunityId = `opp_targeted_${randomId()}`;
+  const timestamp = now();
+  run(
+    db,
+    `INSERT INTO opportunities
+     (id, round_id, venture_id, source_type, status, title, business_model, buyer,
+      problem, offer_direction, geography, language, channel, demand_score,
+      supply_gap_score, economics_score, channel_fit_score, execution_fit_score,
+      risk_score, overall_score, confidence, recommendation, smallest_validation,
+      evidence_ids, metadata, created_at, updated_at)
+     VALUES (?, ?, ?, 'targeted_diligence', 'selected_for_validation', ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      opportunityId,
+      round.id,
+      source.venture_id,
+      title,
+      input.businessModel || source.business_model,
+      input.buyer || source.buyer,
+      input.problem || source.problem,
+      offerDirection,
+      input.geography || source.geography,
+      input.language || source.language,
+      input.channel || source.channel,
+      source.demand_score,
+      source.supply_gap_score,
+      source.economics_score,
+      source.channel_fit_score,
+      source.execution_fit_score,
+      source.risk_score,
+      source.overall_score,
+      input.confidence || source.confidence,
+      `Targeted diligence is testing one named gap: ${decisionGap}`,
+      input.smallestValidation || source.smallest_validation,
+      toJson(baselineEvidenceIds),
+      toJson({
+        ...retainedMetadata,
+        demandEvidence,
+        competitionEvidence,
+        risks: Array.isArray(input.risks) && input.risks.length ? input.risks : retainedMetadata.risks || [],
+        targetedReview: {
+          parentOpportunityId: sourceOpportunityId,
+          comparisonRoundId: source.round_id,
+          comparisonCompletedIds,
+          decisionGap,
+          baselineEvidenceIds,
+          parentEvidenceCount: sourceEvidenceIds.length,
+          startedAt: timestamp,
+        },
+      }),
+      timestamp,
+      timestamp,
+    ],
+  );
+  const roundMetadata = round.metadata && typeof round.metadata === "object"
+    ? round.metadata
+    : fromJson(round.metadata, {});
+  run(
+    db,
+    `UPDATE opportunity_rounds
+     SET status = 'validating', metadata = ?, updated_at = ?
+     WHERE id = ?`,
+    [
+      toJson({
+        ...roundMetadata,
+        targetedInvestmentReview: true,
+        sourceOpportunityId,
+        decisionGap,
+        selectedOpportunityId: opportunityId,
+        validationQueueIds: [opportunityId],
+        validationCompletedIds: [],
+        comparisonRoundId: source.round_id,
+        comparisonCompletedIds,
+        baselineEvidenceIds,
+        productionBlocked: true,
+      }),
+      timestamp,
+      round.id,
+    ],
+  );
+  const queued = queueCommercialWorker(db, round.id, "demand_validator", {
+    opportunityId,
+    model: CONFIG.terraModel,
+    modelLocked: true,
+    budgetCents: Number(input.demandBudgetCents || 300),
+  });
+  insertEvent(db, {
+    actor: "portfolio_controller",
+    type: "portfolio.targeted_diligence_started",
+    entityType: "opportunity_round",
+    entityId: round.id,
+    message: `Pantheon started targeted diligence for ${title}.`,
+    metadata: {
+      sourceOpportunityId,
+      opportunityId,
+      decisionGap,
+      baselineEvidenceIds,
+      productionBlocked: true,
+      taskId: queued.task?.id || null,
+    },
+  });
+  const persistedRound = get(db, "SELECT * FROM opportunity_rounds WHERE id = ?", [round.id]);
+  const persistedOpportunity = get(db, "SELECT * FROM opportunities WHERE id = ?", [opportunityId]);
+  return {
+    started: true,
+    round: { ...persistedRound, metadata: fromJson(persistedRound.metadata, {}) },
+    opportunity: {
+      ...persistedOpportunity,
+      evidence_ids: fromJson(persistedOpportunity.evidence_ids, []),
+      metadata: fromJson(persistedOpportunity.metadata, {}),
+    },
+    queued,
+    state: getPortfolioState(db),
+  };
+}
+
 function discoveryPrompt(roundNumber, priorRound = null, operatorIdea = "") {
   const priorSummary = priorRound
     ? `The prior bounded round ended with: ${priorRound.metadata.outcome || priorRound.status}. Do not repeat its unsupported claims or candidates unless materially new evidence is available.`
@@ -348,12 +615,7 @@ function startPortfolioDiscovery(db, input = {}) {
   const technicalFailures = rounds.filter((round) => round.status === "stopped_unknown_outcome");
   const recoveryRounds = rounds.filter((round) => round.metadata.developerRecovery === true);
   const failedRecovery = recoveryRounds.some((round) => round.status === "stopped_unknown_outcome");
-  const active = rounds.find((round) => [
-    "researching",
-    "validating",
-    "checking_economics",
-    "investment_review",
-  ].includes(round.status));
+  const active = activePortfolioWorkRound(db);
   if (active) {
     return { started: false, reason: "already_running", round: active, state: getPortfolioState(db) };
   }
@@ -446,11 +708,13 @@ function startPortfolioDiscovery(db, input = {}) {
 }
 
 function getPortfolioState(db) {
-  const rounds = portfolioRounds(db);
-  const evidenceRounds = rounds.filter((round) => round.status !== "stopped_unknown_outcome");
-  const technicalFailures = rounds.filter((round) => round.status === "stopped_unknown_outcome");
-  const recoveryRounds = rounds.filter((round) => round.metadata.developerRecovery === true);
+  const discoveryRounds = portfolioRounds(db);
+  const rounds = portfolioWorkRounds(db);
+  const evidenceRounds = discoveryRounds.filter((round) => round.status !== "stopped_unknown_outcome");
+  const technicalFailures = discoveryRounds.filter((round) => round.status === "stopped_unknown_outcome");
+  const recoveryRounds = discoveryRounds.filter((round) => round.metadata.developerRecovery === true);
   const failedRecovery = recoveryRounds.some((round) => round.status === "stopped_unknown_outcome");
+  const targetedRounds = rounds.filter((round) => round.mode === "targeted_diligence");
   const opportunityState = getOpportunityState(db);
   const cases = listInvestmentCases(db);
   const selectedCase = cases.find((item) => item.recommendation === "advance" && item.status === "decided") || null;
@@ -498,7 +762,9 @@ function getPortfolioState(db) {
         }
         : {
           label: "No investment selected",
-          detail: "Both bounded rounds are complete. Pantheon will not force a weak opportunity into production.",
+          detail: targetedRounds.length
+            ? "The bounded discovery and targeted review are complete. Pantheon will not force a weak opportunity into production."
+            : "Both bounded rounds are complete. Pantheon will not force a weak opportunity into production.",
           action: null,
         };
   return {
@@ -539,4 +805,5 @@ module.exports = {
   neutralizeLegacyPilotDefaults,
   parkJobSearchProduct,
   startPortfolioDiscovery,
+  startTargetedInvestmentReview,
 };

@@ -258,15 +258,22 @@ function sdkUsageDelta(db, usage, resumeSelection) {
     ?? priorMetadata.tokenUsage?.cached_input_tokens
     ?? 0,
   );
+  const priorCacheWrite = Number(
+    priorMetadata.tokenUsage?.cacheWriteInputTokens
+    ?? priorMetadata.tokenUsage?.cache_write_input_tokens
+    ?? 0,
+  );
   const input = Math.max(0, Number(usage.input_tokens || 0) - Number(prior.input_tokens || 0));
   const output = Math.max(0, Number(usage.output_tokens || 0) - Number(prior.output_tokens || 0));
   const cached = Math.max(0, Number(usage.cached_input_tokens || 0) - priorCached);
+  const cacheWrite = Math.max(0, Number(usage.cache_write_input_tokens || 0) - priorCacheWrite);
   return {
     ...usage,
     input_tokens: input,
     output_tokens: output,
     total_tokens: input + output,
     cached_input_tokens: cached,
+    cache_write_input_tokens: cacheWrite,
     usage_status: usage.usage_status === "unknown" ? "unknown" : "reported_delta",
   };
 }
@@ -1480,6 +1487,7 @@ function sdkUsage(result) {
     || lastUsage.inputTokensDetails
     || lastUsage.input_tokens_details
     || {};
+  const inputDetailEntries = Array.isArray(inputDetails) ? inputDetails : [inputDetails];
   const metric = (primaryKeys, secondaryKeys = primaryKeys) => {
     for (const key of primaryKeys) {
       if (Object.prototype.hasOwnProperty.call(usage, key) && usage[key] !== null && usage[key] !== undefined) {
@@ -1498,18 +1506,36 @@ function sdkUsage(result) {
   const input = metric(["inputTokens", "input_tokens"], ["inputTokens", "input_tokens"]);
   const output = metric(["outputTokens", "output_tokens"], ["outputTokens", "output_tokens"]);
   const total = metric(["totalTokens", "total_tokens"], ["totalTokens", "total_tokens"]);
-  const cachedValue = inputDetails.cachedTokens ?? inputDetails.cached_tokens;
-  const cachedKnown = cachedValue !== null && cachedValue !== undefined && Number.isFinite(Number(cachedValue));
+  const detailMetric = (keys) => {
+    let known = false;
+    let value = 0;
+    for (const details of inputDetailEntries) {
+      if (!details || typeof details !== "object") continue;
+      for (const key of keys) {
+        if (!Object.prototype.hasOwnProperty.call(details, key) || details[key] === null || details[key] === undefined) continue;
+        const candidate = Number(details[key]);
+        if (!Number.isFinite(candidate) || candidate < 0) continue;
+        value += candidate;
+        known = true;
+        break;
+      }
+    }
+    return { known, value };
+  };
+  const cached = detailMetric(["cachedTokens", "cached_tokens"]);
+  const cacheWrite = detailMetric(["cacheWriteTokens", "cache_write_tokens"]);
   const knownCount = [input, output, total].filter((item) => item.known).length;
   return {
     input_tokens: input.value,
     output_tokens: output.value,
     total_tokens: total.value,
-    cached_input_tokens: cachedKnown ? Number(cachedValue) : 0,
+    cached_input_tokens: cached.value,
+    cache_write_input_tokens: cacheWrite.value,
     input_tokens_known: input.known,
     output_tokens_known: output.known,
     total_tokens_known: total.known,
-    cached_input_tokens_known: cachedKnown,
+    cached_input_tokens_known: cached.known,
+    cache_write_input_tokens_known: cacheWrite.known,
     usage_status: knownCount === 0 ? "unknown" : knownCount === 3 ? "reported" : "partial",
   };
 }
@@ -2398,6 +2424,7 @@ function __setDigitalProductFactoryForTests(factory) {
 module.exports = {
   AGENTS_SDK_PROVIDER,
   PRODUCT_MANIFEST_SCHEMA,
+  __sdkUsageForTests: sdkUsage,
   __setAgentRuntimeSdkRunnerForTests,
   __setContainerFileDownloaderForTests,
   __setDigitalProductFactoryForTests,

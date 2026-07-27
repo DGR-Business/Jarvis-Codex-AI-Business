@@ -72,6 +72,13 @@ function tokenUsage(response) {
   const cached = forcedUnknown
     ? { known: false, value: 0 }
     : usageMetric(usage, ["cached_input_tokens", "cachedInputTokens"], "cached_input_tokens_known");
+  const cacheWrite = forcedUnknown
+    ? { known: false, value: 0 }
+    : usageMetric(
+      usage,
+      ["cache_write_input_tokens", "input_cache_write_tokens", "cacheWriteInputTokens", "cacheWriteTokens"],
+      "cache_write_input_tokens_known",
+    );
   const knownCount = [input, output, total].filter((metric) => metric.known).length;
   const status = knownCount === 0 ? "unknown" : knownCount === 3 ? "reported" : "partial";
   return {
@@ -79,12 +86,14 @@ function tokenUsage(response) {
     outputTokens: output.value,
     totalTokens: total.value,
     cachedInputTokens: cached.value,
+    cacheWriteInputTokens: cacheWrite.value,
     evidence: {
       status,
       inputTokens: input.known ? input.value : null,
       outputTokens: output.known ? output.value : null,
       totalTokens: total.known ? total.value : null,
       cachedInputTokens: cached.known ? cached.value : null,
+      cacheWriteInputTokens: cacheWrite.known ? cacheWrite.value : null,
     },
   };
 }

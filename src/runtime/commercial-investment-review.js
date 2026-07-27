@@ -91,7 +91,16 @@ function directDemandSignals(opportunity, evidence) {
   };
 }
 
-function economicsSignals(opportunity) {
+function financeDecision(db, finance) {
+  const recorded = text(finance.decision || finance.operatorDecision).toLowerCase();
+  if (recorded) return recorded;
+  if (!finance.taskId) return "";
+  const task = get(db, "SELECT result FROM tasks WHERE id = ?", [finance.taskId]);
+  const taskResult = fromJson(task?.result, {});
+  return text(taskResult.output?.operatorDecision).toLowerCase();
+}
+
+function economicsSignals(db, opportunity) {
   const finance = opportunity.metadata.finance || {};
   const work = finance.work || {};
   const values = {
@@ -105,8 +114,10 @@ function economicsSignals(opportunity) {
   const numericFields = ["price", "marginLogic", "breakEven", "costCap"]
     .filter((key) => NUMERIC_PATTERN.test(values[key]));
   const complete = Object.values(values).every((value) => value.length >= 8);
-  const denied = /\b(deny|reject|stop|not viable|negative contribution)\b/i.test(values.decisionSignal);
-  return { finance, values, numericFields, complete, denied };
+  const decision = financeDecision(db, finance);
+  const denied = ["deny", "denied", "reject", "rejected"].includes(decision);
+  const approved = decision === "approve";
+  return { finance, values, numericFields, complete, decision, denied, approved };
 }
 
 function assessInvestmentCase(db, opportunityId) {
@@ -118,7 +129,7 @@ function assessInvestmentCase(db, opportunityId) {
   const evidence = evidenceRows(db, opportunity);
   const validation = opportunity.metadata.validation || {};
   const demand = directDemandSignals(opportunity, evidence);
-  const economics = economicsSignals(opportunity);
+  const economics = economicsSignals(db, opportunity);
   const competition = Array.isArray(opportunity.metadata.competitionEvidence)
     ? opportunity.metadata.competitionEvidence.map(text).filter(Boolean)
     : [];
@@ -126,10 +137,16 @@ function assessInvestmentCase(db, opportunityId) {
     ...(Array.isArray(opportunity.metadata.risks) ? opportunity.metadata.risks : []),
     ...(Array.isArray(opportunity.metadata.finance?.risks) ? opportunity.metadata.finance.risks : []),
   ].map(text).filter(Boolean);
+  const targetedReview = opportunity.metadata.targetedReview || {};
+  const comparisonRoundId = targetedReview.comparisonRoundId || opportunity.round_id;
+  const comparisonOpportunityId = targetedReview.parentOpportunityId || opportunity.id;
+  const comparisonCompletedIds = Array.isArray(targetedReview.comparisonCompletedIds)
+    ? targetedReview.comparisonCompletedIds
+    : roundMetadata.validationCompletedIds || [];
   const alternatives = all(
     db,
     "SELECT id, title, overall_score, status FROM opportunities WHERE round_id = ? AND id <> ? ORDER BY overall_score DESC",
-    [opportunity.round_id, opportunity.id],
+    [comparisonRoundId, comparisonOpportunityId],
   );
   const kit = selectVentureKit(db, opportunity);
 
@@ -151,15 +168,19 @@ function assessInvestmentCase(db, opportunityId) {
     offer_value: text(opportunity.offer_direction).length >= 20
       ? result("passed", "A specific offer direction is recorded for the buyer problem.", [opportunity.offer_direction])
       : result("failed", "The offer direction is too vague to evaluate.", [], ["credible offer", "buyer-relevant value"]),
-    economics: economics.complete && economics.numericFields.length >= 4 && !economics.denied
+    economics: economics.complete && economics.numericFields.length >= 4 && economics.approved
       ? result("passed", "The finance review contains numeric price, margin, break-even, and cost-cap logic.", Object.values(economics.values))
       : result(
         "failed",
         economics.denied
           ? "The finance review indicates the current case is not viable."
-          : "The economics are incomplete or insufficiently quantified.",
+          : economics.complete && economics.numericFields.length >= 4
+            ? "The finance review is quantified but still requires decision-grade evidence."
+            : "The economics are incomplete or insufficiently quantified.",
         Object.values(economics.values).filter(Boolean),
-        ["numeric price", "full cost stack", "contribution", "break-even", "downside"],
+        economics.complete && economics.numericFields.length >= 4
+          ? ["finance approval based on verified economics"]
+          : ["numeric price", "full cost stack", "contribution", "break-even", "downside"],
       ),
     distribution: text(opportunity.channel).length >= 3
       && text(validation.priceChannelHypothesis).length >= 20
@@ -182,7 +203,7 @@ function assessInvestmentCase(db, opportunityId) {
       && text(validation.stopRule).length >= 20
       ? result("passed", "The case contains a bounded test, success metric, and stop rule.", [validation.smallestTest, validation.metric, validation.stopRule])
       : result("failed", "The smallest useful test, success metric, or stop rule is incomplete.", [], ["test", "metric", "revision rule", "kill rule"]),
-    alternatives: alternatives.length >= 2 && (roundMetadata.validationCompletedIds || []).length >= 3
+    alternatives: alternatives.length >= 2 && comparisonCompletedIds.length >= 3
       ? result("passed", "The candidate is compared with at least two alternatives from the same discovery round.", alternatives.slice(0, 5))
       : result("failed", "The case has not completed a fair comparison with at least two alternatives.", alternatives, ["three comparable finalists", "doing-nothing comparison"]),
     risk: risks.length >= 2 && text(economics.values.financialRisk).length >= 12
@@ -200,7 +221,10 @@ function assessInvestmentCase(db, opportunityId) {
     ? "reject"
     : passedCount === required.length
       ? "advance"
-      : criteria.direct_demand.passed && criteria.economics.passed
+      : criteria.direct_demand.passed
+        && economics.complete
+        && economics.numericFields.length >= 4
+        && !economics.denied
         ? "research_more"
         : "park";
   const confidence = passedCount >= 9 ? "high" : passedCount >= 7 ? "medium" : "low";

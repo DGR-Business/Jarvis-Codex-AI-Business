@@ -359,13 +359,14 @@ function receiptTokenUsage(modelCall) {
   if (!modelCall) return null;
   const metadata = fromJson(modelCall.metadata, {});
   const recorded = metadata.tokenUsage;
-  if (recorded && ["reported", "partial", "unknown"].includes(recorded.status)) {
+  if (recorded && ["reported", "partial", "reconciled", "unknown"].includes(recorded.status)) {
     return {
       status: recorded.status,
       inputTokens: recorded.inputTokens ?? null,
       outputTokens: recorded.outputTokens ?? null,
       totalTokens: recorded.totalTokens ?? null,
       cachedInputTokens: recorded.cachedInputTokens ?? null,
+      cacheWriteInputTokens: recorded.cacheWriteInputTokens ?? null,
       dbCompatibility: recorded.status === "unknown"
         ? {
           inputTokens: modelCall.input_tokens,
@@ -386,6 +387,7 @@ function receiptTokenUsage(modelCall) {
       outputTokens: Number(modelCall.output_tokens || 0),
       totalTokens: legacyTotal || Number(modelCall.input_tokens || 0) + Number(modelCall.output_tokens || 0),
       cachedInputTokens: null,
+      cacheWriteInputTokens: null,
       dbCompatibility: null,
     };
   }
@@ -395,6 +397,7 @@ function receiptTokenUsage(modelCall) {
     outputTokens: null,
     totalTokens: null,
     cachedInputTokens: null,
+    cacheWriteInputTokens: null,
     dbCompatibility: {
       inputTokens: modelCall.input_tokens,
       outputTokens: modelCall.output_tokens,
@@ -403,13 +406,27 @@ function receiptTokenUsage(modelCall) {
   };
 }
 
+function authoritativelyReconciledFailure(snapshot) {
+  const reconciliation = snapshot.attempt?.metadata?.providerReconciliation;
+  return snapshot.attempt?.status === "failed"
+    && snapshot.attempt?.outcomeStatus === "known"
+    && snapshot.provider?.costStatus === "reconciled"
+    && reconciliation?.exactPerCallAllocation === true
+    && Boolean(reconciliation?.evidence?.source)
+    && Boolean(snapshot.provider?.traceId)
+    && ["provider_aborted_reconciled", "provider_output_invalid_reconciled"].includes(
+      snapshot.attempt?.errorKind,
+    );
+}
+
 function receiptStatus(snapshot, missingFields, warnings) {
   const attempt = snapshot.attempt;
+  const reconciledFailure = authoritativelyReconciledFailure(snapshot);
   if (["blocked", "waiting_approval", "needs_changes"].includes(attempt.status)) return "paused";
   if (["unknown", "known_provider_result_needs_review"].includes(attempt.outcomeStatus)) return "needs_review";
-  if (attempt.status === "needs_attention" || snapshot.run?.status === "failed") return "needs_review";
+  if (attempt.status === "needs_attention" || (snapshot.run?.status === "failed" && !reconciledFailure)) return "needs_review";
   if (missingFields.length) return "incomplete";
-  if (snapshot.evaluation && snapshot.evaluation.status !== "passed") return "needs_review";
+  if (snapshot.evaluation && snapshot.evaluation.status !== "passed" && !reconciledFailure) return "needs_review";
   if (warnings.length) return "needs_review";
   return "complete";
 }
@@ -657,6 +674,7 @@ function buildReceiptSnapshot(db, attemptId, explicitRunId) {
     costs: costs.map((cost) => parseRow(cost, ["metadata"])),
   };
 
+  const reconciledFailure = authoritativelyReconciledFailure(snapshot);
   const missingFields = [];
   const warnings = [];
   if (legacyCompatibilityEnabled(attemptRow)) {
@@ -674,7 +692,13 @@ function buildReceiptSnapshot(db, attemptId, explicitRunId) {
     if (!agentRun) missingFields.push("worker run");
     if (!attemptRow.provider_dispatched_at) missingFields.push("provider dispatch time");
     if (!modelCall) missingFields.push("model call");
-    if (!providerRequestId && attemptRow.outcome_status !== "failed_before_effect") missingFields.push("provider response ID");
+    if (
+      !providerRequestId
+      && attemptRow.outcome_status !== "failed_before_effect"
+      && !reconciledFailure
+    ) {
+      missingFields.push("provider response ID");
+    }
     if (agentsSdkBacked && !traceId && attemptRow.outcome_status !== "failed_before_effect") {
       missingFields.push("OpenAI trace ID");
     }

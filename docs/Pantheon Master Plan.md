@@ -41,6 +41,16 @@ historical Job Search package is parked: its engineering files remain evidence,
 but it is not an active commercial venture and must not be published merely
 because it already exists.
 
+Pantheon then ranked the parked cases and opened one targeted diligence round
+for the strongest decision-value gap rather than repeating broad discovery.
+Demand Validator, Finance, and Sol reviewed a specific Excel-based client-control
+and profitability system for freelance social media managers. The case passed
+9 of 10 mandatory gates but remains parked: adjacent marketplace demand and
+fee-only contribution are supported, while willingness to pay for the exact
+offer, format acceptance, acquisition cost, support load, production effort,
+and realised all-in contribution are not. No Venture Kit or production work
+was authorised.
+
 `digital_product_v1` is one registered, non-universal kit. Generic commercial
 logic has no Gumroad-first or digital-product-first channel assumption. The
 approved multi-venture roadmap remains
@@ -246,8 +256,12 @@ Pantheon default.
 ### Now
 
 - Keep the Portfolio result at `No investment selected`. Two bounded rounds
-  compared ten hypotheses and six finalists; none cleared every mandatory
-  demand, entry, economics, channel, operating, and downside gate.
+  compared ten hypotheses and six finalists, and one targeted diligence round
+  re-tested the strongest named gap. No case cleared every mandatory demand,
+  entry, economics, channel, operating, and downside gate.
+- Keep the Social Media Manager Client-Control and Profitability System parked
+  at 9 of 10 gates. Its next valid evidence is real buyer and all-in contribution
+  evidence, not another general market scan or a full speculative build.
 - Keep the historical Job Search package parked and out of current operator
   truth. Its files prove an engineering capability, not an investable business.
 - Keep all 11 workers visible and on standby. No production, publication,
@@ -256,21 +270,30 @@ Pantheon default.
 - Run Pantheon through the Windows control shell: Stopped means no Pantheon
   process, Standby keeps only the lightweight dashboard control service, and
   Working loads the full runtime.
-- Hold July Portfolio exposure at A$16.54: A$4.54 of known incurred estimates
-  from this foundation, A$10.00 of conservative unknown exposure from two
-  post-dispatch timeouts, and A$2.00 carried from earlier July runtime work.
-  None of those estimates is a settled provider invoice.
+- Hold July runtime exposure at A$8.44: A$3.10 is reconciled provider usage and
+  A$5.34 remains ordinary incurred estimates. The two post-dispatch timeouts
+  and one invalid-output call were matched to signed Platform exports and
+  exact trace records; none produced accepted commercial evidence.
+- Use the verified A$1.57675 cash-paid-per-US-dollar-credit conversion for
+  future estimates. Keep estimates visibly separate from reconciled usage and
+  subscription cash outflow.
 
 ### Next
 
-- Reconcile the two unknown OpenAI calls against provider billing without
-  retrying them.
-- Close one decision-critical gap through stronger evidence: a measured
-  research-service trial, a Daniel-submitted idea, or a bounded direct
-  buyer-intent method. Do not repeat another generic broad scan.
-- Reopen an investment case only when attributable new evidence changes a
-  mandatory criterion. If no candidate qualifies, retain the cash and report no
-  investment again.
+- If Daniel authorises the next commercial goal, prepare only the smallest
+  functional sample and measurement-ready buyer-intent test for the Social
+  Media Manager Client-Control and Profitability System. Do not build a full
+  catalogue before the test.
+- Select the actual test channel from buyer access, fees, traffic quality,
+  ownership, and measurement reliability. Etsy is a hypothesis, not a default.
+  Account action, publication, customer contact, and spend remain separate
+  protected actions.
+- Require at least 3 completed paid orders from 100 qualified product-page
+  visits, no format- or clarity-driven refunds, and positive actual all-in cash
+  contribution. Otherwise revise or park under the recorded stop rule.
+- Reopen the investment case only when that attributable evidence changes the
+  failed economics criterion. If the validation asset is not authorised, retain
+  the cash and keep the no-investment decision.
 - After a case clears every gate, implement only the Venture Kit required by
   that opportunity. Venture Factory creates an inactive venture; production and
   every external action remain separate gates.
@@ -295,7 +318,8 @@ Pantheon default.
 Status: the clean first-use and fixed-team engineering foundation was satisfied
 on 2026-07-18, and the Full Journey remained historical engineering proof from
 2026-07-24. The Commercial Intelligence Foundation completed its live
-commercial path on 2026-07-27 with a truthful no-investment result. Local,
+commercial path and signed provider reconciliation on 2026-07-27 with a
+truthful no-investment result. Local,
 clean-install, browser, recovery, lifecycle, release-head, and pull-request CI
 gates passed. The first post-merge `main` run reached its 20-minute job ceiling
 while tests were still advancing, so the suite remains intact and the bounded
