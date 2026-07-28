@@ -50,9 +50,9 @@ associated processes when the final job handle closes.
 - PowerShell parser checks: passed;
 - lint: passed with zero warnings;
 - ordinary isolated tests: 297 of 297 passed in 124.0 seconds;
-- quarantined Windows lifecycle suite: 9 of 9 passed in 237.9 seconds;
+- quarantined Windows lifecycle suite: 9 of 9 passed in 234.9 seconds;
 - ten-cycle supervisor proof: passed as two sequential isolated five-cycle
-  cases in 82.6 and 86.5 seconds;
+  cases in 81.8 and 85.2 seconds;
 - forced supervisor termination removed the standby and working runtime;
 - every test cycle released both ports and removed ownership records;
 - an unrelated Node process remained running throughout the lifecycle proof;
@@ -108,6 +108,13 @@ variables and installs a deterministic conservative A$2/USD test rate. The
 affected cap is A$1.70, sufficient for its priced search scenario. Its focused
 runtime suite passed 83 of 83 in 67.7 seconds, including release of the
 reservation and zero recorded spend after a definite HTTP rejection.
+
+Private `Pantheon checks #20` passed all four ordinary shards. The lifecycle
+job showed that Node had scheduled the two top-level five-cycle cases
+concurrently despite their source order, so both made progress but reached
+their individual 150-second limits. Lifecycle CI now explicitly passes
+`--test-concurrency=1`. This preserves the two bounded cases while making their
+sequential execution a test-runner guarantee.
 
 Test-wrapper cleanup retries permission conflicts for at most five seconds
 instead of hiding the original result behind an immediate temporary-directory

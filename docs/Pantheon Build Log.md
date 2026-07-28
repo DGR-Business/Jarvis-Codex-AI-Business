@@ -1542,7 +1542,7 @@ Final local evidence:
 - source-hashed supervisor compilation passed under a 15-second compiler limit;
 - PowerShell parsing and zero-warning lint passed;
 - 297 of 297 ordinary tests passed in 124.0 seconds;
-- 9 of 9 lifecycle tests passed in 237.9 seconds;
+- 9 of 9 lifecycle tests passed in 234.9 seconds;
 - ten full control cycles and forced supervisor failure passed in two
   sequential isolated five-cycle cases;
 - every owned process, port, and metadata record was released;
@@ -1574,8 +1574,9 @@ full-runtime startup contention on GitHub, where one PowerShell start exceeded
 its 60-second bound. Jarvis retained all ten cycles as two sequential isolated
 five-cycle cases with separate roots and ports. Per-cycle diagnostics show
 progress, each case has a 150-second ceiling, the test wrapper has a seven-minute
-ceiling, and the CI job has a ten-minute ceiling. Local proof passed 9 of 9 in
-237.9 seconds; the two five-cycle cases completed in 82.6 and 86.5 seconds.
+ceiling, and the CI job has a ten-minute ceiling. The runner-enforced sequential
+local proof passed 9 of 9 in 234.9 seconds; the two five-cycle cases completed
+in 81.8 and 85.2 seconds.
 
 The test wrapper now retries temporary-root cleanup for at most five seconds.
 This prevents a transient Windows file lock from immediately replacing the
@@ -1599,3 +1600,12 @@ A$1.70 cap, which safely covers its search-enabled worst case while still
 proving that a definite provider rejection releases the reservation and records
 zero spend. The focused runtime suite passed 83 of 83 in 67.7 seconds. No live
 provider call or paid action occurred.
+
+Private `Pantheon checks #20` then proved all four ordinary shards and the
+pricing correction. Its lifecycle job revealed that Node's top-level test
+scheduler had still run the two source-ordered five-cycle cases concurrently.
+Both timed out while making progress, which recreated the hosted startup
+contention and left temporary files closing during wrapper cleanup. Lifecycle
+CI now passes `--test-concurrency=1`; source order is therefore enforced by the
+test runner, not assumed. The ten cycles, seven-minute wrapper, ten-minute job,
+and per-cycle diagnostics remain unchanged.

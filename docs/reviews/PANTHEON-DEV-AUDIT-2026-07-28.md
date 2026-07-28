@@ -238,7 +238,7 @@ on 2026-07-28.
   record, and every owned child.
 - Forced supervisor termination removed its standby and working descendants.
 - An unrelated Node process remained untouched.
-- The lifecycle suite passed 9 of 9 in 237.9 seconds after the same ten cycles
+- The lifecycle suite passed 9 of 9 in 234.9 seconds after the same ten cycles
   were divided across two sequential isolated five-cycle cases.
 - The ordinary suite passed 297 of 297 in 124.0 seconds.
 
@@ -255,6 +255,11 @@ uses a deterministic conservative conversion, and the attempted concurrent
 lifecycle lanes were replaced after they caused full-runtime startup
 contention on the hosted runner. These are examples of CI improving the release,
 not reasons to relax the gates.
+
+The next hosted run showed that separate top-level Node tests may still be
+scheduled concurrently even when written one after another. Lifecycle CI now
+sets test concurrency to one explicitly. This makes sequential ownership proof
+a runner-enforced property rather than an assumption about source order.
 
 Exact evidence is retained at
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.

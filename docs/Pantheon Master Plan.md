@@ -394,7 +394,7 @@ and normally runs only in its dedicated disposable Windows CI job.
 The post-audit supervisor implementation passed local release proof on
 2026-07-28. A native source-built supervisor now owns standby and working
 descendants through a Windows kill-on-close Job Object. Nine launcher tests
-passed in 237.9 seconds, including ten complete lifecycle cycles and forced
+passed in 234.9 seconds, including ten complete lifecycle cycles and forced
 supervisor termination; the ordinary suite passed 297 of 297 in 124.0 seconds.
 The first stabilization CI run proved the old Windows job but exposed that one
 sequential ordinary test process could report all 296 passes and still reach
@@ -412,9 +412,11 @@ CI run passes.
 The ten-cycle proof now runs as two sequential isolated five-cycle cases. It
 retains ten full standby/working/standby/stop checks and forced supervisor
 failure while avoiding concurrent compilation and full-runtime startup
-contention. The two cases completed locally in 82.6 and 86.5 seconds, and the
-complete Windows suite passed in 237.9 seconds. The wrapper has a seven-minute
-hard deadline inside a ten-minute CI job, with per-cycle progress.
+contention. The lifecycle CI runner explicitly sets Node test concurrency to
+one so this ordering is enforced rather than inferred from source order. The
+two cases completed locally in 81.8 and 85.2 seconds, and the complete Windows
+suite passed in 234.9 seconds. The wrapper has a seven-minute hard deadline
+inside a ten-minute CI job, with per-cycle progress.
 Exact local evidence is retained in
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
 

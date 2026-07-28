@@ -116,9 +116,15 @@ try {
     : process.env.CI === "true"
       ? 12 * 60_000
       : 4 * 60_000;
+  const nodeTestArguments = [
+    "--test",
+    "--test-isolation=none",
+    ...(lifecycleCi ? ["--test-concurrency=1"] : []),
+    ...requestedTestFiles(process.argv.slice(2)),
+  ];
   const result = spawnSync(
     process.execPath,
-    ["--test", "--test-isolation=none", ...requestedTestFiles(process.argv.slice(2))],
+    nodeTestArguments,
     {
       cwd: workspaceRoot,
       env,
