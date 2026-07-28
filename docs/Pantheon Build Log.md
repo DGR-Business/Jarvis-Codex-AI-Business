@@ -26,8 +26,8 @@ commercial move.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
 - Active engineering: the Agent Assurance and OpenAI Integration Hardening
-  implementation is locally complete. Private GitHub CI is the final release
-  gate before the buyer-intent test.
+  release is complete. Local, provider, browser, recovery, dependency, and
+  private GitHub CI gates passed.
 - Current commercial result: two bounded rounds retained ten hypotheses,
   performed comparable live demand and finance review on six finalists, and
   completed two Sol investment reviews. Pantheon selected no investment.
@@ -1394,22 +1394,26 @@ known dependency vulnerabilities at moderate or higher severity,
 operations-ready Doctor, authenticated encrypted recovery, and real-browser
 proof at 1440x900, 1280x720, and 1024x768 with no console errors or horizontal
 overflow. The isolated browser instance stopped cleanly and released its port.
+Private GitHub `Pantheon checks #14` passed on the clean
+`codex/agent-assurance-openai-hardening` branch at commit
+`ea89ac08dfcab73d3a6af8634c15a219862300ee`. The hosted Windows run completed
+the full isolated suite and dependency audit successfully.
 
 Exact evidence is retained at
 `docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`.
 
 ## Next Best Work
 
-Close the private GitHub CI gate for the completed Agent Assurance and OpenAI
-Integration Hardening release. Do not add Sandbox Agents, MCP, computer use,
-Commerce, server-side Multi-agent, dynamic workers, or another dashboard.
+Make the Social Media Manager interest-test packet explicit about the audience,
+authorized channel, exposure or sample cap, qualification question, pass
+threshold, revise threshold, and stop rule. Prepare only the smallest functional
+sample and measurement-ready buyer-intent test. Choose the channel from evidence
+rather than defaulting to Etsy, and retain separate protection for account
+action, publication, customer contact, and spend.
 
-Then make the Social Media Manager interest-test packet explicit about the
-audience, authorized channel, exposure or sample cap, qualification question,
-pass threshold, revise threshold, and stop rule. Prepare only the smallest
-functional sample and measurement-ready buyer-intent test. Choose the channel
-from evidence rather than defaulting to Etsy, and retain separate protection
-for account action, publication, customer contact, and spend.
+Do not add Sandbox Agents, MCP, computer use, Commerce, server-side Multi-agent,
+dynamic workers, or another dashboard before a recorded adoption trigger is
+met.
 
 Pantheon reopens the investment case only if 100 qualified visits produce at
 least 3 completed paid orders, no format- or clarity-driven refunds, and

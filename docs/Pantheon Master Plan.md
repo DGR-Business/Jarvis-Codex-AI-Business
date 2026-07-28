@@ -273,9 +273,11 @@ Pantheon default.
 
 ### Now
 
-- Close the private GitHub CI gate for the completed Agent Assurance and OpenAI
-  Integration Hardening release. Local tests, lint, dependency audit, Doctor,
-  recovery, live provider proof, and browser proof have passed.
+- Prepare only the smallest functional sample and measurement-ready buyer-intent
+  test for the parked Social Media Manager Client-Control and Profitability
+  case. Its decision packet must specify the audience, channel, exposure or
+  sample cap, qualification question, pass threshold, revise threshold, and
+  stop rule before any external action is requested.
 - Keep the Portfolio result at `No investment selected`. Two bounded rounds
   compared ten hypotheses and six finalists, and one targeted diligence round
   re-tested the strongest named gap. No case cleared every mandatory demand,
@@ -360,8 +362,9 @@ retain separate gates.
 The Agent Assurance and OpenAI Integration Hardening release passed its local
 harness identity, trace grouping, reviewed behavior evaluation, guardrail,
 provider, browser, dependency, Doctor, and encrypted recovery gates on
-2026-07-28. Private GitHub CI is its only remaining release gate. Exact proof is
-retained in
+2026-07-28. Private GitHub `Pantheon checks #14` also passed from clean branch
+`codex/agent-assurance-openai-hardening` at commit
+`ea89ac08dfcab73d3a6af8634c15a219862300ee`. Exact proof is retained in
 `docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`.
 
 Foundation is releasable only when:

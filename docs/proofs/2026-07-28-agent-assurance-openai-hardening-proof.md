@@ -1,7 +1,7 @@
 # Agent Assurance And OpenAI Hardening Proof
 
 Date: 2026-07-28
-Status: locally complete; private GitHub CI pending
+Status: complete
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 
@@ -105,6 +105,13 @@ until at least 20 reviewed cases, including at least five held-out cases, reach
   actions remained visible at 1024x768.
 - Lifecycle: the isolated browser-proof instance drained and stopped, its
   process tree was verified, and port 5057 was free afterward.
+- Private GitHub CI: `Pantheon checks #14` passed from clean branch
+  `codex/agent-assurance-openai-hardening` at commit
+  `ea89ac08dfcab73d3a6af8634c15a219862300ee`. The hosted Windows run completed
+  checkout, Node 24 and Python 3.13 setup, clean dependency installation,
+  rendering dependencies, zero-warning lint, the complete isolated test suite,
+  dependency audit, and runner cleanup. Exact run:
+  `https://github.com/DGR-Business/Jarvis-Codex-AI-Business/actions/runs/30324240814`.
 
 The isolated databases and proof JSON remain local and ignored by Git. They are
 retained for Jarvis audit and later provider-cost reconciliation.
