@@ -238,7 +238,8 @@ on 2026-07-28.
   record, and every owned child.
 - Forced supervisor termination removed its standby and working descendants.
 - An unrelated Node process remained untouched.
-- The lifecycle suite passed 8 of 8 in 235.9 seconds.
+- The lifecycle suite passed 8 of 8 in 156.2 seconds after the same ten cycles
+  were divided across two isolated concurrent lanes.
 - The ordinary suite passed 296 of 296 in 119.6 seconds.
 
 Private `Pantheon checks #16` passed its pre-supervisor Windows lifecycle job.

@@ -50,8 +50,9 @@ associated processes when the final job handle closes.
 - PowerShell parser checks: passed;
 - lint: passed with zero warnings;
 - ordinary isolated tests: 296 of 296 passed in 119.6 seconds;
-- quarantined Windows lifecycle suite: 8 of 8 passed in 235.9 seconds;
-- ten-cycle supervisor case: passed in 167.4 seconds;
+- quarantined Windows lifecycle suite: 8 of 8 passed in 156.2 seconds;
+- ten-cycle supervisor case: passed in 87.5 seconds across two isolated,
+  concurrent five-cycle lanes;
 - forced supervisor termination removed the standby and working runtime;
 - every test cycle released both ports and removed ownership records;
 - an unrelated Node process remained running throughout the lifecycle proof;
@@ -90,6 +91,15 @@ locked requirements file.
 This is a release improvement, not a reason to recombine the test suite:
 isolated shards correctly revealed that a clean machine could not render the
 product files. A new private CI run remains required.
+
+The first hosted supervisor proof also showed that ten serial cycles were too
+close to the test case's 180-second ceiling on a slower runner. The proof still
+runs all ten complete lifecycles, but now uses two isolated five-cycle lanes on
+different control and working ports. This additionally proves concurrent
+supervisor compilation and ownership separation. Each cycle emits a progress
+diagnostic, and test-wrapper cleanup retries permission conflicts for at most
+five seconds instead of hiding the original result behind an immediate
+temporary-directory error.
 
 ## Remaining Boundaries
 

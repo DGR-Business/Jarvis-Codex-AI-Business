@@ -404,6 +404,11 @@ Pantheon's renderer imported `pypdfium2` without listing it in the locked
 Python requirements. The missing dependency is now pinned and protected by a
 requirements-contract test. Operations readiness remains held until the next
 private CI run passes.
+
+The ten-cycle proof now runs as two isolated concurrent five-cycle lanes. It
+retains ten full standby/working/standby/stop checks and forced supervisor
+failure while reducing the local supervisor case to 87.5 seconds and emitting
+per-cycle progress. The complete Windows suite passes in 156.2 seconds.
 Exact local evidence is retained in
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
 

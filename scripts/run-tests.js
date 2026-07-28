@@ -134,5 +134,10 @@ try {
   process.exitCode = result.status ?? 1;
 } finally {
   restorePdfTemp();
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 50,
+    retryDelay: 100,
+  });
 }

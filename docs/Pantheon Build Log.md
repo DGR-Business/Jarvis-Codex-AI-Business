@@ -1542,8 +1542,9 @@ Final local evidence:
 - source-hashed supervisor compilation passed under a 15-second compiler limit;
 - PowerShell parsing and zero-warning lint passed;
 - 296 of 296 ordinary tests passed in 119.6 seconds;
-- 8 of 8 lifecycle tests passed in 235.9 seconds;
-- ten full control cycles and forced supervisor failure passed;
+- 8 of 8 lifecycle tests passed in 156.2 seconds;
+- ten full control cycles and forced supervisor failure passed in two isolated
+  five-cycle lanes;
 - every owned process, port, and metadata record was released;
 - an unrelated Node process was not stopped; and
 - no paid provider call or external business action occurred.
@@ -1565,3 +1566,15 @@ The old shared process and developer runtime masked the omission. Jarvis pinned
 local renderer version, and added a deterministic requirements-contract test.
 The failed CI result is retained as evidence. A new clean private run is
 required; no job was merely re-run against an unchanged commit.
+
+The first hosted lifecycle run then reached the individual supervisor test's
+180-second ceiling because ten serial cycles were slower on GitHub than
+locally. Jarvis retained all ten cycles and divided them across two isolated
+five-cycle lanes with separate control and working ports. This also tests
+concurrent source-hashed supervisor compilation and independent process
+ownership. Per-cycle diagnostics now show progress in CI. Local proof passed
+8 of 8 in 156.2 seconds, with the ten-cycle case completing in 87.5 seconds.
+
+The test wrapper now retries temporary-root cleanup for at most five seconds.
+This prevents a transient Windows file lock from immediately replacing the
+underlying test result, while preserving a hard cleanup deadline.
