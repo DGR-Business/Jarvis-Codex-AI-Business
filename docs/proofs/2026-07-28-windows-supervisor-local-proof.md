@@ -2,7 +2,7 @@
 
 Date: 2026-07-28
 
-Status: local release gates passed; private CI pending
+Status: local, private CI, and real operator release gates passed
 
 ## Decision
 
@@ -90,7 +90,7 @@ locked requirements file.
 
 This is a release improvement, not a reason to recombine the test suite:
 isolated shards correctly revealed that a clean machine could not render the
-product files. A new private CI run remains required.
+product files. At that point, a new private CI run was required.
 
 The first hosted supervisor proof also showed that ten serial cycles were too
 close to the test case's 180-second ceiling on a slower runner. An attempted
@@ -123,6 +123,44 @@ on separate disposable Windows runners. Each runner executes one five-cycle
 phase sequentially, records each cycle's elapsed time, and has a seven-minute
 test ceiling inside a nine-minute wrapper and ten-minute CI job. The ten-cycle
 requirement is unchanged.
+
+## Final CI Evidence
+
+Private `Pantheon checks #22` passed on commit `172238c` in 10 minutes 16
+seconds.
+
+- `verify`: 1 minute 3 seconds;
+- ordinary shard 0: 2 minutes 8 seconds;
+- ordinary shard 1: 3 minutes 10 seconds;
+- ordinary shard 2: 1 minute 21 seconds;
+- ordinary shard 3: 10 minutes 9 seconds;
+- `windows-lifecycle (containment)`: 5 minutes 49 seconds; and
+- `windows-lifecycle (repeat)`: 4 minutes 55 seconds.
+
+The hosted proof therefore covers all ten complete lifecycle cycles without
+same-machine phase contention. Every job had an explicit external deadline.
+
+## Real Operator Evidence
+
+Jarvis exercised the exact user path in Chrome after the CI pass.
+
+1. The production database showed no queued or running task, attempt, model
+   call, or agent run.
+2. The actual `STOP PANTHEON.cmd` stopped the owned Working process on 5051 and
+   removed stale 5050 metadata in 6.4 seconds. Ports 5050, 5051, and 5052 had no
+   listeners.
+3. The actual `START PANTHEON.cmd` created Standby in 7.6 seconds. Chrome showed
+   the control shell available, business runtime stopped, and 57 MB memory.
+4. Chrome clicked **Start working**. The browser moved to 5051 and loaded the
+   connected Pantheon business dashboard.
+5. Chrome clicked the icon control labelled **Return Pantheon to standby**.
+   Port 5051 stopped, 5050 remained healthy, and Standby stayed at 57 MB.
+6. Chrome clicked **Stop Pantheon**. No Pantheon listener remained.
+7. A final command-file start completed in 7.2 seconds. Pantheon was left in
+   Standby on 5050 with 5051 stopped.
+
+No OpenAI call, paid tool, external business action, or unrelated process was
+started or stopped by this operator proof.
 
 Test-wrapper cleanup retries permission conflicts for at most five seconds
 instead of hiding the original result behind an immediate temporary-directory

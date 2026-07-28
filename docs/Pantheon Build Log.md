@@ -1618,3 +1618,32 @@ they cannot contend because they share no machine resources. Each phase retains
 five full cycles, receives a seven-minute test ceiling, and emits each cycle's
 elapsed time. The isolated wrapper is capped at nine minutes and each CI job at
 ten minutes.
+
+### Final hosted and operator proof
+
+Private `Pantheon checks #22` passed on commit `172238c` in 10 minutes 16
+seconds:
+
+- verification passed in 1 minute 3 seconds;
+- ordinary shards passed in 2 minutes 8 seconds, 3 minutes 10 seconds,
+  1 minute 21 seconds, and 10 minutes 9 seconds;
+- the five-cycle containment phase passed in 5 minutes 49 seconds; and
+- the five-cycle repeat phase passed in 4 minutes 55 seconds.
+
+Jarvis then exercised the real operator path through the actual command files
+and Chrome. Before shutdown, the production database had no queued or running
+task, attempt, model call, or agent run. `STOP PANTHEON.cmd` drained the
+pre-existing Working instance on 5051 and removed stale 5050 ownership data in
+6.4 seconds. No Pantheon listener remained.
+
+`START PANTHEON.cmd` created Standby in 7.6 seconds. Chrome showed 57 MB control
+memory and no workers or scheduler. Clicking **Start working** opened the full
+connected dashboard on 5051. Clicking the accessible **Return Pantheon to
+standby** control stopped 5051 and retained only the 57 MB control shell on
+5050. Clicking **Stop Pantheon** removed every Pantheon listener. A final
+command-file start completed in 7.2 seconds and left Pantheon in Standby on
+5050, with 5051 stopped.
+
+No OpenAI call, paid tool, external business action, or commercial-state change
+occurred. Windows lifecycle stabilization is complete. Buyer-intent work
+remains paused for the next explicitly selected commercial step.

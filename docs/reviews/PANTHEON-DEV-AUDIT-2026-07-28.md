@@ -267,5 +267,11 @@ the containment and repeat phases to separate disposable runners. Each runner
 performs five sequential cycles with per-cycle timing, a seven-minute test
 ceiling, a nine-minute wrapper, and a ten-minute job ceiling.
 
+Private `Pantheon checks #22` passed both five-cycle jobs, every ordinary shard,
+and verification. The subsequent real Chrome proof passed Stopped to Standby,
+Standby to Working, Working to Standby, and Standby to Stopped using the actual
+operator controls. A final start left only the 57 MB Standby service on 5050.
+The lifecycle finding is closed; no broad process termination is used.
+
 Exact evidence is retained at
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.

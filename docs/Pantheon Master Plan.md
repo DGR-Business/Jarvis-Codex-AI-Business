@@ -406,8 +406,9 @@ requirements-contract test. A later sharded run exposed a hidden test
 dependency on the operator's AUD/USD setting and contention between concurrent
 full-runtime launcher cycles. Tests now set their own conservative A$2/USD
 conversion, and lifecycle proof runs as two sequential five-cycle cases with
-explicit deadlines. Operations readiness remains held until the next private
-CI run passes.
+explicit deadlines. Private `Pantheon checks #22` passed the complete release
+workflow on commit `172238c`, including all ordinary shards and both hosted
+five-cycle lifecycle phases.
 
 The ten-cycle proof now runs as two sequential isolated five-cycle cases. It
 retains ten full standby/working/standby/stop checks and forced supervisor
@@ -421,6 +422,14 @@ job. The two cases completed locally in 81.8 and 85.2 seconds, and the complete
 Windows suite passed in 234.9 seconds, with per-cycle progress.
 Exact local evidence is retained in
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
+
+The real operator lifecycle also passed in Chrome on 2026-07-28. The actual
+command files stopped the pre-existing Working runtime and stale control
+metadata, started a 57 MB Standby shell, started Working from the dashboard,
+returned to Standby from the Working dashboard, stopped every Pantheon
+listener from the control page, and started cleanly into Standby again. No
+queued work, provider call, paid action, or unrelated process was interrupted.
+The launcher is operations-ready for normal Stopped, Standby, and Working use.
 
 The buyer-intent workflow remains paused: its A$0.63 estimated exposure and
 latest `revise` verdict are retained as evidence, not accepted as proof.
