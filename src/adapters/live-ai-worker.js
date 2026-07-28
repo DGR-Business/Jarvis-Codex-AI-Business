@@ -282,7 +282,23 @@ function getRecentTasks(db, workflowId) {
     }));
 }
 
-function buildWorkerPrompt(task, agentDefinition, policy) {
+function buildStableWorkerPrompt(agentDefinition) {
+  const hardStops = agentDefinition.approval_policy?.mustPauseFor || [];
+  return [
+    `Worker: ${agentDefinition.name}`,
+    `Role: ${agentDefinition.role}`,
+    `Instructions: ${agentDefinition.instructions}`,
+    `Hard stops: ${hardStops.join(", ")}`,
+    "",
+    "You are running inside Pantheon, a business operating system. Pantheon owns business truth, approvals, costs, tools, and external authority.",
+    "Do not take or claim external actions. Do not publish, spend money, create accounts, contact customers, or make legal, tax, compliance, or financial-authority decisions.",
+    "Claim live market evidence only when it is supplied in the exact task packet or returned by an approved tool in this run.",
+    "Use ordinary business language. State uncertainty and counterevidence. Recommend the smallest commercially useful next action.",
+    "Return only the exact structured output requested by the supplied schema.",
+  ].join("\n");
+}
+
+function buildWorkerTaskInstruction(task, agentDefinition, policy) {
   const requested = task.payload || {};
   const requestedTools = requested.liveSpendRequest?.tools || [];
   const requiredCorrections = Array.isArray(requested.workBrief?.requiredCorrections)
@@ -295,7 +311,6 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
     && requestedTools.includes("product_file_factory");
   const productVisualRun = agentDefinition.id === "product_builder"
     && requestedTools.includes("image_generation_spend");
-  const hardStops = agentDefinition.approval_policy?.mustPauseFor || [];
   const chiefInstruction = agentDefinition.id === "chief_of_staff"
     ? requested.chiefOrchestration?.enabled === true
       ? "You may nominate exactly one existing specialist from the allowed fixed team. Use specialistNeeded=true only when that worker has a clear bounded objective and expected output. Choose protected or supervised_live; do not invent, spawn, rename, or delete workers, and do not grant tools, approval, spend, or external authority."
@@ -324,23 +339,23 @@ function buildWorkerPrompt(task, agentDefinition, policy) {
     ].join("\n")
     : null;
   return [
-    `Worker: ${agentDefinition.name}`,
-    `Role: ${agentDefinition.role}`,
-    `Instructions: ${agentDefinition.instructions}`,
+    "Exact run controls:",
     `Allowed tools in this run: ${policy.allowedTools.join(", ")}`,
     `Blocked tools/actions: ${policy.blockedTools.join(", ")}`,
-    `Hard stops: ${hardStops.join(", ")}`,
     `Expected output: ${requested.expectedOutput || "Operator-ready business decision summary."}`,
-    "",
-    "You are running inside a business operating system. Do not take external actions. Do not publish, spend money, create accounts, contact customers, or make legal/compliance determinations. Claim live market evidence only when it is supplied in the runtime context or returned by an approved tool in this run.",
-    "Your job is to compress the available runtime evidence into a practical operator decision.",
-    "Use ordinary business language. If evidence is weak, say so and recommend the smallest useful next action.",
     evidenceInstruction,
     chiefInstruction,
     qualityInstruction,
     correctionInstruction,
     outputInstruction,
   ].filter(Boolean).join("\n");
+}
+
+function buildWorkerPrompt(task, agentDefinition, policy) {
+  return [
+    buildStableWorkerPrompt(agentDefinition),
+    buildWorkerTaskInstruction(task, agentDefinition, policy),
+  ].join("\n\n");
 }
 
 function buildOpenAIRequest(db, task, agentDefinition, policy) {
@@ -361,7 +376,7 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
     input: [
       {
         role: "system",
-        content: buildWorkerPrompt(task, agentDefinition, policy),
+        content: buildStableWorkerPrompt(agentDefinition),
       },
       {
         role: "user",
@@ -371,6 +386,7 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
             : productVisualRun
               ? "Create the one approved storefront image, then return one compact Product Builder visual result in strict JSON."
               : "Return one operator-ready business decision in strict JSON.",
+          buildWorkerTaskInstruction(task, agentDefinition, policy),
           "Worker-specific business packet:",
           JSON.stringify(requestContext, null, 2),
         ].join("\n"),
@@ -395,6 +411,10 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
       adapter: approvedRequest.provider || LIVE_AI_WORKER_PROVIDER,
       packet_schema: requestContext.schema,
       packet_hash: requestContext.packetHash,
+      harness_hash: approvedRequest.agentHarness?.harnessHash || "",
+      prompt_policy: approvedRequest.agentHarness?.versions?.promptPolicy || "",
+      trace_group_id: approvedRequest.traceGroup?.groupId || "",
+      trace_scope: approvedRequest.traceGroup?.scopeType || "",
     },
   };
 }
@@ -1021,6 +1041,8 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
 module.exports = {
   LIVE_AI_WORKER_PROVIDER,
   buildOpenAIRequest,
+  buildStableWorkerPrompt,
+  buildWorkerTaskInstruction,
   buildWorkerPrompt,
   latestWorkflowContext,
   liveWorkerCostEstimateCents,

@@ -1,6 +1,6 @@
 # Pantheon Master Plan
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 Status: active source of truth
 Owner: Daniel
 Technical steward: Jarvis (Codex)
@@ -25,7 +25,7 @@ remains the safety limit until Pantheon proves three independent paying buyers
 and positive net cash contribution, but opportunity selection now happens in a
 separate pre-venture Portfolio workspace.
 
-The active completed foundation directive is
+The most recently completed foundation directive is
 `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`.
 It implemented the Commercial Constitution, 60-record knowledge library,
 Portfolio Controller v1, comparable demand and finance review, final Sol
@@ -50,6 +50,17 @@ fee-only contribution are supported, while willingness to pay for the exact
 offer, format acceptance, acquisition cost, support load, production effort,
 and realised all-in contribution are not. No Venture Kit or production work
 was authorised.
+
+The most recently completed engineering directive is
+`docs/plans/PANTHEON-AGENT-ASSURANCE-AND-OPENAI-INTEGRATION-HARDENING-2026-07-28.md`.
+It versions the worker harness, groups related Agents SDK traces, adds 25-case
+reviewed behavioral and trace evaluation, introduces proportionate SDK
+guardrails, records malformed known provider responses without hidden retries,
+and makes live work easier for Daniel and Jarvis to inspect. Local release gates
+passed on 2026-07-28 with A$0.10 estimated provider exposure. The semantic
+reviewer remains advisory and correctly changed no business state. This work
+does not change the no-investment result, authorise a product build, or widen
+external-action authority.
 
 `digital_product_v1` is one registered, non-universal kit. Generic commercial
 logic has no Gumroad-first or digital-product-first channel assumption. The
@@ -128,6 +139,13 @@ usage is recorded as unknown rather than zero, missing approved provider-tool
 activity stops for review, and a terminal failure still receives an evaluation.
 An operator usefulness verdict is committed atomically with its new receipt, so
 the dashboard cannot show a review that is absent from the execution evidence.
+
+Structural completeness is necessary but no longer sufficient for capability
+trust. The completed assurance phase adds a versioned harness identity and
+separate runtime, behavioral, trace, operator-usefulness, and eventual
+commercial-outcome evaluation layers. Any semantic grader remains advisory
+until it agrees with a reviewed calibration set and can never grant approval or
+autonomy.
 
 ## AI Team
 
@@ -255,6 +273,9 @@ Pantheon default.
 
 ### Now
 
+- Close the private GitHub CI gate for the completed Agent Assurance and OpenAI
+  Integration Hardening release. Local tests, lint, dependency audit, Doctor,
+  recovery, live provider proof, and browser proof have passed.
 - Keep the Portfolio result at `No investment selected`. Two bounded rounds
   compared ten hypotheses and six finalists, and one targeted diligence round
   re-tested the strongest named gap. No case cleared every mandatory demand,
@@ -270,17 +291,19 @@ Pantheon default.
 - Run Pantheon through the Windows control shell: Stopped means no Pantheon
   process, Standby keeps only the lightweight dashboard control service, and
   Working loads the full runtime.
-- Hold July runtime exposure at A$8.44: A$3.10 is reconciled provider usage and
-  A$5.34 remains ordinary incurred estimates. The two post-dispatch timeouts
+- Hold July runtime exposure at A$8.54: A$3.10 is reconciled provider usage and
+  A$5.44 remains ordinary incurred estimates. The two post-dispatch timeouts
   and one invalid-output call were matched to signed Platform exports and
-  exact trace records; none produced accepted commercial evidence.
+  exact trace records; none produced accepted commercial evidence. The
+  assurance release added A$0.10 of clearly labelled estimates across three
+  Luna calls, one truncated Terra response, and one corrected Terra review.
 - Use the verified A$1.57675 cash-paid-per-US-dollar-credit conversion for
   future estimates. Keep estimates visibly separate from reconciled usage and
   subscription cash outflow.
 
 ### Next
 
-- If Daniel authorises the next commercial goal, prepare only the smallest
+- After the assurance release passes, prepare only the smallest
   functional sample and measurement-ready buyer-intent test for the Social
   Media Manager Client-Control and Profitability System. Do not build a full
   catalogue before the test.
@@ -300,6 +323,11 @@ Pantheon default.
 
 ### Later
 
+- Apply the explicit adoption triggers in
+  `docs/architecture/PANTHEON-OPENAI-CAPABILITY-ADOPTION-ROADMAP.md`. Sandbox
+  Agents, hosted shell, Skills, MCP, tool search, server-side Multi-agent,
+  sessions, computer use, OpenAI Commerce, remote operation, and dynamic
+  specialists remain future capabilities rather than implied current scope.
 - Complete Venture Factory, prove a structurally different second Venture Kit,
   then replace the one-active-venture safety constraint with three tested,
   isolated venture lanes. Do not copy the runtime or hard-code every business
@@ -329,6 +357,13 @@ Publication, buyer results, positive cash contribution, capability promotion,
 Venture Factory, concurrent lanes, and every consequential external action
 retain separate gates.
 
+The Agent Assurance and OpenAI Integration Hardening release passed its local
+harness identity, trace grouping, reviewed behavior evaluation, guardrail,
+provider, browser, dependency, Doctor, and encrypted recovery gates on
+2026-07-28. Private GitHub CI is its only remaining release gate. Exact proof is
+retained in
+`docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`.
+
 Foundation is releasable only when:
 
 - encrypted source, database, and artifact backups restore successfully;
@@ -345,6 +380,16 @@ Foundation is releasable only when:
 ## Durable Records
 
 - `docs/Pantheon Build Log.md`: current decisions, proof, and next work.
+- `docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`: exact
+  harness, assurance, live provider, cost, recovery, and browser evidence.
+- `docs/plans/PANTHEON-AGENT-ASSURANCE-AND-OPENAI-INTEGRATION-HARDENING-2026-07-28.md`:
+  active harness, trace, evaluation, guardrail, and operator-observability
+  implementation directive.
+- `docs/architecture/PANTHEON-OPENAI-CAPABILITY-ADOPTION-ROADMAP.md`: explicit
+  future OpenAI capability triggers, reasons for deferral, and release gates.
+- `docs/decisions/0007-agent-assurance-before-capability-expansion.md`: accepted
+  decision to establish behavioral assurance before widening tools or
+  orchestration.
 - `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`:
   completed foundation scope, live result, cost truth, and next gate.
 - `docs/commercial/COMMERCIAL-CONSTITUTION.md`: shared commercial decision

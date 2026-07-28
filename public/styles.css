@@ -572,6 +572,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .run-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .run-filters button { min-height: 32px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 0.72rem; }
 .run-filters button.active { border-color: #3d6256; background: var(--mint-soft); color: var(--text); }
+.run-groups { display: grid; gap: 16px; }
+.run-group { min-width: 0; }
+.run-group-header {
+  min-width: 0;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 2px 9px;
+}
+.run-group-header h3 { margin-top: 3px; font-size: 0.9rem; }
+.run-group-header p { margin: 4px 0 0; color: var(--muted); font-size: 0.68rem; }
 .run-list { display: grid; gap: 1px; border: 1px solid var(--line-soft); border-radius: 6px; overflow: hidden; background: var(--line-soft); }
 .run-list > .empty-state { border: 0; border-radius: 0; background: var(--surface); }
 .run-row {

@@ -934,6 +934,45 @@ function filteredAgentRuns(state) {
   return runs.filter((run) => run.executionKind === store.runFilter);
 }
 
+function groupedAgentRuns(state, runs) {
+  const groupFacts = new Map((state?.workGroups || []).map((group) => [group.id, group]));
+  const groups = new Map();
+  runs.forEach((run) => {
+    const identity = run.workGroup || {
+      id: `run-${run.id}`,
+      label: run.taskTitle,
+      scopeType: "task",
+      versioned: false,
+    };
+    const group = groups.get(identity.id) || {
+      ...(groupFacts.get(identity.id) || identity),
+      runs: [],
+    };
+    group.runs.push(run);
+    groups.set(identity.id, group);
+  });
+  return [...groups.values()];
+}
+
+function renderAgentRunGroup(group) {
+  const activeCount = group.runs.filter((run) => run.active).length;
+  const reviewCount = group.runs.filter((run) => run.attentionRequired).length;
+  const state = activeCount ? "working" : reviewCount ? "needs_review" : "completed";
+  const workers = [...new Set(group.runs.map((run) => run.workerName))];
+  const latest = group.runs
+    .map((run) => run.updatedAt)
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  return `<section class="run-group">
+    <header class="run-group-header">
+      <div><span class="section-label">Related work</span><h3>${escapeHtml(group.label || "AI work")}</h3><p>${group.runs.length} step${group.runs.length === 1 ? "" : "s"} / ${workers.length} worker${workers.length === 1 ? "" : "s"}${latest ? ` / Updated ${escapeHtml(dateTime(latest))}` : ""}</p></div>
+      ${badge(state, state === "completed" ? "mint" : state === "working" ? "sky" : "amber")}
+    </header>
+    <div class="run-list">${group.runs.map(renderAgentRunRow).join("")}</div>
+  </section>`;
+}
+
 function renderAgentRunRow(run) {
   const protectedRun = run.executionKind === "protected_rehearsal";
   const actualTokens = run.actualTokens?.total === null || run.actualTokens?.total === undefined
@@ -966,6 +1005,7 @@ function renderLiveRuns(data) {
   const state = data.liveRuns || { counts: {}, runs: [] };
   const counts = state.counts || {};
   const runs = filteredAgentRuns(state);
+  const workGroups = groupedAgentRuns(state, runs);
   const activeRuns = (state.runs || []).filter((run) => run.active && run.executionKind !== "protected_rehearsal");
   const filters = [
     ["running", "Running"],
@@ -985,11 +1025,11 @@ function renderLiveRuns(data) {
     <section>
       ${sectionHeading("Run history", "See what genuinely used OpenAI, what stayed internal, and what requires reconciliation.")}
       <div class="run-filters" role="group" aria-label="Filter AI runs">${filters.map(([id, label]) => `<button class="${store.runFilter === id ? "active" : ""}" data-action="run-filter" data-filter="${id}">${escapeHtml(label)}</button>`).join("")}</div>
-      <div class="run-list">${runs.length ? runs.map(renderAgentRunRow).join("") : emptyState(
+      <div class="run-groups">${runs.length ? workGroups.map(renderAgentRunGroup).join("") : `<div class="run-list">${emptyState(
         store.runFilter === "running" ? "No AI work is running" : "No runs match this view",
         store.runFilter === "running" ? "Genuine AI work will appear here while it is in progress." : "Choose another run view to inspect the available records.",
         "activity",
-      )}</div>
+      )}</div>`}</div>
     </section>
   </div>`;
 }
@@ -1618,6 +1658,7 @@ function runReviewBody(data) {
   const controlledEvidence = process.suppliedEvidence?.some((item) => item.sourceType === "test_fixture");
   const demandResult = data.run.workerId === "demand_validator";
   const qualityNeedsWork = ["failed", "needs_review"].includes(data.quality?.status);
+  const assuranceLayers = data.quality?.layers || {};
   const plainConclusion = demandResult && controlledEvidence
     ? "Demand Validator recommends a small, free interest test before anything is built. The controlled evidence suggests a recurring problem, but it does not prove real demand or willingness to pay."
     : plainAgentText(process.conclusion);
@@ -1640,6 +1681,14 @@ function runReviewBody(data) {
     : visibility.providerResponseStored && visibility.providerTraceContent
       ? "OpenAI trace content was enabled for this approved non-personal run."
       : "Pantheon retained the structured result and local execution record; full provider trace content was not enabled.";
+  const cacheUsage = execution.cacheUsage || {};
+  const cacheLabel = cacheUsage.status === "reported"
+    ? cacheUsage.inputTokens > 0
+      ? `${Math.round(Number(cacheUsage.cacheHitRate || 0) * 100)}% of input was served from cache`
+      : "No input tokens were reported"
+    : cacheUsage.status === "partial"
+      ? "Some token data was reported; cache use is incomplete"
+      : "OpenAI did not report enough data to measure cache use";
   const suppliedEvidence = process.suppliedEvidence?.length
     ? `<div class="evidence-list">${process.suppliedEvidence.map((item) => {
         const url = safeExternalUrl(item.url);
@@ -1692,11 +1741,30 @@ function runReviewBody(data) {
   const receiptRecord = receipt
     ? `<div class="review-check"><span>${receipt.status === "complete" ? "Inputs, output, provider evidence, cost state, and checks were captured." : "Pantheon found an issue in the stored run record."}</span>${badge(receipt.status === "complete" ? "Record complete" : "Review needed", receipt.status === "complete" ? "mint" : "amber")}</div>${receipt.missingFields?.length ? `<h4>Missing details</h4>${detailList(receipt.missingFields)}` : ""}${receipt.warnings?.length ? `<h4>Review notes</h4>${detailList(receipt.warnings)}` : ""}`
     : `<div class="error-callout"><strong>Run record not finalized</strong><p>${data.run.status === "running" ? "Pantheon is still recording this run." : "The system monitor will keep this visible until the record is complete."}</p></div>`;
+  const assuranceRows = [
+    ["Output structure", assuranceLayers.structural?.status || data.quality?.status || "not reviewed"],
+    ["Claims and scope", assuranceLayers.behavioral?.status || "not reviewed"],
+    ["Run record", assuranceLayers.trace?.status || receipt?.status || "not reviewed"],
+    ["Useful to the operator", assuranceLayers.operatorUsefulness?.status || "not reviewed"],
+    ["Proven in the market", assuranceLayers.commercialOutcome?.status || "not measured"],
+  ];
+  const assuranceOverview = detailSection(
+    "Pantheon checks",
+    `<p>These checks separate a well-formed AI answer from work that is useful to you and results that have actually occurred in the market.</p><div class="review-check-list">${assuranceRows.map(([label, status]) => {
+      const normalized = String(status || "").toLowerCase();
+      const tone = ["passed", "complete", "verified"].includes(normalized)
+        ? "mint"
+        : ["failed", "blocked"].includes(normalized)
+          ? "coral"
+          : "amber";
+      return `<div class="review-check"><span>${escapeHtml(label)}</span>${badge(humanStatus(status), tone)}</div>`;
+    }).join("")}</div>`,
+  );
   const technicalRecord = [
     detailSection("Automated checks", `${reviewCriteria(data.review?.criteria || {})}<p>The ${escapeHtml(String(data.quality?.score ?? "unscored"))}${data.quality?.score !== undefined ? "/100" : ""} result checks structure and safety only. You decide whether the work is commercially useful.</p>`),
-    detailSection("Execution facts", `<div class="review-facts"><div><span>Run type</span><strong>${escapeHtml(execution.label)}</strong></div><div><span>Status</span><strong>${escapeHtml(humanStatus(data.run.status))}</strong></div><div><span>Provider</span><strong>${escapeHtml(execution.provider || (protectedRun ? "No provider used" : execution.requestedProvider || "Not captured"))}</strong></div><div><span>Model</span><strong>${escapeHtml(execution.modelRoute?.label || execution.model || (protectedRun ? "No model called" : execution.requestedModel || "Not captured"))}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Tokens</span><strong>${escapeHtml(actualTokens)}</strong></div><div><span>Planned limits</span><strong>${escapeHtml(plannedTokens)}</strong></div><div><span>Cost</span><strong>${escapeHtml(providerCost)}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div></div><p>${escapeHtml(providerVisibility)}</p>`),
+    detailSection("Execution facts", `<div class="review-facts"><div><span>Related work</span><strong>${escapeHtml(execution.workGroup?.label || "Earlier ungrouped run")}</strong></div><div><span>Run type</span><strong>${escapeHtml(execution.label)}</strong></div><div><span>Status</span><strong>${escapeHtml(humanStatus(data.run.status))}</strong></div><div><span>Provider</span><strong>${escapeHtml(execution.provider || (protectedRun ? "No provider used" : execution.requestedProvider || "Not captured"))}</strong></div><div><span>Model</span><strong>${escapeHtml(execution.modelRoute?.label || execution.model || (protectedRun ? "No model called" : execution.requestedModel || "Not captured"))}</strong></div><div><span>Duration</span><strong>${escapeHtml(duration)}</strong></div><div><span>Tokens</span><strong>${escapeHtml(actualTokens)}</strong></div><div><span>Prompt cache</span><strong>${escapeHtml(cacheLabel)}</strong></div><div><span>Planned limits</span><strong>${escapeHtml(plannedTokens)}</strong></div><div><span>Cost</span><strong>${escapeHtml(providerCost)}</strong></div><div><span>External effects</span><strong>${execution.externalEffects.length ? escapeHtml(execution.externalEffects.join(", ")) : "None"}</strong></div><div><span>Scope check</span><strong>${escapeHtml(humanStatus(execution.sdkGuardrails?.preflight?.status || (protectedRun ? "not applicable" : "not captured")))}</strong></div></div><p>${escapeHtml(providerVisibility)}</p>`),
     detailSection("Tools and research", `<h4>Tool activity</h4>${observedTools}<h4>Research sources</h4>${sources}`),
-    detailSection("Stored run record", `${receiptRecord}<div class="technical-ids"><span>OpenAI trace</span><code>${escapeHtml(execution.traceId || "Not captured")}</code><span>OpenAI response</span><code>${escapeHtml(execution.responseId || "Not captured")}</code><span>Pantheon run</span><code>${escapeHtml(data.run.id)}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || data.developer.contextSnapshotHash || "Not captured")}</code><span>Receipt fingerprint</span><code>${escapeHtml(receipt?.hash || "Not captured")}</code></div>`),
+    detailSection("Stored run record", `${receiptRecord}<div class="technical-ids"><span>OpenAI trace</span><code>${escapeHtml(execution.traceId || "Not captured")}</code><span>OpenAI response</span><code>${escapeHtml(execution.responseId || "Not captured")}</code><span>Pantheon run</span><code>${escapeHtml(data.run.id)}</code><span>Work group</span><code>${escapeHtml(execution.workGroup?.id || "Historical ungrouped run")}</code><span>Agent harness</span><code>${escapeHtml(execution.harness?.hash || "Historical unversioned run")}</code><span>Input fingerprint</span><code>${escapeHtml(data.developer.fixtureHash || data.developer.contextSnapshotHash || "Not captured")}</code><span>Receipt fingerprint</span><code>${escapeHtml(receipt?.hash || "Not captured")}</code></div>`),
     detailSection("Run timeline", traceEvents),
   ].join("");
 
@@ -1707,6 +1775,7 @@ function runReviewBody(data) {
     </section>
     ${errorSection}
     ${qualitySection}
+    ${assuranceOverview}
     <section class="run-fact-strip">
       <div><span>Records reviewed</span><strong>${reviewedRecordCount} business record${reviewedRecordCount === 1 ? "" : "s"}</strong></div>
       <div><span>Web research</span><strong>${escapeHtml(researchLabel)}</strong></div>

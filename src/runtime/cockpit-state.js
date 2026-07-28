@@ -20,6 +20,7 @@ const { getOpportunityState } = require("./pantheon-opportunities");
 const { getProductionState } = require("./pantheon-production");
 const { currentOperatorJourney } = require("./pantheon-journey");
 const { getPortfolioState } = require("./portfolio-controller");
+const { getAgentCostObservability } = require("./agent-cost-observability");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -1048,6 +1049,14 @@ function runExecutionContext(db, runRecord, taskRow = null) {
   const protectedRehearsal = kind === "protected_rehearsal";
   const liveRequest = task?.payload?.liveSpendRequest || {};
   const modelMetadata = modelCall?.metadata || {};
+  const agentHarness = modelMetadata.agentHarness
+    || runMetadata.agentHarness
+    || liveRequest.agentHarness
+    || null;
+  const traceGroup = modelMetadata.traceGroup
+    || runMetadata.traceGroup
+    || liveRequest.traceGroup
+    || null;
   const usageCaptured = !protectedRehearsal && Boolean(
     modelCall
     && modelCall.status !== "not_called"
@@ -1152,6 +1161,10 @@ function runExecutionContext(db, runRecord, taskRow = null) {
     tools,
     research,
     receipt,
+    agentHarness,
+    traceGroup,
+    sdkGuardrails: modelMetadata.sdkGuardrails || runMetadata.sdkGuardrails || null,
+    cacheUsage: modelMetadata.cacheUsage || null,
   };
 }
 
@@ -1162,6 +1175,34 @@ function executionLabel(kind) {
     model_backed: "OpenAI used",
     provider_outcome_unknown: "Outcome needs review",
   }[kind] || "Run recorded";
+}
+
+function workGroupLabel(traceGroup, fallbackTitle) {
+  if (!traceGroup) return fallbackTitle || "Recorded AI work";
+  return {
+    journey: "Commercial journey",
+    opportunity: "Opportunity review",
+    investment_case: "Investment review",
+    discovery_round: "Market discovery round",
+    work_package: "Business work package",
+    workflow: "Business workflow",
+    task: fallbackTitle || "AI task",
+  }[traceGroup.scopeType] || fallbackTitle || "Related AI work";
+}
+
+function runAssuranceSummary(context) {
+  const layers = context.evaluation?.metadata?.evaluationLayers
+    || context.runMetadata.evaluationLayers
+    || null;
+  return {
+    status: context.evaluation?.status || "not_reviewed",
+    score: context.evaluation?.score ?? null,
+    structural: layers?.structural?.status || null,
+    behavioral: layers?.behavioral?.status || null,
+    trace: layers?.trace?.status || null,
+    operatorUsefulness: layers?.operatorUsefulness?.status || "not_reviewed",
+    commercialOutcome: layers?.commercialOutcome?.status || "not_measured",
+  };
 }
 
 function agentRunSummary(db, row, supersededTaskIds = new Set()) {
@@ -1190,6 +1231,14 @@ function agentRunSummary(db, row, supersededTaskIds = new Set()) {
         || context.receipt?.status === "needs_review"
       )
     );
+  const traceGroup = context.traceGroup;
+  const workGroup = {
+    id: traceGroup?.groupId || `pantheon_run_group_${row.id}`,
+    scopeType: traceGroup?.scopeType || "task",
+    scopeId: traceGroup?.scopeId || row.task_id || row.id,
+    label: workGroupLabel(traceGroup, row.task_title || context.runMetadata.taskTitle),
+    versioned: Boolean(traceGroup?.groupId),
+  };
   return {
     id: row.id,
     executionKind: context.kind,
@@ -1232,6 +1281,15 @@ function agentRunSummary(db, row, supersededTaskIds = new Set()) {
       requested: Array.isArray(context.liveRequest.tools) ? context.liveRequest.tools : [],
       observedCount: context.tools.length,
     },
+    workGroup,
+    harness: context.agentHarness ? {
+      hash: context.agentHarness.harnessHash || null,
+      promptPolicy: context.agentHarness.versions?.promptPolicy || null,
+      assurancePolicy: context.agentHarness.versions?.assurancePolicy || null,
+      guardrailPolicy: context.agentHarness.versions?.guardrailPolicy || null,
+    } : null,
+    assurance: runAssuranceSummary(context),
+    cacheUsage: context.cacheUsage,
     groundedSourceCount: context.research.sources.filter((source) => source.grounded).length,
     reviewStatus: context.review?.operator_verdict || context.evaluation?.status || "not_reviewed",
     receipt: context.receipt ? {
@@ -1253,6 +1311,57 @@ function agentRunSummary(db, row, supersededTaskIds = new Set()) {
     responseId: context.responseId,
     updatedAt: row.completed_at || latestTrace?.ts || row.started_at,
   };
+}
+
+function groupAgentRuns(runs) {
+  const groups = new Map();
+  for (const item of runs) {
+    const identity = item.workGroup || {
+      id: `pantheon_run_group_${item.id}`,
+      scopeType: "task",
+      scopeId: item.taskId || item.id,
+      label: item.taskTitle,
+      versioned: false,
+    };
+    const group = groups.get(identity.id) || {
+      ...identity,
+      runIds: [],
+      workers: [],
+      runCount: 0,
+      activeCount: 0,
+      needsReviewCount: 0,
+      estimatedCostCents: 0,
+      actualCostCents: 0,
+      actualCostComplete: true,
+      latestAt: null,
+    };
+    group.runIds.push(item.id);
+    if (!group.workers.includes(item.workerName)) group.workers.push(item.workerName);
+    group.runCount += 1;
+    if (item.active) group.activeCount += 1;
+    if (item.attentionRequired) group.needsReviewCount += 1;
+    group.estimatedCostCents += Number(item.cost?.estimatedCents || 0);
+    if (item.cost?.actualCents === null || item.cost?.actualCents === undefined) {
+      group.actualCostComplete = false;
+    } else {
+      group.actualCostCents += Number(item.cost.actualCents || 0);
+    }
+    if (!group.latestAt || String(item.updatedAt || "") > String(group.latestAt)) {
+      group.latestAt = item.updatedAt;
+    }
+    groups.set(identity.id, group);
+  }
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      status: group.activeCount
+        ? "working"
+        : group.needsReviewCount
+          ? "needs_review"
+          : "completed",
+      actualCostCents: group.actualCostComplete ? group.actualCostCents : null,
+    }))
+    .sort((left, right) => String(right.latestAt || "").localeCompare(String(left.latestAt || "")));
 }
 
 function getAgentRunsState(db, filters = {}) {
@@ -1297,6 +1406,8 @@ function getAgentRunsState(db, filters = {}) {
       reconciledCostCents: summaries.reduce((total, item) => total + Number(item.cost.reconciledCents || 0), 0),
     },
     totalMatching: matches.length,
+    workGroups: groupAgentRuns(matches),
+    costObservability: getAgentCostObservability(db),
     runs: matches.slice(0, limit),
   };
 }
@@ -1996,6 +2107,18 @@ function getAgentRunDetail(db, id) {
         resolvedAt: handoff.resolved_at,
       })),
       externalEffects: task?.payload?.liveSpendRequest?.effects || [],
+      workGroup: context.traceGroup ? {
+        id: context.traceGroup.groupId || null,
+        scopeType: context.traceGroup.scopeType || null,
+        scopeId: context.traceGroup.scopeId || null,
+        label: workGroupLabel(context.traceGroup, task?.title),
+      } : null,
+      harness: context.agentHarness ? {
+        hash: context.agentHarness.harnessHash || null,
+        versions: context.agentHarness.versions || {},
+      } : null,
+      sdkGuardrails: context.sdkGuardrails,
+      cacheUsage: context.cacheUsage,
       tracePolicy: {
         ...tracePolicy,
         legacyPolicyInferred: !context.protectedRehearsal && approvedTracePolicy === null,
@@ -2025,6 +2148,10 @@ function getAgentRunDetail(db, id) {
       criteria: evaluation.criteria,
       findings: evaluation.findings,
       evaluationId: evaluation.id,
+      evaluatorVersion: evaluation.evaluator_version || null,
+      layers: evaluation.metadata?.evaluationLayers
+        || runMetadata.evaluationLayers
+        || null,
     } : null,
     receipt: context.receipt ? {
       id: context.receipt.id,
@@ -2045,6 +2172,10 @@ function getAgentRunDetail(db, id) {
       researchRunId: context.research.run?.id || null,
       structuredOutput: output,
       traceEvents: context.traces,
+      agentHarness: context.agentHarness,
+      traceGroup: context.traceGroup,
+      sdkGuardrails: context.sdkGuardrails,
+      cacheUsage: context.cacheUsage,
     },
   };
 }

@@ -167,6 +167,21 @@ function seedRunEvidence(db) {
         maxCostCents: 100,
         tools: ["research_adapter"],
         effects: [],
+        agentHarness: {
+          schema: "pantheon.agent-harness.v1",
+          harnessHash: "harness-live",
+          versions: {
+            promptPolicy: "prompt-v1",
+            assurancePolicy: "assurance-v1",
+            guardrailPolicy: "guardrail-v1",
+          },
+        },
+        traceGroup: {
+          schema: "pantheon.agent-trace-group.v1",
+          groupId: "pantheon_group_live",
+          scopeType: "workflow",
+          scopeId: "wf-live-runs",
+        },
         tracePolicy: { providerResponseStored: true, providerTraceContent: true, localReviewStored: true },
       },
     },
@@ -193,7 +208,22 @@ function seedRunEvidence(db) {
     costStatus: "reconciled",
     reconciledCents: 2,
     outcomeStatus: "known",
-    metadata: { provider: "openai-agents-sdk", totalTokens: 1664, responseId: "resp_live", agentSdkTraceId: "trace_live" },
+    metadata: {
+      provider: "openai-agents-sdk",
+      totalTokens: 1664,
+      responseId: "resp_live",
+      agentSdkTraceId: "trace_live",
+      cacheUsage: {
+        status: "reported",
+        inputTokens: 1329,
+        cachedInputTokens: 600,
+        cacheWriteInputTokens: 0,
+        cacheHitRate: 0.4515,
+      },
+      sdkGuardrails: {
+        preflight: { status: "passed" },
+      },
+    },
   });
   insertRun(db, {
     id: "run-live",
@@ -225,8 +255,16 @@ function seedRunEvidence(db) {
   run(
     db,
     `INSERT INTO agent_eval_results (id, run_id, agent_id, task_id, status, score, criteria, findings, metadata, created_at)
-     VALUES ('eval-live', 'run-live', 'demand_validator', 'task-live', 'passed', 91, '[]', '[]', '{}', ?)`,
-    [ts],
+     VALUES ('eval-live', 'run-live', 'demand_validator', 'task-live', 'passed', 91, '[]', '[]', ?, ?)`,
+    [toJson({
+      evaluationLayers: {
+        structural: { status: "passed", score: 95 },
+        behavioral: { status: "passed", score: 92 },
+        trace: { status: "passed", score: 100 },
+        operatorUsefulness: { status: "pending_review", score: null },
+        commercialOutcome: { status: "not_measured", resultId: null },
+      },
+    }), ts],
   );
   run(
     db,
@@ -342,6 +380,13 @@ test("Live Runs separates real provider work, unknown outcomes and internal rehe
     assert.equal(liveRun.responseId, "resp_live");
     assert.equal(liveRun.traceId, "trace_live");
     assert.equal(liveRun.groundedSourceCount, 1);
+    assert.equal(liveRun.workGroup.id, "pantheon_group_live");
+    assert.equal(liveRun.workGroup.label, "Business workflow");
+    assert.equal(liveRun.assurance.behavioral, "passed");
+    assert.equal(liveRun.assurance.operatorUsefulness, "pending_review");
+    assert.equal(liveRun.cacheUsage.cacheHitRate, 0.4515);
+    assert.equal(state.workGroups.find((group) => group.id === "pantheon_group_live").runCount, 1);
+    assert.equal(state.costObservability.workerHarnesses[0].workerId, "demand_validator");
 
     const unknownRun = state.runs.find((item) => item.id === "run-unknown");
     assert.equal(unknownRun.executionKind, "provider_outcome_unknown");
@@ -359,6 +404,7 @@ test("Live Runs separates real provider work, unknown outcomes and internal rehe
     const aiTeam = getAiTeamState(runtime.db);
     assert.equal(aiTeam.pilot, undefined);
     assert.equal(aiTeam.liveRuns.counts.total, 3);
+    assert.ok(aiTeam.liveRuns.workGroups.length >= 1);
   } finally {
     closeRuntime(runtime);
   }

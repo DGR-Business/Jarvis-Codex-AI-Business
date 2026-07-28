@@ -1,7 +1,7 @@
 # Pantheon Multi-Venture Foundation And Venture Kits
 
 Date: 2026-07-22
-Last reviewed: 2026-07-27
+Last reviewed: 2026-07-28
 Status: active long-range roadmap; Portfolio Controller and the first registry
 boundary are implemented, while Venture Factory, Kit 2, and concurrent venture
 lanes remain gated
@@ -225,6 +225,11 @@ Every integration exposes:
 
 Kits select tools from the registry. They never embed reusable credentials or
 allow an agent to discover and call arbitrary services without runtime policy.
+
+OpenAI-specific execution, connector, sandbox, commerce, and transport
+capabilities are tracked with explicit adoption triggers in
+`docs/architecture/PANTHEON-OPENAI-CAPABILITY-ADOPTION-ROADMAP.md`. A new API or
+beta feature is not automatically a registered Pantheon capability.
 
 ### 8. Evidence, Memory, And Learning
 

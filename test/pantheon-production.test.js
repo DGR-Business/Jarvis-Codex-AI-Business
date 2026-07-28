@@ -1100,7 +1100,19 @@ test("Product Builder renders and validates a real manifest and bundle before co
     }));
 
     const executed = await runOnce(runtime.db, { taskId: build.task.id });
-    assert.equal(executed.status, "completed", executed.error || JSON.stringify(executed));
+    const evaluation = get(
+      runtime.db,
+      "SELECT status, score, findings, metadata FROM agent_eval_results WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
+      [build.task.id],
+    );
+    assert.equal(executed.status, "completed", JSON.stringify({
+      error: executed.error || null,
+      evaluation: evaluation ? {
+        ...evaluation,
+        findings: fromJson(evaluation.findings, []),
+        metadata: fromJson(evaluation.metadata, {}),
+      } : null,
+    }));
     assert.equal(executed.result.output.generatedFiles.files.length, 2);
     assert.equal(executed.result.output.generatedFiles.manifest.planId, build.spec.planId);
     assert.equal(executed.result.qualityGate.status, "not_required");

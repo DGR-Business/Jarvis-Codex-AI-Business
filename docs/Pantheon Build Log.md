@@ -1,6 +1,6 @@
 # Pantheon Build Log
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 Pantheon is the active product name from 2026-07-18. Earlier entries retain
 Jarvis-Codex or Jarvis where that was the product name at the time. Jarvis now
@@ -25,20 +25,23 @@ commercial move.
   Controller, and a registered non-universal `digital_product_v1` Venture Kit.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
+- Active engineering: the Agent Assurance and OpenAI Integration Hardening
+  implementation is locally complete. Private GitHub CI is the final release
+  gate before the buyer-intent test.
 - Current commercial result: two bounded rounds retained ten hypotheses,
   performed comparable live demand and finance review on six finalists, and
   completed two Sol investment reviews. Pantheon selected no investment.
-- Current operator state: all 11 workers are on standby. One consolidated
-  accounting note retains two unknown post-dispatch calls; there is no product,
-  publication, market-test, or external-action decision waiting.
+- Current operator state: all 11 workers are on standby. There are no unknown
+  provider outcomes and no product, publication, market-test, or
+  external-action decision waiting.
 - Historical product: the Job Search Evidence Tracker package remains
   recoverable engineering evidence but is parked after an unbiased comparison.
   It is not an active venture or publication recommendation.
 - External actions: locked by default.
 - Operator budget: eight hours per week in the build and first-proof phase.
 - Pre-revenue AI and tool cap: A$100 per month. July runtime exposure is
-  A$16.54, including A$10.00 conservatively held for two unknown calls. These
-  amounts are estimates pending provider reconciliation, not settled spend.
+  A$8.54, comprising A$3.10 reconciled provider usage and A$5.44 ordinary
+  incurred estimates. There are no unknown provider outcomes.
 - Operations: `START PANTHEON.cmd` opens the lightweight control shell in
   Standby. The dashboard starts Working mode and can return to Standby or stop
   every exact Pantheon-owned process without touching unrelated Node work.
@@ -80,6 +83,8 @@ commercial move.
 | 2026-07-27 | Treat channels and Venture Kits as evidence-selected, versioned capabilities. | Gumroad and digital products are one implementation path, not the architecture of the commercial kernel. |
 | 2026-07-27 | Use Stopped, Standby, and Working as the only operator lifecycle states. | Daniel needs a low-memory dashboard state and exact process ownership without recurring command-line work or orphaned Node processes. |
 | 2026-07-27 | Do not repeat generic broad discovery after two unsupported rounds. | The next spend must close a named evidence gap through stronger market data, a measured service trial, a submitted idea, or direct buyer intent. |
+| 2026-07-28 | Establish agent assurance before expanding OpenAI capabilities. | Pantheon has strong runtime control but needs reviewed behavioral and trace evaluation before broader tools, sandboxes, connectors, commerce, or dynamic orchestration can earn trust. |
+| 2026-07-28 | Record malformed semantic-review responses as known failed attempts and permit only one separately visible correction. | Provider work and cost must remain truthful even when strict structured output fails; a larger token ceiling must never become an invisible retry. |
 
 ## 2026-07-22 Full Journey Rehearsal: Genuine Quality Stop
 
@@ -1303,13 +1308,108 @@ The first-use foundation passed its release proof on 2026-07-17:
 No paid OpenAI call or external business action was made during this release
 review.
 
+## 2026-07-28 Agent Assurance And OpenAI Adoption Decision
+
+Jarvis reviewed Pantheon's actual Agents SDK runner, capability bridge,
+evaluation path, trace evidence, commercial state, and current dependency
+versions against the official OpenAI guidance for Agents SDK orchestration,
+running agents, guardrails, trace evaluation, Sandbox Agents, tools, MCP,
+Skills, shell, computer use, Responses Multi-agent, Flex processing, and
+OpenAI Commerce.
+
+The review found no reason to replace Pantheon's architecture. Application-owned
+state, exact approvals, explicit model routes, strict structured outputs,
+serialized `RunState` resumption, capped hosted tools, immutable receipts, and
+runtime-owned commercial truth match the intended SDK boundary.
+
+The material gap is assurance quality. `local-structural-v2` catches missing
+fields, missing sources, prohibited authority, commercial acceptance defects,
+and output-contract failures, but a structurally valid answer can still be
+poorly evidenced or commercially unhelpful. Pantheon therefore will not widen
+its tool or orchestration surface until it can compare worker behavior against
+reviewed examples and real outcomes.
+
+Daniel approved
+`docs/plans/PANTHEON-AGENT-ASSURANCE-AND-OPENAI-INTEGRATION-HARDENING-2026-07-28.md`.
+The active goal will version the complete harness, group related OpenAI traces,
+add deterministic and calibrated behavioral assurance, introduce proportionate
+SDK guardrails, improve ordinary-language Live Run review, and prove one
+bounded live subject-and-grader path under a combined A$2 ceiling.
+
+Useful but premature features are preserved in
+`docs/architecture/PANTHEON-OPENAI-CAPABILITY-ADOPTION-ROADMAP.md`. Each entry
+states its value, reason for deferral, commercial adoption trigger, and release
+gate. The register covers Sandbox Agents, hosted shell, Skills, MCP,
+tool search, server-side Multi-agent, sessions, computer use, OpenAI Commerce,
+Agentic Checkout, hosted retrieval, media generation, WebSocket transport,
+Flex and Batch processing, hosted trace graders, prompt optimization, dynamic
+specialists, remote operation, and a mobile or ChatGPT companion.
+
+No implementation, paid provider call, external action, or commercial-state
+change occurred during the documentation and goal-definition step.
+
+## 2026-07-28 Agent Assurance Release Proof
+
+Pantheon completed the approved assurance implementation without widening
+external-action authority:
+
+- the complete worker, prompt, output, tool, commercial, routing, and evaluator
+  harness is versioned and hash-bound to approval, traces, attempts, receipts,
+  and review;
+- related independent Agents SDK attempts share one stable Pantheon-owned work
+  group;
+- 25 reviewed behavioral fixtures cover unsupported demand and economics,
+  ignored counterevidence, stale scope, wrong tools, invented completion,
+  authority expansion, commercially empty recommendations, and exact
+  Pantheon regressions;
+- structural, behavioral, trace, operator-usefulness, and commercial-outcome
+  states are separate, and structure alone cannot promote a capability;
+- deterministic SDK guardrails now reject wrong scope, tools, effects,
+  invented outcomes, guarantees, placeholders, and authority expansion before
+  acceptance;
+- prompt-cache evidence and processing mode are measured without claiming
+  hypothetical savings; and
+- Live Runs groups related work and presents the worker, evidence, tools,
+  assurance, tokens, cost, limitations, and next action in ordinary language.
+
+The live proof retained three Luna calls. Two known outputs exposed overly broad
+local assurance rules; Jarvis corrected and versioned those rules, then reused
+the exact retained output rather than paying for another subject. The accepted
+Luna subject passed structural, behavioral, and trace assurance at 100.
+
+The first Terra advisory response was truncated at a 600-token ceiling. The old
+failure path lacked local trace persistence, so Pantheon recorded that
+limitation and a conservative A$0.05 upper estimate. One separately visible
+1,000-token correction returned 2,266 measured tokens for an estimated A$0.02.
+It truthfully failed the subject on ambiguous `approve` wording and an
+underspecified audience, channel, exposure, and decision threshold. Because the
+reviewer is `advisory_not_calibrated`, no business state or autonomy changed.
+
+Total assurance-proof exposure is an estimated A$0.10, below the A$2 ceiling.
+No tools, external effects, publication, account action, customer contact,
+spend activation, agreement, or money movement occurred.
+
+Verification passed: 294 tests, zero-warning lint, `git diff --check`, zero
+known dependency vulnerabilities at moderate or higher severity,
+operations-ready Doctor, authenticated encrypted recovery, and real-browser
+proof at 1440x900, 1280x720, and 1024x768 with no console errors or horizontal
+overflow. The isolated browser instance stopped cleanly and released its port.
+
+Exact evidence is retained at
+`docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`.
+
 ## Next Best Work
 
-If Daniel approves the next commercial goal, prepare only the smallest
-functional sample and measurement-ready buyer-intent test for the 9-of-10
-Social Media Manager case. Choose the channel from evidence rather than
-defaulting to Etsy, and retain separate protection for account action,
-publication, customer contact, and spend.
+Close the private GitHub CI gate for the completed Agent Assurance and OpenAI
+Integration Hardening release. Do not add Sandbox Agents, MCP, computer use,
+Commerce, server-side Multi-agent, dynamic workers, or another dashboard.
+
+Then make the Social Media Manager interest-test packet explicit about the
+audience, authorized channel, exposure or sample cap, qualification question,
+pass threshold, revise threshold, and stop rule. Prepare only the smallest
+functional sample and measurement-ready buyer-intent test. Choose the channel
+from evidence rather than defaulting to Etsy, and retain separate protection
+for account action, publication, customer contact, and spend.
 
 Pantheon reopens the investment case only if 100 qualified visits produce at
 least 3 completed paid orders, no format- or clarity-driven refunds, and

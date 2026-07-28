@@ -51,6 +51,11 @@ const {
   renderDigitalProductKit,
 } = require("./digital-product-file-factory");
 const { productBlueprintClaimAlignmentIssues } = require("./product-claim-alignment");
+const {
+  buildAgentsSdkGuardrails,
+  summarizeSdkGuardrailResults,
+} = require("./agent-sdk-guardrails");
+const { cacheUsageFromTokenEvidence } = require("./agent-cost-observability");
 
 const AGENTS_SDK_PROVIDER = "openai-agents-sdk";
 
@@ -130,6 +135,16 @@ function sdkHttpStatus(error) {
 
 function classifySdkRunError(error, dispatchStarted, traceId) {
   error.agentSdkTraceId = traceId;
+  if (error?.constructor?.name === "OutputGuardrailTripwireTriggered") {
+    error.providerCallOccurred = true;
+    error.providerResponseReceived = true;
+    error.outcomeUnknown = false;
+    error.needsAttention = true;
+    error.providerDispatchStatus = "response_received_guardrail_blocked";
+    error.errorKind = "sdk_output_guardrail_blocked";
+    error.guardrailResult = error.result?.output || null;
+    return error;
+  }
   if (dispatchStarted && isSdkInvalidFinalOutput(error)) {
     error.providerCallOccurred = true;
     error.providerResponseReceived = true;
@@ -1651,7 +1666,21 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
   const { Agent, Runner, RunState, generateTraceId, z } = sdk;
   const traceId = options.traceId || generateTraceId();
   const tracePolicy = approvedTracePolicy(task);
+  const agentHarness = task.payload?.liveSpendRequest?.agentHarness || null;
+  const traceGroup = task.payload?.liveSpendRequest?.traceGroup || null;
   const capabilityPlan = options.capabilityPlan || buildAgentsSdkCapabilityPlan(task, agentDefinition);
+  const guardrails = buildAgentsSdkGuardrails(task, agentDefinition, capabilityPlan);
+  const guardrailPreflight = guardrails.preflight();
+  if (guardrailPreflight.tripwireTriggered) {
+    const error = new Error(`Pantheon blocked the AI request before dispatch: ${guardrailPreflight.outputInfo.findings.join(" ")}`);
+    error.providerCallOccurred = false;
+    error.outcomeUnknown = false;
+    error.providerDispatchStatus = "not_dispatched";
+    error.errorKind = "sdk_input_guardrail_blocked";
+    error.guardrailResult = guardrailPreflight;
+    error.agentSdkTraceId = traceId;
+    throw error;
+  }
   if (testSdkRunner) {
     let dispatchStarted = false;
     try {
@@ -1660,7 +1689,25 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
       }
       dispatchStarted = true;
       const result = await testSdkRunner({ requestBody, task, agentDefinition, policy, options, traceId, tracePolicy, capabilityPlan });
-      return { result, traceId };
+      const hasInterruption = Array.isArray(result?.interruptions) && result.interruptions.length > 0;
+      const outputCheck = hasInterruption ? null : guardrails.checkOutput(result?.finalOutput);
+      if (outputCheck?.tripwireTriggered) {
+        const error = new Error(`Pantheon blocked the AI output: ${outputCheck.outputInfo.findings.join(" ")}`);
+        error.providerCallOccurred = true;
+        error.providerResponseReceived = true;
+        error.outcomeUnknown = false;
+        error.providerDispatchStatus = "response_received_guardrail_blocked";
+        error.errorKind = "sdk_output_guardrail_blocked";
+        error.guardrailResult = outputCheck;
+        throw error;
+      }
+      return {
+        result,
+        traceId,
+        traceGroup,
+        agentHarness,
+        guardrailActivity: summarizeSdkGuardrailResults(result, guardrailPreflight),
+      };
     } catch (error) {
       classifySdkRunError(error, dispatchStarted, traceId);
       throw error;
@@ -1677,6 +1724,8 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     model: requestBody.model,
     tools: sdkTools,
     handoffs: [],
+    inputGuardrails: guardrails.inputGuardrails,
+    outputGuardrails: guardrails.outputGuardrails,
     modelSettings: {
       maxTokens: Math.min(8000, Number(requestBody.max_output_tokens || 1200)),
       toolChoice: capabilityPlan.toolChoice,
@@ -1688,7 +1737,9 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
           ? ["web_search_call.action.sources"]
           : undefined,
         safety_identifier: stableSafetyIdentifier(task),
-        prompt_cache_key: `pantheon_${agentDefinition.id}_${requestBody.metadata.packet_schema}`,
+        prompt_cache_key: `pantheon_${agentDefinition.id}_${String(
+          agentHarness?.harnessHash || requestBody.metadata.packet_schema,
+        ).slice(0, 24)}`,
       },
     },
   };
@@ -1730,6 +1781,7 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     const result = await runner.run(agent, sdkInput, {
       maxTurns: capabilityPlan.maxTurns,
       traceId,
+      groupId: traceGroup?.groupId || undefined,
       workflowName: `Pantheon ${agentDefinition.name} controlled run`,
       traceIncludeSensitiveData: tracePolicy.providerTraceContent,
       signal,
@@ -1741,6 +1793,10 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
         provider_response_stored: String(tracePolicy.providerResponseStored),
         provider_trace_content: String(tracePolicy.providerTraceContent),
         data_class: tracePolicy.dataClass,
+        trace_group_id: String(traceGroup?.groupId || ""),
+        harness_hash: String(agentHarness?.harnessHash || ""),
+        prompt_policy: String(agentHarness?.versions?.promptPolicy || ""),
+        assurance_policy: String(agentHarness?.versions?.assurancePolicy || ""),
       },
       context: {
         workflowId: task.workflow_id,
@@ -1749,9 +1805,17 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
         provider: AGENTS_SDK_PROVIDER,
         externalActionsAllowed: false,
         approvedSdkTools: capabilityPlan.requestedTools,
+        agentHarnessHash: agentHarness?.harnessHash || null,
+        traceGroupId: traceGroup?.groupId || null,
       },
     });
-    return { result, traceId };
+    return {
+      result,
+      traceId,
+      traceGroup,
+      agentHarness,
+      guardrailActivity: summarizeSdkGuardrailResults(result, guardrailPreflight),
+    };
   } catch (error) {
     classifySdkRunError(error, dispatchStarted, traceId);
     throw error;
@@ -1772,6 +1836,10 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const approvedCapCents = liveWorkerCostEstimateCents(task);
   const tracePolicy = approvedTracePolicy(task);
   const capabilityPlan = buildAgentsSdkCapabilityPlan(task, agentDefinition);
+  const executionIdentity = {
+    agentHarness: task.payload?.liveSpendRequest?.agentHarness || null,
+    traceGroup: task.payload?.liveSpendRequest?.traceGroup || null,
+  };
   if (
     usesDeterministicProductFileResult(agentDefinition, capabilityPlan)
     && capabilityPlan.specs.some((spec) => spec.sdkName === "product_file_factory")
@@ -1832,6 +1900,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
           tracePolicy,
           capabilityPlan,
           inputAssets,
+          ...executionIdentity,
         });
         if (options.taskClaim) {
           markTaskAttemptProviderDispatched(db, options.taskClaim, {
@@ -1858,6 +1927,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     });
     result = sdkRun.result;
     traceId = sdkRun.traceId;
+    executionIdentity.sdkGuardrails = sdkRun.guardrailActivity || null;
   } catch (error) {
     const dispatched = Boolean(dispatchCall);
     if (error.outcomeUnknown === undefined) error.outcomeUnknown = dispatched && error.providerCallOccurred !== false;
@@ -1927,6 +1997,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       providerDispatchStatus: error.providerDispatchStatus,
       tracePolicy,
       inputAssets,
+      ...executionIdentity,
       },
     );
     error.modelCallId = failedCall.id;
@@ -1965,6 +2036,13 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const responseId = sdkResponseId(result) || `agents_sdk_${randomId()}`;
   const cumulativeUsage = sdkUsage(result);
   const usage = sdkUsageDelta(db, cumulativeUsage, resumeSelection);
+  const cacheUsage = cacheUsageFromTokenEvidence({
+    inputTokens: usage.input_tokens_known === false ? undefined : usage.input_tokens,
+    cachedInputTokens: usage.cached_input_tokens_known === false ? undefined : usage.cached_input_tokens,
+    cacheWriteInputTokens: usage.cache_write_input_tokens_known === false
+      ? undefined
+      : usage.cache_write_input_tokens,
+  });
   const pricingEstimate = sdkPricingEstimate(requestBody.model, usage, approvedCapCents, toolActivity, capabilityPlan);
   const estimateCents = pricingEstimate.amountCents;
   const providerCall = recordLiveWorkerModelCall(db, task, { id: responseId, usage, output: [] }, estimateCents, requestBody.model, "provider_completed", {
@@ -1977,12 +2055,14 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
     sdkItemSummary,
     cumulativeUsage,
+    cacheUsage,
     reservedCostCents: approvedCapCents,
     pricingEstimate,
     tracePolicy,
     capabilityPlan,
     toolActivity,
     inputAssets,
+    ...executionIdentity,
     providerReceiptRecordedAt: now(),
   });
   recordLiveWorkerCost(db, task, estimateCents, { id: responseId }, {
@@ -1995,10 +2075,12 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     agentSdkTraceId: traceId,
     approvedCapCents,
     pricingEstimate,
+    cacheUsage,
     tracePolicy,
     capabilityPlan,
     toolActivity,
     inputAssets,
+    ...executionIdentity,
   });
   const providerReceipt = {
     modelCallId: providerCall.id,
@@ -2050,6 +2132,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       sdkResearch,
       inputAssets,
       outcomeUnknown: false,
+      ...executionIdentity,
     });
     for (const invocation of toolInvocations) {
       const interruptedInvocation = invocation.spec === interruptedSpec;
@@ -2224,6 +2307,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     generatedAssets,
     generatedFiles,
     sdkResearch,
+    ...executionIdentity,
     reason: capabilityPlan.requestedTools.length
       ? "Live AI worker used only the exact approved SDK capability; no publishing, contact, account action, legal decision, or money movement was exposed."
       : "Live AI worker used the OpenAI Agents SDK runner after approval; no external tools or side effects were exposed.",
@@ -2251,6 +2335,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       inputAssets,
       generatedAssets,
       generatedFiles,
+      ...executionIdentity,
     },
   });
 
@@ -2330,6 +2415,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       inputAssets,
       generatedAssets,
       toolInvocations: toolInvocations.map((item) => ({ id: item.gate.id, toolId: item.spec.toolId, sdkName: item.spec.sdkName })),
+      ...executionIdentity,
     },
   };
   } catch (error) {
@@ -2370,6 +2456,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         toolActivity,
         inputAssets,
         localStructuredOutput,
+        ...executionIdentity,
       });
       insertEvent(db, {
         level: "error",

@@ -11,6 +11,7 @@
     "dev": "node src/server.js",
     "seed": "node scripts/seed-runtime.js",
     "proof": "node scripts/run-dry-pipeline.js",
+    "proof:agent-assurance": "node scripts/run-agent-assurance-proof.js",
     "backup": "node scripts/backup-runtime.js",
     "restore": "node scripts/restore-runtime.js",
     "doctor": "node scripts/doctor.js",

@@ -430,6 +430,10 @@ function recordPilotRunReview(db, input) {
   const reconciled = Number(input.liveWorker?.reconciledCostCents || input.liveWorker?.modelCall?.actualCostCents || 0);
   const costCompliance = estimate <= PILOT_COST_CAP_CENTS && reconciled <= PILOT_COST_CAP_CENTS;
   const unsupportedClaims = input.output?.liveEvidence === true;
+  const behavioral = input.evaluation?.layers?.behavioral || null;
+  const behavioralAssurance = behavioral?.status === "passed"
+    && Array.isArray(behavioral.advisories)
+    && behavioral.advisories.length === 0;
   const criteria = {
     sourceValidity,
     unsupportedClaims: !unsupportedClaims,
@@ -437,9 +441,17 @@ function recordPilotRunReview(db, input) {
     commercialUsefulness: "operator_review_required",
     scopeCompliance,
     costCompliance,
+    behavioralAssurance,
+    behavioralStatus: behavioral?.status || "not_evaluated",
+    behavioralAdvisories: behavioral?.advisories || [],
     baselineExcludedFromWorker: task.payload?.pilotFixture?.baselineExcluded === true,
   };
-  const deterministicStatus = sourceValidity && !unsupportedClaims && requiredStructure && scopeCompliance && costCompliance
+  const deterministicStatus = sourceValidity
+    && !unsupportedClaims
+    && requiredStructure
+    && scopeCompliance
+    && costCompliance
+    && behavioralAssurance
     ? "passed"
     : "failed";
   const id = `pilot_review_${randomId()}`;

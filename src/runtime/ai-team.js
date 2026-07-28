@@ -1,5 +1,6 @@
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { bindAgentRunToAttempt, sha256 } = require("./agent-execution-evidence");
+const { evaluateAgentBehavior } = require("./agent-assurance");
 const {
   digitalProductKitCompatibilityIssues,
   offerClaimAlignmentIssues,
@@ -900,8 +901,23 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
     score -= Math.min(25, missingContractFields.length * 5);
   }
 
-  const finalScore = Math.max(0, Math.min(100, score));
-  const status = finalScore >= 80 ? "passed" : finalScore >= 60 ? "needs_review" : "failed";
+  const structuralScore = Math.max(0, Math.min(100, score));
+  const structuralStatus = structuralScore >= 80 ? "passed" : structuralScore >= 60 ? "needs_review" : "failed";
+  const behavioral = evaluateAgentBehavior({
+    definition,
+    task,
+    output,
+    context,
+  });
+  const structuralFindings = [...findings];
+  findings.push(...behavioral.blockingFindings.map((finding) => `Behavioral assurance: ${finding}`));
+  findings.push(...behavioral.advisories.map((finding) => `Behavioral advisory: ${finding}`));
+  const status = structuralStatus === "passed" && behavioral.status === "failed"
+    ? "failed"
+    : structuralStatus;
+  const finalScore = structuralStatus === "passed" && behavioral.status === "failed"
+    ? Math.min(structuralScore, behavioral.score)
+    : structuralScore;
   const evalId = `agent_eval_${randomId()}`;
 
   run(
@@ -929,8 +945,25 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
         missingBusinessDecisionFields,
         missingContractFields,
         commercialAcceptanceIssues,
+        evaluationLayers: {
+          structural: {
+            version: "local-structural-v2",
+            status: structuralStatus,
+            score: structuralScore,
+            findings: structuralFindings,
+          },
+          behavioral,
+          trace: behavioral.trace,
+          operatorUsefulness: behavioral.operatorUsefulness,
+          commercialOutcome: behavioral.commercialOutcome,
+          overall: {
+            status,
+            score: finalScore,
+            policy: "A structural failure always blocks. A behavioural failure blocks a structurally passing result. Advisories prevent capability promotion but do not block the current bounded run.",
+          },
+        },
       }),
-      "local-structural-v2",
+      "local-assurance-v3",
       sha256(output || {}),
       now(),
     ],
@@ -938,8 +971,33 @@ function evaluateAgentOutput(db, definition, runRecord, task, output, context = 
   addAgentTrace(db, runRecord.id, "eval_completed", "Worker output checked", `${definition.name} evaluation ${status} with score ${finalScore}/100.`, {
     evalId,
     findings,
+    layers: {
+      structural: { status: structuralStatus, score: structuralScore },
+      behavioral: {
+        status: behavioral.behavioral.status,
+        score: behavioral.behavioral.score,
+        advisoryCount: behavioral.behavioral.advisories.length,
+      },
+      trace: { status: behavioral.trace.status, score: behavioral.trace.score },
+      operatorUsefulness: behavioral.operatorUsefulness,
+      commercialOutcome: behavioral.commercialOutcome,
+    },
   });
-  return { id: evalId, attemptId, status, score: finalScore, findings, criteria };
+  return {
+    id: evalId,
+    attemptId,
+    status,
+    score: finalScore,
+    findings,
+    criteria,
+    layers: {
+      structural: { status: structuralStatus, score: structuralScore, findings: structuralFindings },
+      behavioral: behavioral.behavioral,
+      trace: behavioral.trace,
+      operatorUsefulness: behavioral.operatorUsefulness,
+      commercialOutcome: behavioral.commercialOutcome,
+    },
+  };
 }
 
 function recordTerminalAgentEvaluation(db, definition, runRecord, task, input = {}) {
