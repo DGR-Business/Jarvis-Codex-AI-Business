@@ -540,16 +540,10 @@ test("Windows stop refuses a changed process identity and succeeds after exact o
   }
 });
 
-test("Windows supervisor contains the full runtime tree and ten control cycles leave no owned process behind", {
-  skip: process.platform !== "win32",
-  timeout: 180_000,
-}, async (context) => {
-  const root = makeLauncherWorkspace("supervisor");
-  const lanes = await Promise.all([0, 1].map(async (lane) => ({
-    lane,
-    controlPort: await freePort(),
-    workingPort: await freePort(),
-  })));
+async function runSupervisorCycleProof(context, name, crashFirstCycle) {
+  const root = makeLauncherWorkspace(name);
+  const controlPort = await freePort();
+  const workingPort = await freePort();
   const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",
     windowsHide: true,
@@ -557,108 +551,111 @@ test("Windows supervisor contains the full runtime tree and ten control cycles l
   unrelated.unref();
 
   try {
-    const laneResults = await Promise.allSettled(lanes.map(async ({
-      lane,
-      controlPort,
-      workingPort,
-    }) => {
-      for (let cycle = 1; cycle <= 5; cycle += 1) {
-        const cycleLabel = `lane ${lane + 1}, cycle ${cycle}`;
-        const controlSession = await startControlSession(
-          root,
-          controlPort,
-          workingPort,
-          `${lane}-${cycle}`,
-        );
-        const controlMetadataPath = path.join(root, "tmp", `pantheon-server-${controlPort}.json`);
-        const supervisorMetadataPath = path.join(root, "tmp", `pantheon-supervisor-${controlPort}.json`);
-        const controlMetadata = JSON.parse(fs.readFileSync(controlMetadataPath, "utf8"));
-        const supervisorMetadata = JSON.parse(fs.readFileSync(supervisorMetadataPath, "utf8"));
-        assert.equal(controlMetadata.supervised, true);
-        assert.equal(controlMetadata.pid, supervisorMetadata.childPid);
-        assert.ok(processAlive(controlMetadata.pid));
-        assert.ok(processAlive(supervisorMetadata.pid));
+    for (let cycle = 1; cycle <= 5; cycle += 1) {
+      const cycleLabel = `${name}, cycle ${cycle}`;
+      const controlSession = await startControlSession(
+        root,
+        controlPort,
+        workingPort,
+        `${name}-${cycle}`,
+      );
+      const controlMetadataPath = path.join(root, "tmp", `pantheon-server-${controlPort}.json`);
+      const supervisorMetadataPath = path.join(root, "tmp", `pantheon-supervisor-${controlPort}.json`);
+      const controlMetadata = JSON.parse(fs.readFileSync(controlMetadataPath, "utf8"));
+      const supervisorMetadata = JSON.parse(fs.readFileSync(supervisorMetadataPath, "utf8"));
+      assert.equal(controlMetadata.supervised, true);
+      assert.equal(controlMetadata.pid, supervisorMetadata.childPid);
+      assert.ok(processAlive(controlMetadata.pid));
+      assert.ok(processAlive(supervisorMetadata.pid));
 
-        const standbyHealth = await fetch(`${controlSession.origin}/api/health`).then(
-          (response) => response.json(),
-        );
-        assert.ok(
-          standbyHealth.memoryMb < 100,
-          `${cycleLabel} used ${standbyHealth.memoryMb} MB`,
-        );
+      const standbyHealth = await fetch(`${controlSession.origin}/api/health`).then(
+        (response) => response.json(),
+      );
+      assert.ok(
+        standbyHealth.memoryMb < 100,
+        `${cycleLabel} used ${standbyHealth.memoryMb} MB`,
+      );
 
-        await startWorkingFromControl(controlSession, workingPort);
-        const workingMetadataPath = path.join(root, "tmp", `pantheon-server-${workingPort}.json`);
-        await waitForCondition(
-          () => fs.existsSync(workingMetadataPath),
-          `${cycleLabel} did not create working ownership metadata`,
-        );
-        const workingMetadata = JSON.parse(fs.readFileSync(workingMetadataPath, "utf8"));
-        assert.ok(processAlive(workingMetadata.pid));
+      await startWorkingFromControl(controlSession, workingPort);
+      const workingMetadataPath = path.join(root, "tmp", `pantheon-server-${workingPort}.json`);
+      await waitForCondition(
+        () => fs.existsSync(workingMetadataPath),
+        `${cycleLabel} did not create working ownership metadata`,
+      );
+      const workingMetadata = JSON.parse(fs.readFileSync(workingMetadataPath, "utf8"));
+      assert.ok(processAlive(workingMetadata.pid));
 
-        if (lane === 0 && cycle === 1) {
-          process.kill(supervisorMetadata.pid);
-          for (const pid of [supervisorMetadata.pid, controlMetadata.pid, workingMetadata.pid]) {
-            assert.equal(
-              await waitForExit(pid, 10_000),
-              true,
-              `supervisor crash containment left process ${pid} running`,
-            );
-          }
-          for (const cleanupPort of [workingPort, controlPort]) {
-            const cleaned = await runPowerShell(
-              path.join(root, "scripts", "stop-pantheon.ps1"),
-              ["-Port", cleanupPort, "-GracefulTimeoutSeconds", "2"],
-              root,
-              true,
-            );
-            assert.equal(cleaned.code, 0, `${cleaned.stdout}\n${cleaned.stderr}`);
-          }
-        } else {
-          const stoppedWorking = await runPowerShell(
-            path.join(root, "scripts", "stop-pantheon.ps1"),
-            ["-Port", workingPort, "-GracefulTimeoutSeconds", "2"],
-            root,
+      if (crashFirstCycle && cycle === 1) {
+        process.kill(supervisorMetadata.pid);
+        for (const pid of [supervisorMetadata.pid, controlMetadata.pid, workingMetadata.pid]) {
+          assert.equal(
+            await waitForExit(pid, 10_000),
             true,
+            `supervisor crash containment left process ${pid} running`,
           );
-          assert.equal(stoppedWorking.code, 0, `${stoppedWorking.stdout}\n${stoppedWorking.stderr}`);
-          assert.equal(await waitForExit(workingMetadata.pid), true);
-          assert.equal(processAlive(controlMetadata.pid), true);
-
-          const stoppedControl = await runPowerShell(
-            path.join(root, "scripts", "stop-pantheon.ps1"),
-            ["-Port", controlPort, "-GracefulTimeoutSeconds", "2"],
-            root,
-            true,
-          );
-          assert.equal(stoppedControl.code, 0, `${stoppedControl.stdout}\n${stoppedControl.stderr}`);
-          assert.equal(await waitForExit(controlMetadata.pid), true);
-          assert.equal(await waitForExit(supervisorMetadata.pid), true);
         }
-
-        await waitForCondition(
-          async () => (
-            await portAvailable(controlPort)
-            && await portAvailable(workingPort)
-          ),
-          `${cycleLabel} left a lifecycle port occupied`,
+        for (const cleanupPort of [workingPort, controlPort]) {
+          const cleaned = await runPowerShell(
+            path.join(root, "scripts", "stop-pantheon.ps1"),
+            ["-Port", cleanupPort, "-GracefulTimeoutSeconds", "2"],
+            root,
+            true,
+          );
+          assert.equal(cleaned.code, 0, `${cleaned.stdout}\n${cleaned.stderr}`);
+        }
+      } else {
+        const stoppedWorking = await runPowerShell(
+          path.join(root, "scripts", "stop-pantheon.ps1"),
+          ["-Port", workingPort, "-GracefulTimeoutSeconds", "2"],
+          root,
+          true,
         );
-        assert.equal(fs.existsSync(controlMetadataPath), false);
-        assert.equal(fs.existsSync(workingMetadataPath), false);
-        assert.equal(fs.existsSync(supervisorMetadataPath), false);
-        assert.equal(processAlive(unrelated.pid), true);
-        context.diagnostic(`${cycleLabel} completed without an owned process or port leak`);
-      }
-    }));
+        assert.equal(stoppedWorking.code, 0, `${stoppedWorking.stdout}\n${stoppedWorking.stderr}`);
+        assert.equal(await waitForExit(workingMetadata.pid), true);
+        assert.equal(processAlive(controlMetadata.pid), true);
 
-    const failedLane = laneResults.find((result) => result.status === "rejected");
-    if (failedLane) {
-      throw failedLane.reason;
+        const stoppedControl = await runPowerShell(
+          path.join(root, "scripts", "stop-pantheon.ps1"),
+          ["-Port", controlPort, "-GracefulTimeoutSeconds", "2"],
+          root,
+          true,
+        );
+        assert.equal(stoppedControl.code, 0, `${stoppedControl.stdout}\n${stoppedControl.stderr}`);
+        assert.equal(await waitForExit(controlMetadata.pid), true);
+        assert.equal(await waitForExit(supervisorMetadata.pid), true);
+      }
+
+      await waitForCondition(
+        async () => (
+          await portAvailable(controlPort)
+          && await portAvailable(workingPort)
+        ),
+        `${cycleLabel} left a lifecycle port occupied`,
+      );
+      assert.equal(fs.existsSync(controlMetadataPath), false);
+      assert.equal(fs.existsSync(workingMetadataPath), false);
+      assert.equal(fs.existsSync(supervisorMetadataPath), false);
+      assert.equal(processAlive(unrelated.pid), true);
+      context.diagnostic(`${cycleLabel} completed without an owned process or port leak`);
     }
   } finally {
     if (processAlive(unrelated.pid)) process.kill(unrelated.pid);
     await cleanupWorkspace(root);
   }
+}
+
+test("Windows supervisor contains the full runtime tree across five control cycles", {
+  skip: process.platform !== "win32",
+  timeout: 150_000,
+}, async (context) => {
+  await runSupervisorCycleProof(context, "supervisor-containment", true);
+});
+
+test("Windows supervisor repeats five additional control cycles without leaks", {
+  skip: process.platform !== "win32",
+  timeout: 150_000,
+}, async (context) => {
+  await runSupervisorCycleProof(context, "supervisor-repeat", false);
 });
 
 test("Windows launcher recovers safely when a stale Pantheon PID has been reused", {

@@ -49,10 +49,10 @@ associated processes when the final job handle closes.
 - supervisor compilation: passed in 1.5 seconds;
 - PowerShell parser checks: passed;
 - lint: passed with zero warnings;
-- ordinary isolated tests: 296 of 296 passed in 119.6 seconds;
-- quarantined Windows lifecycle suite: 8 of 8 passed in 156.2 seconds;
-- ten-cycle supervisor case: passed in 87.5 seconds across two isolated,
-  concurrent five-cycle lanes;
+- ordinary isolated tests: 297 of 297 passed in 124.0 seconds;
+- quarantined Windows lifecycle suite: 9 of 9 passed in 237.9 seconds;
+- ten-cycle supervisor proof: passed as two sequential isolated five-cycle
+  cases in 82.6 and 86.5 seconds;
 - forced supervisor termination removed the standby and working runtime;
 - every test cycle released both ports and removed ownership records;
 - an unrelated Node process remained running throughout the lifecycle proof;
@@ -93,13 +93,25 @@ isolated shards correctly revealed that a clean machine could not render the
 product files. A new private CI run remains required.
 
 The first hosted supervisor proof also showed that ten serial cycles were too
-close to the test case's 180-second ceiling on a slower runner. The proof still
-runs all ten complete lifecycles, but now uses two isolated five-cycle lanes on
-different control and working ports. This additionally proves concurrent
-supervisor compilation and ownership separation. Each cycle emits a progress
-diagnostic, and test-wrapper cleanup retries permission conflicts for at most
-five seconds instead of hiding the original result behind an immediate
-temporary-directory error.
+close to the test case's 180-second ceiling on a slower runner. An attempted
+two-lane version passed locally, but private `Pantheon checks #19` showed that
+concurrent full-runtime starts contend on the hosted Windows runner and can
+push one bounded PowerShell start past 60 seconds. The release proof therefore
+runs as two sequential isolated five-cycle cases. Each case has a 150-second
+ceiling, the wrapper has a seven-minute ceiling, the CI job has a ten-minute
+ceiling, and every cycle emits a progress diagnostic.
+
+That same run confirmed the renderer dependency repair and exposed one hidden
+test assumption: a provider-rejection test inherited the operator's AUD/USD
+setting. The isolated wrapper now removes both current and legacy conversion
+variables and installs a deterministic conservative A$2/USD test rate. The
+affected cap is A$1.70, sufficient for its priced search scenario. Its focused
+runtime suite passed 83 of 83 in 67.7 seconds, including release of the
+reservation and zero recorded spend after a definite HTTP rejection.
+
+Test-wrapper cleanup retries permission conflicts for at most five seconds
+instead of hiding the original result behind an immediate temporary-directory
+error.
 
 ## Remaining Boundaries
 

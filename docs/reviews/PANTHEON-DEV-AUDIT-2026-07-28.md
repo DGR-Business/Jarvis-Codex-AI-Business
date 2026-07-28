@@ -238,15 +238,23 @@ on 2026-07-28.
   record, and every owned child.
 - Forced supervisor termination removed its standby and working descendants.
 - An unrelated Node process remained untouched.
-- The lifecycle suite passed 8 of 8 in 156.2 seconds after the same ten cycles
-  were divided across two isolated concurrent lanes.
-- The ordinary suite passed 296 of 296 in 119.6 seconds.
+- The lifecycle suite passed 9 of 9 in 237.9 seconds after the same ten cycles
+  were divided across two sequential isolated five-cycle cases.
+- The ordinary suite passed 297 of 297 in 124.0 seconds.
 
 Private `Pantheon checks #16` passed its pre-supervisor Windows lifecycle job.
 Its ordinary job printed all 296 test passes but reached the old 12-minute
 single-process deadline before final exit. Ordinary CI is now divided into
 four isolated shards while retaining explicit per-job deadlines. Operations
 readiness remains held until the revised supervisor commit passes private CI.
+
+Subsequent clean CI runs found two more masked assumptions: a missing
+`pypdfium2` runtime dependency and an isolated test that inherited the
+operator's AUD/USD setting. The renderer is now pinned, the test environment
+uses a deterministic conservative conversion, and the attempted concurrent
+lifecycle lanes were replaced after they caused full-runtime startup
+contention on the hosted runner. These are examples of CI improving the release,
+not reasons to relax the gates.
 
 Exact evidence is retained at
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.

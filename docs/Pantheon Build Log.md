@@ -1541,10 +1541,10 @@ Final local evidence:
 
 - source-hashed supervisor compilation passed under a 15-second compiler limit;
 - PowerShell parsing and zero-warning lint passed;
-- 296 of 296 ordinary tests passed in 119.6 seconds;
-- 8 of 8 lifecycle tests passed in 156.2 seconds;
-- ten full control cycles and forced supervisor failure passed in two isolated
-  five-cycle lanes;
+- 297 of 297 ordinary tests passed in 124.0 seconds;
+- 9 of 9 lifecycle tests passed in 237.9 seconds;
+- ten full control cycles and forced supervisor failure passed in two
+  sequential isolated five-cycle cases;
 - every owned process, port, and metadata record was released;
 - an unrelated Node process was not stopped; and
 - no paid provider call or external business action occurred.
@@ -1569,12 +1569,33 @@ required; no job was merely re-run against an unchanged commit.
 
 The first hosted lifecycle run then reached the individual supervisor test's
 180-second ceiling because ten serial cycles were slower on GitHub than
-locally. Jarvis retained all ten cycles and divided them across two isolated
-five-cycle lanes with separate control and working ports. This also tests
-concurrent source-hashed supervisor compilation and independent process
-ownership. Per-cycle diagnostics now show progress in CI. Local proof passed
-8 of 8 in 156.2 seconds, with the ten-cycle case completing in 87.5 seconds.
+locally. An attempted two-lane proof passed locally but caused concurrent
+full-runtime startup contention on GitHub, where one PowerShell start exceeded
+its 60-second bound. Jarvis retained all ten cycles as two sequential isolated
+five-cycle cases with separate roots and ports. Per-cycle diagnostics show
+progress, each case has a 150-second ceiling, the test wrapper has a seven-minute
+ceiling, and the CI job has a ten-minute ceiling. Local proof passed 9 of 9 in
+237.9 seconds; the two five-cycle cases completed in 82.6 and 86.5 seconds.
 
 The test wrapper now retries temporary-root cleanup for at most five seconds.
 This prevents a transient Windows file lock from immediately replacing the
 underlying test result, while preserving a hard cleanup deadline.
+
+### Second sharded CI correction
+
+Private `Pantheon checks #19` confirmed that the pinned renderer dependency
+fixed the clean-install product and full-journey shards. It exposed two further
+determinism defects rather than product failures:
+
+- parallel lifecycle lanes contended during full runtime startup, so lifecycle
+  proof is now sequential and bounded as described above; and
+- one rejection-path test inherited the operator's AUD/USD configuration, so
+  its A$1.40 reservation exceeded the runtime's conservative A$1.40 cap after
+  conversion and failed before reaching the behavior under test.
+
+The isolated test wrapper now removes both legacy and current AUD/USD variables
+and sets a deterministic A$2/USD test rate. The affected test uses a recorded
+A$1.70 cap, which safely covers its search-enabled worst case while still
+proving that a definite provider rejection releases the reservation and records
+zero spend. The focused runtime suite passed 83 of 83 in 67.7 seconds. No live
+provider call or paid action occurred.

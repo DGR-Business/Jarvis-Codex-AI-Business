@@ -393,22 +393,28 @@ and normally runs only in its dedicated disposable Windows CI job.
 
 The post-audit supervisor implementation passed local release proof on
 2026-07-28. A native source-built supervisor now owns standby and working
-descendants through a Windows kill-on-close Job Object. Eight launcher tests
-passed in 235.9 seconds, including ten complete lifecycle cycles and forced
-supervisor termination; the ordinary suite passed 296 of 296 in 119.6 seconds.
+descendants through a Windows kill-on-close Job Object. Nine launcher tests
+passed in 237.9 seconds, including ten complete lifecycle cycles and forced
+supervisor termination; the ordinary suite passed 297 of 297 in 124.0 seconds.
 The first stabilization CI run proved the old Windows job but exposed that one
 sequential ordinary test process could report all 296 passes and still reach
 its 12-minute external ceiling. Ordinary CI is now split into four isolated
 shards. The first sharded run exposed a previously masked clean-install defect:
 Pantheon's renderer imported `pypdfium2` without listing it in the locked
 Python requirements. The missing dependency is now pinned and protected by a
-requirements-contract test. Operations readiness remains held until the next
-private CI run passes.
+requirements-contract test. A later sharded run exposed a hidden test
+dependency on the operator's AUD/USD setting and contention between concurrent
+full-runtime launcher cycles. Tests now set their own conservative A$2/USD
+conversion, and lifecycle proof runs as two sequential five-cycle cases with
+explicit deadlines. Operations readiness remains held until the next private
+CI run passes.
 
-The ten-cycle proof now runs as two isolated concurrent five-cycle lanes. It
+The ten-cycle proof now runs as two sequential isolated five-cycle cases. It
 retains ten full standby/working/standby/stop checks and forced supervisor
-failure while reducing the local supervisor case to 87.5 seconds and emitting
-per-cycle progress. The complete Windows suite passes in 156.2 seconds.
+failure while avoiding concurrent compilation and full-runtime startup
+contention. The two cases completed locally in 82.6 and 86.5 seconds, and the
+complete Windows suite passed in 237.9 seconds. The wrapper has a seven-minute
+hard deadline inside a ten-minute CI job, with per-cycle progress.
 Exact local evidence is retained in
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
 

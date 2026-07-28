@@ -4104,7 +4104,7 @@ test("Agents SDK definite HTTP rejection releases the reservation and records ze
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
 
     const requested = requestLiveAiWorker(db, workflowId, {
-      estimatedCostCents: 140,
+      estimatedCostCents: 170,
       worker: "demand_validator",
       tools: ["research_adapter"],
       toolArguments: {
@@ -4143,7 +4143,7 @@ test("Agents SDK definite HTTP rejection releases the reservation and records ze
     assert.equal(modelCall.error_kind, "provider_rejected");
     assert.equal(modelCall.provider_request_id, "req_definite_rejection");
     assert.equal(modelCall.estimated_cost_cents, 0);
-    assert.equal(modelCall.reserved_cost_cents, 140);
+    assert.equal(modelCall.reserved_cost_cents, 170);
     assert.equal(modelCall.metadata.outcomeUnknown, false);
     assert.equal(modelCall.metadata.definiteProviderRejection, true);
     assert.equal(modelCall.metadata.httpStatus, 400);

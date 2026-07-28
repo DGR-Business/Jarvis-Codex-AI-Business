@@ -75,6 +75,7 @@ function requestedTestFiles(args) {
 // leak credentials or live-mode flags into Pantheon's isolated test process.
 const blockedEnvironment = new Set([
   "OPENAI_API_KEY",
+  "PANTHEON_API_CREDIT_AUD_PER_USD",
   "PANTHEON_ENABLE_LIVE_MODELS",
   "PANTHEON_ENABLE_LIVE_RESEARCH",
   "PANTHEON_ENABLE_IMAGE_GENERATION",
@@ -83,6 +84,7 @@ const blockedEnvironment = new Set([
   "JARVIS_ENABLE_LIVE_MODELS",
   "JARVIS_ENABLE_LIVE_RESEARCH",
   "JARVIS_ENABLE_IMAGE_GENERATION",
+  "JARVIS_API_CREDIT_AUD_PER_USD",
   "JARVIS_LIVE_MODE",
   "JARVIS_BACKUP_PASSPHRASE",
 ]);
@@ -101,6 +103,7 @@ const env = {
   PANTHEON_DATA_DIR: path.join(root, "data"),
   PANTHEON_DB_PATH: path.join(root, "data", "runtime.sqlite"),
   PANTHEON_PRIVACY_HASH_KEY: "test-only-privacy-hash-key-32-bytes",
+  PANTHEON_API_CREDIT_AUD_PER_USD: "2",
   PANTHEON_LIVE_MODE: "0",
 };
 
@@ -109,7 +112,7 @@ try {
   const lifecycleCi = process.env.CI === "true"
     && process.env.PANTHEON_LIFECYCLE_CI === "1";
   const testDeadlineMs = lifecycleCi
-    ? 5 * 60_000
+    ? 7 * 60_000
     : process.env.CI === "true"
       ? 12 * 60_000
       : 4 * 60_000;
