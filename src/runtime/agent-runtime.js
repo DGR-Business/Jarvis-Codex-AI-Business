@@ -751,6 +751,200 @@ function persistStorefrontPreviews(db, task, downloads, previewNames, options = 
   });
 }
 
+function persistCustomerPackageFiles(
+  db,
+  task,
+  downloads,
+  manifest,
+  packageFingerprint,
+  options = {},
+) {
+  const entryNames = [...new Set([
+    ...(manifest.catalogueItems || []).flatMap((item) => item.files || []),
+    ...(manifest.sharedFiles || []),
+  ].map(normalizedArchiveName).filter(Boolean))].sort();
+  if (!entryNames.length) {
+    throw new Error("The product manifest does not identify any customer files.");
+  }
+  const outputDir = path.join(
+    options.artifactRoot || CONFIG.artifactRoot,
+    "workflows",
+    safeId(task.workflow_id),
+    "customer-files",
+    safeId(task.id),
+    packageFingerprint,
+  );
+  fs.mkdirSync(outputDir, { recursive: true });
+  const timestamp = now();
+  return entryNames.map((entryName, index) => {
+    const bytes = archiveEntryBytes(downloads, entryName);
+    if (!bytes) throw new Error(`Pantheon could not extract customer file ${entryName}.`);
+    const originalName = path.basename(entryName);
+    const validation = validateProductFile(bytes, originalName);
+    if (!new Set([".xlsx", ".csv", ".pdf"]).has(validation.extension)) {
+      throw new Error(`Customer file ${entryName} has an unsupported extracted format.`);
+    }
+    const hash = crypto.createHash("sha256").update(bytes).digest("hex");
+    const deliverableId = taskScopedDeliverableId("deliv_customer_file", task.id, index + 1);
+    const filename = `${String(index + 1).padStart(2, "0")}-${safeProductFilename(originalName, `customer-file-${index + 1}`)}`;
+    const outputPath = path.join(outputDir, filename);
+    if (fs.existsSync(outputPath)) {
+      const existingHash = crypto.createHash("sha256").update(fs.readFileSync(outputPath)).digest("hex");
+      if (existingHash !== hash) {
+        throw new Error(`Customer file path ${filename} already contains different bytes.`);
+      }
+    } else {
+      const temporaryPath = `${outputPath}.${process.pid}.${randomId().slice(0, 8)}.tmp`;
+      fs.writeFileSync(temporaryPath, bytes, { flag: "wx" });
+      fs.renameSync(temporaryPath, outputPath);
+    }
+    const relativePath = path.relative(CONFIG.rootDir, outputPath).replace(/\\/g, "/");
+    const mediaType = productMediaType(validation.extension);
+    run(
+      db,
+      `INSERT INTO deliverables
+       (id, workflow_id, command_id, task_id, venture_id, title, human_name,
+        audience, format, status, file_path, summary, metadata, content_hash,
+        version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'Customer Product File', ?, 'operator', ?,
+        'built_pending_quality_review', ?, ?, ?, ?, 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         workflow_id = excluded.workflow_id, command_id = excluded.command_id,
+         task_id = excluded.task_id, venture_id = excluded.venture_id,
+         human_name = excluded.human_name, format = excluded.format,
+         status = excluded.status, file_path = excluded.file_path,
+         summary = excluded.summary, metadata = excluded.metadata,
+         content_hash = excluded.content_hash,
+         version = CASE WHEN deliverables.content_hash IS NOT excluded.content_hash THEN deliverables.version + 1 ELSE deliverables.version END,
+         updated_at = excluded.updated_at`,
+      [
+        deliverableId,
+        task.workflow_id,
+        task.payload?.commandId || null,
+        task.id,
+        task.venture_id,
+        originalName,
+        mediaType,
+        relativePath,
+        "Exact customer file extracted from the verified bundle and retained separately for review and download.",
+        toJson({
+          source: "verified_customer_bundle",
+          archiveEntry: entryName,
+          sha256: hash,
+          bytes: bytes.length,
+          approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
+          localRecovery: options.localRecovery || undefined,
+        }),
+        hash,
+        timestamp,
+        timestamp,
+      ],
+    );
+    return {
+      id: deliverableId,
+      humanName: originalName,
+      filePath: relativePath,
+      format: mediaType,
+      status: "built_pending_quality_review",
+      bytes: bytes.length,
+      sha256: hash,
+      archiveEntry: entryName,
+      customerFile: true,
+    };
+  });
+}
+
+function persistLocalQualityReviewImages(db, task, images, packageFingerprint, options = {}) {
+  if (!Array.isArray(images) || !images.length) return [];
+  const outputDir = path.join(
+    options.artifactRoot || CONFIG.artifactRoot,
+    "workflows",
+    safeId(task.workflow_id),
+    "quality-review",
+    safeId(task.id),
+    packageFingerprint,
+  );
+  fs.mkdirSync(outputDir, { recursive: true });
+  const ts = now();
+  return images.map((image, index) => {
+    const filename = safeProductFilename(image.filename, `quality-review-${index + 1}.png`);
+    const bytes = Buffer.isBuffer(image.bytes) ? image.bytes : Buffer.from(image.bytes || []);
+    const validation = validateProductFile(bytes, filename);
+    if (validation.extension !== ".png") {
+      throw new Error("Product quality-review images must be valid PNG files.");
+    }
+    const hash = crypto.createHash("sha256").update(bytes).digest("hex");
+    const deliverableId = taskScopedDeliverableId("deliv_quality_preview", task.id, index + 1);
+    const outputName = `${String(index + 1).padStart(2, "0")}-${filename}`;
+    const outputPath = path.join(outputDir, outputName);
+    if (fs.existsSync(outputPath)) {
+      const existingHash = crypto.createHash("sha256").update(fs.readFileSync(outputPath)).digest("hex");
+      if (existingHash !== hash) {
+        throw new Error(`Quality-review image path ${outputName} already contains different bytes.`);
+      }
+    } else {
+      const temporaryPath = `${outputPath}.${process.pid}.${randomId().slice(0, 8)}.tmp`;
+      fs.writeFileSync(temporaryPath, bytes, { flag: "wx" });
+      fs.renameSync(temporaryPath, outputPath);
+    }
+    const relativePath = path.relative(CONFIG.rootDir, outputPath).replace(/\\/g, "/");
+    const humanName = index === 0
+      ? "Actual Workbook Review"
+      : index === 1
+        ? "Actual Setup Guide Review"
+        : `Product File Review ${index + 1}`;
+    run(
+      db,
+      `INSERT INTO deliverables
+       (id, workflow_id, command_id, task_id, venture_id, title, human_name, audience,
+        format, status, file_path, summary, metadata, content_hash, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'Product File Review', ?, 'internal', 'image/png',
+        'built_pending_quality_review', ?, ?, ?, ?, 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         workflow_id = excluded.workflow_id, command_id = excluded.command_id,
+         task_id = excluded.task_id, venture_id = excluded.venture_id,
+         human_name = excluded.human_name, status = excluded.status,
+         file_path = excluded.file_path, summary = excluded.summary,
+         metadata = excluded.metadata, content_hash = excluded.content_hash,
+         version = CASE WHEN deliverables.content_hash IS NOT excluded.content_hash THEN deliverables.version + 1 ELSE deliverables.version END,
+         updated_at = excluded.updated_at`,
+      [
+        deliverableId,
+        task.workflow_id,
+        task.payload?.commandId || null,
+        task.id,
+        task.venture_id,
+        humanName,
+        relativePath,
+        "QA-only visual rendered from the exact saved customer file for independent product inspection.",
+        toJson({
+          ...(image.metadata || {}),
+          qualityReviewOnly: true,
+          derivedFromActualSavedFile: image.metadata?.derivedFromActualSavedFile === true,
+          sha256: hash,
+          bytes: bytes.length,
+          approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
+          localRecovery: options.localRecovery || undefined,
+        }),
+        hash,
+        ts,
+        ts,
+      ],
+    );
+    return {
+      id: deliverableId,
+      humanName,
+      filePath: relativePath,
+      format: "image/png",
+      status: "built_pending_quality_review",
+      bytes: bytes.length,
+      sha256: hash,
+      qualityReviewOnly: true,
+      derivedFromActualSavedFile: image.metadata?.derivedFromActualSavedFile === true,
+    };
+  });
+}
+
 async function persistGeneratedProductFiles(db, task, capabilityPlan, result, options = {}) {
   const localSpec = capabilityPlan.specs.find((spec) => (
     spec.kind === "runtime_transform" && spec.sdkName === "product_file_factory"
@@ -765,7 +959,7 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
   if (localSpec) {
     const blueprint = result?.finalOutput?.work?.productBlueprint;
     const buildSpec = task?.payload?.liveSpendRequest?.parameters?.productBuildSpec || {};
-    const normalized = normalizeProductBlueprintForFactory(blueprint);
+    const normalized = normalizeProductBlueprintForFactory(blueprint, buildSpec);
     const claimIssues = productBlueprintClaimAlignmentIssues(normalized.blueprint, buildSpec);
     if (claimIssues.length) {
       const error = new Error(`Product claim preflight failed: ${claimIssues.join(" ")}`);
@@ -890,6 +1084,9 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
         toJson({
           provider: localSpec ? "pantheon-local-runtime" : AGENTS_SDK_PROVIDER,
           renderer: localSpec ? sourceType : null,
+          constructionMode: localSpec
+            ? localRender?.constructionMode || "model_blueprint_deterministic_render"
+            : "openai_code_interpreter",
           containerId: file.citation.containerId || null,
           providerFileId: file.citation.fileId || null,
           sourceMetadata: file.sourceMetadata,
@@ -925,13 +1122,32 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
       manifest: file === manifestFile,
     });
   }
+  const customerFiles = persistCustomerPackageFiles(
+    db,
+    task,
+    downloads,
+    manifest,
+    packageFingerprint,
+    options,
+  );
   const previews = persistStorefrontPreviews(db, task, downloads, storefrontPreviews, options);
+  const qualityReviewImages = persistLocalQualityReviewImages(
+    db,
+    task,
+    localRender?.qualityReviewImages || [],
+    packageFingerprint,
+    options,
+  );
   const blueprint = localSpec ? result?.finalOutput?.work?.productBlueprint || null : null;
   return {
-    files: persisted,
+    files: [...persisted, ...customerFiles],
     manifest,
     previews,
+    qualityReviewImages,
     sourceType,
+    constructionMode: localSpec
+      ? localRender?.constructionMode || "model_blueprint_deterministic_render"
+      : "openai_code_interpreter",
     manifestEmbeddedIdentical: embeddedManifestMatches,
     archiveInventoryVerified,
     blueprint,
@@ -1054,6 +1270,7 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
         productManifest: generatedFiles.manifest,
         generatedFileIds: generatedFiles.files.map((file) => file.id),
         storefrontPreviewIds: generatedFiles.previews.map((preview) => preview.id),
+        qualityReviewImageIds: (generatedFiles.qualityReviewImages || []).map((image) => image.id),
         productBundleDeliverableId: generatedFiles.files.find((file) => /\.zip$/i.test(file.humanName))?.id || null,
         localRendererRefreshedAt: refreshedAt,
         localRendererRefresh,
@@ -1082,6 +1299,7 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
       externalAction: false,
       fileIds: generatedFiles.files.map((file) => file.id),
       previewIds: generatedFiles.previews.map((preview) => preview.id),
+      qualityReviewImageIds: (generatedFiles.qualityReviewImages || []).map((image) => image.id),
     },
   });
   return generatedFiles;
@@ -1282,8 +1500,11 @@ function deterministicProductBuilderResult(task, generatedFiles) {
     .map((item) => String(item.id || item.catalogueItemId || ""))
     .filter(Boolean)
     .slice(0, 5);
+  const contractDefined = generatedFiles?.constructionMode === "contract_defined_model_assisted";
   return {
-    summary: `Product Builder designed ${catalogueItems.length} approved catalogue items and Pantheon rendered and validated the exact customer package.`,
+    summary: contractDefined
+      ? "Pantheon rendered the approved buyer-test contract into customer files after Luna checked and completed the bounded product draft."
+      : `Product Builder designed ${catalogueItems.length} approved catalogue items and Pantheon rendered and validated the exact customer package.`,
     recommendation: "Send the retained files and previews to the independent Quality Reviewer before preparing any listing or publication action.",
     evidence: [
       `${files.length} generated package files were opened, hashed, and retained locally by Pantheon.`,
@@ -1299,7 +1520,9 @@ function deterministicProductBuilderResult(task, generatedFiles) {
       productFormat: String(spec.profile || "Validated digital product package"),
       assetPlan: catalogueItems.map((item) => String(item.title || item.id)).filter(Boolean).slice(0, 5),
       productionMethod: generatedFiles?.sourceType === "pantheon-local-digital-product-factory-v1"
-        ? "Luna defined the exact product blueprint once; Pantheon then rendered, opened, hashed, and validated the files locally."
+        ? contractDefined
+          ? "The approved buyer-test contract defined the workbook structure. Luna supplied bounded product judgement and wording; Pantheon deterministically rendered, opened, hashed, and validated the files."
+          : "Luna defined the exact product blueprint once; Pantheon then rendered, opened, hashed, and validated the files locally."
         : "Luna produced the package in an isolated workspace; Pantheon then downloaded, opened, hashed, and validated the files locally.",
       producedFiles,
       catalogueCoverage: coverage,
@@ -1313,7 +1536,7 @@ function deterministicProductBuilderResult(task, generatedFiles) {
         "No buyer demand, conversion, or customer satisfaction result exists until the finished offer is published and measured.",
       ],
       approvalNeeded: "Independent Quality Reviewer pass and Daniel's later publication decision.",
-      channelFit: "Local Gumroad-ready digital download package; nothing has been uploaded or published.",
+      channelFit: `Local download package prepared for ${String(spec.channels?.[0] || "the selected digital channel")}; nothing has been uploaded or published.`,
     },
   };
 }

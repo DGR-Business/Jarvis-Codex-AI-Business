@@ -144,7 +144,7 @@ function workingHealth() {
   });
 }
 
-function runPowerShell(scriptName, args = [], extraEnvironment = {}) {
+function runPowerShell(scriptName, args = [], extraEnvironment = {}, timeoutMs = 45_000) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       powershell,
@@ -169,13 +169,20 @@ function runPowerShell(scriptName, args = [], extraEnvironment = {}) {
     const stdout = [];
     const stderr = [];
     let settled = false;
+    let deadline = null;
+    let timeoutError = null;
     const finish = (error, code = null) => {
       if (settled) return;
       settled = true;
+      if (deadline) clearTimeout(deadline);
       const out = Buffer.concat(stdout).toString("utf8").trim();
       const err = Buffer.concat(stderr).toString("utf8").trim();
       child.stdout.destroy();
       child.stderr.destroy();
+      if (timeoutError) {
+        reject(timeoutError);
+        return;
+      }
       if (error) {
         reject(error);
         return;
@@ -186,12 +193,46 @@ function runPowerShell(scriptName, args = [], extraEnvironment = {}) {
       }
       reject(new Error(err || out || `Pantheon command exited with code ${code}.`));
     };
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    const retainOutput = (target, chunk) => {
+      if (target.reduce((total, item) => total + item.length, 0) < 1024 * 1024) {
+        target.push(chunk);
+      }
+    };
+    child.stdout.on("data", (chunk) => retainOutput(stdout, chunk));
+    child.stderr.on("data", (chunk) => retainOutput(stderr, chunk));
     child.on("error", (error) => finish(error));
     // A working Node process can inherit PowerShell's output handles. The
     // PowerShell exit is authoritative; waiting for inherited pipes can hang.
     child.on("exit", (code) => finish(null, code));
+    deadline = setTimeout(() => {
+      timeoutError = new Error(
+        `Pantheon stopped waiting because ${scriptName} exceeded its ${Math.round(timeoutMs / 1000)}-second deadline.`,
+      );
+      if (process.platform !== "win32" || !child.pid) {
+        child.kill("SIGKILL");
+        finish(timeoutError);
+        return;
+      }
+      const killer = spawn(
+        path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
+        ["/PID", String(child.pid), "/T", "/F"],
+        { windowsHide: true, stdio: "ignore" },
+      );
+      const killerDeadline = setTimeout(() => {
+        killer.kill("SIGKILL");
+        child.kill("SIGKILL");
+        finish(timeoutError);
+      }, 8_000);
+      killerDeadline.unref();
+      const killed = () => {
+        clearTimeout(killerDeadline);
+        child.kill("SIGKILL");
+        finish(timeoutError);
+      };
+      killer.once("error", killed);
+      killer.once("exit", killed);
+    }, timeoutMs);
+    deadline.unref();
   });
 }
 
@@ -216,6 +257,7 @@ async function startWorking() {
           PANTHEON_STANDBY_URL: `http://127.0.0.1:${port}`,
           PANTHEON_STANDBY_HANDOFF_TOKEN: controlToken,
         },
+        60_000,
       );
       const operatorUrl = fs.readFileSync(handoffPath, "utf8").trim();
       if (!operatorUrl.startsWith(`http://127.0.0.1:${workingPort}/`)) {
@@ -235,7 +277,12 @@ function scheduleReturnToStandby() {
   transition = (async () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
     try {
-      await runPowerShell("stop-pantheon.ps1", ["-Port", String(workingPort)]);
+      await runPowerShell(
+        "stop-pantheon.ps1",
+        ["-Port", String(workingPort)],
+        {},
+        30_000,
+      );
     } finally {
       transition = null;
     }

@@ -107,7 +107,15 @@ function makeLauncherWorkspace(name) {
   return root;
 }
 
-function runPowerShell(script, args, cwd, capture = false, extraEnv = {}, resolveOnExit = false) {
+function runPowerShell(
+  script,
+  args,
+  cwd,
+  capture = false,
+  extraEnv = {},
+  resolveOnExit = false,
+  timeoutMs = 25_000,
+) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       powershell,
@@ -127,14 +135,28 @@ function runPowerShell(script, args, cwd, capture = false, extraEnv = {}, resolv
     );
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let deadline = null;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      if (deadline) clearTimeout(deadline);
+      if (error) reject(error);
+      else resolve(result);
+    };
     if (capture) {
       child.stdout.on("data", (chunk) => { stdout += chunk; });
       child.stderr.on("data", (chunk) => { stderr += chunk; });
     }
-    child.on("error", reject);
+    child.on("error", (error) => finish(error));
     child.on(capture && resolveOnExit ? "exit" : "close", (code) => {
-      resolve({ code, stdout, stderr });
+      finish(null, { code, stdout, stderr });
     });
+    deadline = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error(`Windows launcher command exceeded its ${timeoutMs}-millisecond test deadline.`));
+    }, timeoutMs);
+    deadline.unref();
   });
 }
 

@@ -28,6 +28,40 @@ function Get-RecordedDescendants($Metadata) {
   return @()
 }
 
+function Invoke-BoundedTaskkill {
+  param(
+    [Parameter(Mandatory = $true)][int]$ProcessId,
+    [ValidateRange(1, 30)][int]$TimeoutSeconds = 8
+  )
+
+  $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $taskkill
+  $startInfo.Arguments = "/PID $ProcessId /T /F"
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  try {
+    if (-not $process.Start()) {
+      throw "Windows could not start its bounded process-tree stop command."
+    }
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+      try { $process.Kill() } catch {}
+      throw "Windows did not finish its process-tree stop command within $TimeoutSeconds seconds."
+    }
+    return [pscustomobject]@{
+      ExitCode = [int]$process.ExitCode
+      Stdout = $process.StandardOutput.ReadToEnd()
+      Stderr = $process.StandardError.ReadToEnd()
+    }
+  } finally {
+    $process.Dispose()
+  }
+}
+
 function Stop-OnePantheon {
   param(
     [Parameter(Mandatory = $true)][int]$TargetPort,
@@ -136,9 +170,8 @@ function Stop-OnePantheon {
       if (-not (Test-PantheonSnapshotMatches -Expected $rootSnapshot -Actual $currentRoot)) {
         throw "Pantheon's process identity changed during shutdown. The replacement process was not stopped."
       }
-      $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
-      & $taskkill /PID $serverPid /T /F | Out-Null
-      if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) {
+      $taskkillResult = Invoke-BoundedTaskkill -ProcessId $serverPid -TimeoutSeconds 8
+      if ($taskkillResult.ExitCode -ne 0 -and (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) {
         throw "Windows could not terminate Pantheon's exact process tree. Try STOP PANTHEON.cmd from the same Windows permission level used to start it."
       }
       if (-not (Wait-PantheonProcessExit -ProcessId $serverPid -TimeoutSeconds 8)) {

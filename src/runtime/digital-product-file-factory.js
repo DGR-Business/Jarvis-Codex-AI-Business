@@ -10,8 +10,8 @@ const LEGACY_PRODUCT_BLUEPRINT_SCHEMAS = new Set([
   "pantheon.product-blueprint.v2",
 ]);
 const CALCULATION_OPERATIONS = new Set(["multiply", "sum", "subtract", "percent_of"]);
-const RENDERED_COLUMN_MAX = 14;
-const REQUIRED_PYTHON_MODULES = ["openpyxl", "PIL", "reportlab"];
+const RENDERED_COLUMN_MAX = 18;
+const REQUIRED_PYTHON_MODULES = ["openpyxl", "PIL", "pypdfium2", "reportlab"];
 
 let cachedReadiness = null;
 
@@ -29,7 +29,14 @@ function fieldReference(value) {
     .toLowerCase();
 }
 
-function normalizeProductBlueprintForFactory(blueprint) {
+function mergeRequiredList(required, supplied, limit) {
+  return [...new Set([
+    ...(Array.isArray(required) ? required : []),
+    ...(Array.isArray(supplied) ? supplied : []),
+  ].map((item) => String(item || "").trim()).filter(Boolean))].slice(0, limit);
+}
+
+function normalizeProductBlueprintForFactory(blueprint, spec = {}) {
   const source = blueprint && typeof blueprint === "object"
     ? blueprint
     : {};
@@ -40,6 +47,58 @@ function normalizeProductBlueprintForFactory(blueprint) {
     || !Array.isArray(normalized.catalogueItems)
   ) {
     return { blueprint: normalized, normalizations };
+  }
+  const validationSample = spec?.validationSample;
+  const exactItem = validationSample?.exactItemBlueprint;
+  if (exactItem && normalized.catalogueItems.length === 1) {
+    const item = normalized.catalogueItems[0];
+    const before = JSON.stringify({
+      packageTitle: normalized.packageTitle,
+      customerPromise: normalized.customerPromise,
+      setupSteps: normalized.setupSteps,
+      disclaimers: normalized.disclaimers,
+      item,
+    });
+    normalized.packageTitle = String(validationSample.packageTitle || normalized.packageTitle || "").trim();
+    normalized.customerPromise = String(
+      validationSample.customerPromise || normalized.customerPromise || "",
+    ).trim();
+    normalized.setupSteps = mergeRequiredList(
+      validationSample.setupSteps,
+      normalized.setupSteps,
+      6,
+    );
+    normalized.disclaimers = mergeRequiredList(
+      validationSample.disclaimers,
+      normalized.disclaimers,
+      3,
+    );
+    item.id = String(exactItem.id || item.id || "").trim();
+    item.title = String(exactItem.title || item.title || "").trim();
+    item.purpose = String(exactItem.purpose || item.purpose || "").trim();
+    item.instructions = mergeRequiredList(
+      exactItem.instructions,
+      item.instructions,
+      5,
+    );
+    item.columns = JSON.parse(JSON.stringify(exactItem.columns || []));
+    item.sampleRows = JSON.parse(JSON.stringify(exactItem.sampleRows || []));
+    item.calculations = JSON.parse(JSON.stringify(exactItem.calculations || []));
+    if (before !== JSON.stringify({
+      packageTitle: normalized.packageTitle,
+      customerPromise: normalized.customerPromise,
+      setupSteps: normalized.setupSteps,
+      disclaimers: normalized.disclaimers,
+      item,
+    })) {
+      normalizations.push({
+        code: "validation_contract_reconciled",
+        itemId: item.id,
+        fieldName: null,
+        sampleValue: null,
+        reason: "The approved buyer-test contract, not the model draft, defines the final fields, formulas, dropdowns, and sample records.",
+      });
+    }
   }
   for (const item of normalized.catalogueItems) {
     const columns = Array.isArray(item.columns) ? item.columns : [];
@@ -144,7 +203,14 @@ function assertBlueprintMatchesSpec(spec, blueprint) {
   }
   const expectedItems = Array.isArray(spec.catalogueItems) ? spec.catalogueItems : [];
   const actualItems = Array.isArray(blueprint.catalogueItems) ? blueprint.catalogueItems : [];
-  if (expectedItems.length < 3 || expectedItems.length > 6 || actualItems.length !== expectedItems.length) {
+  const validationSample = spec?.validationSample;
+  const minimumItems = validationSample?.noFullCatalogueAuthorised === true ? 1 : 3;
+  const maximumItems = validationSample?.noFullCatalogueAuthorised === true ? 1 : 6;
+  if (
+    expectedItems.length < minimumItems
+    || expectedItems.length > maximumItems
+    || actualItems.length !== expectedItems.length
+  ) {
     throw new Error("The product blueprint must cover every approved catalogue item exactly once.");
   }
   const expectedIds = expectedItems.map((item) => String(item.id));
@@ -263,6 +329,23 @@ function assertBlueprintMatchesSpec(spec, blueprint) {
       }
     }
   }
+  if (validationSample?.exactItemBlueprint) {
+    const exact = validationSample.exactItemBlueprint;
+    const item = actualItems.find((candidate) => String(candidate.id) === String(exact.id));
+    const exactBindings = {
+      columns: exact.columns || [],
+      sampleRows: exact.sampleRows || [],
+      calculations: exact.calculations || [],
+    };
+    const actualBindings = {
+      columns: item?.columns || [],
+      sampleRows: item?.sampleRows || [],
+      calculations: item?.calculations || [],
+    };
+    if (!item || JSON.stringify(actualBindings) !== JSON.stringify(exactBindings)) {
+      throw new Error("The validation product does not match its exact approved fields, formulas, dropdowns, and sample records.");
+    }
+  }
   return blueprint;
 }
 
@@ -279,6 +362,15 @@ function factoryReadiness(options = {}) {
     ["-c", `import ${REQUIRED_PYTHON_MODULES.join(", ")}`],
     { cwd: CONFIG.rootDir, encoding: "utf8", timeout: 20_000 },
   );
+  if (probe.error?.code === "ETIMEDOUT") {
+    cachedReadiness = {
+      ready: false,
+      python,
+      renderer,
+      reason: "The local file-factory dependency check exceeded its 20-second deadline.",
+    };
+    return cachedReadiness;
+  }
   cachedReadiness = probe.status === 0
     ? { ready: true, python, renderer, reason: null }
     : {
@@ -345,6 +437,10 @@ function composeStorefrontCover(task, sourceBytes, options = {}) {
         maxBuffer: 1024 * 1024,
       },
     );
+    if (composed.error?.code === "ETIMEDOUT") {
+      throw new Error("Local storefront-cover composition exceeded its 60-second deadline.");
+    }
+    if (composed.error) throw composed.error;
     if (composed.status !== 0) {
       throw new Error(`Local storefront-cover composition failed: ${String(composed.stderr || composed.stdout || "unknown error").trim()}`);
     }
@@ -366,7 +462,7 @@ function renderDigitalProductKit(task, blueprint, options = {}) {
     .createHash("sha256")
     .update(JSON.stringify(blueprint))
     .digest("hex");
-  const normalized = normalizeProductBlueprintForFactory(blueprint);
+  const normalized = normalizeProductBlueprintForFactory(blueprint, spec);
   assertBlueprintMatchesSpec(spec, normalized.blueprint);
   const readiness = assertDigitalProductFactoryReady();
   const fingerprint = crypto
@@ -405,6 +501,10 @@ function renderDigitalProductKit(task, blueprint, options = {}) {
       maxBuffer: 2 * 1024 * 1024,
     },
   );
+  if (rendered.error?.code === "ETIMEDOUT") {
+    throw new Error("Local digital-product rendering exceeded its two-minute deadline.");
+  }
+  if (rendered.error) throw rendered.error;
   if (rendered.status !== 0) {
     throw new Error(`Local digital-product rendering failed: ${String(rendered.stderr || rendered.stdout || "unknown error").trim()}`);
   }
@@ -415,15 +515,38 @@ function renderDigitalProductKit(task, blueprint, options = {}) {
       throw new Error(`Local digital-product rendering did not create ${path.basename(requiredPath)}.`);
     }
   }
+  const qualityReviewRoot = path.join(outputRoot, "quality-review");
+  const qualityReviewPaths = [
+    path.join(qualityReviewRoot, "actual-workbook.png"),
+    path.join(qualityReviewRoot, "actual-setup-guide.png"),
+  ];
+  for (const requiredPath of qualityReviewPaths) {
+    if (!fs.existsSync(requiredPath) || !fs.statSync(requiredPath).isFile()) {
+      throw new Error(`Local digital-product rendering did not create ${path.basename(requiredPath)}.`);
+    }
+  }
   return {
     fingerprint,
     renderer: "pantheon-local-digital-product-factory-v1",
+    constructionMode: spec.validationSample?.exactItemBlueprint
+      ? "contract_defined_model_assisted"
+      : "model_blueprint_deterministic_render",
     sourceBlueprintHash,
     renderedBlueprintHash: crypto
       .createHash("sha256")
       .update(JSON.stringify(normalized.blueprint))
       .digest("hex"),
     runtimeNormalizations: normalized.normalizations,
+    qualityReviewImages: qualityReviewPaths.map((filePath) => ({
+      filename: path.basename(filePath),
+      bytes: fs.readFileSync(filePath),
+      metadata: {
+        source: "local_deterministic_renderer",
+        purpose: "quality_review_only",
+        derivedFromActualSavedFile: true,
+        fingerprint,
+      },
+    })),
     files: [manifestPath, bundlePath].map((filePath) => ({
       filename: path.basename(filePath),
       bytes: fs.readFileSync(filePath),

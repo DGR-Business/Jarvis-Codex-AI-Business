@@ -59,9 +59,10 @@ function insertModelCall(db, values) {
        id, workflow_id, task_id, venture_id, provider, model_class, selected_model,
        mode, status, input_tokens, output_tokens, estimated_cost_cents,
        actual_cost_cents, approval_required, metadata, created_at,
-       provider_request_id, cost_status, reconciled_cost_cents, outcome_status
+       provider_request_id, cost_status, reconciled_cost_cents, outcome_status,
+       completed_at
      ) VALUES (?, 'wf-live-runs', ?, 'venture-digital-products', 'openai', 'research-high',
-       ?, ?, ?, ?, ?, ?, ?, 0, ?, '2026-07-17T00:00:00.000Z', ?, ?, ?, ?)`,
+       ?, ?, ?, ?, ?, ?, ?, 0, ?, '2026-07-17T00:00:00.000Z', ?, ?, ?, ?, ?)`,
     [
       values.id,
       values.taskId,
@@ -77,6 +78,7 @@ function insertModelCall(db, values) {
       values.costStatus,
       values.reconciledCents,
       values.outcomeStatus,
+      values.completedAt || null,
     ],
   );
 }
@@ -208,6 +210,7 @@ function seedRunEvidence(db) {
     costStatus: "reconciled",
     reconciledCents: 2,
     outcomeStatus: "known",
+    completedAt: "2026-07-17T00:01:05.000Z",
     metadata: {
       provider: "openai-agents-sdk",
       totalTokens: 1664,
@@ -358,6 +361,7 @@ test("Live Runs separates real provider work, unknown outcomes and internal rehe
       modelBacked: 1,
       protectedRehearsals: 1,
       needsReview: 1,
+      deterministicSteps: 0,
       reconciledCostCents: 2,
     });
     assert.equal(state.totalMatching, 3);
@@ -441,6 +445,7 @@ test("multiple attempts under one task do not duplicate provider usage or cost",
       costStatus: "incurred_estimate",
       reconciledCents: 0,
       outcomeStatus: "known",
+      completedAt: "2026-07-17T00:04:01.000Z",
       metadata: { providerResponseReceived: true },
     });
     insertRun(runtime.db, {

@@ -409,7 +409,13 @@ function generateApprovalPack(db, workflowId, options = {}) {
   const rendered = spawnSync(resolvePython(), [renderer, payloadPath, outputPath], {
     cwd: CONFIG.rootDir,
     encoding: "utf8",
+    timeout: 90_000,
+    maxBuffer: 2 * 1024 * 1024,
   });
+  if (rendered.error?.code === "ETIMEDOUT") {
+    throw new Error("Approval pack PDF rendering exceeded its 90-second deadline.");
+  }
+  if (rendered.error) throw rendered.error;
   if (rendered.status !== 0) {
     throw new Error(`Approval pack PDF render failed: ${rendered.stderr || rendered.stdout || "unknown error"}`);
   }

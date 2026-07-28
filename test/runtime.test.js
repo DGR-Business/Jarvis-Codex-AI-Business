@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { decideApproval, decideApprovalByToken } = require("../src/runtime/approvals");
 const {
   buildApprovalScope,
@@ -779,11 +780,11 @@ test("Agents SDK capability bridge exposes only exact capped worker skills", () 
 
   const visionTask = {
     id: "task-sdk-vision",
-    cost_budget_cents: 100,
+    cost_budget_cents: 150,
     payload: {
       liveSpendRequest: {
         tools: ["visual_asset_review"],
-        maxCostCents: 100,
+        maxCostCents: 150,
         maxTurns: 1,
         maxToolCalls: 0,
         deadlineMs: 90000,
@@ -794,8 +795,15 @@ test("Agents SDK capability bridge exposes only exact capped worker skills", () 
   };
   const visionPlan = buildAgentsSdkCapabilityPlan(visionTask, qualityReviewer);
   assert.equal(visionPlan.specs[0].kind, "model_input");
+  assert.equal(visionPlan.approvedCostCapCents, 150);
   assert.deepEqual(visionPlan.specs[0].options.assetIds, ["asset-one"]);
   assert.deepEqual(materializeAgentsSdkTools(sdk, visionPlan), []);
+  const excessiveVisionTask = JSON.parse(JSON.stringify(visionTask));
+  excessiveVisionTask.payload.liveSpendRequest.maxCostCents = 151;
+  assert.throws(
+    () => buildAgentsSdkCapabilityPlan(excessiveVisionTask, qualityReviewer),
+    /capped at A\$1\.50/i,
+  );
 });
 
 test("visual review sends only exact approved local images without logging image data", () => {
@@ -5330,9 +5338,43 @@ test("HTTP API serves registered PDF and image review outputs for dashboard prev
     assert.match(imagePreview.headers.get("content-disposition"), /inline/);
     assert.ok((await imagePreview.arrayBuffer()).byteLength > 32);
 
-    const nonPreviewable = get(db, "SELECT id FROM deliverables WHERE format NOT IN ('pdf', 'image/png') ORDER BY created_at LIMIT 1");
-    const nonPreviewableResponse = await fetch(`${baseUrl}/api/deliverables/${encodeURIComponent(nonPreviewable.id)}/file`);
+    const workbookPath = path.join(packDir, "verified-workbook.xlsx");
+    const workbookBytes = Buffer.from("verified workbook download fixture");
+    const workbookHash = crypto.createHash("sha256").update(workbookBytes).digest("hex");
+    fs.writeFileSync(workbookPath, workbookBytes);
+    run(
+      db,
+      `INSERT INTO deliverables
+       (id, workflow_id, title, human_name, audience, format, status, file_path,
+        summary, metadata, content_hash, created_at, updated_at)
+       VALUES ('deliv_verified_workbook', 'wf-digital-product-pilot-proof',
+         'Verified workbook', 'Verified Workbook.xlsx', 'operator', 'xlsx',
+         'quality_passed', ?, 'Verified workbook download proof.', ?, ?, ?, ?)`,
+      [
+        workbookPath,
+        JSON.stringify({ sha256: workbookHash, bytes: workbookBytes.length }),
+        workbookHash,
+        ts,
+        ts,
+      ],
+    );
+    const nonPreviewableResponse = await fetch(
+      `${baseUrl}/api/deliverables/deliv_verified_workbook/file`,
+    );
     assert.equal(nonPreviewableResponse.status, 415);
+    const workbookDownload = await fetch(
+      `${baseUrl}/api/deliverables/deliv_verified_workbook/download`,
+    );
+    assert.equal(workbookDownload.status, 200);
+    assert.match(workbookDownload.headers.get("content-disposition"), /attachment/);
+    assert.equal(workbookDownload.headers.get("x-pantheon-content-hash"), workbookHash);
+    assert.deepEqual(Buffer.from(await workbookDownload.arrayBuffer()), workbookBytes);
+
+    fs.writeFileSync(workbookPath, "changed after review");
+    const changedDownload = await fetch(
+      `${baseUrl}/api/deliverables/deliv_verified_workbook/download`,
+    );
+    assert.equal(changedDownload.status, 409);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));

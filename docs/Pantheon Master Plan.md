@@ -62,6 +62,13 @@ reviewer remains advisory and correctly changed no business state. This work
 does not change the no-investment result, authorise a product build, or widen
 external-action authority.
 
+The active commercial directive is
+`docs/plans/PANTHEON-FIRST-BUYER-INTENT-PROOF-2026-07-28.md`. It prepares one
+functional validation workbook and one measurement-ready Etsy listing test for
+the parked Social Media Manager case. The investment case remains parked, a
+full catalogue remains blocked, and every account, KYC, publication, contact,
+and external-spend action remains separate.
+
 `digital_product_v1` is one registered, non-universal kit. Generic commercial
 logic has no Gumroad-first or digital-product-first channel assumption. The
 approved multi-venture roadmap remains
@@ -273,11 +280,15 @@ Pantheon default.
 
 ### Now
 
-- Prepare only the smallest functional sample and measurement-ready buyer-intent
-  test for the parked Social Media Manager Client-Control and Profitability
-  case. Its decision packet must specify the audience, channel, exposure or
-  sample cap, qualification question, pass threshold, revise threshold, and
-  stop rule before any external action is requested.
+- Pause the Social Media Manager buyer-intent proof at `needs_attention`. Five
+  worker calls recorded A$0.63 of billing-pending estimates, and the latest
+  Quality Reviewer required two copy corrections. No market test or external
+  action is authorised.
+- Complete the 2026-07-28 developer audit and prove the ordinary isolated suite
+  without running Windows launcher integration on Daniel's machine.
+- Treat explicit human-approval markers as stronger than internal mandates.
+  No further paid buyer-intent correction may run without Daniel's exact
+  action-time instruction.
 - Keep the Portfolio result at `No investment selected`. Two bounded rounds
   compared ten hypotheses and six finalists, and one targeted diligence round
   re-tested the strongest named gap. No case cleared every mandatory demand,
@@ -290,25 +301,32 @@ Pantheon default.
 - Keep all 11 workers visible and on standby. No production, publication,
   customer contact, advertising, account action, or money movement is
   authorised.
-- Run Pantheon through the Windows control shell: Stopped means no Pantheon
-  process, Standby keeps only the lightweight dashboard control service, and
-  Working loads the full runtime.
-- Hold July runtime exposure at A$8.54: A$3.10 is reconciled provider usage and
-  A$5.44 remains ordinary incurred estimates. The two post-dispatch timeouts
+- Retain Stopped, Standby, and Working as the operator contract, but do not
+  declare the current nested launcher process tree production-ready. Local
+  lifecycle integration is quarantined to disposable Windows CI pending a
+  Job Object-backed supervisor.
+- Hold July runtime exposure at A$9.17: A$3.10 is reconciled provider usage and
+  A$6.07 remains ordinary incurred estimates. The two post-dispatch timeouts
   and one invalid-output call were matched to signed Platform exports and
   exact trace records; none produced accepted commercial evidence. The
   assurance release added A$0.10 of clearly labelled estimates across three
   Luna calls, one truncated Terra response, and one corrected Terra review.
+  The paused buyer-intent workflow added A$0.63 of estimates.
 - Use the verified A$1.57675 cash-paid-per-US-dollar-credit conversion for
   future estimates. Keep estimates visibly separate from reconciled usage and
   subscription cash outflow.
 
 ### Next
 
-- After the assurance release passes, prepare only the smallest
-  functional sample and measurement-ready buyer-intent test for the Social
-  Media Manager Client-Control and Profitability System. Do not build a full
-  catalogue before the test.
+- Replace the current nested lifecycle scripts with one lightweight Windows
+  supervisor that owns the full working process tree through a Job Object.
+  Setup must remain separate from start. Every control action needs an external
+  deadline, atomic state, and exact cleanup evidence.
+- Prove ten start, standby, working, standby, and stop cycles without leaked
+  processes or ports before restoring local lifecycle readiness.
+- After the audit branch, ordinary suite, and CI pass, Daniel may authorize one
+  bounded correction of the current Social Media Manager validation sample.
+  Do not build a full catalogue before a real buyer test.
 - Select the actual test channel from buyer access, fees, traffic quality,
   ownership, and measurement reliability. Etsy is a hypothesis, not a default.
   Account action, publication, customer contact, and spend remain separate
@@ -367,6 +385,15 @@ provider, browser, dependency, Doctor, and encrypted recovery gates on
 `ea89ac08dfcab73d3a6af8634c15a219862300ee`. Exact proof is retained in
 `docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`.
 
+The 2026-07-28 developer audit supersedes any inference that the current local
+Windows launcher is fully operations-ready. Earlier happy-path lifecycle tests
+passed, but they did not establish descendant ownership under timeout or
+interruption. Local launcher integration is now excluded from ordinary tests
+and may run only in its dedicated disposable Windows CI job until the
+supervisor release gate above passes. The buyer-intent workflow is also paused:
+its A$0.63 estimated exposure and latest `revise` verdict are retained as
+evidence, not accepted as proof.
+
 Foundation is releasable only when:
 
 - encrypted source, database, and artifact backups restore successfully;
@@ -383,6 +410,8 @@ Foundation is releasable only when:
 ## Durable Records
 
 - `docs/Pantheon Build Log.md`: current decisions, proof, and next work.
+- `docs/reviews/PANTHEON-DEV-AUDIT-2026-07-28.md`: command-hang,
+  authorization, proof-truth, artifact, shutdown, and release-readiness audit.
 - `docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`: exact
   harness, assurance, live provider, cost, recovery, and browser evidence.
 - `docs/plans/PANTHEON-AGENT-ASSURANCE-AND-OPENAI-INTEGRATION-HARDENING-2026-07-28.md`:

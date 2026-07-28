@@ -127,7 +127,9 @@ function classifyInternalApproval(approval) {
   const amountCents = pricedWorstCaseCents > 0 && pricedWorstCaseCents <= hardCapCents
     ? pricedWorstCaseCents
     : hardCapCents;
-  const operatorChoiceRequired = payload.parameters?.operatorChoiceRequired === true
+  const manualApprovalRequired = payload.parameters?.manualApprovalRequired === true
+    || descriptor.parameters?.manualApprovalRequired === true
+    || payload.parameters?.operatorChoiceRequired === true
     || descriptor.parameters?.operatorChoiceRequired === true;
   const journeyId = payload.parameters?.pantheonJourney?.journeyId
     || payload.parameters?.pantheonCommercial?.journeyId
@@ -149,7 +151,7 @@ function classifyInternalApproval(approval) {
       && allowedType
       && allowedTools
       && !protectedEffect
-      && !operatorChoiceRequired
+      && !manualApprovalRequired
       && String(approval.risk_level || "low") !== "high"
       && amountCents > 0
     ),
@@ -176,8 +178,8 @@ function classifyInternalApproval(approval) {
                   ? "tool_not_in_mandate"
                   : protectedEffect
                   ? "external_effect_requires_daniel"
-                  : operatorChoiceRequired
-                    ? "operator_choice_required"
+                  : manualApprovalRequired
+                    ? "manual_approval_required"
                   : String(approval.risk_level || "low") === "high"
                       ? "high_risk_requires_daniel"
                       : amountCents <= 0

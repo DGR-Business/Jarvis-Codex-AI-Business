@@ -186,7 +186,12 @@ test("doctor operations-ready CLI passes against a complete local recovery fixtu
         "--json",
         "--operations-ready",
       ],
-      { encoding: "utf8", env: environment, windowsHide: true },
+      {
+        encoding: "utf8",
+        env: environment,
+        windowsHide: true,
+        timeout: 60_000,
+      },
     );
     assert.equal(run.status, 0, run.stderr || run.stdout);
     const report = JSON.parse(run.stdout);

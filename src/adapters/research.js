@@ -403,13 +403,15 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model, s
   const outcomeStatus = providerCompleted ? "known" : outcomeUnknown ? "unknown" : dispatching ? "provider_dispatched" : "failed_before_effect";
   const errorKind = metadata.errorKind
     || (outcomeUnknown ? "provider_outcome_unknown" : status === "failed" ? "provider_rejected" : null);
+  const callTimestamp = now();
+  const completedAt = dispatching ? null : callTimestamp;
   run(
     db,
     `INSERT INTO model_calls (id, workflow_id, task_id, venture_id, provider, model_class, selected_model, mode, status,
       input_tokens, output_tokens, estimated_cost_cents, actual_cost_cents, approval_required, metadata, created_at,
       provider_request_id, cost_status, reserved_cost_cents, incurred_estimate_cents, reconciled_cost_cents, outcome_status,
-      error_kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      error_kind, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        status = excluded.status,
        input_tokens = excluded.input_tokens,
@@ -421,7 +423,8 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model, s
        reserved_cost_cents = excluded.reserved_cost_cents,
        incurred_estimate_cents = excluded.incurred_estimate_cents,
        outcome_status = excluded.outcome_status,
-       error_kind = excluded.error_kind`,
+       error_kind = excluded.error_kind,
+       completed_at = COALESCE(excluded.completed_at, model_calls.completed_at)`,
     [
       callId,
       task.workflow_id,
@@ -447,7 +450,7 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model, s
         ...metadata,
         modelCallId: undefined,
       }),
-      now(),
+      callTimestamp,
       response?.id || null,
       costStatus,
       estimateCents,
@@ -455,6 +458,7 @@ function recordLiveResearchModelCall(db, task, response, estimateCents, model, s
       0,
       outcomeStatus,
       errorKind,
+      completedAt,
     ],
   );
   if (metadata.taskAttemptId) bindModelCallToAttempt(db, metadata.taskAttemptId, callId);

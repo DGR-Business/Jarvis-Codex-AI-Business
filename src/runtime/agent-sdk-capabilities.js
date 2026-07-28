@@ -59,7 +59,7 @@ const CAPABILITIES = {
     kind: "model_input",
     sdkName: "image_understanding",
     workerIds: ["quality_reviewer"],
-    maxCostCents: 100,
+    maxCostCents: 150,
     maxToolCalls: 0,
     maxTurns: 1,
     maxDeadlineMs: 90_000,

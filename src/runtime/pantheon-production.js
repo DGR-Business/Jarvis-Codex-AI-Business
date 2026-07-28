@@ -18,6 +18,7 @@ const {
 const { requestLiveAiWorker } = require("./live-ai-workers");
 const { journeyForRound, updateJourney } = require("./pantheon-journey");
 const { combinedProofExposureFromDatabase } = require("./proof-exposure-ledger");
+const { finalizeBuyerIntentValidationSample } = require("./buyer-intent-validation");
 
 const PRODUCT_BUILD_SPEC_SCHEMA = "pantheon.product-build-spec.v1";
 const PRODUCT_MANIFEST_SCHEMA = "pantheon.product-manifest.v1";
@@ -610,6 +611,8 @@ function normalizedRevisionCorrections(options = {}) {
 function buildSpec(plan, opportunityRecord, items, options = {}) {
   const profile = buildProfile(opportunityRecord);
   const fullJourney = Boolean(plan.metadata.journeyId);
+  const validationSample = plan.metadata.validationSample || null;
+  const needsStorefrontPreviews = fullJourney || Boolean(validationSample);
   const revisionCorrections = normalizedRevisionCorrections(options);
   return {
     schema: PRODUCT_BUILD_SPEC_SCHEMA,
@@ -634,11 +637,30 @@ function buildSpec(plan, opportunityRecord, items, options = {}) {
       priceCents: Number(item.price_cents || 0),
     })),
     manifestFilename: "pantheon-product-manifest.json",
-    bundleFilename: `${slug(opportunityRecord.title)}-catalogue.zip`,
+    bundleFilename: validationSample
+      ? `${slug(validationSample.sample?.packageTitle || opportunityRecord.title)}.zip`
+      : `${slug(opportunityRecord.title)}-catalogue.zip`,
     minimumReturnedFiles: 2,
-    storefrontPreviewCount: fullJourney ? 2 : 0,
-    storefrontPreviewDirectory: fullJourney ? "storefront-previews" : null,
-    ventureKit: fullJourney ? "digital_product_v1" : null,
+    storefrontPreviewCount: needsStorefrontPreviews ? 2 : 0,
+    storefrontPreviewDirectory: needsStorefrontPreviews ? "storefront-previews" : null,
+    ventureKit: needsStorefrontPreviews ? "digital_product_v1" : null,
+    validationSample: validationSample ? {
+      schema: validationSample.schema,
+      specId: validationSample.specId,
+      contractHash: validationSample.contractHash,
+      packageTitle: validationSample.sample?.packageTitle,
+      customerPromise: validationSample.sample?.customerPromise,
+      setupSteps: validationSample.sample?.setupSteps || [],
+      disclaimers: validationSample.sample?.disclaimers || [],
+      channel: validationSample.channel || null,
+      exactItemBlueprint: {
+        ...(validationSample.sample?.item || {}),
+        id: items[0]?.id || validationSample.sample?.item?.id,
+        title: items[0]?.title || validationSample.sample?.item?.title,
+      },
+      testMeasurement: validationSample.measurement,
+      noFullCatalogueAuthorised: true,
+    } : null,
     revisionNumber: Number(options.revisionNumber || 0),
     revisionCorrections,
     revisionFeedback: revisionCorrections.join("; ").slice(0, 1800),
@@ -682,7 +704,7 @@ function qualityReviewFingerprintForTask(task) {
     || reviewFingerprint(parameters.reviewBindings, parameters.qualityReviewPacket);
 }
 
-function existingQualityReviewTask(db, planId, revisionNumber, fingerprint) {
+function existingQualityReviewTask(db, planId, revisionNumber, fingerprint, options = {}) {
   const rows = all(
     db,
     `SELECT * FROM tasks
@@ -701,13 +723,130 @@ function existingQualityReviewTask(db, planId, revisionNumber, fingerprint) {
     sameRevision.map(qualityReviewFingerprintForTask).filter(Boolean),
   );
   if (matching) return { task: matching, existing: true, sequence: reviewedFingerprints.size };
+  const planMetadata = fromJson(
+    get(db, "SELECT metadata FROM catalogue_plans WHERE id = ?", [planId])?.metadata,
+    {},
+  );
+  const validationSample = planMetadata.validationSample || null;
+  const explicitOperatorFinalReview = options.explicitOperatorFinalReview === true;
+  if (validationSample) {
+    const correctionLimit = Math.max(
+      0,
+      Number(validationSample.providerPolicy?.correctionLimit || 0),
+    );
+    if (explicitOperatorFinalReview) {
+      throw new Error("The retired final-review override cannot create another paid review.");
+    }
+    if (sameRevision.length > 0) {
+      throw new Error(
+        "Pantheon already reviewed this product revision. Changed files require a new bounded revision.",
+      );
+    }
+    if (Number(revisionNumber) > correctionLimit) {
+      throw new Error("Pantheon has reached the buyer-intent correction limit.");
+    }
+    return { task: null, existing: false, sequence: rows.length + 1 };
+  }
   // One product correction may require bounded rechecks when Jarvis fixes the
   // deterministic renderer or applies an exact claim-safety finding without
   // asking the model to redesign the product.
-  if (reviewedFingerprints.size >= 3) {
+  if (reviewedFingerprints.size >= 4) {
+    throw new Error("Pantheon has already used the one operator-authorised final quality review for this product revision.");
+  }
+  if (reviewedFingerprints.size >= 3 && !explicitOperatorFinalReview) {
     throw new Error("Pantheon stopped before creating another quality review for the same product revision.");
   }
   return { task: null, existing: false, sequence: reviewedFingerprints.size + 1 };
+}
+
+function assertQualityReviewRecheckAvailable(db, planId, revisionNumber) {
+  const rows = all(
+    db,
+    `SELECT payload
+     FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND status <> 'cancelled'
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage') = 'quality_review'`,
+    [planId],
+  ).map((row) => parseRow(row, ["payload"])).filter((row) => (
+    Number(productMetadata(row)?.revisionNumber || 0) === Number(revisionNumber)
+  ));
+  const reviewedFingerprints = new Set(
+    rows.map(qualityReviewFingerprintForTask).filter(Boolean),
+  );
+  if (reviewedFingerprints.size >= 3) {
+    throw new Error("Pantheon stopped before creating another quality review for the same product revision.");
+  }
+  return {
+    reviewedFingerprints: reviewedFingerprints.size,
+    remainingRechecks: Math.max(0, 3 - reviewedFingerprints.size),
+  };
+}
+
+function assertBuyerIntentProviderBudget(db, plan, requestedCapCents) {
+  const validationSample = plan?.metadata?.validationSample;
+  if (!validationSample) return;
+  const combinedCapCents = Math.max(
+    0,
+    Number(validationSample.providerPolicy?.combinedCapCents || 0),
+  );
+  if (!combinedCapCents) {
+    throw new Error("The buyer-intent provider budget is missing.");
+  }
+  const taskRows = all(
+    db,
+    `SELECT id
+     FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND status NOT IN ('cancelled', 'superseded')
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage')
+           IN ('product_build', 'quality_review')`,
+    [plan.id],
+  );
+  const taskIds = taskRows.map((row) => row.id);
+  let committed = 0;
+  if (taskIds.length) {
+    const placeholders = taskIds.map(() => "?").join(", ");
+    const costs = all(
+      db,
+      `SELECT task_id, COALESCE(SUM(amount_cents), 0) AS cents
+       FROM costs
+       WHERE task_id IN (${placeholders})
+         AND status NOT IN ('released', 'cancelled')
+         AND amount_cents > 0
+       GROUP BY task_id`,
+      taskIds,
+    );
+    const reservations = all(
+      db,
+      `SELECT task_id, COALESCE(MAX(amount_cents), 0) AS cents
+       FROM budget_reservations
+       WHERE task_id IN (${placeholders})
+         AND status IN ('reserved', 'incurred_estimate', 'unknown')
+       GROUP BY task_id`,
+      taskIds,
+    );
+    const costByTask = new Map(costs.map((row) => [row.task_id, Number(row.cents || 0)]));
+    const reservationByTask = new Map(
+      reservations.map((row) => [row.task_id, Number(row.cents || 0)]),
+    );
+    committed = taskIds.reduce(
+      (total, taskId) => total + Math.max(
+        costByTask.get(taskId) || 0,
+        reservationByTask.get(taskId) || 0,
+      ),
+      0,
+    );
+  }
+  const requested = Math.max(0, Number(requestedCapCents || 0));
+  if (committed + requested > combinedCapCents) {
+    throw new Error(
+      `Pantheon stopped because this request would exceed the buyer-intent AI limit of `
+      + `A$${(combinedCapCents / 100).toFixed(2)}.`,
+    );
+  }
 }
 
 function updatePlan(db, planId, patch = {}) {
@@ -769,30 +908,52 @@ function prepareCatalogueBuild(db, input = {}) {
   }
   const round = roundForPlan(db, plan);
   const journey = journeyForPlan(db, plan);
+  const validationSample = plan.metadata.validationSample || null;
+  const workflowId = validationSample?.workflowId || round.metadata.workflowId;
+  if (!workflowId) throw new Error("The product build has no exact owning workflow.");
+  const requestedRoute = validationSample?.providerPolicy?.productBuilderRoute || null;
+  const selectedModel = requestedRoute === "luna"
+    ? CONFIG.lunaModel
+    : requestedRoute === "terra"
+      ? CONFIG.terraModel
+      : journey?.model || CONFIG.terraModel;
+  const estimatedCostCents = Number(
+    validationSample?.providerPolicy?.productBuilderCapCents || 200,
+  );
+  assertBuyerIntentProviderBudget(db, plan, estimatedCostCents);
   const operatorChoiceRequired = input.operatorChoiceRequired !== false;
-  const request = requestLiveAiWorker(db, round.metadata.workflowId, {
+  const request = requestLiveAiWorker(db, workflowId, {
     requestKey: `catalogue_build_${safeId(plan.id)}_r${revisionNumber}`,
     requestedBy: operatorChoiceRequired ? "chief_of_staff" : "pantheon_quality_recovery",
     worker: "product_builder",
     taskTitle: revisionNumber
       ? `Correct and rebuild ${plan.title}`
-      : `Build ${plan.title}`,
+      : validationSample
+        ? `Build the ${plan.title} validation workbook`
+        : `Build ${plan.title}`,
     approvalTitle: revisionNumber
       ? `Correct the ${plan.title} product files`
-      : `Build and quality-check the ${items.length}-product catalogue`,
-    estimatedCostCents: 200,
+      : validationSample
+        ? `Build the functional validation workbook`
+        : `Build and quality-check the ${items.length}-product catalogue`,
+    estimatedCostCents,
     reason: operatorChoiceRequired
-      ? `Create the exact ${items.length}-item local product catalogue that Daniel reviewed. Nothing will be published, sent, or uploaded to a marketplace.`
+      ? validationSample
+        ? "Create one exact local validation workbook and two previews so willingness to pay and Excel-format acceptance can be tested. Nothing will be published, sent, or uploaded."
+        : `Create the exact ${items.length}-item local product catalogue that Daniel reviewed. Nothing will be published, sent, or uploaded to a marketplace.`
       : "Correct the exact local product package after Pantheon's Quality Reviewer found a material defect. Nothing will be published or sent.",
     expectedOutput: `A real downloadable ${spec.bundleFilename}, ${spec.manifestFilename}, and a structured production summary. Planning prose without files is a failed build.`,
     expectedMetric: `Pantheon downloads, hashes, validates, and maps usable product files to all ${items.length} approved catalogue items.`,
-    model: journey?.model || CONFIG.terraModel,
-    modelLocked: journey?.model_locked === 1,
-    maxInputTokens: 64000,
-    maxOutputTokens: 8000,
+    model: selectedModel,
+    modelLocked: validationSample ? true : journey?.model_locked === 1,
+    maxInputTokens: validationSample ? 32000 : 64000,
+    maxOutputTokens: validationSample ? 6000 : 8000,
     maxTurns: 1,
     maxToolCalls: 0,
     deadlineMs: 180000,
+    contextClasses: validationSample
+      ? ["venture", "production", "legal"]
+      : undefined,
     tools: ["product_file_factory"],
     toolArguments: {
       product_file_factory: {
@@ -808,10 +969,15 @@ function prepareCatalogueBuild(db, input = {}) {
       evidenceStandard: "Use the approved opportunity, economics, offer, and catalogue records. Do not invent buyer proof or public claims.",
     },
     workBrief: {
-      objective: `Design the exact customer contents for the complete ${items.length}-item catalogue in approvedProductBuildSpec.`,
+      objective: validationSample
+        ? "Design the exact customer contents for the one validation workbook in approvedProductBuildSpec."
+        : `Design the exact customer contents for the complete ${items.length}-item catalogue in approvedProductBuildSpec.`,
       deliverable: `Return one strict Product Builder result containing a complete productBlueprint. Pantheon will turn it into ${spec.bundleFilename} and ${spec.manifestFilename} locally after validation.`,
       assetPrompt: [
         `The manifest must use schema ${PRODUCT_MANIFEST_SCHEMA} and exactly match planId ${plan.id} and opportunityId ${opportunityRecord.id}.`,
+        validationSample
+          ? "Use approvedProductBuildSpec.validationSample.exactItemBlueprint as the required minimum structure. Preserve its exact item ID, named fields, status options, formulas, sample records, setup steps, customer promise, and limitations. Improve clarity only when every required function remains present."
+          : null,
         "Its catalogueItems array must contain every exact catalogue item id. Each item must list the real customer-facing files that exist inside the returned bundle.",
         "Define complete customer-usable trackers, instructions, fields, and realistic examples. Do not return outlines, lorem ipsum, TODO markers, empty worksheets, or claims that files already exist.",
         "Keep the strict blueprint compact: one short sentence per purpose, instruction, and field guide; use one realistic sample row unless a second is essential; do not repeat the same explanation.",
@@ -861,6 +1027,10 @@ function prepareCatalogueBuild(db, input = {}) {
         revisionNumber,
         operatorChoiceRequired,
         journeyId: journey?.id || null,
+        buyerIntentValidation: validationSample ? {
+          specId: validationSample.specId,
+          contractHash: validationSample.contractHash,
+        } : null,
       },
     },
     effects: [],
@@ -910,6 +1080,9 @@ function markCatalogueDeliverablesQualityPassed(db, plan, generated) {
   const visualIds = [
     ...(plan.metadata.storefrontVisualIds || []),
     ...(plan.metadata.storefrontPreviewIds || []),
+    ...(plan.metadata.qualityReviewImageIds || []),
+    ...(generated.previews || []).map((preview) => preview.id),
+    ...(generated.qualityReviewImages || []).map((image) => image.id),
   ];
   const reviewedDeliverableIds = [...new Set([
     ...(generated.files || []).map((file) => file.id).filter(Boolean),
@@ -1214,8 +1387,19 @@ function buildQualityReviewPacket(
     opportunityId: opportunityRecord.id,
     buildTaskId: buildTask.id,
     revisionNumber: Number(productMetadata(buildTask)?.revisionNumber || 0),
+    constructionMode: generated.constructionMode || "not_recorded",
+    constructionExplanation: generated.constructionMode === "contract_defined_model_assisted"
+      ? "The approved buyer-test contract defined the customer-file structure; the model supplied bounded judgement and wording before deterministic rendering."
+      : "The model blueprint was rendered deterministically into the retained customer files.",
     packageTitle: compactReviewText(manifest.packageTitle, 240),
     customerPromise: compactReviewText(manifest.customerPromise, 500),
+    assetProvenance: manifest.assetProvenance ? {
+      sourceType: compactReviewText(manifest.assetProvenance.sourceType, 120),
+      externalAssetsUsed: (manifest.assetProvenance.externalAssetsUsed || [])
+        .map((value) => compactReviewText(value, 240)),
+      customerDataUsed: manifest.assetProvenance.customerDataUsed === true,
+      statement: compactReviewText(manifest.assetProvenance.statement, 700),
+    } : null,
     deliveryFormat: compactReviewText(manifest.deliveryFormat, 320),
     customerInstructionSource: String(manifest.customerInstructionSource || "unknown"),
     expectedCatalogueCount: Number(plan.target_item_count || 0),
@@ -1271,6 +1455,18 @@ function buildQualityReviewPacket(
           compactReviewText(field.formula, 240),
           String(field.range || ""),
         ]),
+        sampleCalculationChecks: (item.validation?.sampleCalculationChecks || []).map((check) => ({
+          trackerRow: Number(check.trackerRow || 0),
+          record: compactReviewText(check.record, 120),
+          results: (check.results || []).map((result) => ({
+            target: compactReviewText(result.target, 120),
+            operation: compactReviewText(result.operation, 80),
+            inputs: (result.inputs || []).map((value) => compactReviewText(value, 120)),
+            value: Number.isFinite(Number(result.value)) ? Number(result.value) : null,
+            display: compactReviewText(result.display, 80),
+          })),
+        })),
+        dashboardExpectedResults: item.validation?.dashboardExpectedResults || null,
         formulaEvidence: {
           totalFormulaCells: Number(item.validation?.formulaCells || 0),
           sampleCount: Array.isArray(item.validation?.formulas) ? item.validation.formulas.length : 0,
@@ -1354,6 +1550,7 @@ function buildQualityReviewPacket(
       sha256: file.sha256 || null,
     })),
     storefrontPreviews: (generated.previews || []).map((preview) => reviewDeliverableFact(db, preview.id)),
+    fileInspectionVisuals: (generated.qualityReviewImages || []).map((image) => reviewDeliverableFact(db, image.id)),
     storefrontVisuals: visualAssetIds.map((id) => reviewDeliverableFact(db, id)),
     approvedVisualReviewIds: reviewAssetIds,
     deterministicChecks: {
@@ -1382,10 +1579,31 @@ function buildQualityReviewPacket(
       customerInstructionsDerivedFromActualFiles: (
         manifest.customerInstructionSource === "generated_from_actual_files_by_local_factory"
       ),
+      assetProvenanceDeclared: (
+        manifest.assetProvenance?.sourceType === "pantheon_local_generation"
+        && Array.isArray(manifest.assetProvenance?.externalAssetsUsed)
+        && manifest.assetProvenance.externalAssetsUsed.length === 0
+        && manifest.assetProvenance?.customerDataUsed === false
+      ),
       dashboardStatusMetricsMatchDropdowns: manifestItems.every((item) => (
         !item.validation?.dashboardMetric
         || item.validation.dashboardMetric.countedValueInValidation === true
       )),
+      sampleCalculationsIndependentlyChecked: manifestItems.every((item) => {
+        const calculations = Array.isArray(item.validation?.calculatedFields)
+          ? item.validation.calculatedFields
+          : [];
+        if (!calculations.length) return true;
+        const checks = Array.isArray(item.validation?.sampleCalculationChecks)
+          ? item.validation.sampleCalculationChecks
+          : [];
+        return checks.length === Number(item.validation?.sampleRows || 0)
+          && checks.every((check) => (
+            Array.isArray(check.results)
+            && check.results.length === calculations.length
+            && check.results.every((result) => Number.isFinite(Number(result.value)))
+          ));
+      }),
       setupGuideContentExposed: (
         manifest.setupGuide?.contentSource === "same_claim_safe_blueprint_used_to_render_pdf"
         && Array.isArray(manifest.setupGuide.products)
@@ -1401,7 +1619,10 @@ function buildQualityReviewPacket(
     reviewInstructions: [
       "Treat deterministic checks and hashes as file-integrity evidence, not as proof of buyer value.",
       "Formula samples are intentionally compact for large workbooks. Use formulaEvidence.totalFormulaCells, coverage ranges, and completeCoverage to judge deterministic coverage; do not treat the sample count as the workbook's formula count.",
+      "Use sampleCalculationChecks as Pantheon's independent arithmetic verification of the exact sample rows; the saved workbook remains configured to recalculate formulas when opened in Excel.",
+      "Use assetProvenance to distinguish locally generated package elements from third-party assets; do not request external rights evidence when externalAssetsUsed is empty.",
       "Inspect every approved visual for clipping, misleading motifs, unsupported claims, and consistency with the real package.",
+      "QA-only file inspection visuals are rendered from the exact saved XLSX and PDF and are not customer-facing storefront assets.",
       "Compare each approved catalogue promise with the exact workbook fields, instructions, sample data, and delivery format. Do not pass a technically valid but commercially empty or misrepresented package.",
       `Pass only when the complete ${manifestItems.length}-part package is usable, truthfully represented, and has no unresolved material defect.`,
     ],
@@ -1419,6 +1640,17 @@ function queueQualityReview(
 ) {
   const revisionNumber = Number(productMetadata(buildTask)?.revisionNumber || 0);
   const journey = journeyForPlan(db, plan);
+  const validationSample = plan.metadata.validationSample || null;
+  const explicitOperatorFinalReview = options.explicitOperatorFinalReview === true;
+  const requestedRoute = validationSample?.providerPolicy?.qualityReviewerRoute || null;
+  const selectedModel = requestedRoute === "luna"
+    ? CONFIG.lunaModel
+    : requestedRoute === "terra"
+      ? CONFIG.terraModel
+      : journey?.model || CONFIG.terraModel;
+  const estimatedCostCents = Number(
+    validationSample?.providerPolicy?.qualityReviewerCapCents || 100,
+  );
   const files = generated.files.map((file) => ({
     id: file.id,
     name: file.humanName,
@@ -1426,9 +1658,14 @@ function queueQualityReview(
     bytes: file.bytes,
     sha256: file.sha256,
   }));
-  const reviewAssetIds = [...new Set([
+  const reviewAssetIds = [...new Set(validationSample ? [
+    ...(generated.qualityReviewImages || []).map((image) => image.id),
+    ...(generated.previews || []).map((preview) => preview.id),
+    ...visualAssetIds,
+  ] : [
     ...visualAssetIds,
     ...(generated.previews || []).map((preview) => preview.id),
+    ...(generated.qualityReviewImages || []).map((image) => image.id),
   ])].slice(0, 4);
   for (const visualId of visualAssetIds) {
     run(
@@ -1480,8 +1717,17 @@ function queueQualityReview(
       "The exact product files or review packet changed before this quality review began.",
     );
   }
-  const prior = existingQualityReviewTask(db, plan.id, revisionNumber, fingerprint);
-  if (prior.task) return { task: prior.task, existing: true };
+  const prior = existingQualityReviewTask(db, plan.id, revisionNumber, fingerprint, options);
+  if (prior.task) {
+    return {
+      task: prior.task,
+      approval: prior.task.approval_id
+        ? get(db, "SELECT * FROM approvals WHERE id = ?", [prior.task.approval_id])
+        : null,
+      existing: true,
+    };
+  }
+  assertBuyerIntentProviderBudget(db, plan, estimatedCostCents);
   const requestKeySuffix = options.requestKeySuffix
     ? `_${safeId(options.requestKeySuffix)}`
     : "";
@@ -1489,15 +1735,28 @@ function queueQualityReview(
     requestKey: `catalogue_quality_${safeId(plan.id)}_r${revisionNumber}_${fingerprint.slice(0, 12)}${requestKeySuffix}`,
     requestedBy: "pantheon_supervisor",
     worker: "quality_reviewer",
-    taskTitle: `Review the finished product package for ${opportunityRecord.title}`,
-    approvalTitle: `Run the product quality review for ${opportunityRecord.title}`,
-    estimatedCostCents: 100,
-    reason: "Independently check the exact locally stored product package before any launch preparation.",
+    taskTitle: explicitOperatorFinalReview
+      ? `Run the final independent check on the corrected workbook for ${opportunityRecord.title}`
+      : validationSample
+      ? `Review the functional validation workbook for ${opportunityRecord.title}`
+      : `Review the finished product package for ${opportunityRecord.title}`,
+    approvalTitle: explicitOperatorFinalReview
+      ? "Run one final independent check on the corrected workbook"
+      : validationSample
+      ? `Check the validation workbook before the buyer test`
+      : `Run the product quality review for ${opportunityRecord.title}`,
+    estimatedCostCents,
+    manualApprovalRequired: explicitOperatorFinalReview,
+    reason: explicitOperatorFinalReview
+      ? "Jarvis corrected the exact local workbook, setup guide, calculations, and previews at no additional AI cost. Three independent review attempts are already retained, so one final review requires Daniel's exact approval."
+      : validationSample
+      ? "Independently check the exact locally stored workbook, guide, and previews before Pantheon prepares a buyer test."
+      : "Independently check the exact locally stored product package before any launch preparation.",
     expectedOutput: "A clear pass, revise, or stop verdict with quality score, file coverage, usability risks, unsupported claims, and exact corrections.",
     expectedMetric: "All catalogue items are covered, deterministic file validation passed, and semantic review scores at least 80/100 with no unresolved high-risk finding.",
-    model: journey?.model || CONFIG.terraModel,
-    modelLocked: journey?.model_locked === 1,
-    maxInputTokens: 96000,
+    model: selectedModel,
+    modelLocked: validationSample ? true : journey?.model_locked === 1,
+    maxInputTokens: validationSample ? 64000 : 96000,
     maxOutputTokens: 2400,
     maxTurns: 1,
     maxToolCalls: 0,
@@ -1515,7 +1774,9 @@ function queueQualityReview(
     },
     workBrief: {
       objective: "Review the exact product manifest, deterministic file checks, commercial promise, claim safety, usability, and catalogue completeness.",
-      deliverable: "A decision-quality review that clearly distinguishes verified file facts from semantic judgements and remaining inspection limits.",
+      deliverable: validationSample
+        ? "A decision-quality pass, revise, or stop review of the one functional validation sample, clearly distinguishing verified file facts from semantic judgements."
+        : "A decision-quality review that clearly distinguishes verified file facts from semantic judgements and remaining inspection limits.",
       assetPrompt: `Use the complete frozen qualityReviewPacket, exact qualityReviewTargets, and all ${reviewAssetIds.length} approved visual inputs. Do not infer from a shortened narrative excerpt.`,
       constraints: [
         "Fail the package if any catalogue item lacks a real file.",
@@ -1525,11 +1786,19 @@ function queueQualityReview(
       acceptanceCriteria: [
         "Quality score is reasoned rather than cosmetic.",
         "Material defects identify an exact correction.",
-        "Approval means ready for launch preparation, not already published or sold.",
+        explicitOperatorFinalReview
+          ? "This is the one operator-authorised final review. Pass means the corrected validation sample may advance to buyer-test planning; revise or stop ends the build without another paid review."
+          : validationSample
+          ? "Approval means ready to prepare the exact buyer test, not ready for a full catalogue, publication, or sale."
+          : "Approval means ready for launch preparation, not already published or sold.",
       ],
     },
     parameters: {
       ...journeyParameters(journey),
+      ...(explicitOperatorFinalReview ? {
+        manualApprovalRequired: true,
+        operatorChoiceRequired: true,
+      } : {}),
       approvedAssetIds: reviewAssetIds,
       reviewOfTaskId: buildTask.id,
       reviewBindings,
@@ -1544,7 +1813,12 @@ function queueQualityReview(
         revisionNumber,
         reviewFingerprint: fingerprint,
         reviewSequence: prior.sequence,
+        explicitOperatorFinalReview,
         journeyId: journey?.id || null,
+        buyerIntentValidation: validationSample ? {
+          specId: validationSample.specId,
+          contractHash: validationSample.contractHash,
+        } : null,
       },
     },
     effects: [],
@@ -1575,12 +1849,24 @@ function queueQualityReview(
         taskId: request.task?.id || null,
         workerId: "quality_reviewer",
         note: prior.sequence > 1
-          ? "The locally corrected package is frozen under new hashes and ready for a fresh independent review."
+          ? explicitOperatorFinalReview
+            ? "The corrected package is frozen under exact hashes and awaiting Daniel's decision on one final independent check."
+            : "The locally corrected package is frozen under new hashes and ready for a fresh independent review."
           : "The exact product files, previews, and cover are ready for independent review.",
       },
     });
   }
   return request;
+}
+
+function prepareExplicitFinalValidationReview(db, planId) {
+  const plan = cataloguePlan(db, planId);
+  if (!plan?.metadata?.validationSample) {
+    throw new Error("This catalogue plan is not an evidence-bound buyer-intent validation sample.");
+  }
+  throw new Error(
+    "Pantheon's final-review override is retired. Start a newly approved bounded revision instead.",
+  );
 }
 
 function recoverQualityReviewAfterEvidenceRepair(db, qualityTaskId) {
@@ -2096,6 +2382,7 @@ function projectStorefrontVisual(db, task, plan, opportunityRecord) {
       storefrontVisualTaskId: task.id,
       storefrontVisualIds: visualAssets.map((asset) => asset.id),
       storefrontPreviewIds: (generated.previews || []).map((preview) => preview.id),
+      qualityReviewImageIds: (generated.qualityReviewImages || []).map((image) => image.id),
     },
   });
   const review = queueQualityReview(
@@ -2137,6 +2424,19 @@ function qualityPassed(output) {
       ...(output.risks || []),
     ].filter(Boolean),
   };
+}
+
+function qualityRevisionCorrections(output, verdict) {
+  const roleOutput = output.roleOutput || {};
+  const actionableFindings = (verdict.findings || []).filter((finding) => (
+    !/^no (?:major |unresolved )/i.test(String(finding))
+    && /clipp|overflow|misrepresent|usability|layout|visual|workbook|formula|content|grammar|wording|copy|claim|contact|history|instruction|payment|field|status/i.test(String(finding))
+  ));
+  return [...new Set([
+    output.nextAction,
+    roleOutput.operatorRecommendation,
+    ...actionableFindings,
+  ].filter(Boolean).map((item) => String(item).replace(/\s+/g, " ").trim()))].slice(0, 6);
 }
 
 function queueConversionCopy(db, plan, opportunityRecord, qualityTask, options = {}) {
@@ -2420,6 +2720,109 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
   const verdict = qualityPassed(output);
   const revisionNumber = Number(productMetadata(task)?.revisionNumber || 0);
   if (!verdict.passed) {
+    if (plan.metadata.validationSample) {
+      const correctionLimit = Math.max(
+        0,
+        Number(plan.metadata.validationSample.providerPolicy?.correctionLimit || 0),
+      );
+      const revisionCorrections = qualityRevisionCorrections(output, verdict);
+      if (revisionNumber < correctionLimit) {
+        try {
+          const revision = prepareCatalogueBuild(db, {
+            planId: plan.id,
+            opportunityId: opportunityRecord.id,
+            revisionNumber: revisionNumber + 1,
+            revisionCorrections: revisionCorrections.length
+              ? revisionCorrections
+              : [output.summary],
+            operatorChoiceRequired: false,
+          });
+          updatePlan(db, plan.id, {
+            status: "rebuilding",
+            metadata: {
+              buildStatus: "validation_sample_correction_prepared",
+              qualityTaskId: task.id,
+              qualityScore: verdict.score,
+              qualityFindings: verdict.findings,
+              qualityDecision: verdict.decision,
+              correctionPrepared: true,
+              correctionRequiresNewBudget: false,
+              correctionTaskId: revision.task?.id || null,
+            },
+          });
+          run(
+            db,
+            "UPDATE catalogue_items SET quality_status = 'needs_changes', updated_at = ? WHERE plan_id = ?",
+            [now(), plan.id],
+          );
+          insertEvent(db, {
+            level: "warn",
+            actor: "pantheon",
+            type: "catalogue.validation_sample_correction_prepared",
+            entityType: "catalogue_plan",
+            entityId: plan.id,
+            message: "Pantheon prepared the one permitted internal correction after the validation sample failed review.",
+            metadata: {
+              taskId: task.id,
+              correctionTaskId: revision.task?.id || null,
+              score: verdict.score,
+              findings: verdict.findings,
+              combinedBudgetCents: Number(
+                plan.metadata.validationSample.providerPolicy?.combinedCapCents || 0,
+              ),
+            },
+          });
+          return {
+            next: revision,
+            verdict,
+            correctionPrepared: true,
+            additionalApprovalRequired: false,
+          };
+        } catch (error) {
+          if (!/buyer-intent AI limit/i.test(String(error.message || ""))) throw error;
+        }
+      }
+      updatePlan(db, plan.id, {
+        status: "needs_attention",
+        metadata: {
+          buildStatus: "validation_sample_quality_review_failed",
+          qualityTaskId: task.id,
+          qualityScore: verdict.score,
+          qualityFindings: verdict.findings,
+          qualityDecision: verdict.decision,
+          correctionPrepared: false,
+          correctionRequiresNewBudget: true,
+        },
+      });
+      run(
+        db,
+        "UPDATE catalogue_items SET quality_status = 'needs_changes', updated_at = ? WHERE plan_id = ?",
+        [now(), plan.id],
+      );
+      insertEvent(db, {
+        level: "warn",
+        actor: "pantheon",
+        type: "catalogue.validation_sample_quality_failed",
+        entityType: "catalogue_plan",
+        entityId: plan.id,
+        message: revisionNumber >= correctionLimit
+          ? "Pantheon stopped after the permitted validation-sample correction still failed quality review."
+          : "Pantheon stopped because the validation sample could not be corrected inside its approved AI limit.",
+        metadata: {
+          taskId: task.id,
+          score: verdict.score,
+          findings: verdict.findings,
+          combinedBudgetCents: Number(plan.metadata.validationSample.providerPolicy?.combinedCapCents || 0),
+          additionalApprovalRequired: true,
+        },
+      });
+      return {
+        next: null,
+        verdict,
+        correctionPrepared: false,
+        additionalApprovalRequired: true,
+      };
+    }
     updatePlan(db, plan.id, {
       status: revisionNumber < 1 ? "rebuilding" : "needs_attention",
       metadata: {
@@ -2436,16 +2839,7 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
       [now(), plan.id],
     );
     if (revisionNumber < 1) {
-      const roleOutput = output.roleOutput || {};
-      const actionableFindings = (verdict.findings || []).filter((finding) => (
-        !/^no (?:major |unresolved )/i.test(String(finding))
-        && /clipp|overflow|misrepresent|usability|layout|visual|workbook|formula|content|grammar|wording|copy|claim|contact|history|instruction|payment|field|status/i.test(String(finding))
-      ));
-      const revisionCorrections = [...new Set([
-        output.nextAction,
-        roleOutput.operatorRecommendation,
-        ...actionableFindings,
-      ].filter(Boolean).map((item) => String(item).replace(/\s+/g, " ").trim()))].slice(0, 6);
+      const revisionCorrections = qualityRevisionCorrections(output, verdict);
       const revision = prepareCatalogueBuild(db, {
         planId: plan.id,
         opportunityId: opportunityRecord.id,
@@ -2511,6 +2905,44 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
     [now(), plan.id],
   );
   markCatalogueDeliverablesQualityPassed(db, plan, generated);
+  if (plan.metadata.validationSample) {
+    updatePlan(db, plan.id, {
+      status: "validation_sample_ready",
+      metadata: {
+        buildStatus: "validation_sample_quality_passed",
+        qualityTaskId: task.id,
+        qualityScore: verdict.score,
+        qualityFindings: verdict.findings,
+        qualityDecision: verdict.decision,
+        investmentCaseRemainsParked: true,
+      },
+    });
+    const finalized = finalizeBuyerIntentValidationSample(db, {
+      planId: plan.id,
+      buildTaskId: buildTask.id,
+      qualityTaskId: task.id,
+      generated,
+    });
+    insertEvent(db, {
+      actor: "pantheon",
+      type: "catalogue.validation_sample_quality_passed",
+      entityType: "catalogue_plan",
+      entityId: plan.id,
+      message: `The functional validation sample passed independent quality review at ${verdict.score}/100; its exact buyer test is ready for review.`,
+      metadata: {
+        taskId: task.id,
+        score: verdict.score,
+        executionPackId: finalized.pack.id,
+        noExternalAction: true,
+      },
+    });
+    return {
+      next: null,
+      verdict,
+      validationSampleReady: true,
+      executionPack: finalized.pack,
+    };
+  }
   const updated = updatePlan(db, plan.id, {
     status: "preparing_launch",
     metadata: {
@@ -3952,11 +4384,13 @@ module.exports = {
   PRODUCT_BUILD_SPEC_SCHEMA,
   PRODUCTION_STAGES,
   applyPantheonHandoffDecision,
+  assertQualityReviewRecheckAvailable,
   buildProfile,
   completedUnprojectedProductionTask,
   getProductionState,
   pendingProductionTask,
   prepareCatalogueBuild,
+  prepareExplicitFinalValidationReview,
   prepareVerifiedLaunchContextRepair,
   publicationPlanPriceText,
   publicationPriceChannelHypothesis,

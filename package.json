@@ -17,6 +17,7 @@
     "doctor": "node scripts/doctor.js",
     "lint": "eslint \"src/**/*.js\" \"scripts/**/*.js\" \"test/**/*.js\" \"public/**/*.js\" \"*.js\" --max-warnings=0",
     "test": "node scripts/run-tests.js",
+    "test:lifecycle:ci": "node scripts/run-tests.js test/windows-launcher.test.js",
     "test:ops": "node scripts/run-tests.js test/ops-recovery.test.js",
     "test:recovery": "node scripts/run-tests.js test/ops-recovery.test.js"
   },

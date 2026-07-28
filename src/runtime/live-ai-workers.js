@@ -1264,8 +1264,12 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     || options.parameters?.pantheonProduction?.supervisorOwned === true;
   const qualityReviewedWorker = !pantheonSupervisorOwned
     && ["product_builder", "copy_conversion_agent", "distribution_operator"].includes(workerDefinition.id);
+  const manualApprovalRequired = options.manualApprovalRequired === true
+    || options.parameters?.manualApprovalRequired === true
+    || options.parameters?.operatorChoiceRequired === true;
   const requestParameters = {
     ...(options.parameters || {}),
+    ...(manualApprovalRequired ? { manualApprovalRequired: true } : {}),
     ...(qualityReviewedWorker ? { requiredReviewer: "quality_reviewer" } : {}),
   };
   const effects = Array.isArray(options.effects) ? options.effects : [];

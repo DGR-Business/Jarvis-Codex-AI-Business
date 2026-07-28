@@ -88,7 +88,7 @@ function pendingApprovals(db) {
     });
 }
 
-function decisionCard(approval) {
+function decisionCard(approval, db = null) {
   const payload = approval.payload || {};
   const liveRequest = approval.taskPayload?.liveSpendRequest || {};
   const modelRoute = liveRequest.modelRoute || null;
@@ -104,16 +104,24 @@ function decisionCard(approval) {
   const dataProtectionPlan = approval.scope === "data_retention_policy";
   const catalogueBuild = production?.stage === "product_build"
     && production.operatorChoiceRequired === true;
+  const validationProductBuild = catalogueBuild && Boolean(productBuildSpec?.validationSample);
   const qualityReview = production?.stage === "quality_review"
     || workerId === "quality_reviewer";
   const correctionNumber = Number(production?.revisionNumber || 0);
-  const finalQualityRecheck = qualityReview && correctionNumber > 0;
+  const explicitOperatorFinalReview = qualityReview
+    && production?.explicitOperatorFinalReview === true;
+  const finalQualityRecheck = qualityReview
+    && (correctionNumber > 0 || explicitOperatorFinalReview);
   const maxCostCents = Number(payload.estimatedCostCents || payload.maxCostCents || 0);
   return {
     id: approval.id,
     type: "decision",
     decisionKind: "approval",
-    title: catalogueBuild
+    title: explicitOperatorFinalReview
+      ? "Run one final independent check on the corrected workbook?"
+      : validationProductBuild
+      ? "Build the functional validation workbook?"
+      : catalogueBuild
       ? `Build the ${productBuildSpec?.catalogueItems?.length || "planned"}-product catalogue?`
       : demandResearch
       ? `Decide whether to run live market research${maxCostCents > 0 ? ` (up to A$${(maxCostCents / 100).toFixed(2)})` : ""}`
@@ -124,14 +132,22 @@ function decisionCard(approval) {
     requestedAt: approval.requested_at,
     scopeHash: approval.scope_hash,
     expiresAt: approval.expires_at,
-    recommendation: catalogueBuild
+    recommendation: explicitOperatorFinalReview
+      ? "Jarvis corrected the exact workbook, setup guide, calculations, and previews locally at no additional AI cost. Run one final independent review before Pantheon treats the product as ready for a buyer test."
+      : validationProductBuild
+      ? "Pantheon will create one usable local Excel workbook, setup guide, and two previews, then send the exact files through independent quality review. Nothing will be published or sent."
+      : catalogueBuild
       ? "Pantheon will create the complete local product files, retain them in the venture record, and send them through an independent quality review. Nothing will be published or sent."
       : demandResearch
       ? "Demand Validator will search the web for current buyer language, competing products, price signals, and one suitable free audience channel."
       : controlledDemandCheck
         ? "Demand Validator will assess the supplied test evidence and return one recommendation for your review."
         : payload.reason || payload.commercialPurpose || "Review the evidence and choose whether this exact action should continue.",
-    expectedUpside: catalogueBuild
+    expectedUpside: explicitOperatorFinalReview
+      ? "Confirms whether the corrected customer files are genuinely usable and truthfully represented. If they still fail, Pantheon stops rather than paying for another review."
+      : validationProductBuild
+      ? "Closes the product-format and usability gap with one real sample before any wider catalogue or marketplace action is considered."
+      : catalogueBuild
       ? "Turns the validated offer into customer-usable files so the real launch decision can be based on an actual product rather than a plan."
       : demandResearch
       ? "The result should tell us whether this buyer can be reached and give us one measurable free test with a clear stop rule."
@@ -151,6 +167,10 @@ function decisionCard(approval) {
     productionStage: production?.stage || null,
     correctionNumber,
     finalQualityRecheck,
+    explicitOperatorFinalReview,
+    productFiles: explicitOperatorFinalReview && db
+      ? currentBuyerIntentValidation(db, approval.venture_id, production?.planId)?.files || []
+      : [],
     effects: approval.expectedEffects,
     tools,
     maxTurns: Number(scope.maxTurns || liveRequest.maxTurns || 0),
@@ -171,9 +191,13 @@ function decisionCard(approval) {
     tracePolicy: payload.tracePolicy || null,
     policySummary: Array.isArray(payload.policySummary) ? payload.policySummary : null,
     noDeletion: payload.noDeletion === true,
-    attentionLabel: catalogueBuild ? "Product build ready" : finalQualityRecheck ? "Final quality recheck ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
-    primaryActionLabel: catalogueBuild ? "Review catalogue build" : finalQualityRecheck ? "Review final quality recheck" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
-    approveLabel: catalogueBuild
+    attentionLabel: explicitOperatorFinalReview ? "Corrected workbook ready" : validationProductBuild ? "Validation product ready" : catalogueBuild ? "Product build ready" : finalQualityRecheck ? "Final quality recheck ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
+    primaryActionLabel: explicitOperatorFinalReview ? "Review the corrected workbook" : validationProductBuild ? "Review validation product" : catalogueBuild ? "Review catalogue build" : finalQualityRecheck ? "Review final quality recheck" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
+    approveLabel: explicitOperatorFinalReview
+      ? "Run the final independent check"
+      : validationProductBuild
+      ? "Build this validation workbook"
+      : catalogueBuild
       ? "Build this catalogue"
       : finalQualityRecheck
         ? "Start final quality recheck"
@@ -186,6 +210,8 @@ function decisionCard(approval) {
         ? "data_protection"
         : null,
     productBuild: catalogueBuild ? {
+      validationSample: validationProductBuild,
+      channel: productBuildSpec?.validationSample?.channel || null,
       productCount: Number(productBuildSpec?.catalogueItems?.length || 0),
       profile: productBuildSpec?.profile || null,
       formats: productBuildSpec?.allowedFormats || [],
@@ -198,7 +224,9 @@ function decisionCard(approval) {
         priceCents: Number(item.priceCents || 0),
       })),
     } : null,
-    decisionPrompt: catalogueBuild
+    decisionPrompt: explicitOperatorFinalReview
+      ? "Review the corrected files, the one-review limit, and the A$1.50 maximum before deciding."
+      : catalogueBuild
       ? "Review what Pantheon will create, the cost ceiling, and what remains locked."
       : demandResearch
       ? "See what the AI will research, the maximum cost, and what it cannot do."
@@ -326,7 +354,7 @@ function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
   const consequentialChoices = [
     ...pendingApprovals(db)
       .filter((approval) => belongsToCurrentJourney(approval.taskPayload, currentJourneyId))
-      .map(decisionCard),
+      .map((approval) => decisionCard(approval, db)),
     ...pendingHandoffs(db)
       .filter((handoff) => belongsToCurrentJourney(handoff.source_task_payload, currentJourneyId))
       .map(handoffCard),
@@ -537,13 +565,124 @@ function currentTest(db, ventureId) {
   const row = get(
     db,
     `SELECT * FROM commercial_experiments
-     WHERE venture_id = ?
+     WHERE (
+         venture_id = ?
+         OR json_extract(metadata, '$.buyerIntentValidation') IS NOT NULL
+       )
        AND status IN ('ready', 'running')
        AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
-     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
-    [ventureId],
+     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
+              CASE WHEN venture_id = ? THEN 0 ELSE 1 END,
+              updated_at DESC LIMIT 1`,
+    [ventureId, ventureId],
   );
   return row ? { ...row, status: testStatus(row.status), metadata: fromJson(row.metadata) } : null;
+}
+
+function validationSampleDeliverables(db, plan) {
+  const metadata = plan?.metadata || {};
+  const ids = [...new Set([
+    ...(metadata.generatedFileIds || []),
+    ...(metadata.storefrontPreviewIds || []),
+  ].filter(Boolean))];
+  if (!ids.length) return [];
+  const rows = all(
+    db,
+    `SELECT *
+     FROM deliverables
+     WHERE id IN (${ids.map(() => "?").join(", ")})
+       AND status <> 'archived'`,
+    ids,
+  ).map((row) => operatorDeliverable({
+    ...row,
+    metadata: fromJson(row.metadata, {}),
+  }));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return ids.map((id) => byId.get(id)).filter(Boolean).map((row) => ({
+    id: row.id,
+    name: row.human_name,
+    format: row.format,
+    bytes: Number(row.metadata?.bytes || 0),
+    status: row.status,
+    summary: row.summary,
+    qualityReviewOnly: row.metadata?.qualityReviewOnly === true,
+    derivedFromActualSavedFile: row.metadata?.derivedFromActualSavedFile === true,
+  }));
+}
+
+function currentBuyerIntentValidation(db, ventureId = null, planId = null) {
+  const planRow = get(
+    db,
+    `SELECT *
+     FROM catalogue_plans
+     WHERE json_extract(metadata, '$.validationSample') IS NOT NULL
+       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
+       AND (? IS NULL OR venture_id = ?)
+       AND (? IS NULL OR id = ?)
+     ORDER BY updated_at DESC LIMIT 1`,
+    [ventureId, ventureId, planId, planId],
+  );
+  if (!planRow) return null;
+  const plan = {
+    ...planRow,
+    metadata: fromJson(planRow.metadata, {}),
+  };
+  const contract = plan.metadata.validationSample || {};
+  const experiment = contract.experimentId
+    ? get(db, "SELECT id, name, status, updated_at FROM commercial_experiments WHERE id = ?", [contract.experimentId])
+    : null;
+  const finalTaskId = plan.metadata.explicitFinalReviewTaskId || null;
+  const finalTask = finalTaskId
+    ? get(
+      db,
+      "SELECT id, title, status, approval_id, cost_budget_cents, updated_at FROM tasks WHERE id = ?",
+      [finalTaskId],
+    )
+    : null;
+  const reviewAttempts = Number(get(
+    db,
+    `SELECT COUNT(DISTINCT json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.reviewFingerprint')) AS count
+     FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND status IN ('running', 'completed', 'failed', 'needs_attention')
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage') = 'quality_review'`,
+    [plan.id],
+  )?.count || 0);
+  const recordedFiles = Array.isArray(plan.metadata.validationSampleDeliverables)
+    ? plan.metadata.validationSampleDeliverables
+    : [];
+  let status = "product_being_built";
+  if (plan.status === "needs_attention") status = "product_needs_attention";
+  else if (
+    plan.status === "validation_sample_ready"
+    && plan.metadata.validationSampleDeliverables?.length
+  ) status = "buyer_test_ready";
+  else if (finalTask?.status === "running") status = "final_review_running";
+  else if (["blocked", "waiting_approval", "queued"].includes(finalTask?.status)) {
+    status = "waiting_for_final_review_decision";
+  } else if (plan.metadata.qualityReviewLimitReached === true) {
+    status = "corrected_files_waiting_for_review";
+  }
+  return {
+    planId: plan.id,
+    opportunityId: plan.opportunity_id,
+    experimentId: experiment?.id || contract.experimentId || null,
+    name: experiment?.name || contract.sample?.packageTitle || "Buyer-intent validation product",
+    status,
+    planStatus: plan.status,
+    buildStatus: plan.metadata.buildStatus || null,
+    reviewAttempts,
+    reviewLimit: 2,
+    finalTask,
+    finalApprovalId: plan.metadata.explicitFinalReviewApprovalId || finalTask?.approval_id || null,
+    finalReviewCapCents: Number(
+      contract.providerPolicy?.qualityReviewerCapCents || finalTask?.cost_budget_cents || 0,
+    ),
+    investmentCaseRemainsParked: contract.investmentCaseRemainsParked !== false,
+    externalActionsAllowed: contract.externalActionsAllowed === true,
+    files: recordedFiles.length ? recordedFiles : validationSampleDeliverables(db, plan),
+  };
 }
 
 function digestWithCurrentAttention(db, digest, work, ventureId, currentJourneyId = null) {
@@ -735,12 +874,14 @@ function getCockpitState(db) {
   const failedCount = operationalTasks.filter((task) => ["failed", "needs_attention"].includes(task.status)).length;
   const activeRuns = getAgentRunsState(db, { state: "active", limit: 10 }).runs;
   const portfolio = getPortfolioState(db);
+  const buyerIntentValidation = currentBuyerIntentValidation(db);
   return {
     generatedAt: new Date().toISOString(),
     activeVenture: commercial.venture,
     ventureCase: commercial.ventureCase,
     importantWork: work,
     currentTest: test,
+    buyerIntentValidation,
     activeRuns,
     nextMoneyMove: commercial.ventureCase.next_money_move,
     economics: commercial.economics,
@@ -799,7 +940,7 @@ function getCockpitState(db) {
 
 function getDecisionsState(db) {
   const approvals = [
-    ...pendingApprovals(db).map(decisionCard),
+    ...pendingApprovals(db).map((approval) => decisionCard(approval, db)),
     ...pendingHandoffs(db).map(handoffCard),
   ];
   const reviews = parseRows(all(
@@ -849,12 +990,22 @@ function getBusinessTestsState(db) {
   const production = getProductionState(db);
   const experiments = parseRows(all(
     db,
-    `SELECT * FROM commercial_experiments
-     WHERE venture_id = ?
-       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
-     ORDER BY updated_at DESC`,
+    `SELECT commercial_experiments.*, ventures.name AS venture_name,
+            ventures.is_active AS venture_is_active
+     FROM commercial_experiments
+     LEFT JOIN ventures ON ventures.id = commercial_experiments.venture_id
+     WHERE (
+         commercial_experiments.venture_id = ?
+         OR json_extract(commercial_experiments.metadata, '$.buyerIntentValidation') IS NOT NULL
+       )
+       AND COALESCE(json_extract(commercial_experiments.metadata, '$.archivedFromOperator'), 0) <> 1
+     ORDER BY commercial_experiments.updated_at DESC`,
     [commercial.venture.id],
-  )).map((experiment) => ({ ...experiment, status: testStatus(experiment.status) }));
+  )).map((experiment) => ({
+    ...experiment,
+    status: testStatus(experiment.status),
+    preVenture: Boolean(experiment.metadata?.buyerIntentValidation),
+  }));
   const tests = { candidate: [], ready: [], running: [], completed: [], cancelled: [] };
   for (const experiment of experiments) tests[experiment.status].push(experiment);
   return {
@@ -1011,6 +1162,10 @@ function observedToolsForRun(db, runId) {
 
 function executionKindForRun(runRecord, modelCall, task, cost, receipt) {
   const runMode = String(runRecord.mode || "").toLowerCase();
+  const runMetadata = fromJson(runRecord.metadata, {});
+  if (runMetadata.executionKind === "deterministic_system_step") {
+    return "deterministic_system_step";
+  }
   const callMode = String(modelCall?.mode || "").toLowerCase();
   const callStatus = String(modelCall?.status || "").toLowerCase();
   const costMetadata = cost?.metadata || {};
@@ -1033,8 +1188,23 @@ function executionKindForRun(runRecord, modelCall, task, cost, receipt) {
     || modelCall?.outcome_status === "unknown"
     || ["unknown", "outcome_unknown"].includes(callStatus)
     || costMetadata.outcomeUnknown === true
-    || fromJson(runRecord.metadata, {}).outcomeUnknown === true;
-  return outcomeUnknown ? "provider_outcome_unknown" : "model_backed";
+    || runMetadata.outcomeUnknown === true;
+  if (outcomeUnknown) return "provider_outcome_unknown";
+  const terminalProviderEvidence = Boolean(
+    providerEvidence
+    && callMode === "live"
+    && [
+      "completed",
+      "succeeded",
+      "provider_completed",
+      "failed",
+      "needs_attention",
+    ].includes(callStatus)
+    && modelCall?.outcome_status === "known"
+    && modelCall?.provider_request_id
+    && modelCall?.completed_at
+  );
+  return terminalProviderEvidence ? "model_backed" : "provider_evidence_missing";
 }
 
 function runExecutionContext(db, runRecord, taskRow = null) {
@@ -1046,7 +1216,7 @@ function runExecutionContext(db, runRecord, taskRow = null) {
   const cost = exactCostForRun(db, runRecord, task, modelCall);
   const receipt = latestAgentRunReceipt(db, runRecord.id);
   const kind = executionKindForRun(runRecord, modelCall, task, cost, receipt);
-  const protectedRehearsal = kind === "protected_rehearsal";
+  const protectedRehearsal = ["protected_rehearsal", "deterministic_system_step"].includes(kind);
   const liveRequest = task?.payload?.liveSpendRequest || {};
   const modelMetadata = modelCall?.metadata || {};
   const agentHarness = modelMetadata.agentHarness
@@ -1171,9 +1341,11 @@ function runExecutionContext(db, runRecord, taskRow = null) {
 function executionLabel(kind) {
   return {
     protected_rehearsal: "Internal rehearsal",
+    deterministic_system_step: "System-generated step",
     provider_not_contacted: "Stopped before OpenAI",
     model_backed: "OpenAI used",
     provider_outcome_unknown: "Outcome needs review",
+    provider_evidence_missing: "Provider proof incomplete",
   }[kind] || "Run recorded";
 }
 
@@ -1402,6 +1574,7 @@ function getAgentRunsState(db, filters = {}) {
       active: summaries.filter((item) => item.active).length,
       modelBacked: summaries.filter((item) => item.executionKind === "model_backed").length,
       protectedRehearsals: summaries.filter((item) => item.executionKind === "protected_rehearsal").length,
+      deterministicSteps: summaries.filter((item) => item.executionKind === "deterministic_system_step").length,
       needsReview: summaries.filter((item) => item.attentionRequired || item.reviewStatus === "pending").length,
       reconciledCostCents: summaries.reduce((total, item) => total + Number(item.cost.reconciledCents || 0), 0),
     },
@@ -1784,8 +1957,68 @@ function getSystemState(db) {
 function getTestDetail(db, id) {
   const experiment = get(db, "SELECT * FROM commercial_experiments WHERE id = ?", [id]);
   if (!experiment) return null;
+  const parsedExperiment = {
+    ...experiment,
+    status: testStatus(experiment.status),
+    metadata: fromJson(experiment.metadata),
+  };
+  const packRow = get(
+    db,
+    `SELECT *
+     FROM commercial_execution_packs
+     WHERE experiment_id = ?
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+    [id],
+  );
+  const pack = packRow ? { ...packRow, metadata: fromJson(packRow.metadata) } : null;
+  const candidateId = parsedExperiment.metadata?.candidateId || null;
+  const candidateRow = candidateId
+    ? get(db, "SELECT * FROM commercial_test_candidates WHERE id = ?", [candidateId])
+    : null;
+  const candidate = candidateRow ? { ...candidateRow, metadata: fromJson(candidateRow.metadata) } : null;
+  const contract = parsedExperiment.metadata?.buyerIntentValidation
+    || candidate?.metadata?.buyerIntentValidation
+    || pack?.metadata?.buyerIntentValidation
+    || null;
+  const planRow = contract?.cataloguePlanId
+    ? get(db, "SELECT * FROM catalogue_plans WHERE id = ?", [contract.cataloguePlanId])
+    : null;
+  const plan = planRow ? {
+    ...planRow,
+    audience_segments: fromJson(planRow.audience_segments, []),
+    channels: fromJson(planRow.channels, []),
+    geographies: fromJson(planRow.geographies, []),
+    languages: fromJson(planRow.languages, []),
+    metadata: fromJson(planRow.metadata, {}),
+  } : null;
+  const distributionRunId = pack?.metadata?.aiTeam?.distributionRun?.runId || null;
+  const decisionHandoff = distributionRunId ? parseRows(all(
+    db,
+    `SELECT * FROM agent_handoffs
+     WHERE from_run_id = ? AND to_agent_id = 'chief_of_staff'
+     ORDER BY created_at DESC LIMIT 1`,
+    [distributionRunId],
+  ))[0] || null : null;
+  const packedSampleDeliverables = Array.isArray(pack?.metadata?.sampleDeliverables)
+    ? pack.metadata.sampleDeliverables
+    : [];
+  const plannedSampleDeliverables = Array.isArray(plan?.metadata?.validationSampleDeliverables)
+    ? plan.metadata.validationSampleDeliverables
+    : [];
+  const sampleDeliverables = packedSampleDeliverables.length
+    ? packedSampleDeliverables
+    : plannedSampleDeliverables.length
+      ? plannedSampleDeliverables
+      : validationSampleDeliverables(db, plan);
   return {
-    experiment: { ...experiment, status: testStatus(experiment.status), metadata: fromJson(experiment.metadata) },
+    experiment: parsedExperiment,
+    candidate,
+    pack,
+    plan,
+    buyerIntentValidation: contract,
+    sampleDeliverables,
+    decisionHandoff,
     evidence: parseRows(all(db, "SELECT * FROM commercial_evidence WHERE experiment_id = ? ORDER BY captured_at", [id])),
     results: parseRows(all(db, "SELECT * FROM commercial_results WHERE experiment_id = ? ORDER BY occurred_at", [id])),
     feedback: parseRows(all(db, "SELECT * FROM commercial_feedback WHERE experiment_id = ? ORDER BY occurred_at", [id])),

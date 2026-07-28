@@ -20,31 +20,35 @@ commercial move.
 - Channel direction: selected from evidence per opportunity. Gumroad, Etsy,
   marketplaces, direct commerce, service channels, affiliate networks, and
   other lawful routes are options, not generic defaults.
-- Runtime: Node.js 24, CommonJS, built-in SQLite schema 23, local signed operator
+- Runtime: Node.js 24, CommonJS, built-in SQLite schema 24, local signed operator
   session, scheduler-backed supervisor, independent monitor, Portfolio
   Controller, and a registered non-universal `digital_product_v1` Venture Kit.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
-- Active engineering: the Agent Assurance and OpenAI Integration Hardening
-  release is complete. Local, provider, browser, recovery, dependency, and
-  private GitHub CI gates passed.
+- Active engineering: the First Buyer-Intent Proof is paused at
+  `needs_attention` while the 2026-07-28 developer audit closes an
+  authorization defect and removes unbounded local lifecycle testing.
 - Current commercial result: two bounded rounds retained ten hypotheses,
   performed comparable live demand and finance review on six finalists, and
   completed two Sol investment reviews. Pantheon selected no investment.
-- Current operator state: all 11 workers are on standby. There are no unknown
-  provider outcomes and no product, publication, market-test, or
-  external-action decision waiting.
+- Current operator state: no worker is running and there is no unknown provider
+  outcome. The buyer-intent sample is not quality-passed and no market test,
+  publication, account action, customer contact, or external spend is
+  authorised.
 - Historical product: the Job Search Evidence Tracker package remains
   recoverable engineering evidence but is parked after an unbiased comparison.
   It is not an active venture or publication recommendation.
 - External actions: locked by default.
 - Operator budget: eight hours per week in the build and first-proof phase.
 - Pre-revenue AI and tool cap: A$100 per month. July runtime exposure is
-  A$8.54, comprising A$3.10 reconciled provider usage and A$5.44 ordinary
-  incurred estimates. There are no unknown provider outcomes.
-- Operations: `START PANTHEON.cmd` opens the lightweight control shell in
-  Standby. The dashboard starts Working mode and can return to Standby or stop
-  every exact Pantheon-owned process without touching unrelated Node work.
+  A$9.17, comprising A$3.10 reconciled provider usage and A$6.07 ordinary
+  incurred estimates. The buyer-intent workflow added A$0.63 of billing-pending
+  estimates. There are no unknown provider outcomes.
+- Operations: Stopped, Standby, and Working remain the intended interface.
+  Local lifecycle proof is not currently release-approved: the launcher test
+  is quarantined to a disposable, externally bounded Windows CI job until a
+  single supervisor with operating-system-enforced descendant ownership
+  replaces the nested PowerShell/Node process tree.
 
 ## Durable Decisions
 
@@ -85,6 +89,8 @@ commercial move.
 | 2026-07-27 | Do not repeat generic broad discovery after two unsupported rounds. | The next spend must close a named evidence gap through stronger market data, a measured service trial, a submitted idea, or direct buyer intent. |
 | 2026-07-28 | Establish agent assurance before expanding OpenAI capabilities. | Pantheon has strong runtime control but needs reviewed behavioral and trace evaluation before broader tools, sandboxes, connectors, commerce, or dynamic orchestration can earn trust. |
 | 2026-07-28 | Record malformed semantic-review responses as known failed attempts and permit only one separately visible correction. | Provider work and cost must remain truthful even when strict structured output fails; a larger token ceiling must never become an invisible retry. |
+| 2026-07-28 | Quarantine Windows lifecycle integration from local and ordinary test runs. | A nested npm, Node, PowerShell, fake-server, and child-Node process tree outlived the test deadline and left Codex waiting. Lifecycle proof now belongs only in a disposable CI job with an external ceiling until a Windows Job Object-backed supervisor exists. |
+| 2026-07-28 | Treat an explicit human-decision marker as stronger than an internal mandate. | A Quality Reviewer call ran under the monthly mandate even though its exact packet said Daniel's approval was required. Both current and legacy manual-approval flags now fail closed. |
 
 ## 2026-07-22 Full Journey Rehearsal: Genuine Quality Stop
 
@@ -1404,18 +1410,97 @@ Exact evidence is retained at
 
 ## Next Best Work
 
-Make the Social Media Manager interest-test packet explicit about the audience,
-authorized channel, exposure or sample cap, qualification question, pass
-threshold, revise threshold, and stop rule. Prepare only the smallest functional
-sample and measurement-ready buyer-intent test. Choose the channel from evidence
-rather than defaulting to Etsy, and retain separate protection for account
-action, publication, customer contact, and spend.
+Finish the bounded 2026-07-28 developer audit, run the ordinary isolated suite
+without the Windows launcher test, and prove the branch in private CI. Do not
+make another paid buyer-intent call or external action during stabilization.
 
-Do not add Sandbox Agents, MCP, computer use, Commerce, server-side Multi-agent,
-dynamic workers, or another dashboard before a recorded adoption trigger is
-met.
+The next operations release must replace nested lifecycle ownership with one
+lightweight Windows supervisor and a Job Object configured to terminate every
+owned descendant when the supervisor exits. Setup, start, standby, stop, and
+emergency stop must be separate bounded operations. Ten repeated cycles must
+leave no owned process or occupied port.
 
-Pantheon reopens the investment case only if 100 qualified visits produce at
-least 3 completed paid orders, no format- or clarity-driven refunds, and
-positive actual all-in cash contribution. A full catalogue and exact Venture
-Kit begin only after that evidence changes the failed economics criterion.
+Only after that release passes may Daniel authorize one bounded correction of
+the current validation sample. A full catalogue remains blocked until real
+buyer evidence changes the failed economics criterion.
+
+## 2026-07-28 First Buyer-Intent Proof Started
+
+Daniel instructed Jarvis to continue after the Agent Assurance release. Jarvis
+reconciled the retained 9-of-10 investment case, the exact failed economics
+criterion, Pantheon's generic execution-pack path, and current official Etsy
+seller documentation.
+
+Pantheon will prepare one usable Excel validation sample and one single-listing
+test rather than a full catalogue. The test uses A$29.95, up to 100 Etsy Shop
+Stats visits or 30 days, and a pass rule of three independent paid orders, no
+format- or clarity-driven refund, and at least A$10 actual net cash contribution
+per completed order. Favourites and enquiries may justify one revision but
+cannot pass the investment gate. Fewer than 100 visits is an inconclusive reach
+result, not a demand failure.
+
+The reusable runtime contract remains venture-neutral. Etsy, Excel, the buyer,
+workbook fields, price, and thresholds are retained in
+`config/buyer-intent-validation-specs.js`. Account creation, KYC, seller terms,
+setup fees, publication, buyer contact, advertising, and undelegated spend
+remain protected.
+
+## 2026-07-28 Developer Audit: Buyer Proof Paused
+
+The audit found two separate defects and therefore does not accept the current
+buyer-intent workflow as a clean proof.
+
+First, `npm.cmd test -- test/windows-launcher.test.js` could create this process
+tree: npm wrapper, test wrapper, Node test runner, PowerShell launcher, fake
+Node server, and child Node process. A test timeout did not own or terminate all
+descendants, and one cleanup path itself used an unbounded synchronous
+`taskkill`. This explains the long periods with no useful progress. The exact
+local command now refuses within seconds. Ordinary tests exclude the launcher;
+the lifecycle test can run only in its dedicated disposable Windows CI job.
+
+Second, Pantheon ran another Quality Reviewer call even though the exact
+decision packet stated that Daniel's approval was required. The task was
+`task_live_worker_wf_buyer_intent_social_media_manager_client_control_v1_catalogue_quality_catalogue_validation_social_media_manager_2d9a65f51395`.
+It used Terra, returned known provider response
+`resp_0f0d5d8bd90501c4016a683f02711081988189be305173df9b`, and recorded trace
+`trace_1476c7cf57044123a466f76bf2734d6a`. Its estimated cost was A$0.16 and
+billing remains pending. No external action occurred.
+
+The workflow contains five incurred worker estimates totalling A$0.63:
+A$0.03 for Product Builder and A$0.14, A$0.14, A$0.16, and A$0.16 for review
+attempts. The final review scored the files 88 and required two copy
+corrections. The workflow remains `needs_attention`; it is not buyer proof,
+commercial validation, or authority to publish.
+
+Corrections now:
+
+- make both current `manualApprovalRequired` and legacy
+  `operatorChoiceRequired` override internal mandates;
+- permit at most one measured correction and retire the fourth-review override;
+- calculate the A$3 workflow ceiling from current incurred or unresolved
+  exposure without double-counting reservations or historical task caps;
+- make correction replay idempotent;
+- persist exact model-call completion evidence and require it for live proof;
+- drain the scheduler before normal shutdown and stop new ticks immediately;
+- impose explicit deadlines and bounded output on every reviewed subprocess;
+- hash, size-check, allowlist, canonicalize, and re-open customer artifacts;
+- label deterministic runtime steps as system-generated rather than AI work;
+  and
+- keep pre-venture Business Tests visible without pretending they belong to an
+  active operating venture.
+
+The full factual audit is retained at
+`docs/reviews/PANTHEON-DEV-AUDIT-2026-07-28.md`.
+
+Bounded local verification completed without another hang: lint passed, the
+ordinary isolated suite passed 296 of 296 tests in 129 seconds, the dependency
+tree validated, and Doctor passed database, renderer, encrypted OneDrive
+backup, and recovery checks. The external registry advisory request was blocked
+by the local sandbox; the private CI workflow retains its critical-severity
+`npm audit` gate.
+
+The pre-existing Working instance at port 5051 was not created by the tests.
+Ownership metadata binds it to PID 30060 and this workspace. It is responsive,
+uses approximately 108 MB working memory, has no queued or running task, and
+reports only the two exact quality-review findings. Jarvis did not stop or
+restart it during the audit.

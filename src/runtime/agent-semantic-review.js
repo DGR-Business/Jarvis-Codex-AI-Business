@@ -421,9 +421,9 @@ function recordSemanticReviewAssurance(db, input = {}) {
       mode, status, input_tokens, output_tokens, estimated_cost_cents,
       actual_cost_cents, approval_required, metadata, created_at,
       provider_request_id, cost_status, reserved_cost_cents,
-      incurred_estimate_cents, reconciled_cost_cents, outcome_status)
+      incurred_estimate_cents, reconciled_cost_cents, outcome_status, completed_at)
      VALUES (?, ?, NULL, ?, 'openai', 'semantic-assurance', ?, 'live', 'completed',
-      ?, ?, ?, 0, 0, ?, ?, NULL, 'incurred_estimate', 0, ?, 0, 'known')`,
+      ?, ?, ?, 0, 0, ?, ?, NULL, 'incurred_estimate', 0, ?, 0, 'known', ?)`,
     [
       modelCallId,
       subject.workflow_id,
@@ -435,6 +435,7 @@ function recordSemanticReviewAssurance(db, input = {}) {
       toJson(metadata),
       timestamp,
       costCents,
+      timestamp,
     ],
   );
   run(
@@ -559,9 +560,9 @@ function recordSemanticReviewFailure(db, input = {}) {
       mode, status, input_tokens, output_tokens, estimated_cost_cents,
       actual_cost_cents, approval_required, metadata, created_at,
       provider_request_id, cost_status, reserved_cost_cents,
-      incurred_estimate_cents, reconciled_cost_cents, outcome_status)
+      incurred_estimate_cents, reconciled_cost_cents, outcome_status, completed_at)
      VALUES (?, ?, NULL, ?, 'openai', 'semantic-assurance', ?, 'live', ?,
-      ?, ?, ?, 0, 0, ?, ?, ?, ?, 0, ?, 0, ?)`,
+      ?, ?, ?, 0, 0, ?, ?, ?, ?, 0, ?, 0, ?, ?)`,
     [
       modelCallId,
       subject.workflow_id,
@@ -577,6 +578,7 @@ function recordSemanticReviewFailure(db, input = {}) {
       costStatus,
       knownOutcome ? costCents : 0,
       failure.outcomeStatus,
+      timestamp,
     ],
   );
   run(

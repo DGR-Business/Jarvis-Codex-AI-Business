@@ -99,7 +99,11 @@ function checkPricingFreshness(options = {}) {
 
 function checkTar() {
   const command = process.platform === "win32" ? "tar.exe" : "tar";
-  const probe = spawnSync(command, ["--version"], { encoding: "utf8", windowsHide: true });
+  const probe = spawnSync(command, ["--version"], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
   if (probe.status !== 0) return result("Archive tool", "fail", "The tar archive command is unavailable.");
   const firstLine = String(probe.stdout || probe.stderr || "tar available").split(/\r?\n/)[0].trim();
   return result("Archive tool", "pass", firstLine);
@@ -140,7 +144,7 @@ function checkRenderer() {
           "print(PIL.__version__)",
         ].join(";"),
       ],
-      { encoding: "utf8", windowsHide: true },
+      { encoding: "utf8", windowsHide: true, timeout: 20_000 },
     );
     if (probe.status === 0) {
       const lines = String(probe.stdout || "").trim().split(/\r?\n/);

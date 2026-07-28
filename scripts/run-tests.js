@@ -8,6 +8,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-test-runtime-"));
 const isolatedTempRoot = path.join(root, "os-temp");
 const pdfTempRoot = path.join(workspaceRoot, "tmp", "pdfs");
 const pdfSnapshot = path.join(root, "pre-test-pdfs");
+const processIntegrationTests = new Set(["windows-launcher.test.js"]);
 fs.mkdirSync(isolatedTempRoot, { recursive: true });
 
 function isInside(parent, candidate) {
@@ -27,13 +28,32 @@ function restorePdfTemp() {
 }
 
 function requestedTestFiles(args) {
-  if (!args.length) return ["test/*.test.js"];
-  return args.map((value) => {
+  const lifecycleCi = process.env.CI === "true"
+    && process.env.PANTHEON_LIFECYCLE_CI === "1";
+  const requested = args.length
+    ? args.map((value) => {
+      const normalized = value.replace(/\\/g, "/");
+      if (!/^test\/[a-zA-Z0-9._-]+\.test\.js$/.test(normalized)) {
+        throw new Error(`Unsupported test path: ${value}`);
+      }
+      return normalized;
+    })
+    : fs.readdirSync(path.join(workspaceRoot, "test"))
+      .filter((name) => name.endsWith(".test.js"))
+      .sort()
+      .map((name) => `test/${name}`);
+  const processTests = requested.filter((value) => (
+    processIntegrationTests.has(path.basename(value))
+  ));
+  if (args.length && processTests.length && !lifecycleCi) {
+    throw new Error(
+      "Windows lifecycle integration is quarantined from local and ordinary test runs. "
+      + "It runs only in the disposable, externally bounded CI lifecycle job.",
+    );
+  }
+  return requested.filter((value) => {
     const normalized = value.replace(/\\/g, "/");
-    if (!/^test\/[a-zA-Z0-9._-]+\.test\.js$/.test(normalized)) {
-      throw new Error(`Unsupported test path: ${value}`);
-    }
-    return normalized;
+    return lifecycleCi || !processIntegrationTests.has(path.basename(normalized));
   });
 }
 
@@ -72,11 +92,30 @@ const env = {
 
 try {
   snapshotPdfTemp();
+  const lifecycleCi = process.env.CI === "true"
+    && process.env.PANTHEON_LIFECYCLE_CI === "1";
+  const testDeadlineMs = lifecycleCi
+    ? 5 * 60_000
+    : process.env.CI === "true"
+      ? 12 * 60_000
+      : 4 * 60_000;
   const result = spawnSync(
     process.execPath,
     ["--test", "--test-isolation=none", ...requestedTestFiles(process.argv.slice(2))],
-    { cwd: workspaceRoot, env, stdio: "inherit" },
+    {
+      cwd: workspaceRoot,
+      env,
+      stdio: "inherit",
+      windowsHide: true,
+      timeout: testDeadlineMs,
+      killSignal: "SIGKILL",
+    },
   );
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error(
+      `The ${lifecycleCi ? "Windows lifecycle" : "ordinary"} test process exceeded its external deadline.`,
+    );
+  }
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;
 } finally {

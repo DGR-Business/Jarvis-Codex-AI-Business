@@ -8,6 +8,9 @@ const AdmZip = require("adm-zip");
 
 const CONFIG = require("../src/config");
 const {
+  SOCIAL_MEDIA_MANAGER_CLIENT_CONTROL_V1: buyerIntentSpec,
+} = require("../config/buyer-intent-validation-specs");
+const {
   all,
   fromJson,
   get,
@@ -32,8 +35,10 @@ const { getCockpitState, getDecisionsState } = require("../src/runtime/cockpit-s
 const { runOnce } = require("../src/runtime/orchestrator");
 const {
   applyPantheonHandoffDecision,
+  assertQualityReviewRecheckAvailable,
   getProductionState,
   prepareCatalogueBuild,
+  prepareExplicitFinalValidationReview,
   prepareVerifiedLaunchContextRepair,
   publicationPlanPriceText,
   publicationPriceChannelHypothesis,
@@ -409,6 +414,50 @@ test("local product factory adds one recorded workflow status without changing t
   assert.equal(assertBlueprintMatchesSpec(spec, crowdedNormalized.blueprint), crowdedNormalized.blueprint);
 });
 
+test("the one-item buyer test is reconciled to its exact 16-field validation contract", () => {
+  const exactItem = {
+    ...buyerIntentSpec.sample.item,
+    id: buyerIntentSpec.sample.item.id,
+  };
+  const spec = {
+    schema: "pantheon.product-build-spec.v1",
+    catalogueItems: [{ id: exactItem.id }],
+    validationSample: {
+      packageTitle: buyerIntentSpec.sample.packageTitle,
+      customerPromise: buyerIntentSpec.sample.customerPromise,
+      setupSteps: buyerIntentSpec.sample.setupSteps,
+      disclaimers: buyerIntentSpec.sample.disclaimers,
+      exactItemBlueprint: exactItem,
+      noFullCatalogueAuthorised: true,
+    },
+  };
+  const supplied = {
+    schema: "pantheon.product-blueprint.v3",
+    packageTitle: "Draft package",
+    customerPromise: "Draft promise",
+    setupSteps: ["Open the workbook.", "Review the example.", "Replace the example."],
+    disclaimers: [],
+    catalogueItems: [{
+      id: exactItem.id,
+      title: "Draft workbook",
+      purpose: "Draft purpose",
+      instructions: ["Open the workbook.", "Replace the sample row."],
+      columns: exactItem.columns.slice(0, 12),
+      sampleRows: exactItem.sampleRows.map((row) => row.slice(0, 12)),
+      calculations: [],
+    }],
+  };
+
+  const normalized = normalizeProductBlueprintForFactory(supplied, spec);
+  assert.equal(normalized.blueprint.catalogueItems.length, 1);
+  assert.equal(normalized.blueprint.catalogueItems[0].columns.length, 16);
+  assert.deepEqual(normalized.blueprint.catalogueItems[0].columns, exactItem.columns);
+  assert.deepEqual(normalized.blueprint.catalogueItems[0].sampleRows, exactItem.sampleRows);
+  assert.deepEqual(normalized.blueprint.catalogueItems[0].calculations, exactItem.calculations);
+  assert.ok(normalized.normalizations.some((item) => item.code === "validation_contract_reconciled"));
+  assert.equal(assertBlueprintMatchesSpec(spec, normalized.blueprint), normalized.blueprint);
+});
+
 test("claim alignment rejects unsupported outcomes and accepts explicit product mechanisms", () => {
   const offerIssues = offerClaimAlignmentIssues({
     promise: "Collect better inputs and finish projects faster.",
@@ -628,6 +677,225 @@ function insertGeneratedDeliverables(runtime, task) {
   return { files, manifest };
 }
 
+test("a failed buyer-intent quality review cannot spend beyond its combined approval", () => {
+  const runtime = makeRuntime("buyer-intent-quality-budget");
+  try {
+    const build = prepareBuild(runtime.db);
+    const plan = get(runtime.db, "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'");
+    run(
+      runtime.db,
+      "UPDATE catalogue_plans SET metadata = ?, updated_at = ? WHERE id = 'plan-pantheon-production'",
+      [
+        toJson({
+          ...fromJson(plan.metadata, {}),
+          validationSample: {
+            providerPolicy: {
+              productBuilderCapCents: 150,
+              qualityReviewerCapCents: 150,
+              combinedCapCents: 300,
+              automaticPaidRetry: false,
+              correctionLimit: 1,
+            },
+          },
+        }),
+        now(),
+      ],
+    );
+    const generated = insertGeneratedDeliverables(runtime, build.task);
+    completeTask(runtime.db, build.task.id, {
+      ...workerOutput("Product Builder"),
+      generatedFiles: generated,
+    });
+    const buildProjection = projectCompletedProductionTask(runtime.db, build.task.id);
+    const qualityTask = buildProjection.result.next.task;
+    for (const [id, task, amountCents] of [
+      ["cost-buyer-intent-build-cap", build.task, 150],
+      ["cost-buyer-intent-review-cap", qualityTask, 150],
+    ]) {
+      run(
+        runtime.db,
+        `INSERT INTO costs
+         (id, workflow_id, venture_id, task_id, category, source, status,
+          amount_cents, currency, occurred_at, metadata)
+         VALUES (?, ?, ?, ?, 'live_ai_worker', 'openai-agents-sdk',
+                 'incurred_estimate', ?, 'AUD', ?, '{}')`,
+        [id, task.workflow_id, task.venture_id, task.id, amountCents, now()],
+      );
+    }
+    completeTask(runtime.db, qualityTask.id, {
+      ...workerOutput("Quality Reviewer", {
+        qualityScore: 55,
+        riskFindings: ["The workbook instructions are incomplete."],
+        operatorRecommendation: "Correct the instructions before testing.",
+      }),
+      operatorDecision: "revise",
+    });
+
+    const result = projectCompletedProductionTask(runtime.db, qualityTask.id);
+    assert.equal(result.result.correctionPrepared, false);
+    assert.equal(result.result.additionalApprovalRequired, true);
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM tasks WHERE json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.revisionNumber') = 1").count,
+      0,
+    );
+    const stoppedPlan = get(runtime.db, "SELECT status, metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'");
+    assert.equal(stoppedPlan.status, "needs_attention");
+    assert.equal(fromJson(stoppedPlan.metadata, {}).correctionRequiresNewBudget, true);
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'catalogue.validation_sample_quality_failed'").count,
+      1,
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("a failed buyer-intent review may use its one correction when real exposure remains under the cap", () => {
+  const runtime = makeRuntime("buyer-intent-quality-correction");
+  try {
+    const build = prepareBuild(runtime.db);
+    const plan = get(runtime.db, "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'");
+    run(
+      runtime.db,
+      "UPDATE catalogue_plans SET metadata = ?, updated_at = ? WHERE id = 'plan-pantheon-production'",
+      [
+        toJson({
+          ...fromJson(plan.metadata, {}),
+          validationSample: {
+            providerPolicy: {
+              productBuilderCapCents: 150,
+              qualityReviewerCapCents: 150,
+              combinedCapCents: 300,
+              automaticPaidRetry: false,
+              correctionLimit: 1,
+            },
+          },
+        }),
+        now(),
+      ],
+    );
+    const generated = insertGeneratedDeliverables(runtime, build.task);
+    completeTask(runtime.db, build.task.id, {
+      ...workerOutput("Product Builder"),
+      generatedFiles: generated,
+    });
+    const buildProjection = projectCompletedProductionTask(runtime.db, build.task.id);
+    const qualityTask = buildProjection.result.next.task;
+    for (const [id, task, amountCents] of [
+      ["cost-buyer-intent-build-low", build.task, 15],
+      ["cost-buyer-intent-review-low", qualityTask, 16],
+    ]) {
+      run(
+        runtime.db,
+        `INSERT INTO costs
+         (id, workflow_id, venture_id, task_id, category, source, status,
+          amount_cents, currency, occurred_at, metadata)
+         VALUES (?, ?, ?, ?, 'live_ai_worker', 'openai-agents-sdk',
+                 'incurred_estimate', ?, 'AUD', ?, '{}')`,
+        [id, task.workflow_id, task.venture_id, task.id, amountCents, now()],
+      );
+    }
+    completeTask(runtime.db, qualityTask.id, {
+      ...workerOutput("Quality Reviewer", {
+        qualityScore: 55,
+        riskFindings: ["The workbook instructions are incomplete."],
+        operatorRecommendation: "Correct the instructions before testing.",
+      }),
+      operatorDecision: "revise",
+    });
+
+    const result = projectCompletedProductionTask(runtime.db, qualityTask.id);
+    assert.equal(result.result.correctionPrepared, true);
+    assert.equal(result.result.additionalApprovalRequired, false);
+    assert.ok(["blocked", "queued"].includes(result.result.next.task.status));
+    const correctionPayload = typeof result.result.next.task.payload === "string"
+      ? fromJson(result.result.next.task.payload, {})
+      : result.result.next.task.payload;
+    assert.equal(
+      correctionPayload.liveSpendRequest.parameters.pantheonProduction.revisionNumber,
+      1,
+    );
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'catalogue.validation_sample_correction_prepared'").count,
+      1,
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("quality-review capacity stops a fourth distinct review for one product revision", () => {
+  const runtime = makeRuntime("quality-review-capacity");
+  try {
+    const timestamp = now();
+    for (let index = 1; index <= 3; index += 1) {
+      run(
+        runtime.db,
+        `INSERT INTO tasks
+         (id, workflow_id, title, kind, agent, status, priority, retries, max_retries,
+          cost_budget_cents, cost_actual_cents, payload, result, created_at, updated_at,
+          outcome_status)
+         VALUES (?, NULL, ?, 'live_ai_worker_execution',
+                 'quality_reviewer', 'completed', 2, 0, 0, 150, 0, ?, '{}', ?, ?, 'known')`,
+        [
+          `task-quality-capacity-${index}`,
+          `Quality review ${index}`,
+          toJson({
+            liveSpendRequest: {
+              parameters: {
+                pantheonProduction: {
+                  planId: "plan-quality-capacity",
+                  stage: "quality_review",
+                  revisionNumber: 0,
+                  reviewFingerprint: `fingerprint-${index}`,
+                },
+              },
+            },
+          }),
+          timestamp,
+          timestamp,
+        ],
+      );
+    }
+    assert.throws(
+      () => assertQualityReviewRecheckAvailable(runtime.db, "plan-quality-capacity", 0),
+      /stopped before creating another quality review/i,
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("the retired final-review override cannot create another paid validation review", () => {
+  const runtime = makeRuntime("explicit-final-quality-review");
+  try {
+    const timestamp = now();
+    const plan = get(runtime.db, "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'");
+    run(
+      runtime.db,
+      "UPDATE catalogue_plans SET status = 'needs_attention', metadata = ?, updated_at = ? WHERE id = 'plan-pantheon-production'",
+      [
+        toJson({
+          ...fromJson(plan.metadata, {}),
+          validationSample: buyerIntentSpec,
+        }),
+        timestamp,
+      ],
+    );
+
+    assert.throws(
+      () => prepareExplicitFinalValidationReview(
+        runtime.db,
+        "plan-pantheon-production",
+      ),
+      /final-review override is retired/i,
+    );
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM model_calls").count, 0);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
 test("the local Digital Product Kit renderer creates usable workbooks, guide, previews and bundle", () => {
   const runtime = makeRuntime("local-file-renderer");
   try {
@@ -702,12 +970,27 @@ test("the local Digital Product Kit renderer creates usable workbooks, guide, pr
     );
     assert.equal(rendered.renderer, "pantheon-local-digital-product-factory-v1");
     assert.equal(rendered.files.length, 2);
+    assert.equal(rendered.qualityReviewImages.length, 2);
+    assert.deepEqual(
+      rendered.qualityReviewImages.map((image) => image.filename),
+      ["actual-workbook.png", "actual-setup-guide.png"],
+    );
+    assert.ok(rendered.qualityReviewImages.every((image) => image.bytes.subarray(0, 8).equals(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    )));
     const manifestFile = rendered.files.find((file) => file.filename === build.spec.manifestFilename);
     const bundleFile = rendered.files.find((file) => file.filename === build.spec.bundleFilename);
     assert.ok(manifestFile && bundleFile);
     const manifest = JSON.parse(manifestFile.bytes.toString("utf8"));
     assert.equal(manifest.catalogueItems.length, 3);
     assert.equal(manifest.storefrontPreviews.length, 2);
+    assert.equal(manifest.assetProvenance.sourceType, "pantheon_local_generation");
+    assert.deepEqual(manifest.assetProvenance.externalAssetsUsed, []);
+    assert.equal(manifest.assetProvenance.customerDataUsed, false);
+    assert.ok(
+      manifest.catalogueItems[0].validation.sampleCalculationChecks
+        .every((check) => check.results.every((result) => Number.isFinite(result.value))),
+    );
     assert.equal(manifest.customerPromise, "Use these files to collect project inputs in a structured format and track the work.");
     assert.equal(
       manifest.catalogueItems[0].purpose,
@@ -1113,12 +1396,16 @@ test("Product Builder renders and validates a real manifest and bundle before co
         metadata: fromJson(evaluation.metadata, {}),
       } : null,
     }));
-    assert.equal(executed.result.output.generatedFiles.files.length, 2);
+    assert.equal(executed.result.output.generatedFiles.files.length, 5);
+    assert.equal(
+      executed.result.output.generatedFiles.files.filter((file) => file.customerFile).length,
+      3,
+    );
     assert.equal(executed.result.output.generatedFiles.manifest.planId, build.spec.planId);
     assert.equal(executed.result.qualityGate.status, "not_required");
     assert.equal(
       get(runtime.db, "SELECT COUNT(*) AS count FROM deliverables WHERE task_id = ? AND status = 'built_pending_quality_review'", [build.task.id]).count,
-      2,
+      5,
     );
     assert.equal(
       get(runtime.db, "SELECT COUNT(*) AS count FROM deliverables WHERE workflow_id = ? AND format = 'pdf'", [build.task.workflow_id]).count,
