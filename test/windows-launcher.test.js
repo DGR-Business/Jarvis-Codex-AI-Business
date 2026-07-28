@@ -85,7 +85,7 @@ process.on("SIGINT", () => server.close(() => process.exit(0)));
 
 function makeLauncherWorkspace(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `pantheon-launcher-${name}-`));
-  for (const directory of ["scripts", "src", "public", "node_modules", "tmp"]) {
+  for (const directory of ["scripts", "scripts/windows", "src", "public", "node_modules", "tmp"]) {
     fs.mkdirSync(path.join(root, directory), { recursive: true });
   }
   for (const file of [
@@ -93,12 +93,19 @@ function makeLauncherWorkspace(name) {
     "pantheon-credential-store.ps1",
     "configure-openai.ps1",
     "configure-pantheon-recovery.ps1",
+    "ensure-pantheon-supervisor.ps1",
     "start-pantheon.ps1",
+    "start-pantheon-control.ps1",
     "stop-pantheon.ps1",
     "status-pantheon.ps1",
+    "pantheon-standby.js",
   ]) {
     fs.copyFileSync(path.join(workspaceRoot, "scripts", file), path.join(root, "scripts", file));
   }
+  fs.copyFileSync(
+    path.join(workspaceRoot, "scripts", "windows", "PantheonSupervisor.cs"),
+    path.join(root, "scripts", "windows", "PantheonSupervisor.cs"),
+  );
   fs.writeFileSync(path.join(root, "scripts", "serve-pantheon.js"), fakeServer);
   fs.writeFileSync(path.join(root, "src", "placeholder.js"), "module.exports = {};\n");
   fs.writeFileSync(path.join(root, "public", "placeholder.txt"), "Pantheon launcher test\n");
@@ -294,6 +301,73 @@ async function waitForExit(pid, timeoutMs = 8_000) {
   return !processAlive(pid);
 }
 
+async function waitForCondition(condition, message, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(message);
+}
+
+async function startControlSession(root, controlPort, workingPort, suffix) {
+  const operatorUrlPath = path.join(root, "tmp", `control-url-${suffix}.txt`);
+  const result = await runPowerShell(
+    path.join(root, "scripts", "start-pantheon-control.ps1"),
+    [
+      "-Port",
+      controlPort,
+      "-WorkingPort",
+      workingPort,
+      "-NoOpen",
+      "-LifecycleProof",
+      "-OperatorUrlFile",
+      operatorUrlPath,
+      "-StartupTimeoutSeconds",
+      "8",
+    ],
+    root,
+    true,
+    {},
+    true,
+    20_000,
+  );
+  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+
+  const operatorUrl = fs.readFileSync(operatorUrlPath, "utf8").trim();
+  const parsedUrl = new URL(operatorUrl);
+  const bootstrap = new URLSearchParams(parsedUrl.hash.slice(1)).get("bootstrap");
+  assert.ok(bootstrap);
+  const origin = `http://127.0.0.1:${controlPort}`;
+  const sessionResponse = await fetch(`${origin}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify({ bootstrap }),
+  });
+  const sessionBody = await sessionResponse.text();
+  assert.equal(sessionResponse.status, 201, sessionBody);
+  const session = JSON.parse(sessionBody);
+  const cookie = sessionResponse.headers.get("set-cookie").split(";")[0];
+  return { origin, session, cookie };
+}
+
+async function startWorkingFromControl(controlSession, workingPort) {
+  const response = await fetch(`${controlSession.origin}/api/control/start`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: controlSession.origin,
+      cookie: controlSession.cookie,
+      "x-pantheon-csrf": controlSession.session.csrfToken,
+    },
+    body: "{}",
+  });
+  const responseBody = await response.text();
+  assert.equal(response.status, 200, responseBody);
+  const result = JSON.parse(responseBody);
+  assert.match(result.operatorUrl, new RegExp(`^http://127\\.0\\.0\\.1:${workingPort}/`));
+}
+
 async function cleanupWorkspace(root) {
   if (!root) return;
   const stopScript = path.join(root, "scripts", "stop-pantheon.ps1");
@@ -456,6 +530,119 @@ test("Windows stop refuses a changed process identity and succeeds after exact o
   }
 });
 
+test("Windows supervisor contains the full runtime tree and ten control cycles leave no owned process behind", {
+  skip: process.platform !== "win32",
+  timeout: 180_000,
+}, async () => {
+  const root = makeLauncherWorkspace("supervisor");
+  const controlPort = await freePort();
+  const workingPort = await freePort();
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  unrelated.unref();
+
+  try {
+    for (let cycle = 1; cycle <= 10; cycle += 1) {
+      const controlSession = await startControlSession(
+        root,
+        controlPort,
+        workingPort,
+        String(cycle),
+      );
+      const controlMetadataPath = path.join(root, "tmp", `pantheon-server-${controlPort}.json`);
+      const supervisorMetadataPath = path.join(root, "tmp", `pantheon-supervisor-${controlPort}.json`);
+      const controlMetadata = JSON.parse(fs.readFileSync(controlMetadataPath, "utf8"));
+      const supervisorMetadata = JSON.parse(fs.readFileSync(supervisorMetadataPath, "utf8"));
+      assert.equal(controlMetadata.supervised, true);
+      assert.equal(controlMetadata.pid, supervisorMetadata.childPid);
+      assert.ok(processAlive(controlMetadata.pid));
+      assert.ok(processAlive(supervisorMetadata.pid));
+
+      const standbyHealth = await fetch(`${controlSession.origin}/api/health`).then(
+        (response) => response.json(),
+      );
+      assert.ok(standbyHealth.memoryMb < 100, `cycle ${cycle} used ${standbyHealth.memoryMb} MB`);
+
+      await startWorkingFromControl(controlSession, workingPort);
+      const workingMetadataPath = path.join(root, "tmp", `pantheon-server-${workingPort}.json`);
+      await waitForCondition(
+        () => fs.existsSync(workingMetadataPath),
+        `cycle ${cycle} did not create working ownership metadata`,
+      );
+      const workingMetadata = JSON.parse(fs.readFileSync(workingMetadataPath, "utf8"));
+      assert.ok(processAlive(workingMetadata.pid));
+
+      if (cycle === 1) {
+        process.kill(supervisorMetadata.pid);
+        for (const pid of [supervisorMetadata.pid, controlMetadata.pid, workingMetadata.pid]) {
+          assert.equal(
+            await waitForExit(pid, 10_000),
+            true,
+            `supervisor crash containment left process ${pid} running`,
+          );
+        }
+        const cleaned = await runPowerShell(
+          path.join(root, "scripts", "stop-pantheon.ps1"),
+          ["-All", "-GracefulTimeoutSeconds", "2"],
+          root,
+          true,
+        );
+        assert.equal(cleaned.code, 0, `${cleaned.stdout}\n${cleaned.stderr}`);
+      } else {
+        const stoppedWorking = await runPowerShell(
+          path.join(root, "scripts", "stop-pantheon.ps1"),
+          ["-Port", workingPort, "-GracefulTimeoutSeconds", "2"],
+          root,
+          true,
+        );
+        assert.equal(stoppedWorking.code, 0, `${stoppedWorking.stdout}\n${stoppedWorking.stderr}`);
+        assert.equal(await waitForExit(workingMetadata.pid), true);
+        assert.equal(processAlive(controlMetadata.pid), true);
+
+        const stoppedControl = await runPowerShell(
+          path.join(root, "scripts", "stop-pantheon.ps1"),
+          ["-Port", controlPort, "-GracefulTimeoutSeconds", "2"],
+          root,
+          true,
+        );
+        assert.equal(stoppedControl.code, 0, `${stoppedControl.stdout}\n${stoppedControl.stderr}`);
+        assert.equal(await waitForExit(controlMetadata.pid), true);
+        assert.equal(await waitForExit(supervisorMetadata.pid), true);
+      }
+
+      await waitForCondition(
+        async () => {
+          const controlFree = await new Promise((resolve) => {
+            const probe = net.createServer();
+            probe.once("error", () => resolve(false));
+            probe.listen(controlPort, "127.0.0.1", () => {
+              probe.close(() => resolve(true));
+            });
+          });
+          const workingFree = await new Promise((resolve) => {
+            const probe = net.createServer();
+            probe.once("error", () => resolve(false));
+            probe.listen(workingPort, "127.0.0.1", () => {
+              probe.close(() => resolve(true));
+            });
+          });
+          return controlFree && workingFree;
+        },
+        `cycle ${cycle} left a lifecycle port occupied`,
+      );
+      assert.equal(fs.existsSync(controlMetadataPath), false);
+      assert.equal(fs.existsSync(workingMetadataPath), false);
+      assert.equal(fs.existsSync(supervisorMetadataPath), false);
+      assert.equal(processAlive(unrelated.pid), true);
+    }
+  } finally {
+    if (processAlive(unrelated.pid)) process.kill(unrelated.pid);
+    await cleanupWorkspace(root);
+  }
+});
+
 test("Windows launcher recovers safely when a stale Pantheon PID has been reused", {
   skip: process.platform !== "win32",
   timeout: 60_000,
@@ -548,4 +735,5 @@ test("operator command files use native Windows PowerShell and the main stop com
   assert.match(startCommand, /System32\\WindowsPowerShell\\v1\.0\\powershell\.exe/i);
   assert.match(rehearsalCommand, /-JourneyRehearsal/);
   assert.match(stopCommand, /stop-pantheon\.ps1" -All/i);
+  assert.match(startCommand, /start-pantheon-control\.ps1/i);
 });

@@ -318,12 +318,12 @@ Pantheon default.
 
 ### Next
 
-- Replace the current nested lifecycle scripts with one lightweight Windows
-  supervisor that owns the full working process tree through a Job Object.
-  Setup must remain separate from start. Every control action needs an external
-  deadline, atomic state, and exact cleanup evidence.
-- Prove ten start, standby, working, standby, and stop cycles without leaked
-  processes or ports before restoring local lifecycle readiness.
+- Complete the private CI release gate for the new Windows supervisor. Local
+  proof passed ten standby, working, standby, and stop cycles, including forced
+  supervisor termination, without leaked owned processes, records, or ports.
+  The ordinary 296-test suite also passed under its external deadline.
+- Keep lifecycle integration quarantined from ordinary local tests. It belongs
+  in the separately bounded Windows CI job even after the supervisor release.
 - After the audit branch, ordinary suite, and CI pass, Daniel may authorize one
   bounded correction of the current Social Media Manager validation sample.
   Do not build a full catalogue before a real buyer test.
@@ -389,10 +389,22 @@ The 2026-07-28 developer audit supersedes any inference that the current local
 Windows launcher is fully operations-ready. Earlier happy-path lifecycle tests
 passed, but they did not establish descendant ownership under timeout or
 interruption. Local launcher integration is now excluded from ordinary tests
-and may run only in its dedicated disposable Windows CI job until the
-supervisor release gate above passes. The buyer-intent workflow is also paused:
-its A$0.63 estimated exposure and latest `revise` verdict are retained as
-evidence, not accepted as proof.
+and normally runs only in its dedicated disposable Windows CI job.
+
+The post-audit supervisor implementation passed local release proof on
+2026-07-28. A native source-built supervisor now owns standby and working
+descendants through a Windows kill-on-close Job Object. Eight launcher tests
+passed in 235.9 seconds, including ten complete lifecycle cycles and forced
+supervisor termination; the ordinary suite passed 296 of 296 in 119.6 seconds.
+The first stabilization CI run proved the old Windows job but exposed that one
+sequential ordinary test process could report all 296 passes and still reach
+its 12-minute external ceiling. Ordinary CI is now split into four isolated
+shards. Operations readiness remains held until that revised private CI passes.
+Exact local evidence is retained in
+`docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
+
+The buyer-intent workflow remains paused: its A$0.63 estimated exposure and
+latest `revise` verdict are retained as evidence, not accepted as proof.
 
 Foundation is releasable only when:
 
@@ -414,6 +426,8 @@ Foundation is releasable only when:
   authorization, proof-truth, artifact, shutdown, and release-readiness audit.
 - `docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`: exact
   harness, assurance, live provider, cost, recovery, and browser evidence.
+- `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`: exact Job Object,
+  repeated-cycle, forced-failure, ordinary-suite, and first-CI evidence.
 - `docs/plans/PANTHEON-AGENT-ASSURANCE-AND-OPENAI-INTEGRATION-HARDENING-2026-07-28.md`:
   active harness, trace, evaluation, guardrail, and operator-observability
   implementation directive.

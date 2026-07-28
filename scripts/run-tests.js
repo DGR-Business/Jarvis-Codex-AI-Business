@@ -51,10 +51,24 @@ function requestedTestFiles(args) {
       + "It runs only in the disposable, externally bounded CI lifecycle job.",
     );
   }
-  return requested.filter((value) => {
+  const runnable = requested.filter((value) => {
     const normalized = value.replace(/\\/g, "/");
     return lifecycleCi || !processIntegrationTests.has(path.basename(normalized));
   });
+  if (args.length || process.env.CI !== "true") return runnable;
+
+  const shardCount = Number(process.env.PANTHEON_TEST_SHARD_COUNT || 1);
+  const shardIndex = Number(process.env.PANTHEON_TEST_SHARD_INDEX || 0);
+  if (
+    !Number.isInteger(shardCount)
+    || shardCount < 1
+    || !Number.isInteger(shardIndex)
+    || shardIndex < 0
+    || shardIndex >= shardCount
+  ) {
+    throw new Error("Pantheon received an invalid CI test-shard configuration.");
+  }
+  return runnable.filter((value, index) => index % shardCount === shardIndex);
 }
 
 // Legacy JARVIS_* names are scrubbed only so an older developer shell cannot

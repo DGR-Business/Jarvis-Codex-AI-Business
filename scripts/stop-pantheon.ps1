@@ -69,6 +69,7 @@ function Stop-OnePantheon {
   )
 
   $runtimePath = Get-PantheonRuntimePath -StateRoot $stateRoot -Port $TargetPort
+  $supervisorPath = Get-PantheonSupervisorPath -StateRoot $stateRoot -Port $TargetPort
   $legacyRuntimePath = Join-Path $stateRoot "jarvis-server-$TargetPort.json"
   $healthUrl = "http://127.0.0.1:$TargetPort/api/health"
   $launcherLock = $null
@@ -93,6 +94,15 @@ function Stop-OnePantheon {
     }
 
     if (-not $metadata) {
+      if (Test-Path -LiteralPath $supervisorPath) {
+        Stop-PantheonSupervisor `
+          -StateRoot $stateRoot `
+          -Port $TargetPort `
+          -WorkspaceRoot $root `
+          -TimeoutSeconds $GracefulTimeoutSeconds
+        [void](Wait-PantheonPortAvailable -Port $TargetPort -TimeoutSeconds $GracefulTimeoutSeconds)
+        $health = Get-PantheonHealth -Port $TargetPort
+      }
       if ($health) {
         throw "A Pantheon-compatible service is running on port $TargetPort, but this launcher does not own it. It was not stopped."
       }
@@ -132,6 +142,11 @@ function Stop-OnePantheon {
         throw "Pantheon's recorded process has exited, but port $TargetPort is still occupied. The unknown process was not stopped."
       }
       Remove-Item -LiteralPath $runtimePath -Force
+      Stop-PantheonSupervisor `
+        -StateRoot $stateRoot `
+        -Port $TargetPort `
+        -WorkspaceRoot $root `
+        -TimeoutSeconds $GracefulTimeoutSeconds
       Write-Host "Pantheon on port $TargetPort was already stopped; stale ownership data was removed."
       return
     }
@@ -187,6 +202,12 @@ function Stop-OnePantheon {
     if (Get-Process -Id $serverPid -ErrorAction SilentlyContinue) {
       throw "Pantheon's server process is still running after shutdown verification."
     }
+    Stop-PantheonSupervisor `
+      -StateRoot $stateRoot `
+      -Port $TargetPort `
+      -WorkspaceRoot $root `
+      -TimeoutSeconds $GracefulTimeoutSeconds
+
     if (Get-PantheonHealth -Port $TargetPort) {
       throw "A service is still responding on Pantheon's port after its exact process exited. The new service was not stopped."
     }
@@ -212,15 +233,19 @@ if ($All) {
       $candidatePort = [int]$Matches[1]
       if ($candidatePort -ge 1 -and $candidatePort -le 65535) { $targetPorts += $candidatePort }
     }
+    if ($file.Name -match "^pantheon-supervisor-(\d+)\.json$") {
+      $candidatePort = [int]$Matches[1]
+      if ($candidatePort -ge 1 -and $candidatePort -le 65535) { $targetPorts += $candidatePort }
+    }
   }
   if ($PSBoundParameters.ContainsKey("Port")) { $targetPorts += $Port }
-  $targetPorts = @($targetPorts | Sort-Object -Unique)
+  $targetPorts = @($targetPorts | Sort-Object -Unique -Descending)
   if ($targetPorts.Count -eq 0) {
     Write-Host "Pantheon is already stopped; no launcher-owned Windows processes are recorded."
     exit 0
   }
 } else {
-  $targetPorts = @($Port | Sort-Object -Unique)
+  $targetPorts = @($Port | Sort-Object -Unique -Descending)
 }
 
 $failures = @()

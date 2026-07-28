@@ -226,3 +226,26 @@ Release requires:
 
 The safe next move is stabilization and CI, then the supervisor release. Do not
 resume product work merely to make the dashboard look complete.
+
+## Post-Audit Supervisor Result
+
+The recommended supervisor was implemented and passed its local release gate
+on 2026-07-28.
+
+- A source-built native Windows supervisor now owns the standby and working
+  tree through a kill-on-close Job Object.
+- Ten complete lifecycle cycles released both ports, every exact ownership
+  record, and every owned child.
+- Forced supervisor termination removed its standby and working descendants.
+- An unrelated Node process remained untouched.
+- The lifecycle suite passed 8 of 8 in 235.9 seconds.
+- The ordinary suite passed 296 of 296 in 119.6 seconds.
+
+Private `Pantheon checks #16` passed its pre-supervisor Windows lifecycle job.
+Its ordinary job printed all 296 test passes but reached the old 12-minute
+single-process deadline before final exit. Ordinary CI is now divided into
+four isolated shards while retaining explicit per-job deadlines. Operations
+readiness remains held until the revised supervisor commit passes private CI.
+
+Exact evidence is retained at
+`docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.

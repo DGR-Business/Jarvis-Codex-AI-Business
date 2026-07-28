@@ -1504,3 +1504,50 @@ Ownership metadata binds it to PID 30060 and this workspace. It is responsive,
 uses approximately 108 MB working memory, has no queued or running task, and
 reports only the two exact quality-review findings. Jarvis did not stop or
 restart it during the audit.
+
+## 2026-07-28 Windows Supervisor And Bounded CI Repair
+
+Daniel directed Jarvis to stop allowing PowerShell or npm commands to sit
+unobserved for long periods. The implementation rule is now operational:
+short commands receive short deadlines; longer verification is run under an
+external deadline and polled visibly at approximately 25-second intervals.
+
+The audited stabilization was committed as `c32108b` and pushed to
+`codex/first-buyer-intent-proof`. Private `Pantheon checks #16` produced two
+useful results:
+
+- `windows-lifecycle` passed in 1 minute 47 seconds; and
+- the ordinary job printed 296 passing tests but its one sequential Node
+  process reached the 12-minute external deadline before final exit.
+
+This was a CI architecture defect, not a failed assertion. Ordinary CI now
+runs four isolated file shards. Lint and the critical dependency audit remain
+separate bounded checks.
+
+Pantheon's user-facing Windows lifecycle now starts through a small native
+supervisor. It creates a Windows Job Object with kill-on-close, starts the
+standby Node process inside it, and remains the durable owner until standby
+exits. The working runtime and transition processes inherit containment.
+Existing exact PID, start-time, executable, SID, instance, health, and port
+checks remain in place.
+
+The first local supervisor proof exposed one real environment bug: the
+sanitised control environment dropped the non-secret credential-store path,
+so a working transition searched the wrong profile. Jarvis added only
+`PANTHEON_CREDENTIAL_ROOT` and `PANTHEON_LAUNCHER_STATE_ROOT` to the forwarding
+allowlist; no raw API key is forwarded.
+
+Final local evidence:
+
+- source-hashed supervisor compilation passed under a 15-second compiler limit;
+- PowerShell parsing and zero-warning lint passed;
+- 296 of 296 ordinary tests passed in 119.6 seconds;
+- 8 of 8 lifecycle tests passed in 235.9 seconds;
+- ten full control cycles and forced supervisor failure passed;
+- every owned process, port, and metadata record was released;
+- an unrelated Node process was not stopped; and
+- no paid provider call or external business action occurred.
+
+Release remains pending the revised private CI run. Buyer-intent work remains
+paused. Exact evidence is
+`docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
