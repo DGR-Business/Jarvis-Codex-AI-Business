@@ -1551,3 +1551,17 @@ Final local evidence:
 Release remains pending the revised private CI run. Buyer-intent work remains
 paused. Exact evidence is
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
+
+### First sharded CI correction
+
+Private `Pantheon checks #17` confirmed that the new jobs no longer wait behind
+one monolithic test process. It also exposed a real clean-install failure:
+independent production and full-journey shards could not import
+`pypdfium2`. The product renderer requires that module, but
+`requirements-runtime.txt` listed only openpyxl, Pillow, and reportlab.
+
+The old shared process and developer runtime masked the omission. Jarvis pinned
+`pypdfium2==5.12.1`, matching the reviewed current PyPI release and the bundled
+local renderer version, and added a deterministic requirements-contract test.
+The failed CI result is retained as evidence. A new clean private run is
+required; no job was merely re-run against an unchanged commit.

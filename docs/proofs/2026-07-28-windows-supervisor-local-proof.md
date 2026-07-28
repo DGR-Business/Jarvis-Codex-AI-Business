@@ -78,6 +78,19 @@ The revised workflow keeps hard deadlines and runs ordinary test files in four
 separate isolated jobs. Private CI must pass on the supervisor commit before
 the local launcher quarantine is lifted.
 
+Private `Pantheon checks #17` then proved the sharding behavior and exposed a
+clean-install dependency defect that the old shared-process order had masked.
+Two independent renderer shards could not import `pypdfium2`, even though
+Pantheon's product renderer imports it directly. The package was absent from
+`requirements-runtime.txt`. Pantheon now pins `pypdfium2==5.12.1`, matching the
+reviewed July 2026 PyPI release and the locally verified renderer runtime. A
+separate static test requires every imported renderer package to remain in the
+locked requirements file.
+
+This is a release improvement, not a reason to recombine the test suite:
+isolated shards correctly revealed that a clean machine could not render the
+product files. A new private CI run remains required.
+
 ## Remaining Boundaries
 
 - Runtime metadata remains under the ignored repository `tmp` root. Moving it

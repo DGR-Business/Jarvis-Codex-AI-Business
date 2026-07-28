@@ -399,7 +399,11 @@ supervisor termination; the ordinary suite passed 296 of 296 in 119.6 seconds.
 The first stabilization CI run proved the old Windows job but exposed that one
 sequential ordinary test process could report all 296 passes and still reach
 its 12-minute external ceiling. Ordinary CI is now split into four isolated
-shards. Operations readiness remains held until that revised private CI passes.
+shards. The first sharded run exposed a previously masked clean-install defect:
+Pantheon's renderer imported `pypdfium2` without listing it in the locked
+Python requirements. The missing dependency is now pinned and protected by a
+requirements-contract test. Operations readiness remains held until the next
+private CI run passes.
 Exact local evidence is retained in
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
 
