@@ -97,9 +97,9 @@ close to the test case's 180-second ceiling on a slower runner. An attempted
 two-lane version passed locally, but private `Pantheon checks #19` showed that
 concurrent full-runtime starts contend on the hosted Windows runner and can
 push one bounded PowerShell start past 60 seconds. The release proof therefore
-runs as two sequential isolated five-cycle cases. Each case has a 150-second
-ceiling, the wrapper has a seven-minute ceiling, the CI job has a ten-minute
-ceiling, and every cycle emits a progress diagnostic.
+runs as two isolated five-cycle cases. The first split used a 150-second case
+ceiling, a seven-minute wrapper, and a ten-minute CI job, and every cycle
+emitted a progress diagnostic.
 
 That same run confirmed the renderer dependency repair and exposed one hidden
 test assumption: a provider-rejection test inherited the operator's AUD/USD
@@ -115,6 +115,14 @@ concurrently despite their source order, so both made progress but reached
 their individual 150-second limits. Lifecycle CI now explicitly passes
 `--test-concurrency=1`. This preserves the two bounded cases while making their
 sequential execution a test-runner guarantee.
+
+Private `Pantheon checks #21` then confirmed serialization and quantified the
+hosted latency: the first phase completed three cycles and the second completed
+two before their 150-second case limits. The phases now run as a GitHub matrix
+on separate disposable Windows runners. Each runner executes one five-cycle
+phase sequentially, records each cycle's elapsed time, and has a seven-minute
+test ceiling inside a nine-minute wrapper and ten-minute CI job. The ten-cycle
+requirement is unchanged.
 
 Test-wrapper cleanup retries permission conflicts for at most five seconds
 instead of hiding the original result behind an immediate temporary-directory

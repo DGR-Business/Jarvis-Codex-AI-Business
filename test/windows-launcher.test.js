@@ -14,6 +14,10 @@ const powershell = path.join(
   "v1.0",
   "powershell.exe",
 );
+const lifecyclePhase = process.env.PANTHEON_LIFECYCLE_PHASE || "all";
+if (!["all", "containment", "repeat"].includes(lifecyclePhase)) {
+  throw new Error(`Unsupported Windows lifecycle phase: ${lifecyclePhase}`);
+}
 
 const fakeServer = String.raw`
 const fs = require("node:fs");
@@ -552,6 +556,7 @@ async function runSupervisorCycleProof(context, name, crashFirstCycle) {
 
   try {
     for (let cycle = 1; cycle <= 5; cycle += 1) {
+      const cycleStartedAt = Date.now();
       const cycleLabel = `${name}, cycle ${cycle}`;
       const controlSession = await startControlSession(
         root,
@@ -636,7 +641,10 @@ async function runSupervisorCycleProof(context, name, crashFirstCycle) {
       assert.equal(fs.existsSync(workingMetadataPath), false);
       assert.equal(fs.existsSync(supervisorMetadataPath), false);
       assert.equal(processAlive(unrelated.pid), true);
-      context.diagnostic(`${cycleLabel} completed without an owned process or port leak`);
+      context.diagnostic(
+        `${cycleLabel} completed in ${Date.now() - cycleStartedAt} ms `
+        + "without an owned process or port leak",
+      );
     }
   } finally {
     if (processAlive(unrelated.pid)) process.kill(unrelated.pid);
@@ -645,15 +653,15 @@ async function runSupervisorCycleProof(context, name, crashFirstCycle) {
 }
 
 test("Windows supervisor contains the full runtime tree across five control cycles", {
-  skip: process.platform !== "win32",
-  timeout: 150_000,
+  skip: process.platform !== "win32" || lifecyclePhase === "repeat",
+  timeout: 420_000,
 }, async (context) => {
   await runSupervisorCycleProof(context, "supervisor-containment", true);
 });
 
 test("Windows supervisor repeats five additional control cycles without leaks", {
-  skip: process.platform !== "win32",
-  timeout: 150_000,
+  skip: process.platform !== "win32" || lifecyclePhase === "containment",
+  timeout: 420_000,
 }, async (context) => {
   await runSupervisorCycleProof(context, "supervisor-repeat", false);
 });

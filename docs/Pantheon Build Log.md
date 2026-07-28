@@ -1573,10 +1573,10 @@ locally. An attempted two-lane proof passed locally but caused concurrent
 full-runtime startup contention on GitHub, where one PowerShell start exceeded
 its 60-second bound. Jarvis retained all ten cycles as two sequential isolated
 five-cycle cases with separate roots and ports. Per-cycle diagnostics show
-progress, each case has a 150-second ceiling, the test wrapper has a seven-minute
-ceiling, and the CI job has a ten-minute ceiling. The runner-enforced sequential
-local proof passed 9 of 9 in 234.9 seconds; the two five-cycle cases completed
-in 81.8 and 85.2 seconds.
+progress. The initial split gave each case a 150-second ceiling inside a
+seven-minute wrapper and ten-minute job. The runner-enforced sequential local
+proof passed 9 of 9 in 234.9 seconds; the two five-cycle cases completed in
+81.8 and 85.2 seconds.
 
 The test wrapper now retries temporary-root cleanup for at most five seconds.
 This prevents a transient Windows file lock from immediately replacing the
@@ -1607,5 +1607,14 @@ scheduler had still run the two source-ordered five-cycle cases concurrently.
 Both timed out while making progress, which recreated the hosted startup
 contention and left temporary files closing during wrapper cleanup. Lifecycle
 CI now passes `--test-concurrency=1`; source order is therefore enforced by the
-test runner, not assumed. The ten cycles, seven-minute wrapper, ten-minute job,
-and per-cycle diagnostics remain unchanged.
+test runner, not assumed.
+
+Private `Pantheon checks #21` proved all four ordinary shards again. Its serial
+lifecycle job established the hosted timing boundary: the first five-cycle
+phase completed three cycles in 150 seconds and the second completed two before
+the same per-case limit. This was measured work, not a hung command. The two
+phases now run as a GitHub matrix on separate disposable Windows runners, where
+they cannot contend because they share no machine resources. Each phase retains
+five full cycles, receives a seven-minute test ceiling, and emits each cycle's
+elapsed time. The isolated wrapper is capped at nine minutes and each CI job at
+ten minutes.

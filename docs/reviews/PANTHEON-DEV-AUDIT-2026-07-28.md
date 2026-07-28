@@ -261,5 +261,11 @@ scheduled concurrently even when written one after another. Lifecycle CI now
 sets test concurrency to one explicitly. This makes sequential ownership proof
 a runner-enforced property rather than an assumption about source order.
 
+The following hosted run confirmed serialization but showed that five complete
+lifecycle cycles exceed 150 seconds on GitHub's Windows runner. CI now assigns
+the containment and repeat phases to separate disposable runners. Each runner
+performs five sequential cycles with per-cycle timing, a seven-minute test
+ceiling, a nine-minute wrapper, and a ten-minute job ceiling.
+
 Exact evidence is retained at
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.

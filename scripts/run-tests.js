@@ -112,7 +112,7 @@ try {
   const lifecycleCi = process.env.CI === "true"
     && process.env.PANTHEON_LIFECYCLE_CI === "1";
   const testDeadlineMs = lifecycleCi
-    ? 7 * 60_000
+    ? 9 * 60_000
     : process.env.CI === "true"
       ? 12 * 60_000
       : 4 * 60_000;

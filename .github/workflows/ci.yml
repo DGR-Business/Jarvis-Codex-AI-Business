@@ -66,6 +66,10 @@ jobs:
   windows-lifecycle:
     runs-on: windows-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [containment, repeat]
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -80,4 +84,5 @@ jobs:
         shell: powershell
         env:
           PANTHEON_LIFECYCLE_CI: "1"
+          PANTHEON_LIFECYCLE_PHASE: ${{ matrix.phase }}
         run: npm.cmd run test:lifecycle:ci

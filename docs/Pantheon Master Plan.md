@@ -413,10 +413,12 @@ The ten-cycle proof now runs as two sequential isolated five-cycle cases. It
 retains ten full standby/working/standby/stop checks and forced supervisor
 failure while avoiding concurrent compilation and full-runtime startup
 contention. The lifecycle CI runner explicitly sets Node test concurrency to
-one so this ordering is enforced rather than inferred from source order. The
-two cases completed locally in 81.8 and 85.2 seconds, and the complete Windows
-suite passed in 234.9 seconds. The wrapper has a seven-minute hard deadline
-inside a ten-minute CI job, with per-cycle progress.
+one so ordering is enforced rather than inferred from source order. Hosted CI
+dispatches the containment and repeat phases to separate disposable Windows
+runners; they cannot contend because they do not share a machine. Each phase
+has a seven-minute test ceiling inside a nine-minute wrapper and ten-minute CI
+job. The two cases completed locally in 81.8 and 85.2 seconds, and the complete
+Windows suite passed in 234.9 seconds, with per-cycle progress.
 Exact local evidence is retained in
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
 
