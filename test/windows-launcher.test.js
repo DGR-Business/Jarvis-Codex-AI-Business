@@ -167,7 +167,9 @@ function runPowerShell(
       child.kill("SIGKILL");
       finish(new Error(`Windows launcher command exceeded its ${timeoutMs}-millisecond test deadline.`));
     }, timeoutMs);
-    deadline.unref();
+    // Keep the hard deadline referenced. On Windows, process exit can race the
+    // final pipe-close notification; without this handle node:test can abandon
+    // the still-pending command promise instead of completing or timing it out.
   });
 }
 
