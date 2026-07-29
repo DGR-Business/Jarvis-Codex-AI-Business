@@ -6,6 +6,7 @@ param(
   [int]$WorkingPort = 5051,
   [switch]$NoOpen,
   [switch]$LifecycleProof,
+  [string]$OperatorUrlFile,
   [ValidateRange(2, 60)]
   [int]$StartupTimeoutSeconds = 20
 )
@@ -15,6 +16,7 @@ $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "pantheon-launcher-common.ps1")
 $stateRoot = Get-PantheonStateRoot -Root $root
 $runtimePath = Get-PantheonRuntimePath -StateRoot $stateRoot -Port $Port
+$supervisorPath = Get-PantheonSupervisorPath -StateRoot $stateRoot -Port $Port
 $stdoutPath = Join-Path $stateRoot "pantheon-server-$Port.log"
 $stderrPath = Join-Path $stateRoot "pantheon-server-$Port-error.log"
 $dashboardUrl = "http://127.0.0.1:$Port/"
@@ -62,6 +64,15 @@ try {
         throw "Pantheon Control found unsafe stale ownership data ($($ownership.reason))."
       }
     }
+    if (-not $metadata -and (Test-Path -LiteralPath $supervisorPath)) {
+      Stop-PantheonSupervisor `
+        -StateRoot $stateRoot `
+        -Port $Port `
+        -WorkspaceRoot $root `
+        -TimeoutSeconds $StartupTimeoutSeconds
+      [void](Wait-PantheonPortAvailable -Port $Port -TimeoutSeconds $StartupTimeoutSeconds)
+      $health = $null
+    }
     if (-not (Test-PantheonPortAvailable -Port $Port)) {
       throw "Pantheon Control port $Port is occupied by an unknown process."
     }
@@ -75,23 +86,50 @@ try {
     $bootstrapToken = New-UrlToken
     $controlToken = New-UrlToken
     $instanceId = [guid]::NewGuid().ToString()
+    $supervisorBinary = & (Join-Path $PSScriptRoot "ensure-pantheon-supervisor.ps1") -StateRoot $stateRoot
+    $supervisorBinary = [IO.Path]::GetFullPath(([string]$supervisorBinary).Trim())
     [IO.File]::WriteAllText($stdoutPath, "")
     [IO.File]::WriteAllText($stderrPath, "")
 
     $scriptPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "pantheon-standby.js"))
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $node.Source
-    $startInfo.Arguments = "`"$scriptPath`" $Port"
+    $startInfo.FileName = $supervisorBinary
+    $jobName = "Local\Pantheon-$Port-$instanceId"
+    $supervisorArguments = @(
+      "`"$($node.Source)`"",
+      "`"$scriptPath`"",
+      [string]$Port,
+      [string]$WorkingPort,
+      "`"$([IO.Path]::GetFullPath($root))`"",
+      "`"$supervisorPath`"",
+      "`"$stdoutPath`"",
+      "`"$stderrPath`"",
+      "`"$jobName`""
+    )
+    $startInfo.Arguments = $supervisorArguments -join " "
     $startInfo.WorkingDirectory = $root
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
+    $startInfo.RedirectStandardOutput = $false
+    $startInfo.RedirectStandardError = $false
     $null = $startInfo.EnvironmentVariables
     $environment = $startInfo.Environment
     $environment.Clear()
-    foreach ($name in @("Path", "PATHEXT", "SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "ComSpec")) {
+    foreach ($name in @(
+      "Path",
+      "PATHEXT",
+      "SystemRoot",
+      "WINDIR",
+      "TEMP",
+      "TMP",
+      "USERPROFILE",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "ComSpec",
+      "PANTHEON_CREDENTIAL_ROOT",
+      "PANTHEON_LAUNCHER_STATE_ROOT"
+    )) {
       $value = [Environment]::GetEnvironmentVariable($name, "Process")
       if (-not [string]::IsNullOrWhiteSpace($value)) { $environment[$name] = $value }
     }
@@ -109,16 +147,38 @@ try {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     if (-not $process.Start()) { throw "Pantheon Control could not start." }
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
-    $snapshot = Get-PantheonProcessSnapshot -ProcessId $process.Id
-    if (-not $snapshot) {
+    $supervisorSnapshot = Get-PantheonProcessSnapshot -ProcessId $process.Id
+    if (-not $supervisorSnapshot) {
       Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-      throw "Pantheon Control could not record its exact Windows identity."
+      throw "Pantheon Control could not record its supervisor's exact Windows identity."
+    }
+
+    $supervisorDeadline = [DateTime]::UtcNow.AddSeconds($StartupTimeoutSeconds)
+    $supervisorMetadata = $null
+    do {
+      Start-Sleep -Milliseconds 100
+      $supervisorMetadata = Read-PantheonMetadata -Path $supervisorPath
+      if ($supervisorMetadata) { break }
+      if ($process.HasExited) { break }
+    } while ([DateTime]::UtcNow -lt $supervisorDeadline)
+    if (-not $supervisorMetadata) {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      throw "Pantheon Control's Windows supervisor did not become ready."
+    }
+
+    $snapshot = Get-PantheonProcessSnapshot -ProcessId ([int]$supervisorMetadata.childPid)
+    $expectedChild = [pscustomobject]@{
+      pid = [int]$supervisorMetadata.childPid
+      executablePath = [string]$supervisorMetadata.childExecutablePath
+      startFileTimeUtc = [string]$supervisorMetadata.childStartFileTimeUtc
+    }
+    if (-not (Test-PantheonSnapshotMatches -Expected $expectedChild -Actual $snapshot)) {
+      Stop-PantheonSupervisor -StateRoot $stateRoot -Port $Port -WorkspaceRoot $root
+      throw "Pantheon Control could not verify its supervised standby process."
     }
     $metadata = [ordered]@{
-      metadataVersion = 2
-      pid = $process.Id
+      metadataVersion = 3
+      pid = [int]$supervisorMetadata.childPid
       port = $Port
       instanceId = $instanceId
       mode = "standby"
@@ -130,6 +190,11 @@ try {
       workspaceRoot = [IO.Path]::GetFullPath($root)
       expectedDbPath = $null
       configFingerprint = (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      supervised = $true
+      supervisorPid = [int]$supervisorMetadata.pid
+      supervisorStartFileTimeUtc = [string]$supervisorMetadata.processStartFileTimeUtc
+      supervisorMetadataPath = $supervisorPath
+      supervisorJobName = $jobName
       bootstrapProtected = Protect-LocalValue $bootstrapToken
       controlProtected = Protect-LocalValue $controlToken
       startedAt = [string]$snapshot.startTimeUtc
@@ -152,6 +217,11 @@ try {
   }
 
   $operatorUrl = "$dashboardUrl#bootstrap=$bootstrapToken"
+  if (-not [string]::IsNullOrWhiteSpace($OperatorUrlFile)) {
+    $operatorUrlPath = [IO.Path]::GetFullPath($OperatorUrlFile)
+    New-Item -ItemType Directory -Path (Split-Path -Parent $operatorUrlPath) -Force | Out-Null
+    [IO.File]::WriteAllText($operatorUrlPath, $operatorUrl)
+  }
   if (-not $NoOpen) {
     Start-Process $operatorUrl
   }

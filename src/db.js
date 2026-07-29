@@ -5,7 +5,7 @@ const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 const { spendCostId } = require("./runtime/stable-id");
 
-const LATEST_SCHEMA_VERSION = 23;
+const LATEST_SCHEMA_VERSION = 24;
 
 const REQUIRED_SCHEMA_SHAPE = Object.freeze({
   tasks: ["id", "workflow_id", "venture_id", "claim_token", "outcome_status"],
@@ -2380,6 +2380,80 @@ function applyRuntimeStopEvidenceMigration(db) {
   }
 }
 
+function applyModelCallCompletionTruthMigration(db) {
+  if (migrationApplied(db, 24)) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      UPDATE model_calls
+      SET completed_at = COALESCE(
+        (
+          SELECT attempts.completed_at
+          FROM task_attempts AS attempts
+          WHERE attempts.completed_at IS NOT NULL
+            AND attempts.task_id = model_calls.task_id
+            AND (
+              attempts.model_call_id = model_calls.id
+              OR attempts.provider_dispatch_model_call_id = model_calls.id
+            )
+          ORDER BY attempts.completed_at DESC, attempts.id DESC
+          LIMIT 1
+        ),
+        (
+          SELECT runs.completed_at
+          FROM agent_runs AS runs
+          WHERE runs.completed_at IS NOT NULL
+            AND runs.task_id = model_calls.task_id
+            AND runs.model_call_id = model_calls.id
+          ORDER BY runs.completed_at DESC, runs.id DESC
+          LIMIT 1
+        ),
+        (
+          SELECT tasks.completed_at
+          FROM tasks
+          WHERE tasks.id = model_calls.task_id
+            AND tasks.completed_at IS NOT NULL
+        )
+      )
+      WHERE model_calls.completed_at IS NULL
+        AND model_calls.status IN (
+          'completed', 'succeeded', 'provider_completed', 'waiting_approval',
+          'failed', 'needs_attention', 'cancelled', 'abandoned', 'not_called'
+        )
+        AND (
+          EXISTS (
+            SELECT 1
+            FROM task_attempts AS attempts
+            WHERE attempts.completed_at IS NOT NULL
+              AND attempts.task_id = model_calls.task_id
+              AND (
+                attempts.model_call_id = model_calls.id
+                OR attempts.provider_dispatch_model_call_id = model_calls.id
+              )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM agent_runs AS runs
+            WHERE runs.completed_at IS NOT NULL
+              AND runs.task_id = model_calls.task_id
+              AND runs.model_call_id = model_calls.id
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM tasks
+            WHERE tasks.id = model_calls.task_id
+              AND tasks.completed_at IS NOT NULL
+          )
+        );
+    `);
+    recordMigration(db, 24, "model-call-completion-truth");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3197,6 +3271,7 @@ function migrate(db) {
   applyFullJourneyMigration(db);
   applyCommercialIntelligenceMigration(db);
   applyRuntimeStopEvidenceMigration(db);
+  applyModelCallCompletionTruthMigration(db);
 }
 
 function putSetting(db, key, value) {
@@ -3488,6 +3563,7 @@ function seedDatabase(db, options = {}) {
 module.exports = {
   LATEST_SCHEMA_VERSION,
   applyCommercialIntelligenceMigration,
+  applyModelCallCompletionTruthMigration,
   applyRuntimeStopEvidenceMigration,
   applyStableSpendCostIdMigration,
   all,

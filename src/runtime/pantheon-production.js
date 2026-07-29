@@ -18,6 +18,7 @@ const {
 const { requestLiveAiWorker } = require("./live-ai-workers");
 const { journeyForRound, updateJourney } = require("./pantheon-journey");
 const { combinedProofExposureFromDatabase } = require("./proof-exposure-ledger");
+const { finalizeBuyerIntentValidationSample } = require("./buyer-intent-validation");
 
 const PRODUCT_BUILD_SPEC_SCHEMA = "pantheon.product-build-spec.v1";
 const PRODUCT_MANIFEST_SCHEMA = "pantheon.product-manifest.v1";
@@ -82,6 +83,8 @@ function taskOutput(task) {
 function actualProductTitle(plan, opportunityRecord) {
   return String(
     plan?.metadata?.productManifest?.packageTitle
+      || plan?.metadata?.validationSample?.sample?.item?.title
+      || plan?.metadata?.validationSample?.sample?.packageTitle
       || plan?.title
       || opportunityRecord?.title
       || "",
@@ -610,6 +613,15 @@ function normalizedRevisionCorrections(options = {}) {
 function buildSpec(plan, opportunityRecord, items, options = {}) {
   const profile = buildProfile(opportunityRecord);
   const fullJourney = Boolean(plan.metadata.journeyId);
+  const validationSample = plan.metadata.validationSample || null;
+  const validationPackageTitle = validationSample
+    ? String(
+      validationSample.sample?.item?.title
+      || validationSample.sample?.packageTitle
+      || opportunityRecord.title,
+    ).trim()
+    : null;
+  const needsStorefrontPreviews = fullJourney || Boolean(validationSample);
   const revisionCorrections = normalizedRevisionCorrections(options);
   return {
     schema: PRODUCT_BUILD_SPEC_SCHEMA,
@@ -634,11 +646,30 @@ function buildSpec(plan, opportunityRecord, items, options = {}) {
       priceCents: Number(item.price_cents || 0),
     })),
     manifestFilename: "pantheon-product-manifest.json",
-    bundleFilename: `${slug(opportunityRecord.title)}-catalogue.zip`,
+    bundleFilename: validationSample
+      ? `${slug(validationPackageTitle)}.zip`
+      : `${slug(opportunityRecord.title)}-catalogue.zip`,
     minimumReturnedFiles: 2,
-    storefrontPreviewCount: fullJourney ? 2 : 0,
-    storefrontPreviewDirectory: fullJourney ? "storefront-previews" : null,
-    ventureKit: fullJourney ? "digital_product_v1" : null,
+    storefrontPreviewCount: needsStorefrontPreviews ? 2 : 0,
+    storefrontPreviewDirectory: needsStorefrontPreviews ? "storefront-previews" : null,
+    ventureKit: needsStorefrontPreviews ? "digital_product_v1" : null,
+    validationSample: validationSample ? {
+      schema: validationSample.schema,
+      specId: validationSample.specId,
+      contractHash: validationSample.contractHash,
+      packageTitle: validationPackageTitle,
+      customerPromise: validationSample.sample?.customerPromise,
+      setupSteps: validationSample.sample?.setupSteps || [],
+      disclaimers: validationSample.sample?.disclaimers || [],
+      channel: validationSample.channel || null,
+      exactItemBlueprint: {
+        ...(validationSample.sample?.item || {}),
+        id: items[0]?.id || validationSample.sample?.item?.id,
+        title: items[0]?.title || validationSample.sample?.item?.title,
+      },
+      testMeasurement: validationSample.measurement,
+      noFullCatalogueAuthorised: true,
+    } : null,
     revisionNumber: Number(options.revisionNumber || 0),
     revisionCorrections,
     revisionFeedback: revisionCorrections.join("; ").slice(0, 1800),
@@ -682,7 +713,7 @@ function qualityReviewFingerprintForTask(task) {
     || reviewFingerprint(parameters.reviewBindings, parameters.qualityReviewPacket);
 }
 
-function existingQualityReviewTask(db, planId, revisionNumber, fingerprint) {
+function existingQualityReviewTask(db, planId, revisionNumber, fingerprint, options = {}) {
   const rows = all(
     db,
     `SELECT * FROM tasks
@@ -701,13 +732,156 @@ function existingQualityReviewTask(db, planId, revisionNumber, fingerprint) {
     sameRevision.map(qualityReviewFingerprintForTask).filter(Boolean),
   );
   if (matching) return { task: matching, existing: true, sequence: reviewedFingerprints.size };
+  const planMetadata = fromJson(
+    get(db, "SELECT metadata FROM catalogue_plans WHERE id = ?", [planId])?.metadata,
+    {},
+  );
+  const validationSample = planMetadata.validationSample || null;
+  const explicitOperatorFinalReview = options.explicitOperatorFinalReview === true;
+  const inspectionEvidenceRecheck = options.inspectionEvidenceRecheck === true;
+  if (validationSample) {
+    const correctionLimit = Math.max(
+      0,
+      Number(validationSample.providerPolicy?.correctionLimit || 0),
+    );
+    if (explicitOperatorFinalReview) {
+      throw new Error("The retired final-review override cannot create another paid review.");
+    }
+    if (inspectionEvidenceRecheck) {
+      const priorEvidenceRechecks = all(
+        db,
+        `SELECT * FROM tasks
+         WHERE kind = 'live_ai_worker_execution'
+           AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+           AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage') = 'quality_review'
+           AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.inspectionEvidenceRecheck') = 1`,
+        [planId],
+      ).map((row) => parseRow(row, ["payload", "result"])).filter((row) => (
+        Number(productMetadata(row)?.revisionNumber || 0) === Number(revisionNumber)
+      ));
+      if (priorEvidenceRechecks.length > 0) {
+        throw new Error("Pantheon already used the one inspection-evidence recheck for this product revision.");
+      }
+      if (sameRevision.length !== 1) {
+        throw new Error(
+          "An inspection-evidence recheck requires exactly one completed review of the unchanged product revision.",
+        );
+      }
+      if (Number(revisionNumber) > correctionLimit) {
+        throw new Error("Pantheon has reached the buyer-intent correction limit.");
+      }
+      return { task: null, existing: false, sequence: rows.length + 1 };
+    }
+    if (sameRevision.length > 0) {
+      throw new Error(
+        "Pantheon already reviewed this product revision. Changed files require a new bounded revision.",
+      );
+    }
+    if (Number(revisionNumber) > correctionLimit) {
+      throw new Error("Pantheon has reached the buyer-intent correction limit.");
+    }
+    return { task: null, existing: false, sequence: rows.length + 1 };
+  }
   // One product correction may require bounded rechecks when Jarvis fixes the
   // deterministic renderer or applies an exact claim-safety finding without
   // asking the model to redesign the product.
-  if (reviewedFingerprints.size >= 3) {
+  if (reviewedFingerprints.size >= 4) {
+    throw new Error("Pantheon has already used the one operator-authorised final quality review for this product revision.");
+  }
+  if (reviewedFingerprints.size >= 3 && !explicitOperatorFinalReview) {
     throw new Error("Pantheon stopped before creating another quality review for the same product revision.");
   }
   return { task: null, existing: false, sequence: reviewedFingerprints.size + 1 };
+}
+
+function assertQualityReviewRecheckAvailable(db, planId, revisionNumber) {
+  const rows = all(
+    db,
+    `SELECT payload
+     FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND status <> 'cancelled'
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage') = 'quality_review'`,
+    [planId],
+  ).map((row) => parseRow(row, ["payload"])).filter((row) => (
+    Number(productMetadata(row)?.revisionNumber || 0) === Number(revisionNumber)
+  ));
+  const reviewedFingerprints = new Set(
+    rows.map(qualityReviewFingerprintForTask).filter(Boolean),
+  );
+  if (reviewedFingerprints.size >= 3) {
+    throw new Error("Pantheon stopped before creating another quality review for the same product revision.");
+  }
+  return {
+    reviewedFingerprints: reviewedFingerprints.size,
+    remainingRechecks: Math.max(0, 3 - reviewedFingerprints.size),
+  };
+}
+
+function assertBuyerIntentProviderBudget(db, plan, requestedCapCents) {
+  const validationSample = plan?.metadata?.validationSample;
+  if (!validationSample) return;
+  const combinedCapCents = Math.max(
+    0,
+    Number(validationSample.providerPolicy?.combinedCapCents || 0),
+  );
+  if (!combinedCapCents) {
+    throw new Error("The buyer-intent provider budget is missing.");
+  }
+  const taskRows = all(
+    db,
+    `SELECT id
+     FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND status NOT IN ('cancelled', 'superseded')
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage')
+           IN ('product_build', 'quality_review')`,
+    [plan.id],
+  );
+  const taskIds = taskRows.map((row) => row.id);
+  let committed = 0;
+  if (taskIds.length) {
+    const placeholders = taskIds.map(() => "?").join(", ");
+    const costs = all(
+      db,
+      `SELECT task_id, COALESCE(SUM(amount_cents), 0) AS cents
+       FROM costs
+       WHERE task_id IN (${placeholders})
+         AND status NOT IN ('released', 'cancelled')
+         AND amount_cents > 0
+       GROUP BY task_id`,
+      taskIds,
+    );
+    const reservations = all(
+      db,
+      `SELECT task_id, COALESCE(MAX(amount_cents), 0) AS cents
+       FROM budget_reservations
+       WHERE task_id IN (${placeholders})
+         AND status IN ('reserved', 'incurred_estimate', 'unknown')
+       GROUP BY task_id`,
+      taskIds,
+    );
+    const costByTask = new Map(costs.map((row) => [row.task_id, Number(row.cents || 0)]));
+    const reservationByTask = new Map(
+      reservations.map((row) => [row.task_id, Number(row.cents || 0)]),
+    );
+    committed = taskIds.reduce(
+      (total, taskId) => total + Math.max(
+        costByTask.get(taskId) || 0,
+        reservationByTask.get(taskId) || 0,
+      ),
+      0,
+    );
+  }
+  const requested = Math.max(0, Number(requestedCapCents || 0));
+  if (committed + requested > combinedCapCents) {
+    throw new Error(
+      `Pantheon stopped because this request would exceed the buyer-intent AI limit of `
+      + `A$${(combinedCapCents / 100).toFixed(2)}.`,
+    );
+  }
 }
 
 function updatePlan(db, planId, patch = {}) {
@@ -722,6 +896,65 @@ function updatePlan(db, planId, patch = {}) {
     [patch.status || plan.status, toJson(metadata), now(), planId],
   );
   return cataloguePlan(db, planId);
+}
+
+function terminalizeInspectionEvidenceRecheckPersistence(db, plan) {
+  const contract = plan?.metadata?.validationSample || {};
+  const experimentId = String(contract.experimentId || "").trim();
+  const candidateId = String(contract.candidateId || "").trim();
+  const timestamp = now();
+
+  if (experimentId) {
+    run(
+      db,
+      `UPDATE commercial_experiments
+       SET status = 'cancelled', ended_at = COALESCE(ended_at, ?), updated_at = ?
+       WHERE id = ? AND status <> 'cancelled'`,
+      [timestamp, timestamp, experimentId],
+    );
+  }
+
+  const candidateSelectors = [];
+  const candidateValues = [];
+  if (candidateId) {
+    candidateSelectors.push("id = ?");
+    candidateValues.push(candidateId);
+  }
+  if (experimentId) {
+    candidateSelectors.push("promoted_experiment_id = ?");
+    candidateValues.push(experimentId);
+  }
+  if (candidateSelectors.length) {
+    run(
+      db,
+      `UPDATE commercial_test_candidates
+       SET status = 'cancelled', updated_at = ?
+       WHERE status <> 'cancelled' AND (${candidateSelectors.join(" OR ")})`,
+      [timestamp, ...candidateValues],
+    );
+  }
+
+  const artifactIds = [...new Set([
+    ...(Array.isArray(plan?.metadata?.generatedFileIds) ? plan.metadata.generatedFileIds : []),
+    ...(Array.isArray(plan?.metadata?.storefrontPreviewIds) ? plan.metadata.storefrontPreviewIds : []),
+    ...(Array.isArray(plan?.metadata?.qualityReviewImageIds) ? plan.metadata.qualityReviewImageIds : []),
+  ].filter(Boolean).map(String))];
+  if (artifactIds.length) {
+    run(
+      db,
+      `UPDATE deliverables
+       SET status = 'needs_changes', updated_at = ?
+       WHERE id IN (${artifactIds.map(() => "?").join(", ")})
+         AND status <> 'needs_changes'`,
+      [timestamp, ...artifactIds],
+    );
+  }
+
+  return {
+    experimentId: experimentId || null,
+    candidateId: candidateId || null,
+    artifactIds,
+  };
 }
 
 function prepareCatalogueBuild(db, input = {}) {
@@ -769,30 +1002,53 @@ function prepareCatalogueBuild(db, input = {}) {
   }
   const round = roundForPlan(db, plan);
   const journey = journeyForPlan(db, plan);
+  const validationSample = plan.metadata.validationSample || null;
+  const workflowId = validationSample?.workflowId || round.metadata.workflowId;
+  if (!workflowId) throw new Error("The product build has no exact owning workflow.");
+  const requestedRoute = validationSample?.providerPolicy?.productBuilderRoute || null;
+  const selectedModel = requestedRoute === "luna"
+    ? CONFIG.lunaModel
+    : requestedRoute === "terra"
+      ? CONFIG.terraModel
+      : journey?.model || CONFIG.terraModel;
+  const productTitle = actualProductTitle(plan, opportunityRecord);
+  const estimatedCostCents = Number(
+    validationSample?.providerPolicy?.productBuilderCapCents || 200,
+  );
+  assertBuyerIntentProviderBudget(db, plan, estimatedCostCents);
   const operatorChoiceRequired = input.operatorChoiceRequired !== false;
-  const request = requestLiveAiWorker(db, round.metadata.workflowId, {
+  const request = requestLiveAiWorker(db, workflowId, {
     requestKey: `catalogue_build_${safeId(plan.id)}_r${revisionNumber}`,
     requestedBy: operatorChoiceRequired ? "chief_of_staff" : "pantheon_quality_recovery",
     worker: "product_builder",
     taskTitle: revisionNumber
-      ? `Correct and rebuild ${plan.title}`
-      : `Build ${plan.title}`,
+      ? `Correct and rebuild ${productTitle}`
+      : validationSample
+        ? `Build the ${productTitle} validation workbook`
+        : `Build ${productTitle}`,
     approvalTitle: revisionNumber
-      ? `Correct the ${plan.title} product files`
-      : `Build and quality-check the ${items.length}-product catalogue`,
-    estimatedCostCents: 200,
+      ? `Correct the ${productTitle} product files`
+      : validationSample
+        ? `Build the ${productTitle} validation package`
+        : `Build and quality-check the ${items.length}-product catalogue`,
+    estimatedCostCents,
     reason: operatorChoiceRequired
-      ? `Create the exact ${items.length}-item local product catalogue that Daniel reviewed. Nothing will be published, sent, or uploaded to a marketplace.`
+      ? validationSample
+        ? "Create one exact local validation workbook and two previews so willingness to pay and Excel-format acceptance can be tested. Nothing will be published, sent, or uploaded."
+        : `Create the exact ${items.length}-item local product catalogue that Daniel reviewed. Nothing will be published, sent, or uploaded to a marketplace.`
       : "Correct the exact local product package after Pantheon's Quality Reviewer found a material defect. Nothing will be published or sent.",
     expectedOutput: `A real downloadable ${spec.bundleFilename}, ${spec.manifestFilename}, and a structured production summary. Planning prose without files is a failed build.`,
     expectedMetric: `Pantheon downloads, hashes, validates, and maps usable product files to all ${items.length} approved catalogue items.`,
-    model: journey?.model || CONFIG.terraModel,
-    modelLocked: journey?.model_locked === 1,
-    maxInputTokens: 64000,
-    maxOutputTokens: 8000,
+    model: selectedModel,
+    modelLocked: validationSample ? true : journey?.model_locked === 1,
+    maxInputTokens: validationSample ? 40000 : 64000,
+    maxOutputTokens: validationSample ? 6000 : 8000,
     maxTurns: 1,
     maxToolCalls: 0,
     deadlineMs: 180000,
+    contextClasses: validationSample
+      ? ["venture", "production", "legal"]
+      : undefined,
     tools: ["product_file_factory"],
     toolArguments: {
       product_file_factory: {
@@ -808,10 +1064,15 @@ function prepareCatalogueBuild(db, input = {}) {
       evidenceStandard: "Use the approved opportunity, economics, offer, and catalogue records. Do not invent buyer proof or public claims.",
     },
     workBrief: {
-      objective: `Design the exact customer contents for the complete ${items.length}-item catalogue in approvedProductBuildSpec.`,
+      objective: validationSample
+        ? "Design the exact customer contents for the one validation workbook in approvedProductBuildSpec."
+        : `Design the exact customer contents for the complete ${items.length}-item catalogue in approvedProductBuildSpec.`,
       deliverable: `Return one strict Product Builder result containing a complete productBlueprint. Pantheon will turn it into ${spec.bundleFilename} and ${spec.manifestFilename} locally after validation.`,
       assetPrompt: [
         `The manifest must use schema ${PRODUCT_MANIFEST_SCHEMA} and exactly match planId ${plan.id} and opportunityId ${opportunityRecord.id}.`,
+        validationSample
+          ? "Use approvedProductBuildSpec.validationSample.exactItemBlueprint as the required minimum structure. Preserve its exact item ID, named fields, status options, formulas, sample records, setup steps, customer promise, and limitations. Improve clarity only when every required function remains present."
+          : null,
         "Its catalogueItems array must contain every exact catalogue item id. Each item must list the real customer-facing files that exist inside the returned bundle.",
         "Define complete customer-usable trackers, instructions, fields, and realistic examples. Do not return outlines, lorem ipsum, TODO markers, empty worksheets, or claims that files already exist.",
         "Keep the strict blueprint compact: one short sentence per purpose, instruction, and field guide; use one realistic sample row unless a second is essential; do not repeat the same explanation.",
@@ -861,6 +1122,10 @@ function prepareCatalogueBuild(db, input = {}) {
         revisionNumber,
         operatorChoiceRequired,
         journeyId: journey?.id || null,
+        buyerIntentValidation: validationSample ? {
+          specId: validationSample.specId,
+          contractHash: validationSample.contractHash,
+        } : null,
       },
     },
     effects: [],
@@ -910,6 +1175,9 @@ function markCatalogueDeliverablesQualityPassed(db, plan, generated) {
   const visualIds = [
     ...(plan.metadata.storefrontVisualIds || []),
     ...(plan.metadata.storefrontPreviewIds || []),
+    ...(plan.metadata.qualityReviewImageIds || []),
+    ...(generated.previews || []).map((preview) => preview.id),
+    ...(generated.qualityReviewImages || []).map((image) => image.id),
   ];
   const reviewedDeliverableIds = [...new Set([
     ...(generated.files || []).map((file) => file.id).filter(Boolean),
@@ -1016,12 +1284,13 @@ function queueStorefrontVisual(db, plan, opportunityRecord, buildTask, generated
     );
   }
   const journey = journeyForPlan(db, plan);
+  const productTitle = actualProductTitle(plan, opportunityRecord);
   const request = requestLiveAiWorker(db, buildTask.workflow_id, {
     requestKey: `catalogue_storefront_visual_${safeId(plan.id)}_r${revisionNumber}`,
     requestedBy: "pantheon_supervisor",
     worker: "product_builder",
-    taskTitle: `Create the storefront cover for ${opportunityRecord.title}`,
-    approvalTitle: `Create one storefront cover for ${opportunityRecord.title}`,
+    taskTitle: `Create the storefront cover for ${productTitle}`,
+    approvalTitle: `Create one storefront cover for ${productTitle}`,
     estimatedCostCents: 100,
     reason: "Create one exact, capped local storefront cover for the finished product. Nothing will be published or sent.",
     expectedOutput: "One locally stored cover image, a concise production note, and honest limitations.",
@@ -1127,6 +1396,7 @@ function reviewDeliverableFact(db, deliverableId) {
     bytes: Number(metadata.bytes || 0),
     sha256: row.content_hash || metadata.sha256 || null,
     derivedFromProductFiles: metadata.derivedFromProductFiles === true,
+    inspectionCoverage: metadata.inspectionCoverage || null,
   };
 }
 
@@ -1214,8 +1484,19 @@ function buildQualityReviewPacket(
     opportunityId: opportunityRecord.id,
     buildTaskId: buildTask.id,
     revisionNumber: Number(productMetadata(buildTask)?.revisionNumber || 0),
+    constructionMode: generated.constructionMode || "not_recorded",
+    constructionExplanation: generated.constructionMode === "contract_defined_model_assisted"
+      ? "The approved buyer-test contract defined the customer-file structure; the model supplied bounded judgement and wording before deterministic rendering."
+      : "The model blueprint was rendered deterministically into the retained customer files.",
     packageTitle: compactReviewText(manifest.packageTitle, 240),
     customerPromise: compactReviewText(manifest.customerPromise, 500),
+    assetProvenance: manifest.assetProvenance ? {
+      sourceType: compactReviewText(manifest.assetProvenance.sourceType, 120),
+      externalAssetsUsed: (manifest.assetProvenance.externalAssetsUsed || [])
+        .map((value) => compactReviewText(value, 240)),
+      customerDataUsed: manifest.assetProvenance.customerDataUsed === true,
+      statement: compactReviewText(manifest.assetProvenance.statement, 700),
+    } : null,
     deliveryFormat: compactReviewText(manifest.deliveryFormat, 320),
     customerInstructionSource: String(manifest.customerInstructionSource || "unknown"),
     expectedCatalogueCount: Number(plan.target_item_count || 0),
@@ -1271,6 +1552,18 @@ function buildQualityReviewPacket(
           compactReviewText(field.formula, 240),
           String(field.range || ""),
         ]),
+        sampleCalculationChecks: (item.validation?.sampleCalculationChecks || []).map((check) => ({
+          trackerRow: Number(check.trackerRow || 0),
+          record: compactReviewText(check.record, 120),
+          results: (check.results || []).map((result) => ({
+            target: compactReviewText(result.target, 120),
+            operation: compactReviewText(result.operation, 80),
+            inputs: (result.inputs || []).map((value) => compactReviewText(value, 120)),
+            value: Number.isFinite(Number(result.value)) ? Number(result.value) : null,
+            display: compactReviewText(result.display, 80),
+          })),
+        })),
+        dashboardExpectedResults: item.validation?.dashboardExpectedResults || null,
         formulaEvidence: {
           totalFormulaCells: Number(item.validation?.formulaCells || 0),
           sampleCount: Array.isArray(item.validation?.formulas) ? item.validation.formulas.length : 0,
@@ -1354,6 +1647,7 @@ function buildQualityReviewPacket(
       sha256: file.sha256 || null,
     })),
     storefrontPreviews: (generated.previews || []).map((preview) => reviewDeliverableFact(db, preview.id)),
+    fileInspectionVisuals: (generated.qualityReviewImages || []).map((image) => reviewDeliverableFact(db, image.id)),
     storefrontVisuals: visualAssetIds.map((id) => reviewDeliverableFact(db, id)),
     approvedVisualReviewIds: reviewAssetIds,
     deterministicChecks: {
@@ -1382,10 +1676,31 @@ function buildQualityReviewPacket(
       customerInstructionsDerivedFromActualFiles: (
         manifest.customerInstructionSource === "generated_from_actual_files_by_local_factory"
       ),
+      assetProvenanceDeclared: (
+        manifest.assetProvenance?.sourceType === "pantheon_local_generation"
+        && Array.isArray(manifest.assetProvenance?.externalAssetsUsed)
+        && manifest.assetProvenance.externalAssetsUsed.length === 0
+        && manifest.assetProvenance?.customerDataUsed === false
+      ),
       dashboardStatusMetricsMatchDropdowns: manifestItems.every((item) => (
         !item.validation?.dashboardMetric
         || item.validation.dashboardMetric.countedValueInValidation === true
       )),
+      sampleCalculationsIndependentlyChecked: manifestItems.every((item) => {
+        const calculations = Array.isArray(item.validation?.calculatedFields)
+          ? item.validation.calculatedFields
+          : [];
+        if (!calculations.length) return true;
+        const checks = Array.isArray(item.validation?.sampleCalculationChecks)
+          ? item.validation.sampleCalculationChecks
+          : [];
+        return checks.length === Number(item.validation?.sampleRows || 0)
+          && checks.every((check) => (
+            Array.isArray(check.results)
+            && check.results.length === calculations.length
+            && check.results.every((result) => Number.isFinite(Number(result.value)))
+          ));
+      }),
       setupGuideContentExposed: (
         manifest.setupGuide?.contentSource === "same_claim_safe_blueprint_used_to_render_pdf"
         && Array.isArray(manifest.setupGuide.products)
@@ -1401,7 +1716,10 @@ function buildQualityReviewPacket(
     reviewInstructions: [
       "Treat deterministic checks and hashes as file-integrity evidence, not as proof of buyer value.",
       "Formula samples are intentionally compact for large workbooks. Use formulaEvidence.totalFormulaCells, coverage ranges, and completeCoverage to judge deterministic coverage; do not treat the sample count as the workbook's formula count.",
+      "Use sampleCalculationChecks as Pantheon's independent arithmetic verification of the exact sample rows; the saved workbook remains configured to recalculate formulas when opened in Excel.",
+      "Use assetProvenance to distinguish locally generated package elements from third-party assets; do not request external rights evidence when externalAssetsUsed is empty.",
       "Inspect every approved visual for clipping, misleading motifs, unsupported claims, and consistency with the real package.",
+      "QA-only file inspection visuals are rendered from the exact saved XLSX and PDF and are not customer-facing storefront assets.",
       "Compare each approved catalogue promise with the exact workbook fields, instructions, sample data, and delivery format. Do not pass a technically valid but commercially empty or misrepresented package.",
       `Pass only when the complete ${manifestItems.length}-part package is usable, truthfully represented, and has no unresolved material defect.`,
     ],
@@ -1419,6 +1737,20 @@ function queueQualityReview(
 ) {
   const revisionNumber = Number(productMetadata(buildTask)?.revisionNumber || 0);
   const journey = journeyForPlan(db, plan);
+  const validationSample = plan.metadata.validationSample || null;
+  const productTitle = actualProductTitle(plan, opportunityRecord);
+  const explicitOperatorFinalReview = options.explicitOperatorFinalReview === true;
+  const inspectionEvidenceRecheck = options.inspectionEvidenceRecheck === true;
+  const operatorReviewRequired = explicitOperatorFinalReview || inspectionEvidenceRecheck;
+  const requestedRoute = validationSample?.providerPolicy?.qualityReviewerRoute || null;
+  const selectedModel = requestedRoute === "luna"
+    ? CONFIG.lunaModel
+    : requestedRoute === "terra"
+      ? CONFIG.terraModel
+      : journey?.model || CONFIG.terraModel;
+  const estimatedCostCents = Number(
+    validationSample?.providerPolicy?.qualityReviewerCapCents || 100,
+  );
   const files = generated.files.map((file) => ({
     id: file.id,
     name: file.humanName,
@@ -1426,9 +1758,14 @@ function queueQualityReview(
     bytes: file.bytes,
     sha256: file.sha256,
   }));
-  const reviewAssetIds = [...new Set([
+  const reviewAssetIds = [...new Set(validationSample ? [
+    ...(generated.qualityReviewImages || []).map((image) => image.id),
+    ...(generated.previews || []).map((preview) => preview.id),
+    ...visualAssetIds,
+  ] : [
     ...visualAssetIds,
     ...(generated.previews || []).map((preview) => preview.id),
+    ...(generated.qualityReviewImages || []).map((image) => image.id),
   ])].slice(0, 4);
   for (const visualId of visualAssetIds) {
     run(
@@ -1480,8 +1817,17 @@ function queueQualityReview(
       "The exact product files or review packet changed before this quality review began.",
     );
   }
-  const prior = existingQualityReviewTask(db, plan.id, revisionNumber, fingerprint);
-  if (prior.task) return { task: prior.task, existing: true };
+  const prior = existingQualityReviewTask(db, plan.id, revisionNumber, fingerprint, options);
+  if (prior.task) {
+    return {
+      task: prior.task,
+      approval: prior.task.approval_id
+        ? get(db, "SELECT * FROM approvals WHERE id = ?", [prior.task.approval_id])
+        : null,
+      existing: true,
+    };
+  }
+  assertBuyerIntentProviderBudget(db, plan, estimatedCostCents);
   const requestKeySuffix = options.requestKeySuffix
     ? `_${safeId(options.requestKeySuffix)}`
     : "";
@@ -1489,15 +1835,34 @@ function queueQualityReview(
     requestKey: `catalogue_quality_${safeId(plan.id)}_r${revisionNumber}_${fingerprint.slice(0, 12)}${requestKeySuffix}`,
     requestedBy: "pantheon_supervisor",
     worker: "quality_reviewer",
-    taskTitle: `Review the finished product package for ${opportunityRecord.title}`,
-    approvalTitle: `Run the product quality review for ${opportunityRecord.title}`,
-    estimatedCostCents: 100,
-    reason: "Independently check the exact locally stored product package before any launch preparation.",
+    taskTitle: explicitOperatorFinalReview
+      ? `Run the final independent check on the corrected workbook for ${productTitle}`
+      : inspectionEvidenceRecheck
+        ? `Check the complete setup-guide inspection for ${productTitle}`
+      : validationSample
+      ? `Review the functional validation workbook for ${productTitle}`
+      : `Review the finished product package for ${productTitle}`,
+    approvalTitle: explicitOperatorFinalReview
+      ? `Run one final independent check on the corrected ${productTitle} workbook`
+      : inspectionEvidenceRecheck
+        ? `Check the repaired setup-guide inspection for ${productTitle}`
+      : validationSample
+      ? `Check the ${productTitle} validation workbook before the buyer test`
+      : `Run the product quality review for ${productTitle}`,
+    estimatedCostCents,
+    manualApprovalRequired: operatorReviewRequired,
+    reason: explicitOperatorFinalReview
+      ? "Jarvis corrected the exact local workbook, setup guide, calculations, and previews at no additional AI cost. Three independent review attempts are already retained, so one final review requires Daniel's exact approval."
+      : inspectionEvidenceRecheck
+        ? "Jarvis regenerated only the internal inspection sheet so it now shows every setup-guide page. The customer files are byte-for-byte unchanged. One independently approved recheck can verify the previously unseen page."
+      : validationSample
+      ? "Independently check the exact locally stored workbook, guide, and previews before Pantheon prepares a buyer test."
+      : "Independently check the exact locally stored product package before any launch preparation.",
     expectedOutput: "A clear pass, revise, or stop verdict with quality score, file coverage, usability risks, unsupported claims, and exact corrections.",
     expectedMetric: "All catalogue items are covered, deterministic file validation passed, and semantic review scores at least 80/100 with no unresolved high-risk finding.",
-    model: journey?.model || CONFIG.terraModel,
-    modelLocked: journey?.model_locked === 1,
-    maxInputTokens: 96000,
+    model: selectedModel,
+    modelLocked: validationSample ? true : journey?.model_locked === 1,
+    maxInputTokens: validationSample ? 72000 : 96000,
     maxOutputTokens: 2400,
     maxTurns: 1,
     maxToolCalls: 0,
@@ -1515,7 +1880,9 @@ function queueQualityReview(
     },
     workBrief: {
       objective: "Review the exact product manifest, deterministic file checks, commercial promise, claim safety, usability, and catalogue completeness.",
-      deliverable: "A decision-quality review that clearly distinguishes verified file facts from semantic judgements and remaining inspection limits.",
+      deliverable: validationSample
+        ? "A decision-quality pass, revise, or stop review of the one functional validation sample, clearly distinguishing verified file facts from semantic judgements."
+        : "A decision-quality review that clearly distinguishes verified file facts from semantic judgements and remaining inspection limits.",
       assetPrompt: `Use the complete frozen qualityReviewPacket, exact qualityReviewTargets, and all ${reviewAssetIds.length} approved visual inputs. Do not infer from a shortened narrative excerpt.`,
       constraints: [
         "Fail the package if any catalogue item lacks a real file.",
@@ -1525,11 +1892,21 @@ function queueQualityReview(
       acceptanceCriteria: [
         "Quality score is reasoned rather than cosmetic.",
         "Material defects identify an exact correction.",
-        "Approval means ready for launch preparation, not already published or sold.",
+        explicitOperatorFinalReview
+          ? "This is the one operator-authorised final review. Pass means the corrected validation sample may advance to buyer-test planning; revise or stop ends the build without another paid review."
+          : inspectionEvidenceRecheck
+            ? "Review the unchanged customer package using the complete PDF inspection sheet. This one evidence recheck cannot redesign the product or create another retry."
+          : validationSample
+          ? "Approval means ready to prepare the exact buyer test, not ready for a full catalogue, publication, or sale."
+          : "Approval means ready for launch preparation, not already published or sold.",
       ],
     },
     parameters: {
       ...journeyParameters(journey),
+      ...(operatorReviewRequired ? {
+        manualApprovalRequired: true,
+        operatorChoiceRequired: true,
+      } : {}),
       approvedAssetIds: reviewAssetIds,
       reviewOfTaskId: buildTask.id,
       reviewBindings,
@@ -1544,7 +1921,15 @@ function queueQualityReview(
         revisionNumber,
         reviewFingerprint: fingerprint,
         reviewSequence: prior.sequence,
+        explicitOperatorFinalReview,
+        inspectionEvidenceRecheck,
+        inspectionEvidenceSourceQualityTaskId:
+          options.inspectionEvidenceSourceQualityTaskId || null,
         journeyId: journey?.id || null,
+        buyerIntentValidation: validationSample ? {
+          specId: validationSample.specId,
+          contractHash: validationSample.contractHash,
+        } : null,
       },
     },
     effects: [],
@@ -1575,12 +1960,636 @@ function queueQualityReview(
         taskId: request.task?.id || null,
         workerId: "quality_reviewer",
         note: prior.sequence > 1
-          ? "The locally corrected package is frozen under new hashes and ready for a fresh independent review."
+          ? explicitOperatorFinalReview
+            ? "The corrected package is frozen under exact hashes and awaiting Daniel's decision on one final independent check."
+            : "The locally corrected package is frozen under new hashes and ready for a fresh independent review."
           : "The exact product files, previews, and cover are ready for independent review.",
       },
     });
   }
   return request;
+}
+
+function prepareExplicitFinalValidationReview(db, planId) {
+  const plan = cataloguePlan(db, planId);
+  if (!plan?.metadata?.validationSample) {
+    throw new Error("This catalogue plan is not an evidence-bound buyer-intent validation sample.");
+  }
+  throw new Error(
+    "Pantheon's final-review override is retired. Start a newly approved bounded revision instead.",
+  );
+}
+
+function exactHashSnapshotMatches(left = [], right = []) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  const valid = (item) => (
+    item
+    && typeof item.id === "string"
+    && item.id
+    && /^[a-f0-9]{64}$/i.test(String(item.sha256 || ""))
+  );
+  if (!left.every(valid) || !right.every(valid)) return false;
+  const leftIds = new Set(left.map((item) => item.id));
+  const rightIds = new Set(right.map((item) => item.id));
+  if (leftIds.size !== left.length || rightIds.size !== right.length) return false;
+  const rightById = new Map(right.map((item) => [item.id, item]));
+  return left.every((item) => item.sha256 === rightById.get(item.id)?.sha256);
+}
+
+function inspectionEvidenceRole(item = {}) {
+  const explicit = String(item.evidenceRole || "").trim();
+  if (["workbook_inspection", "setup_guide_inspection"].includes(explicit)) return explicit;
+  const identity = [
+    item.humanName,
+    item.name,
+    item.filename,
+    item.filePath,
+    item.inspectionCoverage?.inspectionFile,
+    item.inspectionCoverage?.inspectionRelativePath,
+  ].filter(Boolean).join(" ");
+  if (/\b(?:setup[-_ ]guide|actual-setup-guide)\b/i.test(identity)) {
+    return "setup_guide_inspection";
+  }
+  if (/\b(?:workbook|actual-workbook)\b/i.test(identity)) return "workbook_inspection";
+  return null;
+}
+
+function inspectionEvidenceByRole(items = []) {
+  if (!Array.isArray(items) || items.length !== 2) return null;
+  const byRole = new Map();
+  for (const item of items) {
+    const role = inspectionEvidenceRole(item);
+    if (
+      !role
+      || byRole.has(role)
+      || !/^[a-f0-9]{64}$/i.test(String(item?.sha256 || ""))
+    ) {
+      return null;
+    }
+    byRole.set(role, item);
+  }
+  return byRole.size === 2 ? byRole : null;
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalJson(value[key])]),
+    );
+  }
+  return value;
+}
+
+function sha256Json(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(canonicalJson(value))).digest("hex");
+}
+
+function managedFilePath(filePath) {
+  if (!filePath) return null;
+  const candidate = path.resolve(
+    path.isAbsolute(filePath) ? filePath : path.join(CONFIG.rootDir, filePath),
+  );
+  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) return null;
+  const realCandidate = fs.realpathSync(candidate);
+  if (!CONFIG.artifactRoot || !fs.existsSync(CONFIG.artifactRoot)) return null;
+  const managedRoot = fs.realpathSync(CONFIG.artifactRoot);
+  const relative = path.relative(managedRoot, realCandidate);
+  const inside = relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return inside ? realCandidate : null;
+}
+
+function managedDeliverableSnapshotVerified(db, buildTask, item) {
+  if (
+    !item?.id
+    || !/^[a-f0-9]{64}$/i.test(String(item.sha256 || ""))
+  ) {
+    return false;
+  }
+  const deliverable = get(
+    db,
+    `SELECT id, workflow_id, task_id, file_path, content_hash
+     FROM deliverables WHERE id = ?`,
+    [item.id],
+  );
+  const deliverablePath = managedFilePath(deliverable?.file_path);
+  const snapshotPath = item.filePath ? managedFilePath(item.filePath) : null;
+  if (
+    !deliverable
+    || deliverable.workflow_id !== buildTask.workflow_id
+    || deliverable.task_id !== buildTask.id
+    || deliverable.content_hash !== item.sha256
+    || !deliverablePath
+    || (item.filePath && (!snapshotPath || snapshotPath !== deliverablePath))
+  ) {
+    return false;
+  }
+  const actualHash = crypto.createHash("sha256").update(fs.readFileSync(deliverablePath)).digest("hex");
+  return actualHash === item.sha256;
+}
+
+function managedSnapshotVerified(db, buildTask, items = []) {
+  return Array.isArray(items)
+    && items.length > 0
+    && items.every((item) => managedDeliverableSnapshotVerified(db, buildTask, item));
+}
+
+function sourceReviewEvidence(qualityTask) {
+  const request = qualityTask?.payload?.liveSpendRequest || {};
+  const parameters = request.parameters || {};
+  const packet = parameters.qualityReviewPacket || {};
+  const files = Array.isArray(packet.packageDeliverables) ? packet.packageDeliverables : [];
+  const previews = Array.isArray(packet.storefrontPreviews) ? packet.storefrontPreviews : [];
+  const inspections = Array.isArray(packet.fileInspectionVisuals)
+    ? packet.fileInspectionVisuals
+    : [];
+  const assetBinding = parameters.approvedAssetBinding
+    || request.toolArguments?.visual_asset_review?.approvedAssetBinding
+    || {};
+  const assets = Array.isArray(assetBinding.assets) ? assetBinding.assets : [];
+  const expectedVisuals = [...previews, ...inspections];
+  const visualBindingExact = (
+    assets.length === 4
+    && expectedVisuals.length === 4
+    && new Set(assets.map((asset) => asset.id)).size === 4
+    && expectedVisuals.every((item) => assets.some((asset) => (
+      asset.id === item.id && asset.sha256 === item.sha256
+    )))
+  );
+  return {
+    files,
+    previews,
+    inspections,
+    inspectionsByRole: inspectionEvidenceByRole(inspections),
+    visualBindingExact,
+  };
+}
+
+function completeGuideInspectionCoverage(coverage, guideFile, guideInspection) {
+  if (!coverage || !guideFile || !guideInspection) return false;
+  const pages = Array.isArray(coverage.pages) ? coverage.pages : [];
+  const canonicalPages = pages.map((page) => ({
+    pageNumber: Number(page.pageNumber || 0),
+    width: Number(page.width || 0),
+    height: Number(page.height || 0),
+    rasterSha256: String(page.rasterSha256 || ""),
+  }));
+  const orderedPagesValid = (
+    canonicalPages.length === 3
+    && canonicalPages.every((page, index) => (
+      page.pageNumber === index + 1
+      && page.width > 0
+      && page.height > 0
+      && /^[a-f0-9]{64}$/i.test(page.rasterSha256)
+    ))
+  );
+  return (
+    coverage.sourceFile === "00-customer-setup-guide.pdf"
+    && coverage.sourceRelativePath === "customer-files/00-customer-setup-guide.pdf"
+    && coverage.sourceSha256 === guideFile.sha256
+    && coverage.inspectionFile === "actual-setup-guide.png"
+    && coverage.inspectionRelativePath === "quality-review/actual-setup-guide.png"
+    && coverage.inspectionSha256 === guideInspection.sha256
+    && Number(coverage.sourcePageCount || 0) === 3
+    && Number(coverage.renderedPageCount || 0) === 3
+    && coverage.completeCoverage === true
+    && Number.isInteger(Number(coverage.columns))
+    && Number(coverage.columns) > 0
+    && Number.isInteger(Number(coverage.rows))
+    && Number(coverage.rows) > 0
+    && Number(coverage.columns) * Number(coverage.rows) >= 3
+    && orderedPagesValid
+    && coverage.orderedPageIdentitySha256 === sha256Json(canonicalPages)
+  );
+}
+
+function qualityFindingIsMaterial(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  const withoutExplicitAbsence = text.replace(
+    /\bno (?:new or )?(?:unsafe|illegal|misleading|unsupported|incorrect|broken|materially false) (?:claim|claims|finding|findings|issue|issues|defect|defects)\b/gi,
+    "",
+  ).replace(
+    /\bno (?:(?:known|remaining|identified)\s+)?(?:material|major|high[- ]risk) (?:finding|findings|issue|issues|defect|defects)\b/gi,
+    "",
+  );
+  return /\b(?:unsafe|illegal|misleading|unsupported|incorrect|broken|unusable|illegible|not legible|not complete|incomplete|material defect|clipp\w*|overflow\w*|formula error|wrong result)\b/i.test(withoutExplicitAbsence);
+}
+
+function inspectionEvidenceOnlyFailure(qualityTask) {
+  const output = taskOutput(qualityTask);
+  const verdict = qualityPassed(output, { requireCompleteEvidence: true });
+  const roleOutput = output.roleOutput || {};
+  const missingEvidence = Array.isArray(roleOutput.missingEvidence)
+    ? roleOutput.missingEvidence.map(String).filter(Boolean)
+    : [];
+  const riskFindings = Array.isArray(roleOutput.riskFindings)
+    ? roleOutput.riskFindings
+    : null;
+  const outputRisks = Array.isArray(output.risks) ? output.risks : null;
+  const disqualifyingDefect = (value) => qualityFindingIsMaterial(value);
+  const defectOutsideInspectionUncertainty = (value) => disqualifyingDefect(
+    String(value || "").replace(
+      /\b(?:cannot|can't|could not|unable to|not possible to)(?:\s+be)?\s+(?:check|inspect|verify|confirm|assess|review)\w*\s+(?:for\s+)?(?:(?:clipping|legibility|disclaimer presentation|overflow)(?:\s*,\s*|\s+or\s+|\s+and\s+)?)+/gi,
+      "cannot be inspected",
+    ),
+  );
+  const inspectionGap = (value) => (
+    /\b(?:pages?|pdf|setup[- ]guide)\b/i.test(String(value))
+    && /\b(?:inspect|visual|render|shown|seen|evidence|check|verify|confirm|assess|review)\w*\b/i.test(String(value))
+    && /\b(?:missing|lacks?|cannot|can't|could not|unable|not possible|not shown|only|uninspect)\b/i.test(String(value))
+    && !defectOutsideInspectionUncertainty(value)
+  );
+  const acceptableFinding = (value) => (
+    inspectionGap(value)
+    || (
+      /\b(?:complete|legible|consistent|verified|confirms?|accurately describe)\b/i.test(String(value))
+      && !/\b(?:not|isn't|aren't|cannot|can't|incomplete|illegible|unusable)\b/i.test(String(value))
+      && !disqualifyingDefect(value)
+    )
+  );
+  const acceptableBackgroundRisk = (value) => (
+    /\b(?:buyer demand|willingness to pay|market demand|conversion)\b/i.test(String(value))
+    && /\b(?:unproven|unknown|not (?:yet )?proven)\b/i.test(String(value))
+    && !disqualifyingDefect(value)
+  );
+  const acceptableBoundedScopeRisk = (value) => (
+    /\b(?:narrow|bounded)\b.*\bvalidation sample\b/i.test(String(value))
+    && /\b(?:only|limited)\b.*\b(?:buyer test|validation test|test)\b/i.test(String(value))
+    && !disqualifyingDefect(value)
+  );
+  const claimSafety = String(roleOutput.claimSafety || "");
+  return (
+    !verdict.passed
+    && verdict.score >= 80
+    && ["revise", "needs_evidence"].includes(verdict.decision)
+    && Array.isArray(riskFindings)
+    && Array.isArray(outputRisks)
+    && missingEvidence.length > 0
+    && missingEvidence.every(inspectionGap)
+    && riskFindings.every(acceptableFinding)
+    && outputRisks.every((risk) => (
+      inspectionGap(risk) || acceptableBackgroundRisk(risk) || acceptableBoundedScopeRisk(risk)
+    ))
+    && /\b(?:safe|supported|accurately|consistent)\b/i.test(claimSafety)
+    && !defectOutsideInspectionUncertainty(claimSafety)
+    && inspectionGap(
+      `${output.summary || ""} ${output.nextAction || ""} ${roleOutput.operatorRecommendation || ""}`,
+    )
+  );
+}
+
+function reconcileExistingInspectionEvidenceRecheck(db, plan, qualityTask, existingRecheck) {
+  const approval = existingRecheck.approval_id
+    ? get(db, "SELECT * FROM approvals WHERE id = ?", [existingRecheck.approval_id])
+    : null;
+  const sourceVerdict = qualityPassed(
+    taskOutput(qualityTask),
+    { requireCompleteEvidence: true },
+  );
+  const declined = existingRecheck.status === "cancelled" || approval?.status === "rejected";
+  const completed = (
+    existingRecheck.status === "completed"
+    && existingRecheck.outcome_status === "known"
+  );
+  const completedVerdict = completed
+    ? qualityPassed(taskOutput(existingRecheck), { requireCompleteEvidence: true })
+    : null;
+  const failed = completed && completedVerdict?.passed !== true;
+  const preparedAt = productMetadata(existingRecheck)?.inspectionEvidencePreparedAt
+    || existingRecheck.created_at
+    || now();
+  if (declined) {
+    updatePlan(db, plan.id, {
+      status: "needs_attention",
+      metadata: {
+        buildStatus: "inspection_evidence_recheck_declined_terminal",
+        supersededQualityTaskId: qualityTask.id,
+        qualityTaskId: existingRecheck.id,
+        qualityReviewFingerprint: qualityReviewFingerprintForTask(existingRecheck),
+        qualityScore: sourceVerdict.score,
+        qualityDecision: "inspection_evidence_recheck_declined",
+        qualityFindings: sourceVerdict.findings,
+        correctionPrepared: false,
+        correctionRequiresNewBudget: false,
+        inspectionEvidenceRecheckTaskId: existingRecheck.id,
+        inspectionEvidenceRecheckApprovalId: approval?.id || null,
+        inspectionEvidenceRecheckPreparedAt: preparedAt,
+        inspectionEvidenceRecheckExhausted: true,
+      },
+    });
+    terminalizeInspectionEvidenceRecheckPersistence(db, plan);
+  } else if (failed) {
+    updatePlan(db, plan.id, {
+      status: "needs_attention",
+      metadata: {
+        buildStatus: "inspection_evidence_recheck_failed_terminal",
+        supersededQualityTaskId: qualityTask.id,
+        qualityTaskId: existingRecheck.id,
+        qualityReviewFingerprint: qualityReviewFingerprintForTask(existingRecheck),
+        qualityScore: completedVerdict.score,
+        qualityDecision: completedVerdict.decision,
+        qualityFindings: completedVerdict.findings,
+        correctionPrepared: false,
+        correctionRequiresNewBudget: false,
+        inspectionEvidenceRecheckTaskId: existingRecheck.id,
+        inspectionEvidenceRecheckApprovalId: approval?.id || null,
+        inspectionEvidenceRecheckPreparedAt: preparedAt,
+        inspectionEvidenceRecheckExhausted: true,
+      },
+    });
+    terminalizeInspectionEvidenceRecheckPersistence(db, plan);
+  } else if (!completed && (
+    plan.metadata.qualityTaskId !== existingRecheck.id
+    || plan.metadata.inspectionEvidenceRecheckTaskId !== existingRecheck.id
+  )) {
+    updatePlan(db, plan.id, {
+      status: "quality_review",
+      metadata: {
+        buildStatus: "inspection_evidence_repaired_pending_recheck",
+        supersededQualityTaskId: qualityTask.id,
+        qualityTaskId: existingRecheck.id,
+        qualityReviewFingerprint: qualityReviewFingerprintForTask(existingRecheck),
+        qualityScore: null,
+        qualityDecision: null,
+        qualityFindings: [],
+        inspectionEvidenceRecheckTaskId: existingRecheck.id,
+        inspectionEvidenceRecheckApprovalId: approval?.id || null,
+        inspectionEvidenceRecheckPreparedAt: preparedAt,
+        inspectionEvidenceRecheckExhausted: false,
+      },
+    });
+  }
+  if (!get(
+    db,
+    "SELECT id FROM events WHERE type = ? AND entity_id = ? ORDER BY ts LIMIT 1",
+    [
+      declined
+        ? "quality_review.pdf_inspection_recheck_declined"
+        : "quality_review.pdf_inspection_recheck_ready",
+      existingRecheck.id,
+    ],
+  )) {
+    insertEvent(db, {
+      level: declined ? "warn" : "info",
+      actor: declined ? "operator" : "jarvis",
+      type: declined
+        ? "quality_review.pdf_inspection_recheck_declined"
+        : "quality_review.pdf_inspection_recheck_ready",
+      entityType: "task",
+      entityId: existingRecheck.id,
+      message: declined
+        ? "The one inspection-evidence recheck was declined and cannot be prepared again."
+        : "Pantheon reconciled the existing single-use inspection-evidence recheck without creating another task or approval.",
+      metadata: {
+        sourceQualityTaskId: qualityTask.id,
+        approvalId: approval?.id || null,
+        singleUseConsumed: true,
+        noProviderCall: true,
+        externalAction: false,
+      },
+    });
+  }
+  return {
+    recovered: true,
+    existing: true,
+    terminal: declined || failed || completed,
+    passed: completedVerdict?.passed === true,
+    singleUseConsumed: true,
+    sourceQualityTask: qualityTask,
+    task: existingRecheck,
+    approval,
+    noProviderCall: true,
+    externalAction: false,
+  };
+}
+
+function recoverValidationQualityReviewAfterInspectionRepairOperation(db, qualityTaskId) {
+  const qualityTask = parseRow(
+    get(db, "SELECT * FROM tasks WHERE id = ?", [qualityTaskId]),
+    ["payload", "result"],
+  );
+  const metadata = productMetadata(qualityTask);
+  if (
+    !qualityTask
+    || qualityTask.kind !== "live_ai_worker_execution"
+    || qualityTask.agent !== "quality_reviewer"
+    || qualityTask.status !== "completed"
+    || qualityTask.outcome_status !== "known"
+    || metadata?.stage !== "quality_review"
+    || !metadata.planId
+    || !metadata.buildTaskId
+    || metadata.inspectionEvidenceRecheck === true
+  ) {
+    throw new Error("This task is not an eligible initial Quality Reviewer result.");
+  }
+  if (!inspectionEvidenceOnlyFailure(qualityTask)) {
+    throw new Error("The completed review did not fail solely because PDF inspection evidence was incomplete.");
+  }
+
+  const plan = cataloguePlan(db, metadata.planId);
+  const existingRecheck = parseRow(get(
+    db,
+    `SELECT * FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage') = 'quality_review'
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.inspectionEvidenceRecheck') = 1
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.inspectionEvidenceSourceQualityTaskId') = ?
+     ORDER BY created_at DESC LIMIT 1`,
+    [metadata.planId, qualityTask.id],
+  ), ["payload", "result"]);
+  if (existingRecheck) {
+    return reconcileExistingInspectionEvidenceRecheck(
+      db,
+      plan,
+      qualityTask,
+      existingRecheck,
+    );
+  }
+  const opportunityRecord = opportunity(db, metadata.opportunityId || plan?.opportunity_id);
+  const buildTask = parseRow(
+    get(db, "SELECT * FROM tasks WHERE id = ?", [metadata.buildTaskId]),
+    ["payload", "result"],
+  );
+  if (
+    !plan?.metadata?.validationSample
+    || !opportunityRecord
+    || !buildTask
+    || buildTask.status !== "completed"
+    || plan.metadata.qualityTaskId !== qualityTask.id
+  ) {
+    throw new Error("Pantheon cannot bind the inspection repair to the exact active validation package.");
+  }
+
+  const generated = generatedProductResult(buildTask);
+  const refresh = generated.localRendererRefresh || plan.metadata.localRendererRefresh || {};
+  const sourceEvidence = sourceReviewEvidence(qualityTask);
+  const previousFiles = refresh.previousFiles || [];
+  const currentFiles = refresh.currentFiles || [];
+  const previousPreviews = refresh.previousPreviews || [];
+  const currentPreviews = refresh.currentPreviews || [];
+  const previousInspections = refresh.previousQualityReviewImages || [];
+  const currentInspections = refresh.currentQualityReviewImages || [];
+  const previousInspectionsByRole = inspectionEvidenceByRole(previousInspections);
+  const currentInspectionsByRole = inspectionEvidenceByRole(currentInspections);
+  const generatedInspectionsByRole = inspectionEvidenceByRole(
+    generated.qualityReviewImages || [],
+  );
+  const sourceInspectionsByRole = sourceEvidence.inspectionsByRole;
+  const sourceWorkbook = sourceInspectionsByRole?.get("workbook_inspection");
+  const sourceGuide = sourceInspectionsByRole?.get("setup_guide_inspection");
+  const previousWorkbook = previousInspectionsByRole?.get("workbook_inspection");
+  const previousGuide = previousInspectionsByRole?.get("setup_guide_inspection");
+  const currentWorkbook = currentInspectionsByRole?.get("workbook_inspection");
+  const currentGuide = currentInspectionsByRole?.get("setup_guide_inspection");
+  const generatedWorkbook = generatedInspectionsByRole?.get("workbook_inspection");
+  const generatedGuide = generatedInspectionsByRole?.get("setup_guide_inspection");
+  const currentGuideFiles = currentFiles.filter((file) => (
+    [
+      file.humanName,
+      file.archiveEntry,
+      file.filePath,
+    ].filter(Boolean).some((identity) => (
+      path.basename(String(identity).replace(/\\/g, "/")).toLowerCase()
+        === "00-customer-setup-guide.pdf"
+    ))
+  ));
+  const currentGuideFile = currentGuideFiles.length === 1 ? currentGuideFiles[0] : null;
+  const currentGeneratedInspections = generated.qualityReviewImages || [];
+  const unchangedCustomerPackage = (
+    exactHashSnapshotMatches(sourceEvidence.files, previousFiles)
+    && exactHashSnapshotMatches(sourceEvidence.files, currentFiles)
+    && exactHashSnapshotMatches(sourceEvidence.previews, previousPreviews)
+    && exactHashSnapshotMatches(sourceEvidence.previews, currentPreviews)
+  );
+  const exactInspectionTransition = Boolean(
+    sourceInspectionsByRole
+    && previousInspectionsByRole
+    && currentInspectionsByRole
+    && generatedInspectionsByRole
+    && sourceWorkbook.id === previousWorkbook.id
+    && sourceWorkbook.sha256 === previousWorkbook.sha256
+    && sourceGuide.id === previousGuide.id
+    && sourceGuide.sha256 === previousGuide.sha256
+    && currentWorkbook.id !== sourceWorkbook.id
+    && currentWorkbook.id === generatedWorkbook.id
+    && currentWorkbook.filePath === generatedWorkbook.filePath
+    && currentWorkbook.sha256 === sourceWorkbook.sha256
+    && currentGuide.id !== sourceGuide.id
+    && currentGuide.id === generatedGuide.id
+    && currentGuide.filePath === generatedGuide.filePath
+    && currentGuide.sha256 !== sourceGuide.sha256
+    && generatedWorkbook.sha256 === currentWorkbook.sha256
+    && generatedGuide.sha256 === currentGuide.sha256
+    && previousGuide.filePath !== currentGuide.filePath
+    && completeGuideInspectionCoverage(
+      currentGuide.inspectionCoverage,
+      currentGuideFile,
+      currentGuide,
+    )
+  );
+  const managedEvidenceVerified = (
+    managedSnapshotVerified(db, buildTask, currentFiles)
+    && managedSnapshotVerified(db, buildTask, currentPreviews)
+    && managedSnapshotVerified(db, buildTask, currentInspections)
+    && managedSnapshotVerified(db, buildTask, currentGeneratedInspections)
+    && managedSnapshotVerified(db, buildTask, sourceEvidence.inspections)
+  );
+  const inspectionRepairProven = (
+    refresh.schema === "pantheon.local-renderer-refresh.v1"
+    && refresh.sourceTaskId === buildTask.id
+    && refresh.noProviderCall === true
+    && refresh.externalAction === false
+    && Boolean(refresh.rendererRevision)
+    && refresh.blueprintHash === generated.blueprintHash
+    && sourceEvidence.visualBindingExact
+    && sourceEvidence.previews.length === 2
+    && sourceEvidence.inspections.length === 2
+    && unchangedCustomerPackage
+    && exactInspectionTransition
+    && managedEvidenceVerified
+  );
+  if (!inspectionRepairProven) {
+    throw new Error(
+      "Pantheon cannot prove a zero-spend inspection repair with unchanged customer files and complete PDF page coverage.",
+    );
+  }
+
+  const replacement = queueQualityReview(
+    db,
+    plan,
+    opportunityRecord,
+    buildTask,
+    generated,
+    [],
+    {
+      inspectionEvidenceRecheck: true,
+      inspectionEvidenceSourceQualityTaskId: qualityTask.id,
+      requestKeySuffix: `inspection_evidence_recheck_${qualityTask.id}_${refresh.rendererRevision}`,
+    },
+  );
+  if (replacement.task.id === qualityTask.id) {
+    throw new Error("The inspection repair did not create a distinct exact quality review.");
+  }
+  const replacementFingerprint = qualityReviewFingerprintForTask(replacement.task);
+  updatePlan(db, plan.id, {
+    status: "quality_review",
+    metadata: {
+      buildStatus: "inspection_evidence_repaired_pending_recheck",
+      supersededQualityTaskId: qualityTask.id,
+      qualityTaskId: replacement.task.id,
+      qualityReviewFingerprint: replacementFingerprint,
+      qualityScore: null,
+      qualityDecision: null,
+      qualityFindings: [],
+      inspectionEvidenceRecheckTaskId: replacement.task.id,
+      inspectionEvidenceRecheckApprovalId: replacement.approval?.id || null,
+      inspectionEvidenceRecheckPreparedAt: now(),
+      inspectionEvidenceRecheckExhausted: false,
+    },
+  });
+  run(
+    db,
+    "UPDATE messages SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?) WHERE task_id = ? AND status = 'open'",
+    [now(), qualityTask.id],
+  );
+  insertEvent(db, {
+    actor: "jarvis",
+    type: "quality_review.pdf_inspection_recheck_ready",
+    entityType: "task",
+    entityId: replacement.task.id,
+    message: "Jarvis preserved every customer file and prepared one approved recheck using a complete all-page PDF inspection sheet.",
+    metadata: {
+      sourceQualityTaskId: qualityTask.id,
+      buildTaskId: buildTask.id,
+      rendererRevision: refresh.rendererRevision,
+      replacementFingerprint,
+      unchangedCustomerPackage: true,
+      completePageCoverage: currentGuide.inspectionCoverage,
+      noProviderCall: true,
+      externalAction: false,
+    },
+  });
+  return {
+    recovered: true,
+    sourceQualityTask: qualityTask,
+    task: replacement.task,
+    approval: replacement.approval,
+    rendererRevision: refresh.rendererRevision,
+    unchangedCustomerPackage: true,
+    completePageCoverage: currentGuide.inspectionCoverage,
+    noProviderCall: true,
+    externalAction: false,
+  };
+}
+
+function recoverValidationQualityReviewAfterInspectionRepair(db, qualityTaskId) {
+  return withSavepoint(
+    db,
+    "recover_validation_inspection",
+    () => recoverValidationQualityReviewAfterInspectionRepairOperation(db, qualityTaskId),
+  );
 }
 
 function recoverQualityReviewAfterEvidenceRepair(db, qualityTaskId) {
@@ -2058,6 +3067,8 @@ function projectProductBuild(db, task, plan, opportunityRecord) {
       buildTaskId: task.id,
       buildRevision: revisionNumber,
       generatedFileIds: generated.files.map((file) => file.id),
+      storefrontPreviewIds: (generated.previews || []).map((preview) => preview.id),
+      qualityReviewImageIds: (generated.qualityReviewImages || []).map((image) => image.id),
       productManifest: generated.manifest,
       productBundleDeliverableId: bundle.id,
       noSellableFilesClaimed: false,
@@ -2096,6 +3107,7 @@ function projectStorefrontVisual(db, task, plan, opportunityRecord) {
       storefrontVisualTaskId: task.id,
       storefrontVisualIds: visualAssets.map((asset) => asset.id),
       storefrontPreviewIds: (generated.previews || []).map((preview) => preview.id),
+      qualityReviewImageIds: (generated.qualityReviewImages || []).map((image) => image.id),
     },
   });
   const review = queueQualityReview(
@@ -2121,22 +3133,58 @@ function projectStorefrontVisual(db, task, plan, opportunityRecord) {
   return { next: review, visualAssets };
 }
 
-function qualityPassed(output) {
+function qualityPassed(output, options = {}) {
   const work = output.roleOutput || {};
   const score = Number(work.qualityScore || 0);
   const decision = String(output.operatorDecision || "");
-  const highRisk = (output.risks || []).some((risk) => /\b(high risk|unsafe|illegal|materially false)\b/i.test(String(risk)));
+  const riskFindings = Array.isArray(work.riskFindings) ? work.riskFindings : null;
+  const missingEvidence = Array.isArray(work.missingEvidence) ? work.missingEvidence : null;
+  const outputRisks = Array.isArray(output.risks) ? output.risks : [];
+  const claimSafety = String(work.claimSafety || "").trim();
+  const claimSafetyPassed = /^(?:safe|supported|acceptable)\b/i.test(claimSafety)
+    && !qualityFindingIsMaterial(claimSafety);
+  const highRisk = outputRisks.some((risk) => (
+    /\b(high risk|unsafe|illegal|materially false)\b/i.test(String(risk))
+    || qualityFindingIsMaterial(risk)
+  ));
+  const materialFinding = (riskFindings || []).some(qualityFindingIsMaterial);
+  const baselinePassed = score >= 80 && decision === "approve" && !highRisk;
+  const requireCompleteEvidence = options.requireCompleteEvidence === true;
   return {
-    passed: score >= 80 && decision === "approve" && !highRisk,
+    passed: baselinePassed && (
+      !requireCompleteEvidence
+      || (
+        Array.isArray(riskFindings)
+        && Array.isArray(missingEvidence)
+        && missingEvidence.length === 0
+        && claimSafetyPassed
+        && !materialFinding
+      )
+    ),
     score,
     highRisk,
+    materialFinding,
+    claimSafetyPassed,
     decision,
     findings: [
-      ...(work.riskFindings || []),
-      ...(work.missingEvidence || []),
-      ...(output.risks || []),
+      ...(riskFindings || []),
+      ...(missingEvidence || []),
+      ...outputRisks,
     ].filter(Boolean),
   };
+}
+
+function qualityRevisionCorrections(output, verdict) {
+  const roleOutput = output.roleOutput || {};
+  const actionableFindings = (verdict.findings || []).filter((finding) => (
+    !/^no (?:major |unresolved )/i.test(String(finding))
+    && /clipp|overflow|misrepresent|usability|layout|visual|workbook|formula|content|grammar|wording|copy|claim|contact|history|instruction|payment|field|status/i.test(String(finding))
+  ));
+  return [...new Set([
+    output.nextAction,
+    roleOutput.operatorRecommendation,
+    ...actionableFindings,
+  ].filter(Boolean).map((item) => String(item).replace(/\s+/g, " ").trim()))].slice(0, 6);
 }
 
 function queueConversionCopy(db, plan, opportunityRecord, qualityTask, options = {}) {
@@ -2144,6 +3192,7 @@ function queueConversionCopy(db, plan, opportunityRecord, qualityTask, options =
   const existing = existingProductionContextTask(db, plan.id, "conversion_copy", revision);
   if (existing) return { task: existing, existing: true };
   const journey = journeyForPlan(db, plan);
+  const productTitle = actualProductTitle(plan, opportunityRecord);
   const verifiedCatalogue = conciseCatalogueContext(plan);
   const expectedIncludedFiles = verifiedCatalogue.listingIncludedFiles;
   const verifiedState = {
@@ -2164,11 +3213,11 @@ function queueConversionCopy(db, plan, opportunityRecord, qualityTask, options =
     requestedBy: "pantheon_supervisor",
     worker: "copy_conversion_agent",
     taskTitle: revision
-      ? `Correct the listing copy from verified files for ${opportunityRecord.title}`
-      : `Prepare the listing copy for ${opportunityRecord.title}`,
+      ? `Correct the listing copy from verified files for ${productTitle}`
+      : `Prepare the listing copy for ${productTitle}`,
     approvalTitle: revision
-      ? `Correct the listing copy from the verified product files`
-      : `Run the listing-copy preparation for ${opportunityRecord.title}`,
+      ? `Correct the listing copy from the verified ${productTitle} files`
+      : `Run the listing-copy preparation for ${productTitle}`,
     estimatedCostCents: 150,
     reason: "Prepare truthful listing copy for the quality-passed local product package. No copy will be published or sent.",
     expectedOutput: "A Gumroad-ready product title, headline, description, included-file summary, tags, FAQ, buyer promise, calls to action, message variants, tracking note, and claim checks.",
@@ -2417,9 +3466,161 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
     };
   }
   const output = taskOutput(task);
-  const verdict = qualityPassed(output);
+  const verdict = qualityPassed(output, {
+    requireCompleteEvidence: Boolean(plan.metadata.validationSample),
+  });
   const revisionNumber = Number(productMetadata(task)?.revisionNumber || 0);
   if (!verdict.passed) {
+    if (metadata.inspectionEvidenceRecheck === true) {
+      updatePlan(db, plan.id, {
+        status: "needs_attention",
+        metadata: {
+          buildStatus: "inspection_evidence_recheck_failed_terminal",
+          qualityTaskId: task.id,
+          qualityScore: verdict.score,
+          qualityFindings: verdict.findings,
+          qualityDecision: verdict.decision,
+          correctionPrepared: false,
+          correctionRequiresNewBudget: false,
+          inspectionEvidenceRecheckTaskId: task.id,
+          inspectionEvidenceRecheckExhausted: true,
+        },
+      });
+      terminalizeInspectionEvidenceRecheckPersistence(db, plan);
+      run(
+        db,
+        "UPDATE catalogue_items SET quality_status = 'needs_changes', updated_at = ? WHERE plan_id = ?",
+        [now(), plan.id],
+      );
+      insertEvent(db, {
+        level: "warn",
+        actor: "pantheon",
+        type: "catalogue.validation_inspection_recheck_failed_terminal",
+        entityType: "catalogue_plan",
+        entityId: plan.id,
+        message: "Pantheon stopped the validation package permanently because its single inspection-evidence recheck did not pass.",
+        metadata: {
+          taskId: task.id,
+          sourceQualityTaskId: metadata.inspectionEvidenceSourceQualityTaskId || null,
+          score: verdict.score,
+          decision: verdict.decision,
+          findings: verdict.findings,
+          correctionPrepared: false,
+          additionalApprovalRequired: false,
+          retryAllowed: false,
+        },
+      });
+      return {
+        next: null,
+        verdict,
+        correctionPrepared: false,
+        additionalApprovalRequired: false,
+        terminal: true,
+      };
+    }
+    if (plan.metadata.validationSample) {
+      const correctionLimit = Math.max(
+        0,
+        Number(plan.metadata.validationSample.providerPolicy?.correctionLimit || 0),
+      );
+      const revisionCorrections = qualityRevisionCorrections(output, verdict);
+      if (revisionNumber < correctionLimit) {
+        try {
+          const revision = prepareCatalogueBuild(db, {
+            planId: plan.id,
+            opportunityId: opportunityRecord.id,
+            revisionNumber: revisionNumber + 1,
+            revisionCorrections: revisionCorrections.length
+              ? revisionCorrections
+              : [output.summary],
+            operatorChoiceRequired: false,
+          });
+          updatePlan(db, plan.id, {
+            status: "rebuilding",
+            metadata: {
+              buildStatus: "validation_sample_correction_prepared",
+              qualityTaskId: task.id,
+              qualityScore: verdict.score,
+              qualityFindings: verdict.findings,
+              qualityDecision: verdict.decision,
+              correctionPrepared: true,
+              correctionRequiresNewBudget: false,
+              correctionTaskId: revision.task?.id || null,
+            },
+          });
+          run(
+            db,
+            "UPDATE catalogue_items SET quality_status = 'needs_changes', updated_at = ? WHERE plan_id = ?",
+            [now(), plan.id],
+          );
+          insertEvent(db, {
+            level: "warn",
+            actor: "pantheon",
+            type: "catalogue.validation_sample_correction_prepared",
+            entityType: "catalogue_plan",
+            entityId: plan.id,
+            message: "Pantheon prepared the one permitted internal correction after the validation sample failed review.",
+            metadata: {
+              taskId: task.id,
+              correctionTaskId: revision.task?.id || null,
+              score: verdict.score,
+              findings: verdict.findings,
+              combinedBudgetCents: Number(
+                plan.metadata.validationSample.providerPolicy?.combinedCapCents || 0,
+              ),
+            },
+          });
+          return {
+            next: revision,
+            verdict,
+            correctionPrepared: true,
+            additionalApprovalRequired: false,
+          };
+        } catch (error) {
+          if (!/buyer-intent AI limit/i.test(String(error.message || ""))) throw error;
+        }
+      }
+      updatePlan(db, plan.id, {
+        status: "needs_attention",
+        metadata: {
+          buildStatus: "validation_sample_quality_review_failed",
+          qualityTaskId: task.id,
+          qualityScore: verdict.score,
+          qualityFindings: verdict.findings,
+          qualityDecision: verdict.decision,
+          correctionPrepared: false,
+          correctionRequiresNewBudget: true,
+        },
+      });
+      run(
+        db,
+        "UPDATE catalogue_items SET quality_status = 'needs_changes', updated_at = ? WHERE plan_id = ?",
+        [now(), plan.id],
+      );
+      insertEvent(db, {
+        level: "warn",
+        actor: "pantheon",
+        type: "catalogue.validation_sample_quality_failed",
+        entityType: "catalogue_plan",
+        entityId: plan.id,
+        message: revisionNumber >= correctionLimit
+          ? "Pantheon stopped after the permitted validation-sample correction still failed quality review."
+          : "Pantheon stopped because the validation sample could not be corrected inside its approved AI limit.",
+        metadata: {
+          taskId: task.id,
+          score: verdict.score,
+          findings: verdict.findings,
+          combinedBudgetCents: Number(plan.metadata.validationSample.providerPolicy?.combinedCapCents || 0),
+          additionalApprovalRequired: true,
+        },
+      });
+      return {
+        next: null,
+        verdict,
+        correctionPrepared: false,
+        additionalApprovalRequired: true,
+      };
+    }
     updatePlan(db, plan.id, {
       status: revisionNumber < 1 ? "rebuilding" : "needs_attention",
       metadata: {
@@ -2436,16 +3637,7 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
       [now(), plan.id],
     );
     if (revisionNumber < 1) {
-      const roleOutput = output.roleOutput || {};
-      const actionableFindings = (verdict.findings || []).filter((finding) => (
-        !/^no (?:major |unresolved )/i.test(String(finding))
-        && /clipp|overflow|misrepresent|usability|layout|visual|workbook|formula|content|grammar|wording|copy|claim|contact|history|instruction|payment|field|status/i.test(String(finding))
-      ));
-      const revisionCorrections = [...new Set([
-        output.nextAction,
-        roleOutput.operatorRecommendation,
-        ...actionableFindings,
-      ].filter(Boolean).map((item) => String(item).replace(/\s+/g, " ").trim()))].slice(0, 6);
+      const revisionCorrections = qualityRevisionCorrections(output, verdict);
       const revision = prepareCatalogueBuild(db, {
         planId: plan.id,
         opportunityId: opportunityRecord.id,
@@ -2511,6 +3703,44 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
     [now(), plan.id],
   );
   markCatalogueDeliverablesQualityPassed(db, plan, generated);
+  if (plan.metadata.validationSample) {
+    updatePlan(db, plan.id, {
+      status: "validation_sample_ready",
+      metadata: {
+        buildStatus: "validation_sample_quality_passed",
+        qualityTaskId: task.id,
+        qualityScore: verdict.score,
+        qualityFindings: verdict.findings,
+        qualityDecision: verdict.decision,
+        investmentCaseRemainsParked: true,
+      },
+    });
+    const finalized = finalizeBuyerIntentValidationSample(db, {
+      planId: plan.id,
+      buildTaskId: buildTask.id,
+      qualityTaskId: task.id,
+      generated,
+    });
+    insertEvent(db, {
+      actor: "pantheon",
+      type: "catalogue.validation_sample_quality_passed",
+      entityType: "catalogue_plan",
+      entityId: plan.id,
+      message: `The functional validation sample passed independent quality review at ${verdict.score}/100; its exact buyer test is ready for review.`,
+      metadata: {
+        taskId: task.id,
+        score: verdict.score,
+        executionPackId: finalized.pack.id,
+        noExternalAction: true,
+      },
+    });
+    return {
+      next: null,
+      verdict,
+      validationSampleReady: true,
+      executionPack: finalized.pack,
+    };
+  }
   const updated = updatePlan(db, plan.id, {
     status: "preparing_launch",
     metadata: {
@@ -2558,6 +3788,7 @@ function queueDistributionPlan(db, plan, opportunityRecord, copyTask, options = 
   const existing = existingProductionContextTask(db, plan.id, "distribution_plan", revision);
   if (existing) return { task: existing, existing: true };
   const journey = journeyForPlan(db, plan);
+  const productTitle = actualProductTitle(plan, opportunityRecord);
   const verifiedCatalogue = conciseCatalogueContext(plan);
   const verifiedState = {
     contextRevision: revision,
@@ -2577,8 +3808,8 @@ function queueDistributionPlan(db, plan, opportunityRecord, copyTask, options = 
     requestKey: `catalogue_distribution_${safeId(plan.id)}_context_${revision}`,
     requestedBy: "pantheon_supervisor",
     worker: "distribution_operator",
-    taskTitle: `Prepare the first market test for ${opportunityRecord.title}`,
-    approvalTitle: `Run the market-test preparation for ${opportunityRecord.title}`,
+    taskTitle: `Prepare the first market test for ${productTitle}`,
+    approvalTitle: `Run the market-test preparation for ${productTitle}`,
     estimatedCostCents: 150,
     reason: "Prepare a channel-specific, measurable launch plan for operator review. No post, listing, ad, message, or spend will occur.",
     expectedOutput: "A 14-day or 50-qualified-view launch plan, up to three organic posts across no more than two channels, tracking requirements, stop rule, and operator workload.",
@@ -2796,6 +4027,7 @@ function queueChiefBrief(db, plan, opportunityRecord, distributionTask, copyTask
   const existing = existingProductionContextTask(db, plan.id, "chief_brief", revision);
   if (existing) return { task: existing, existing: true };
   const journey = journeyForPlan(db, plan);
+  const productTitle = actualProductTitle(plan, opportunityRecord);
   const verifiedCatalogue = conciseCatalogueContext(plan);
   const decisionContext = chiefDecisionContext(plan, copyTask, distributionTask);
   const verifiedState = {
@@ -2819,8 +4051,8 @@ function queueChiefBrief(db, plan, opportunityRecord, distributionTask, copyTask
     requestKey: `catalogue_chief_brief_${safeId(plan.id)}_context_${revision}`,
     requestedBy: "pantheon_supervisor",
     worker: "chief_of_staff",
-    taskTitle: `Prepare the final operator brief for ${opportunityRecord.title}`,
-    approvalTitle: `Prepare the final operator brief for ${opportunityRecord.title}`,
+    taskTitle: `Prepare the final operator brief for ${productTitle}`,
+    approvalTitle: `Prepare the final operator brief for ${productTitle}`,
     estimatedCostCents: 100,
     reason: "Turn the verified specialist outputs into one concise operator decision. No public or account action will occur.",
     expectedOutput: "One plain-language brief stating the product, evidence, economics, exact files, launch plan, cost, risks, decision, success metric, and stop rule.",
@@ -3952,11 +5184,13 @@ module.exports = {
   PRODUCT_BUILD_SPEC_SCHEMA,
   PRODUCTION_STAGES,
   applyPantheonHandoffDecision,
+  assertQualityReviewRecheckAvailable,
   buildProfile,
   completedUnprojectedProductionTask,
   getProductionState,
   pendingProductionTask,
   prepareCatalogueBuild,
+  prepareExplicitFinalValidationReview,
   prepareVerifiedLaunchContextRepair,
   publicationPlanPriceText,
   publicationPriceChannelHypothesis,
@@ -3967,4 +5201,5 @@ module.exports = {
   reconcileVerifiedLaunchContextRepair,
   recoverQualityReviewAfterEvidenceRepair,
   recoverQualityReviewAfterLocalRendererRepair,
+  recoverValidationQualityReviewAfterInspectionRepair,
 };

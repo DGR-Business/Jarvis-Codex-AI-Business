@@ -251,7 +251,16 @@ function tarExecutable() {
 }
 
 function runTar(args) {
-  const result = spawnSync(tarExecutable(), args, { encoding: "utf8", windowsHide: true });
+  const result = spawnSync(tarExecutable(), args, {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 5 * 60_000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error("Archive command exceeded its five-minute deadline.");
+  }
+  if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`Archive command failed: ${(result.stderr || result.stdout || "unknown error").trim()}`);
   }

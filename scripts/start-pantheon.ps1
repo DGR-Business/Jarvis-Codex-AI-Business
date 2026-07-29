@@ -179,7 +179,13 @@ try {
   $recoveryCredentialError = $_.Exception.Message
 }
 
-if (Test-Path -LiteralPath $legacyCredentialPath) {
+$legacyCredentialAvailable = $false
+try {
+  $legacyCredentialAvailable = Test-Path -LiteralPath $legacyCredentialPath
+} catch {
+  Write-Warning "Pantheon could not inspect its legacy recovery profile. Current protected credential stores will be used."
+}
+if ($legacyCredentialAvailable) {
   try {
     $credentialProfile = Get-Content -LiteralPath $legacyCredentialPath -Raw | ConvertFrom-Json
     if (-not $runtimeEnvironment.ContainsKey("OPENAI_API_KEY") -and -not [string]::IsNullOrWhiteSpace([string]$credentialProfile.openAiApiKeyProtected)) {
@@ -345,10 +351,7 @@ if (-not $health) {
   }
 
   if (-not (Test-Path -LiteralPath (Join-Path $root "node_modules"))) {
-    $npm = Get-Command npm.cmd -ErrorAction Stop
-    Write-Host "Preparing Pantheon for first use..."
-    & $npm.Source ci --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { throw "Pantheon dependencies could not be installed." }
+    throw "Pantheon setup is incomplete because its locked dependencies are not installed. Ask Jarvis to run the one-time setup; normal startup will not install software or wait on the network."
   }
 
   $bootstrapToken = New-UrlToken
@@ -391,8 +394,15 @@ if (-not $health) {
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
   if (-not $process.Start()) { throw "Pantheon server process could not be started." }
-  $process.Refresh()
-  $processSnapshot = Get-PantheonProcessSnapshot -ProcessId $process.Id
+  $processSnapshotDeadline = [DateTime]::UtcNow.AddMilliseconds(2000)
+  $processSnapshot = $null
+  do {
+    $process.Refresh()
+    if ($process.HasExited) { break }
+    $processSnapshot = Get-PantheonProcessSnapshot -ProcessId $process.Id
+    if ($processSnapshot) { break }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $processSnapshotDeadline)
   if (-not $processSnapshot) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     throw "Pantheon could not record the exact identity of its new Windows process. The process was stopped."

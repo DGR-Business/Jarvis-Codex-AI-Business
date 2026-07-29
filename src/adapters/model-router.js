@@ -68,8 +68,9 @@ function recordModelCall(db, task, policy, options = {}) {
   run(
     db,
     `INSERT INTO model_calls (id, workflow_id, task_id, provider, model_class, selected_model, mode, status,
-      input_tokens, output_tokens, estimated_cost_cents, actual_cost_cents, approval_required, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      input_tokens, output_tokens, estimated_cost_cents, actual_cost_cents, approval_required, metadata,
+      created_at, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       callId,
       task.workflow_id,
@@ -90,6 +91,7 @@ function recordModelCall(db, task, policy, options = {}) {
         liveModelsEnabled: false,
         modelRoute: selected,
       }),
+      ts,
       ts,
     ],
   );

@@ -215,7 +215,12 @@ test("backup and restore CLIs create one coherent set by default and support ver
         "--approval-packs", fixture.approvalPackRoot,
         "--private-operator", fixture.privateOperatorRoot,
       ],
-      { encoding: "utf8", env: environment, windowsHide: true },
+      {
+        encoding: "utf8",
+        env: environment,
+        windowsHide: true,
+        timeout: 120_000,
+      },
     );
     assert.equal(backupRun.status, 0, backupRun.stderr);
     const backupReport = JSON.parse(backupRun.stdout);
@@ -233,7 +238,12 @@ test("backup and restore CLIs create one coherent set by default and support ver
         "--source", backupPath,
         "--verify-only",
       ],
-      { encoding: "utf8", env: environment, windowsHide: true },
+      {
+        encoding: "utf8",
+        env: environment,
+        windowsHide: true,
+        timeout: 120_000,
+      },
     );
     assert.equal(verifyRun.status, 0, verifyRun.stderr);
     const verifyReport = JSON.parse(verifyRun.stdout);
@@ -249,7 +259,12 @@ test("backup and restore CLIs create one coherent set by default and support ver
         "--source", backupPath,
         "--destination", restoredRoot,
       ],
-      { encoding: "utf8", env: environment, windowsHide: true },
+      {
+        encoding: "utf8",
+        env: environment,
+        windowsHide: true,
+        timeout: 120_000,
+      },
     );
     assert.equal(restoreRun.status, 0, restoreRun.stderr);
     assert.equal(fs.existsSync(path.join(restoredRoot, "data", "runtime.sqlite")), true);

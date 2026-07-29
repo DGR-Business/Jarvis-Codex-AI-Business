@@ -1,6 +1,6 @@
 # Pantheon Master Plan
 
-Last updated: 2026-07-27
+Last updated: 2026-07-29
 Status: active source of truth
 Owner: Daniel
 Technical steward: Jarvis (Codex)
@@ -25,7 +25,7 @@ remains the safety limit until Pantheon proves three independent paying buyers
 and positive net cash contribution, but opportunity selection now happens in a
 separate pre-venture Portfolio workspace.
 
-The active completed foundation directive is
+The most recently completed foundation directive is
 `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`.
 It implemented the Commercial Constitution, 60-record knowledge library,
 Portfolio Controller v1, comparable demand and finance review, final Sol
@@ -50,6 +50,34 @@ fee-only contribution are supported, while willingness to pay for the exact
 offer, format acceptance, acquisition cost, support load, production effort,
 and realised all-in contribution are not. No Venture Kit or production work
 was authorised.
+
+The most recently completed engineering directive is
+`docs/plans/PANTHEON-AGENT-ASSURANCE-AND-OPENAI-INTEGRATION-HARDENING-2026-07-28.md`.
+It versions the worker harness, groups related Agents SDK traces, adds 25-case
+reviewed behavioral and trace evaluation, introduces proportionate SDK
+guardrails, records malformed known provider responses without hidden retries,
+and makes live work easier for Daniel and Jarvis to inspect. Local release gates
+passed on 2026-07-28 with A$0.10 estimated provider exposure. The semantic
+reviewer remains advisory and correctly changed no business state. This work
+does not change the no-investment result, authorise a product build, or widen
+external-action authority.
+
+The most recent commercial directive is
+`docs/plans/PANTHEON-FIRST-BUYER-INTENT-PROOF-2026-07-28.md`. It produced one
+functional validation workbook for the parked Social Media Manager case, then
+ended at its fail-closed quality boundary. One manually approved Terra evidence
+recheck reviewed complete three-page QA evidence and returned `revise`, score
+78. Pantheon permanently stopped the build. It created no buyer-test pack or
+external-test decision, and the investment case remains parked.
+
+The closed continuation handover is
+`docs/plans/PANTHEON-CONTINUATION-HANDOVER-2026-07-29.md`. It preserves the
+exact starting blocker and ordered execution path but is superseded as an
+active instruction by
+`docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`. The proof
+records unchanged customer hashes, complete QA coverage, the one approved
+recheck, the terminal non-pass result, browser evidence, and remaining release
+gates.
 
 `digital_product_v1` is one registered, non-universal kit. Generic commercial
 logic has no Gumroad-first or digital-product-first channel assumption. The
@@ -128,6 +156,13 @@ usage is recorded as unknown rather than zero, missing approved provider-tool
 activity stops for review, and a terminal failure still receives an evaluation.
 An operator usefulness verdict is committed atomically with its new receipt, so
 the dashboard cannot show a review that is absent from the execution evidence.
+
+Structural completeness is necessary but no longer sufficient for capability
+trust. The completed assurance phase adds a versioned harness identity and
+separate runtime, behavioral, trace, operator-usefulness, and eventual
+commercial-outcome evaluation layers. Any semantic grader remains advisory
+until it agrees with a reviewed calibration set and can never grant approval or
+autonomy.
 
 ## AI Team
 
@@ -255,6 +290,24 @@ Pantheon default.
 
 ### Now
 
+- Keep the Social Media Manager Client Control and Profitability Workbook build
+  permanently stopped. The zero-spend QA refresh preserved all seven customer
+  and storefront hashes and proved three of three setup-guide pages. The one
+  manually approved Terra evidence recheck then returned `revise`, score 78,
+  and `changes_required`.
+- Do not retry, fall back to another model, revise this build, or create a
+  buyer-test pack, handoff, execution pack, or external-test decision. The
+  terminal rule was part of the approved scope and has been consumed.
+- Retain the reconciled terminal state: the linked experiment and candidate are
+  cancelled, all nine current plan artifacts are `needs_changes`, every hash
+  and byte count remains unchanged, and reconciliation created no work or
+  external effect.
+- Keep every Etsy account, KYC, seller term, setup fee, publication, customer
+  contact, advertising, and external-spend action locked.
+- Treat explicit human-approval markers as stronger than internal mandates.
+  The one permitted recheck used its own exact, single-use dashboard approval.
+- Use the operations-ready native Windows supervisor and leave Pantheon in
+  Standby after the remaining release work unless Daniel is actively testing.
 - Keep the Portfolio result at `No investment selected`. Two bounded rounds
   compared ten hypotheses and six finalists, and one targeted diligence round
   re-tested the strongest named gap. No case cleared every mandatory demand,
@@ -267,39 +320,51 @@ Pantheon default.
 - Keep all 11 workers visible and on standby. No production, publication,
   customer contact, advertising, account action, or money movement is
   authorised.
-- Run Pantheon through the Windows control shell: Stopped means no Pantheon
-  process, Standby keeps only the lightweight dashboard control service, and
-  Working loads the full runtime.
-- Hold July runtime exposure at A$8.44: A$3.10 is reconciled provider usage and
-  A$5.34 remains ordinary incurred estimates. The two post-dispatch timeouts
+- Retain Stopped, Standby, and Working as the operator contract. Private
+  `Pantheon checks #22` and real command-file/Chrome proof established the
+  native Job Object supervisor as operations-ready. Lifecycle integration
+  remains quarantined to disposable Windows CI rather than ordinary local
+  tests.
+- Hold July runtime exposure at the database-recorded A$9.44: A$3.10 is
+  reconciled provider usage and A$6.34 remains incurred estimates. The two
+  post-dispatch timeouts
   and one invalid-output call were matched to signed Platform exports and
-  exact trace records; none produced accepted commercial evidence.
+  exact trace records; none produced accepted commercial evidence. The
+  assurance release added A$0.10 of clearly labelled estimates across three
+  Luna calls, one truncated Terra response, and one corrected Terra review.
+  The complete retained buyer-intent workflow now accounts for A$1.00 of
+  incurred estimates, including A$0.17 for the terminal evidence recheck.
 - Use the verified A$1.57675 cash-paid-per-US-dollar-credit conversion for
   future estimates. Keep estimates visibly separate from reconciled usage and
   subscription cash outflow.
 
 ### Next
 
-- If Daniel authorises the next commercial goal, prepare only the smallest
-  functional sample and measurement-ready buyer-intent test for the Social
-  Media Manager Client-Control and Profitability System. Do not build a full
-  catalogue before the test.
-- Select the actual test channel from buyer access, fees, traffic quality,
-  ownership, and measurement reliability. Etsy is a hypothesis, not a default.
-  Account action, publication, customer contact, and spend remain separate
-  protected actions.
-- Require at least 3 completed paid orders from 100 qualified product-page
-  visits, no format- or clarity-driven refunds, and positive actual all-in cash
-  contribution. Otherwise revise or park under the recorded stop rule.
-- Reopen the investment case only when that attributable evidence changes the
-  failed economics criterion. If the validation asset is not authorised, retain
-  the cash and keep the no-investment decision.
+- Keep the released workflow terminally stopped and Pantheon in Standby. Its
+  local, browser, clean-install, Doctor, dependency, encrypted-recovery, health,
+  and seven-job private CI gates passed. Keep Windows lifecycle integration in
+  its dedicated private CI jobs.
+- Preserve the completed Chrome evidence: all seven downloads, three-page PDF
+  preview, exact 100-visit/30-day rules, no stale 50-view fallback, no
+  horizontal overflow at the three supported desktop sizes, and no Pantheon
+  console error.
+- Treat any future buyer-intent attempt as a separate commercial decision with
+  a new evidence plan. Reassess buyer access, channel, price, product format,
+  quality evidence, costs, and stop rules rather than reopening this build.
+- Reopen the investment case only when attributable buyer and all-in
+  contribution evidence changes the failed economics criterion. This stopped
+  build produced no such evidence.
 - After a case clears every gate, implement only the Venture Kit required by
   that opportunity. Venture Factory creates an inactive venture; production and
   every external action remain separate gates.
 
 ### Later
 
+- Apply the explicit adoption triggers in
+  `docs/architecture/PANTHEON-OPENAI-CAPABILITY-ADOPTION-ROADMAP.md`. Sandbox
+  Agents, hosted shell, Skills, MCP, tool search, server-side Multi-agent,
+  sessions, computer use, OpenAI Commerce, remote operation, and dynamic
+  specialists remain future capabilities rather than implied current scope.
 - Complete Venture Factory, prove a structurally different second Venture Kit,
   then replace the one-active-venture safety constraint with three tested,
   isolated venture lanes. Do not copy the runtime or hard-code every business
@@ -329,6 +394,69 @@ Publication, buyer results, positive cash contribution, capability promotion,
 Venture Factory, concurrent lanes, and every consequential external action
 retain separate gates.
 
+The Agent Assurance and OpenAI Integration Hardening release passed its local
+harness identity, trace grouping, reviewed behavior evaluation, guardrail,
+provider, browser, dependency, Doctor, and encrypted recovery gates on
+2026-07-28. Private GitHub `Pantheon checks #14` also passed from clean branch
+`codex/agent-assurance-openai-hardening` at commit
+`ea89ac08dfcab73d3a6af8634c15a219862300ee`. Exact proof is retained in
+`docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`.
+
+The 2026-07-28 developer audit supersedes any inference that the current local
+Windows launcher is fully operations-ready. Earlier happy-path lifecycle tests
+passed, but they did not establish descendant ownership under timeout or
+interruption. Local launcher integration is now excluded from ordinary tests
+and normally runs only in its dedicated disposable Windows CI job.
+
+The post-audit supervisor implementation passed local release proof on
+2026-07-28. A native source-built supervisor now owns standby and working
+descendants through a Windows kill-on-close Job Object. Nine launcher tests
+passed in 234.9 seconds, including ten complete lifecycle cycles and forced
+supervisor termination; the ordinary suite passed 297 of 297 in 124.0 seconds.
+The first stabilization CI run proved the old Windows job but exposed that one
+sequential ordinary test process could report all 296 passes and still reach
+its 12-minute external ceiling. Ordinary CI is now split into four isolated
+shards. The first sharded run exposed a previously masked clean-install defect:
+Pantheon's renderer imported `pypdfium2` without listing it in the locked
+Python requirements. The missing dependency is now pinned and protected by a
+requirements-contract test. A later sharded run exposed a hidden test
+dependency on the operator's AUD/USD setting and contention between concurrent
+full-runtime launcher cycles. Tests now set their own conservative A$2/USD
+conversion, and lifecycle proof runs as two sequential five-cycle cases with
+explicit deadlines. Private `Pantheon checks #22` passed the complete release
+workflow on commit `172238c`, including all ordinary shards and both hosted
+five-cycle lifecycle phases.
+
+The ten-cycle proof now runs as two sequential isolated five-cycle cases. It
+retains ten full standby/working/standby/stop checks and forced supervisor
+failure while avoiding concurrent compilation and full-runtime startup
+contention. The lifecycle CI runner explicitly sets Node test concurrency to
+one so ordering is enforced rather than inferred from source order. Hosted CI
+dispatches the containment and repeat phases to separate disposable Windows
+runners; they cannot contend because they do not share a machine. Each phase
+has a seven-minute test ceiling inside a nine-minute wrapper and ten-minute CI
+job. The two cases completed locally in 81.8 and 85.2 seconds, and the complete
+Windows suite passed in 234.9 seconds, with per-cycle progress.
+Exact local evidence is retained in
+`docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
+
+The real operator lifecycle also passed in Chrome on 2026-07-28. The actual
+command files stopped the pre-existing Working runtime and stale control
+metadata, started a 57 MB Standby shell, started Working from the dashboard,
+returned to Standby from the Working dashboard, stopped every Pantheon
+listener from the control page, and started cleanly into Standby again. No
+queued work, provider call, paid action, or unrelated process was interrupted.
+The launcher is operations-ready for normal Stopped, Standby, and Working use.
+
+The buyer-intent workflow is terminally stopped. Its A$1.00 incurred estimate,
+unchanged customer package, complete three-page QA evidence, and final score-78
+`revise` verdict are retained as evidence. The 316-test ordinary suite, browser,
+disposable clean-install, Doctor, dependency, encrypted-recovery, health, push,
+and seven-job private CI gates passed at implementation commit `c5c2436`.
+Pantheon was returned to Standby. Nothing in this result is accepted as an
+independent quality pass, buyer proof, commercial validation, or publication
+authority.
+
 Foundation is releasable only when:
 
 - encrypted source, database, and artifact backups restore successfully;
@@ -345,6 +473,25 @@ Foundation is releasable only when:
 ## Durable Records
 
 - `docs/Pantheon Build Log.md`: current decisions, proof, and next work.
+- `docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`: exact
+  customer hashes, complete QA evidence, one approved recheck, terminal
+  non-pass result, browser proof, passed release gates, and exact private CI.
+- `docs/plans/PANTHEON-CONTINUATION-HANDOVER-2026-07-29.md`: closed execution
+  handover preserving the exact starting blocker and continuation order.
+- `docs/reviews/PANTHEON-DEV-AUDIT-2026-07-28.md`: command-hang,
+  authorization, proof-truth, artifact, shutdown, and release-readiness audit.
+- `docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`: exact
+  harness, assurance, live provider, cost, recovery, and browser evidence.
+- `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`: exact Job Object,
+  repeated-cycle, forced-failure, ordinary-suite, and first-CI evidence.
+- `docs/plans/PANTHEON-AGENT-ASSURANCE-AND-OPENAI-INTEGRATION-HARDENING-2026-07-28.md`:
+  active harness, trace, evaluation, guardrail, and operator-observability
+  implementation directive.
+- `docs/architecture/PANTHEON-OPENAI-CAPABILITY-ADOPTION-ROADMAP.md`: explicit
+  future OpenAI capability triggers, reasons for deferral, and release gates.
+- `docs/decisions/0007-agent-assurance-before-capability-expansion.md`: accepted
+  decision to establish behavioral assurance before widening tools or
+  orchestration.
 - `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`:
   completed foundation scope, live result, cost truth, and next gate.
 - `docs/commercial/COMMERCIAL-CONSTITUTION.md`: shared commercial decision

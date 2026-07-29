@@ -1,6 +1,11 @@
 const crypto = require("node:crypto");
 const CONFIG = require("../config");
 const { fromJson, get, now, run, toJson } = require("../db");
+const {
+  buildAgentHarnessDescriptor,
+  verifyAgentHarnessDescriptor,
+  verifyAgentTraceGroup,
+} = require("./agent-harness");
 
 const EXECUTION_DESCRIPTOR_SCHEMA = "jarvis.execution-descriptor.v1";
 
@@ -142,6 +147,14 @@ function verifyExecutionDescriptor(descriptor) {
     if (scopeHash(approvalPolicy) !== descriptor.workerApprovalPolicyHash) {
       return { valid: false, reason: "The execution descriptor worker approval policy hash is inconsistent.", currentHash };
     }
+    const harnessCheck = verifyAgentHarnessDescriptor(descriptor.agentHarness);
+    if (!harnessCheck.valid) return { ...harnessCheck, currentHash };
+    if (descriptor.agentHarness.worker.id !== descriptor.workerId
+        || descriptor.agentHarness.worker.definitionHash !== descriptor.workerDefinitionHash) {
+      return { valid: false, reason: "The agent harness does not match the exact approved worker.", currentHash };
+    }
+    const traceGroupCheck = verifyAgentTraceGroup(descriptor.traceGroup);
+    if (!traceGroupCheck.valid) return { ...traceGroupCheck, currentHash };
   }
   if (!Array.isArray(descriptor.tools) || !Array.isArray(descriptor.externalEffects)) {
     return { valid: false, reason: "The execution descriptor tools and external effects must be exact lists.", currentHash };
@@ -235,6 +248,8 @@ function buildApprovalScope(approval, task) {
     materializedInputHash: descriptor?.materializedInputHash || null,
     workerDefinitionHash: descriptor?.workerDefinitionHash || null,
     workerApprovalPolicyHash: descriptor?.workerApprovalPolicyHash || null,
+    agentHarnessHash: descriptor?.agentHarness?.harnessHash || null,
+    traceGroupId: descriptor?.traceGroup?.groupId || null,
     effects: descriptor?.externalEffects || spend.effects || approvalPayload.effects || parsedValue(approval.expected_effects, []),
     tracePolicy: descriptor?.tracePolicy || spend.tracePolicy || approvalPayload.tracePolicy || {
       providerResponseStored: false,
@@ -324,6 +339,15 @@ function currentWorkerPacketState(db, task, descriptor) {
   if (descriptor.workerDefinitionHash !== definitionHash) {
     return { valid: false, reason: "The worker definition changed after approval was requested." };
   }
+  const currentHarness = buildAgentHarnessDescriptor({
+    id: workerId,
+    definitionHash,
+  });
+  if (descriptor.agentHarness?.harnessHash !== currentHarness.harnessHash) {
+    return { valid: false, reason: "The agent rules or evaluation policy changed after approval was requested." };
+  }
+  const traceGroupCheck = verifyAgentTraceGroup(descriptor.traceGroup, hydratedTask);
+  if (!traceGroupCheck.valid) return traceGroupCheck;
   const packet = buildWorkerModelPacket(db, hydratedTask, definition);
   const stablePacket = JSON.parse(JSON.stringify(packet));
   delete stablePacket.packetHash;
@@ -358,6 +382,8 @@ function executionRequestEnvelopes(spend, descriptor) {
     externalEffects: spend.effects || [],
     maxCostCents: Number(spend.maxCostCents),
     pricedWorstCaseCostCents: Number(spend.pricedWorstCaseCostCents),
+    agentHarness: spend.agentHarness || null,
+    traceGroup: spend.traceGroup || null,
   };
   const approved = {
     kind: descriptor.kind,
@@ -381,6 +407,8 @@ function executionRequestEnvelopes(spend, descriptor) {
     externalEffects: descriptor.externalEffects || [],
     maxCostCents: Number(descriptor.maxCostCents),
     pricedWorstCaseCostCents: Number(descriptor.worstCaseCost?.amountCents),
+    agentHarness: descriptor.agentHarness || null,
+    traceGroup: descriptor.traceGroup || null,
   };
   const workerId = spend.worker?.id || spend.requestedWorker;
   if (workerId !== undefined) {

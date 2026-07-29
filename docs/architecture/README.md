@@ -8,6 +8,12 @@ integration contracts, deployment notes, and runtime diagrams.
 ## Current Steering
 
 - `docs/Pantheon Master Plan.md`: business and system source of truth.
+- `docs/plans/PANTHEON-AGENT-ASSURANCE-AND-OPENAI-INTEGRATION-HARDENING-2026-07-28.md`:
+  active harness versioning, grouped tracing, behavioral evaluation, SDK
+  guardrail, and operator-observability directive.
+- `docs/architecture/PANTHEON-OPENAI-CAPABILITY-ADOPTION-ROADMAP.md`: future
+  OpenAI capability register with commercial adoption triggers and release
+  gates.
 - `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`:
   completed Portfolio, commercial knowledge, investment review, service-trial,
   runtime-control, and release directive.
@@ -31,6 +37,9 @@ integration contracts, deployment notes, and runtime diagrams.
   on one venture through first revenue.
 - `docs/decisions/0006-autonomous-agent-operations-foundation.md`: fixed
   11-worker supervised foundation and deferred boundaries.
+- `docs/decisions/0007-agent-assurance-before-capability-expansion.md`:
+  behavioral assurance must precede broader tools, orchestration, and commerce
+  capabilities.
 - `docs/reviews/OPENAI-AGENTS-SDK-ARCHITECTURE-REVIEW-2026-07-16.md`: current
   implementation review and guarded-tool boundary.
 - `docs/reviews/PRE-FIRST-USE-ENGINEERING-AND-SECURITY-REVIEW-2026-07-17.md`:

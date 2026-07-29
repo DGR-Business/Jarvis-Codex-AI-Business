@@ -380,6 +380,104 @@ function Get-PantheonRuntimePath {
   return Join-Path $StateRoot "pantheon-server-$Port.json"
 }
 
+function Get-PantheonSupervisorPath {
+  param(
+    [Parameter(Mandatory = $true)][string]$StateRoot,
+    [Parameter(Mandatory = $true)][int]$Port
+  )
+  return Join-Path $StateRoot "pantheon-supervisor-$Port.json"
+}
+
+function Test-PantheonSupervisorOwnership {
+  param(
+    [Parameter(Mandatory = $true)]$Metadata,
+    [Parameter(Mandatory = $true)][int]$Port,
+    [string]$WorkspaceRoot
+  )
+
+  if (
+    -not ($Metadata.PSObject.Properties.Name -contains "pid") -or
+    -not ($Metadata.PSObject.Properties.Name -contains "processStartFileTimeUtc") -or
+    -not ($Metadata.PSObject.Properties.Name -contains "executablePath")
+  ) {
+    return [pscustomobject]@{ owned = $false; reason = "invalid_supervisor_identity"; process = $null }
+  }
+  if (
+    ($Metadata.PSObject.Properties.Name -contains "controlPort") -and
+    [int]$Metadata.controlPort -ne $Port
+  ) {
+    return [pscustomobject]@{ owned = $false; reason = "supervisor_port_changed"; process = $null }
+  }
+  if (
+    -not [string]::IsNullOrWhiteSpace($WorkspaceRoot) -and
+    ($Metadata.PSObject.Properties.Name -contains "workspaceRoot") -and
+    -not [string]::Equals(
+      [IO.Path]::GetFullPath([string]$Metadata.workspaceRoot),
+      [IO.Path]::GetFullPath($WorkspaceRoot),
+      [StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+    return [pscustomobject]@{ owned = $false; reason = "supervisor_workspace_changed"; process = $null }
+  }
+  if ($Metadata.PSObject.Properties.Name -contains "ownerSid") {
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if (-not [string]::Equals(
+      [string]$Metadata.ownerSid,
+      $currentSid,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+      return [pscustomobject]@{ owned = $false; reason = "supervisor_windows_owner_changed"; process = $null }
+    }
+  }
+
+  $actual = Get-PantheonProcessSnapshot -ProcessId ([int]$Metadata.pid)
+  if (-not $actual) {
+    return [pscustomobject]@{ owned = $false; reason = "supervisor_not_running"; process = $null }
+  }
+  $expected = [pscustomobject]@{
+    pid = [int]$Metadata.pid
+    executablePath = [string]$Metadata.executablePath
+    startFileTimeUtc = [string]$Metadata.processStartFileTimeUtc
+  }
+  if (-not (Test-PantheonSnapshotMatches -Expected $expected -Actual $actual)) {
+    return [pscustomobject]@{ owned = $false; reason = "supervisor_identity_changed"; process = $actual }
+  }
+  return [pscustomobject]@{ owned = $true; reason = "exact_supervisor_match"; process = $actual }
+}
+
+function Stop-PantheonSupervisor {
+  param(
+    [Parameter(Mandatory = $true)][string]$StateRoot,
+    [Parameter(Mandatory = $true)][int]$Port,
+    [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+    [int]$TimeoutSeconds = 8
+  )
+
+  $path = Get-PantheonSupervisorPath -StateRoot $StateRoot -Port $Port
+  $metadata = Read-PantheonMetadata -Path $path
+  if (-not $metadata) { return }
+  if (($metadata.PSObject.Properties.Name -contains "invalid") -and $metadata.invalid -eq $true) {
+    throw "Pantheon found unreadable supervisor ownership data for port $Port."
+  }
+  $ownership = Test-PantheonSupervisorOwnership `
+    -Metadata $metadata `
+    -Port $Port `
+    -WorkspaceRoot $WorkspaceRoot
+  if (-not $ownership.owned) {
+    if ($ownership.reason -eq "supervisor_not_running") {
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+      return
+    }
+    throw "Pantheon refused to stop a supervisor whose Windows identity changed ($($ownership.reason))."
+  }
+
+  Stop-Process -Id ([int]$metadata.pid) -Force -ErrorAction Stop
+  if (-not (Wait-PantheonProcessExit -ProcessId ([int]$metadata.pid) -TimeoutSeconds $TimeoutSeconds)) {
+    throw "Pantheon's exact Windows supervisor did not exit within $TimeoutSeconds seconds."
+  }
+  Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+}
+
 function Get-PantheonRuntimeStatus {
   param(
     [Parameter(Mandatory = $true)][string]$StateRoot,

@@ -1,13 +1,14 @@
 import csv
 import hashlib
 import json
+import math
 import re
 import sys
 import textwrap
 import zipfile
 from datetime import date, datetime
 from html import escape
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
@@ -15,13 +16,14 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table as WorkbookTable, TableStyleInfo
 from PIL import Image, ImageDraw, ImageFont
+import pypdfium2 as pdfium
 from reportlab import rl_config
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table as PdfTable, TableStyle
+from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table as PdfTable, TableStyle
 
 
 INK = "172033"
@@ -44,6 +46,51 @@ def slug(value, fallback="product", maximum=64):
 
 def safe_text(value, maximum=500):
     return re.sub(r"\s+", " ", str(value or "")).strip()[:maximum]
+
+
+WINDOWS_RESERVED_LEAF_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def safe_output_leaf(value, label, required_suffix):
+    text = str(value or "").strip()
+    windows_path = PureWindowsPath(text)
+    posix_path = PurePosixPath(text)
+    reserved_stem = text.split(".", 1)[0].rstrip(" .").upper()
+    if (
+        not text
+        or text in {".", ".."}
+        or "/" in text
+        or "\\" in text
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or posix_path.is_absolute()
+        or windows_path.name != text
+        or posix_path.name != text
+        or text.endswith((" ", "."))
+        or re.search(r'[\x00-\x1f<>:"|?*]', text)
+        or reserved_stem in WINDOWS_RESERVED_LEAF_NAMES
+        or Path(text).suffix.lower() != required_suffix
+    ):
+        raise ValueError(
+            f"{label} must be a safe leaf filename ending in {required_suffix}"
+        )
+    return text
+
+
+def contained_output_leaf(root, filename, label):
+    resolved_root = root.resolve()
+    candidate = (resolved_root / filename).resolve()
+    if candidate.parent != resolved_root:
+        raise ValueError(f"{label} escapes the renderer output directory")
+    return candidate
+
 
 def field_reference(value):
     return re.sub(r"\s+", " ", safe_text(value, 80).replace("%", " percent ")).strip().lower()
@@ -270,10 +317,19 @@ UNVERIFIED_NAMED_STRUCTURE = re.compile(
 )
 
 
-def canonical_package_setup_steps():
+def canonical_package_setup_steps(catalogue_items):
+    if len(catalogue_items) == 1:
+        workbook_name = f"01-{slug(catalogue_items[0].get('title'))}.xlsx"
+        open_instruction = (
+            f"Open the setup guide, then open the single included workbook: {workbook_name}."
+        )
+    else:
+        open_instruction = (
+            "Open the setup guide, then choose the workbook that matches the job you are doing."
+        )
     return [
         "Download and unzip the customer bundle into a working folder.",
-        "Open the setup guide, then choose the workbook that matches the job you are doing.",
+        open_instruction,
         "Read the workbook's Read Me sheet before replacing its example records.",
         "Use reviewed information and keep the original bundle as a clean backup.",
         "Review the Dashboard before using or sharing the updated records.",
@@ -649,6 +705,76 @@ def calculation_formula(definition, tracker, row_index):
     return f'=IF(COUNTA({",".join(references)})=0,"",{expression})'
 
 
+def numeric_value(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = safe_text(value, 80).replace("A$", "").replace("$", "").replace(",", "")
+    if not text:
+        return None
+    percent = text.endswith("%")
+    if percent:
+        text = text[:-1]
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    return number / 100 if percent else number
+
+
+def display_calculation(value, kind):
+    if value is None:
+        return ""
+    if kind == "currency":
+        return f"A${value:,.2f}"
+    if kind == "percent":
+        return f"{value:.0%}"
+    return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
+def sample_calculation_checks(item, definitions):
+    headers = [safe_text(column["name"], 80) for column in item["columns"]]
+    kinds = [column["type"] for column in item["columns"]]
+    checks = []
+    for row_index, source_row in enumerate(item["sampleRows"], start=2):
+        values = {
+            field_reference(header): parse_cell(source_row[index], kinds[index])
+            for index, header in enumerate(headers)
+        }
+        results = []
+        for definition in definitions:
+            inputs = [
+                numeric_value(values.get(field_reference(name)))
+                for name in definition["inputs"]
+            ]
+            result = None
+            if all(value is not None for value in inputs):
+                if definition["operation"] == "multiply":
+                    result = inputs[0] * inputs[1]
+                elif definition["operation"] == "sum":
+                    result = sum(inputs)
+                elif definition["operation"] == "subtract":
+                    result = inputs[0] - inputs[1]
+                elif definition["operation"] == "percent_of" and inputs[1] != 0:
+                    result = inputs[0] / inputs[1]
+            target_index = definition["targetColumn"] - 1
+            values[field_reference(definition["target"])] = result
+            results.append({
+                "target": definition["target"],
+                "operation": definition["operation"],
+                "inputs": definition["inputs"],
+                "value": result,
+                "display": display_calculation(result, kinds[target_index]),
+            })
+        checks.append({
+            "trackerRow": row_index,
+            "record": safe_text(source_row[0], 120) if source_row else f"Row {row_index}",
+            "results": results,
+        })
+    return checks
+
+
 def workbook_for_item(item, package_title, customer_promise, setup_steps, output_path):
     workbook = Workbook()
     readme = workbook.active
@@ -683,6 +809,7 @@ def workbook_for_item(item, package_title, customer_promise, setup_steps, output
     headers = [safe_text(column["name"], 80) for column in item["columns"]]
     kinds = [column["type"] for column in item["columns"]]
     calculations = calculation_definitions(item, headers)
+    sample_checks = sample_calculation_checks(item, calculations)
     for index, header in enumerate(headers, start=1):
         cell = tracker.cell(row=1, column=index, value=header)
         cell.font = Font(bold=True, color=WHITE)
@@ -914,6 +1041,29 @@ def workbook_for_item(item, package_title, customer_promise, setup_steps, output
         "formulaSamplePolicy": formula_evidence["samplePolicy"],
         "formulaCoverage": formula_evidence["coverage"],
         "calculatedFields": calculated_fields,
+        "sampleCalculationChecks": sample_checks,
+        "dashboardExpectedResults": {
+            "recordsEntered": sum(
+                1 for row in item["sampleRows"]
+                if row and safe_text(row[0], 120)
+            ),
+            "metricLabel": dashboard_metric["label"] if dashboard_metric else None,
+            "metricValue": (
+                sum(
+                    1 for row in item["sampleRows"]
+                    if dashboard_metric
+                    and safe_text(
+                        row[next(
+                            index for index, header in enumerate(headers)
+                            if header == dashboard_metric["statusField"]
+                        )],
+                        80,
+                    ) == dashboard_metric["countedValue"]
+                )
+                if dashboard_metric and dashboard_metric["countedValue"]
+                else None
+            ),
+        },
         "dataValidations": validation_facts,
         "statusFields": status_fields,
         "dashboardMetric": dashboard_metric,
@@ -971,6 +1121,13 @@ def guide_pdf(blueprint, customer_files, output_path):
         textColor=colors.HexColor(f"#{MUTED}"),
         spaceAfter=6,
     )
+    compact_body = ParagraphStyle(
+        "PantheonCompactBody",
+        parent=body,
+        fontSize=8.8,
+        leading=11.5,
+        spaceAfter=3.5,
+    )
     doc = SimpleDocTemplate(
         str(output_path),
         pagesize=A4,
@@ -1023,12 +1180,13 @@ def guide_pdf(blueprint, customer_files, output_path):
         for column in item["columns"]:
             story.append(Paragraph(
                 f"<b>{escape(safe_text(column['name'], 100))}</b> - {escape(safe_text(column['guidance'], 500))}",
-                body,
+                compact_body,
             ))
     if blueprint["disclaimers"]:
-        story.extend([Spacer(1, 4 * mm), Paragraph("Important notes", heading)])
+        notes = [Spacer(1, 3 * mm), Paragraph("Important notes", heading)]
         for disclaimer in blueprint["disclaimers"]:
-            story.append(Paragraph(escape(safe_text(disclaimer, 800)), body))
+            notes.append(Paragraph(escape(safe_text(disclaimer, 800)), compact_body))
+        story.append(KeepTogether(notes))
     doc.build(story)
 
 
@@ -1060,12 +1218,47 @@ def preview_image(blueprint, output_path, mode):
     )
     if mode == "dashboard":
         section_y = max(220, promise_bottom + 22)
+        item_count = len(blueprint["catalogueItems"])
+        tool_label = "tool" if item_count == 1 else "tools"
         draw.text(
             (95, section_y),
-            f"{len(blueprint['catalogueItems'])} focused tools built from the real customer files.",
+            f"{item_count} focused {tool_label} built from the real customer files.",
             fill=f"#{GREEN}",
             font=font(24, True),
         )
+        if item_count == 1:
+            item = blueprint["catalogueItems"][0]
+            card_top = min(300, max(274, section_y + 48))
+            draw.rounded_rectangle((95, card_top, 1305, card_top + 190), radius=8, fill="#FFFFFF", outline=f"#{GRID}", width=2)
+            draw.rectangle((95, card_top, 107, card_top + 190), fill=f"#{GREEN}")
+            item_font, item_lines = fitted_wrapped_font(draw, item["title"], 1130, 2, 26, 20, True)
+            draw.multiline_text((130, card_top + 24), "\n".join(item_lines), fill=f"#{INK}", font=item_font, spacing=3)
+            title_height = draw.textbbox((0, 0), "Ag", font=item_font)[3]
+            purpose_y = card_top + 24 + len(item_lines) * title_height + max(0, len(item_lines) - 1) * 3 + 12
+            draw_wrapped(draw, (130, purpose_y), item["purpose"], f"#{MUTED}", font(18), 1120, 3, 4)
+
+            panel_top = card_top + 220
+            panels = [
+                ("Workflow control", "Work Status | Due Date | Delivery Proof", GREEN),
+                ("Client decisions", "Approval Status | Scope Change | Notes", CYAN),
+                ("Profit view", "Quoted Fee | Total Cost | Estimated Contribution", AMBER),
+            ]
+            for index, (label, detail, colour) in enumerate(panels):
+                left = 95 + index * 410
+                draw.rounded_rectangle((left, panel_top, left + 380, panel_top + 150), radius=8, fill="#FFFFFF", outline=f"#{GRID}", width=2)
+                draw.rectangle((left, panel_top, left + 8, panel_top + 150), fill=f"#{colour}")
+                draw.text((left + 28, panel_top + 24), label, fill=f"#{INK}", font=font(19, True))
+                draw_wrapped(draw, (left + 28, panel_top + 62), detail, f"#{MUTED}", font(15), 325, 3, 4)
+            draw.text(
+                (95, min(812, panel_top + 180)),
+                f"Editable Excel workbook | setup guide | sample CSV | {len(item['sampleRows'])} example records",
+                fill=f"#{MUTED}",
+                font=font(16),
+            )
+            image.save(output_path, format="PNG", optimize=True)
+            with Image.open(output_path) as reopened:
+                reopened.verify()
+            return
         y = min(310, max(276, section_y + 52))
         colours = [GREEN, CYAN, AMBER, "8C86F7", "EC6F91", "61C0BF"]
         for index, item in enumerate(blueprint["catalogueItems"]):
@@ -1095,7 +1288,65 @@ def preview_image(blueprint, output_path, mode):
             )
     else:
         section_y = max(220, promise_bottom + 22)
-        draw.text((95, section_y), "Inside the workbooks", fill=f"#{GREEN}", font=font(24, True))
+        workbook_label = "workbook" if len(blueprint["catalogueItems"]) == 1 else "workbooks"
+        draw.text((95, section_y), f"Inside the {workbook_label}", fill=f"#{GREEN}", font=font(24, True))
+        if len(blueprint["catalogueItems"]) == 1:
+            item = blueprint["catalogueItems"][0]
+            card_top = min(300, max(274, section_y + 48))
+            draw.rounded_rectangle((95, card_top, 1305, card_top + 180), radius=8, fill="#FFFFFF", outline=f"#{GRID}", width=2)
+            draw.rectangle((95, card_top, 107, card_top + 180), fill=f"#{GREEN}")
+            title_font, title_lines = fitted_wrapped_font(draw, item["title"], 1120, 2, 25, 19, True)
+            draw.multiline_text((130, card_top + 22), "\n".join(title_lines), fill=f"#{INK}", font=title_font, spacing=3)
+            title_height = draw.textbbox((0, 0), "Ag", font=title_font)[3]
+            detail_y = card_top + 22 + len(title_lines) * title_height + max(0, len(title_lines) - 1) * 3 + 10
+            draw_wrapped(draw, (130, detail_y), item["purpose"], f"#{MUTED}", font(17), 1120, 3, 4)
+
+            status_count = len([column for column in item["columns"] if column.get("type") == "status"])
+            metrics = [
+                (str(len(item["columns"])), "named fields"),
+                (str(status_count), "controlled dropdowns"),
+                (str(len(item.get("calculations", []))), "live calculations"),
+                (str(len(item["sampleRows"])), "example records"),
+            ]
+            metric_top = card_top + 210
+            for index, (value, label) in enumerate(metrics):
+                left = 95 + index * 307
+                draw.rounded_rectangle((left, metric_top, left + 280, metric_top + 120), radius=8, fill="#FFFFFF", outline=f"#{GRID}", width=2)
+                draw.text((left + 24, metric_top + 20), value, fill=f"#{GREEN}", font=font(30, True))
+                draw.text((left + 24, metric_top + 67), label, fill=f"#{MUTED}", font=font(15, True))
+
+            field_names = [safe_text(column["name"], 80) for column in item["columns"]]
+            fields_top = metric_top + 154
+            draw.text((95, fields_top), "Included fields", fill=f"#{INK}", font=font(18, True))
+            draw_wrapped(
+                draw,
+                (95, fields_top + 34),
+                " | ".join(field_names),
+                f"#{MUTED}",
+                font(14),
+                1210,
+                3,
+                5,
+            )
+            headers = [safe_text(column["name"], 80) for column in item["columns"]]
+            checks = sample_calculation_checks(item, calculation_definitions(item, headers))
+            example_top = 744
+            draw.text((95, example_top), "Example calculations", fill=f"#{INK}", font=font(18, True))
+            for index, check in enumerate(checks[:2]):
+                details = " | ".join(
+                    f"{result['target']}: {result['display']}"
+                    for result in check["results"]
+                )
+                draw.text(
+                    (95, example_top + 34 + index * 28),
+                    f"{check['record']} - {details}",
+                    fill=f"#{MUTED}",
+                    font=font(14),
+                )
+            image.save(output_path, format="PNG", optimize=True)
+            with Image.open(output_path) as reopened:
+                reopened.verify()
+            return
         card_top = min(310, max(274, section_y + 48))
         card_width = 570
         card_height = 158
@@ -1143,12 +1394,254 @@ def preview_image(blueprint, output_path, mode):
         reopened.verify()
 
 
+def cell_display(value):
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%d %b %Y")
+    if isinstance(value, date):
+        return value.strftime("%d %b %Y")
+    return safe_text(value, 120)
+
+
+def workbook_quality_preview(workbook_path, output_path, validation):
+    workbook = load_workbook(workbook_path, data_only=False, read_only=False)
+    image = Image.new("RGB", (1600, 1000), f"#{INK}")
+    draw = ImageDraw.Draw(image)
+    draw.text((70, 42), "Actual workbook inspection", fill=f"#{WHITE}", font=font(32, True))
+    draw.text(
+        (70, 88),
+        f"{workbook_path.name} | rendered from the saved XLSX",
+        fill="#B9C5D3",
+        font=font(17),
+    )
+
+    dashboard = workbook["Dashboard"] if "Dashboard" in workbook.sheetnames else workbook[workbook.sheetnames[0]]
+    tracker = workbook["Tracker"] if "Tracker" in workbook.sheetnames else workbook[workbook.sheetnames[-1]]
+
+    draw.rounded_rectangle((70, 140, 1530, 395), radius=8, fill="#FFFFFF", outline=f"#{GRID}", width=2)
+    draw.text((96, 164), f"{dashboard.title} sheet", fill=f"#{INK}", font=font(21, True))
+    dashboard_rows = []
+    for row in dashboard.iter_rows(min_row=1, max_row=min(8, dashboard.max_row), values_only=True):
+        values = [cell_display(value) for value in row[:6]]
+        if any(values):
+            dashboard_rows.append(values)
+    dashboard_expected = validation.get("dashboardExpectedResults", {})
+    y = 208
+    for row in dashboard_rows[:6]:
+        populated = [value for value in row if value]
+        if not populated:
+            continue
+        label = populated[0]
+        detail = " | ".join(populated[1:]) or ""
+        if label == "Records entered":
+            detail = f"{dashboard_expected.get('recordsEntered', 0)} expected from the sample rows | {detail}"
+        elif label == dashboard_expected.get("metricLabel"):
+            detail = f"{dashboard_expected.get('metricValue', 0)} expected from the sample rows | {detail}"
+        draw.text((106, y), label[:42], fill=f"#{INK}", font=font(15, True))
+        draw.text((535, y), detail[:105], fill=f"#{MUTED}", font=font(14))
+        draw.line((96, y + 27, 1504, y + 27), fill=f"#{PANEL}", width=1)
+        y += 32
+
+    draw.rounded_rectangle((70, 425, 1530, 925), radius=8, fill="#FFFFFF", outline=f"#{GRID}", width=2)
+    draw.text((96, 449), f"{tracker.title} sheet | actual headers and complete sample values", fill=f"#{INK}", font=font(21, True))
+    max_columns = min(18, tracker.max_column)
+    left = 96
+    table_width = 1408
+    rows_to_render = min(
+        1 + max(1, len(validation.get("sampleCalculationChecks", []))),
+        tracker.max_row,
+    )
+    sample_checks = {
+        int(check["trackerRow"]): {
+            result["target"]: result["display"]
+            for result in check.get("results", [])
+        }
+        for check in validation.get("sampleCalculationChecks", [])
+    }
+
+    def draw_segment(start_column, end_column, top, label):
+        column_count = end_column - start_column + 1
+        column_width = table_width / column_count
+        row_height = 54
+        draw.text((left, top - 24), label, fill=f"#{MUTED}", font=font(13, True))
+        for row_index in range(1, rows_to_render + 1):
+            for offset, column_index in enumerate(range(start_column, end_column + 1)):
+                x0 = int(left + offset * column_width)
+                x1 = int(left + (offset + 1) * column_width)
+                y0 = top + (row_index - 1) * row_height
+                y1 = y0 + row_height
+                fill = f"#{INK}" if row_index == 1 else ("#F7F9FC" if row_index % 2 == 0 else "#FFFFFF")
+                text_colour = f"#{WHITE}" if row_index == 1 else f"#{INK}"
+                draw.rectangle((x0, y0, x1, y1), fill=fill, outline=f"#{GRID}", width=1)
+                header = cell_display(tracker.cell(row=1, column=column_index).value)
+                value = cell_display(tracker.cell(row=row_index, column=column_index).value)
+                if row_index > 1 and header in sample_checks.get(row_index, {}):
+                    value = f"{sample_checks[row_index][header]} (checked)"
+                shortened = textwrap.shorten(
+                    value,
+                    width=34 if row_index == 1 else 64,
+                    placeholder="...",
+                )
+                wrapped = textwrap.wrap(shortened, width=20 if row_index == 1 else 24)[:3]
+                draw.multiline_text(
+                    (x0 + 7, y0 + 8),
+                    "\n".join(wrapped),
+                    fill=text_colour,
+                    font=font(11 if row_index == 1 else 10, row_index == 1),
+                    spacing=2,
+                )
+
+    split = min(8, max_columns)
+    draw_segment(1, split, 500, "Operating record")
+    if max_columns > split:
+        draw_segment(split + 1, max_columns, 692, "Economics and notes")
+
+    calculation_summary = []
+    for check in validation.get("sampleCalculationChecks", []):
+        values = " | ".join(
+            f"{result['target']}: {result['display']}"
+            for result in check.get("results", [])
+        )
+        calculation_summary.append(f"{check['record']} - {values}")
+    draw.text(
+        (96, 842),
+        "Independent sample recalculation",
+        fill=f"#{INK}",
+        font=font(14, True),
+    )
+    for index, summary in enumerate(calculation_summary[:2]):
+        draw.text(
+            (96, 864 + index * 18),
+            summary[:142],
+            fill=f"#{MUTED}",
+            font=font(11),
+        )
+    draw.text(
+        (96, 902),
+        f"Saved workbook facts: {tracker.max_column} fields | {tracker.max_row - 1} working rows | sheets: {', '.join(workbook.sheetnames)}",
+        fill=f"#{MUTED}",
+        font=font(13),
+    )
+    workbook.close()
+    image.save(output_path, format="PNG", optimize=True)
+    with Image.open(output_path) as reopened:
+        reopened.verify()
+
+
+def pdf_quality_preview(pdf_path, output_path, output_root=None):
+    document = pdfium.PdfDocument(str(pdf_path))
+    page_count = len(document)
+    if page_count < 1:
+        raise ValueError("The setup guide PDF has no pages")
+    columns = 2 if page_count <= 2 else 3
+    gap = 34
+    side_margin = 70
+    page_max_width = (
+        1600 - (side_margin * 2) - (gap * (columns - 1))
+    ) // columns - 16
+    page_max_height = 790 if columns == 2 else 650
+    page_images = []
+    page_identities = []
+    for page_index in range(page_count):
+        page = document[page_index]
+        bitmap = page.render(scale=1.45)
+        rendered = bitmap.to_pil().convert("RGB")
+        rendered.thumbnail((page_max_width, page_max_height), Image.Resampling.LANCZOS)
+        page_image = rendered.copy()
+        page_images.append(page_image)
+        page_identities.append({
+            "pageNumber": page_index + 1,
+            "width": page_image.width,
+            "height": page_image.height,
+            "rasterSha256": hashlib.sha256(page_image.tobytes()).hexdigest(),
+        })
+        rendered.close()
+        bitmap.close()
+        page.close()
+    document.close()
+
+    rows = math.ceil(page_count / columns)
+    row_height = page_max_height + 58
+    image_height = 140 + (rows * row_height) + 40
+    image = Image.new("RGB", (1600, image_height), f"#{INK}")
+    draw = ImageDraw.Draw(image)
+    draw.text((70, 42), "Actual setup guide inspection", fill=f"#{WHITE}", font=font(32, True))
+    draw.text(
+        (70, 88),
+        f"{pdf_path.name} | {page_count} pages | rasterized from the saved PDF",
+        fill="#B9C5D3",
+        font=font(17),
+    )
+    for index, page_image in enumerate(page_images):
+        row = index // columns
+        column = index % columns
+        row_images = page_images[row * columns:(row + 1) * columns]
+        row_width = sum(item.width for item in row_images) + gap * max(0, len(row_images) - 1)
+        row_x = (1600 - row_width) // 2
+        x = row_x + sum(item.width for item in row_images[:column]) + gap * column
+        row_top = 140 + row * row_height
+        y = row_top + max(0, (page_max_height - page_image.height) // 2)
+        draw.rounded_rectangle(
+            (x - 8, y - 8, x + page_image.width + 8, y + page_image.height + 8),
+            radius=5,
+            fill="#DDE3EA",
+        )
+        image.paste(page_image, (x, y))
+        draw.text(
+            (x, row_top + page_max_height + 16),
+            f"Page {index + 1}",
+            fill="#B9C5D3",
+            font=font(14, True),
+        )
+        page_image.close()
+    image.save(output_path, format="PNG", optimize=True)
+    with Image.open(output_path) as reopened:
+        reopened.verify()
+    evidence_root = Path(output_root or pdf_path.parent.parent).resolve()
+    source_relative_path = pdf_path.resolve().relative_to(evidence_root).as_posix()
+    inspection_relative_path = output_path.resolve().relative_to(evidence_root).as_posix()
+    ordered_identity = json.dumps(
+        page_identities,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return {
+        "sourceFile": pdf_path.name,
+        "sourceRelativePath": source_relative_path,
+        "sourceSha256": hashlib.sha256(pdf_path.read_bytes()).hexdigest(),
+        "inspectionFile": output_path.name,
+        "inspectionRelativePath": inspection_relative_path,
+        "inspectionSha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+        "sourcePageCount": page_count,
+        "renderedPageCount": len(page_images),
+        "completeCoverage": len(page_images) == page_count,
+        "columns": columns,
+        "rows": rows,
+        "pages": page_identities,
+        "orderedPageIdentitySha256": hashlib.sha256(
+            ordered_identity.encode("ascii")
+        ).hexdigest(),
+    }
+
+
 def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def build(payload, output_root):
     spec = payload["spec"]
+    manifest_filename = safe_output_leaf(
+        spec.get("manifestFilename"),
+        "manifestFilename",
+        ".json",
+    )
+    bundle_filename = safe_output_leaf(
+        spec.get("bundleFilename"),
+        "bundleFilename",
+        ".zip",
+    )
     source_blueprint = payload["blueprint"]
     runtime_normalizations = payload.get("runtimeNormalizations", [])
     normalizations_by_item = {}
@@ -1175,7 +1668,7 @@ def build(payload, output_root):
         for step in source_blueprint.get("setupSteps", [])
         if safe_text(step, 700)
     ]
-    setup_steps = canonical_package_setup_steps()
+    setup_steps = canonical_package_setup_steps(safe_items)
     package_adjustments = []
     if source_setup_steps != setup_steps:
         package_adjustments.append({
@@ -1190,8 +1683,10 @@ def build(payload, output_root):
     }
     customer_root = output_root / "customer-files"
     preview_root = output_root / "storefront-previews"
+    quality_review_root = output_root / "quality-review"
     customer_root.mkdir(parents=True, exist_ok=True)
     preview_root.mkdir(parents=True, exist_ok=True)
+    quality_review_root.mkdir(parents=True, exist_ok=True)
     expected = {str(item["id"]) for item in spec["catalogueItems"]}
     actual = {str(item["id"]) for item in blueprint["catalogueItems"]}
     if expected != actual:
@@ -1246,6 +1741,23 @@ def build(payload, output_root):
     preview_two = preview_root / "workbook-preview.png"
     preview_image(rendered_blueprint, preview_one, "dashboard")
     preview_image(rendered_blueprint, preview_two, "workbook")
+    quality_workbook = quality_review_root / "actual-workbook.png"
+    quality_guide = quality_review_root / "actual-setup-guide.png"
+    workbook_quality_preview(
+        output_root / customer_files[rendered_items[0]["id"]][0],
+        quality_workbook,
+        validation[rendered_items[0]["id"]],
+    )
+    guide_inspection = pdf_quality_preview(guide_path, quality_guide, output_root)
+    write_json(
+        quality_review_root / "inspection-metadata.json",
+        {
+            "schema": "pantheon.local-quality-inspection.v1",
+            "images": {
+                quality_guide.name: guide_inspection,
+            },
+        },
+    )
 
     manifest = {
         "schema": "pantheon.product-manifest.v1",
@@ -1292,8 +1804,19 @@ def build(payload, output_root):
         "externalActionsTaken": [],
         "publishingStatus": "not_published",
         "factory": "pantheon-local-digital-product-factory-v1",
+        "assetProvenance": {
+            "sourceType": "pantheon_local_generation",
+            "externalAssetsUsed": [],
+            "customerDataUsed": False,
+            "statement": (
+                "Pantheon created the workbook, CSV, PDF, and PNG files locally from the approved "
+                "product blueprint. No third-party image, logo, trademark, customer record, or "
+                "downloaded design asset is embedded in the package."
+            ),
+        },
         "deliveryFormat": (
-            f"{len(rendered_items)} editable Excel workbooks, {len(rendered_items)} sample CSV files, "
+            f"{len(rendered_items)} editable Excel {'workbook' if len(rendered_items) == 1 else 'workbooks'}, "
+            f"{len(rendered_items)} sample CSV {'file' if len(rendered_items) == 1 else 'files'}, "
             "one shared setup guide, and two storefront previews derived from the complete catalogue."
         ),
         "customerInstructionSource": "generated_from_actual_files_by_local_factory",
@@ -1312,12 +1835,20 @@ def build(payload, output_root):
         }
         for file_path in archive_paths
     ]
-    bundle_path = output_root / spec["bundleFilename"]
+    bundle_path = contained_output_leaf(
+        output_root,
+        bundle_filename,
+        "bundleFilename",
+    )
     manifest["bundle"] = {
         "filename": bundle_path.name,
         "canonicalManifestInsideBundle": True,
     }
-    manifest_inside = output_root / spec["manifestFilename"]
+    manifest_inside = contained_output_leaf(
+        output_root,
+        manifest_filename,
+        "manifestFilename",
+    )
     write_json(manifest_inside, manifest)
     archive_paths.append(manifest_inside)
     with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:

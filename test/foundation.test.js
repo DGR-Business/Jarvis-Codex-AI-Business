@@ -51,7 +51,15 @@ const {
 const { createApp } = require("../src/server");
 const { getCockpitState, getDecisionsState, getSystemState } = require("../src/runtime/cockpit-state");
 const { commercialFoundationState, recordEvidence, setExperimentState } = require("../src/runtime/venture-case");
-const { all, get, openDatabase, run, seedDatabase, toJson } = require("../src/db");
+const {
+  all,
+  applyModelCallCompletionTruthMigration,
+  get,
+  openDatabase,
+  run,
+  seedDatabase,
+  toJson,
+} = require("../src/db");
 
 const PASSPHRASE = "test-only-passphrase-keep-out-of-production";
 
@@ -329,7 +337,7 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
+    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -366,7 +374,61 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 23);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 24);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("model-call completion migration backfills only an exactly linked completion", () => {
+  const runtime = runtimeDb("model-call-completion-truth");
+  const timestamp = new Date().toISOString();
+  try {
+    run(
+      runtime.db,
+      `INSERT INTO workflows
+       (id, venture_id, type, title, status, current_step, priority, metadata, created_at, updated_at)
+       VALUES ('wf-model-completion', 'venture-digital-products', 'foundation_test',
+               'Model completion proof', 'completed', 'done', 1, '{}', ?, ?)`,
+      [timestamp, timestamp],
+    );
+    run(
+      runtime.db,
+      `INSERT INTO tasks
+       (id, workflow_id, venture_id, title, kind, agent, status, priority,
+        payload, result, created_at, updated_at, completed_at, outcome_status)
+       VALUES ('task-model-completion', 'wf-model-completion', 'venture-digital-products',
+               'Completed model task', 'live_ai_worker_execution', 'demand_validator',
+               'completed', 1, '{}', '{}', ?, ?, ?, 'known')`,
+      [timestamp, timestamp, timestamp],
+    );
+    for (const id of ["model-linked", "model-unproven"]) {
+      run(
+        runtime.db,
+        `INSERT INTO model_calls
+         (id, workflow_id, task_id, provider, model_class, selected_model, mode,
+          status, metadata, created_at, outcome_status, completed_at)
+         VALUES (?, 'wf-model-completion', ?, 'openai', 'test', 'gpt-5.6-luna',
+                 'live', 'completed', '{}', ?, 'known', NULL)`,
+        [
+          id,
+          id === "model-linked" ? "task-model-completion" : null,
+          timestamp,
+        ],
+      );
+    }
+    run(runtime.db, "DELETE FROM schema_migrations WHERE version = 24");
+
+    applyModelCallCompletionTruthMigration(runtime.db);
+
+    assert.equal(
+      get(runtime.db, "SELECT completed_at FROM model_calls WHERE id = 'model-linked'").completed_at,
+      timestamp,
+    );
+    assert.equal(
+      get(runtime.db, "SELECT completed_at FROM model_calls WHERE id = 'model-unproven'").completed_at,
+      null,
+    );
   } finally {
     closeRuntime(runtime);
   }

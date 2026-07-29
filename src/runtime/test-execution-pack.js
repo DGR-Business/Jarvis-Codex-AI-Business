@@ -93,7 +93,15 @@ function experimentFromInput(db, input = {}) {
   return { experiment, candidate: candidateForExperiment(db, experiment) };
 }
 
+function buyerIntentValidation(experiment, candidate, input = {}) {
+  return input.metadata?.buyerIntentValidation
+    || experiment?.metadata?.buyerIntentValidation
+    || candidate?.metadata?.buyerIntentValidation
+    || null;
+}
+
 function executionCopy({ experiment, candidate, brief }) {
+  const validation = buyerIntentValidation(experiment, candidate);
   const buyer = asText(candidate?.buyer || experiment.buyer || brief?.buyer, "The target buyer");
   const problem = asText(candidate?.problem || brief?.problem, "the problem this offer solves");
   const offer = asText(candidate?.offer || experiment.offer, experiment.name);
@@ -102,6 +110,59 @@ function executionCopy({ experiment, candidate, brief }) {
   const cap = moneyLabel(candidate?.cost_cap_cents ?? experiment.cost_cap_cents);
   const successMetric = asText(candidate?.success_metric || experiment.expected_metric, "a clear buyer action, reply, lead, or sale");
   const killCriteria = asText(candidate?.kill_criteria || experiment.metadata?.killCriteria, "stop or revise if the channel produces no useful buyer signal.");
+
+  if (validation) {
+    const measurement = validation.measurement || {};
+    const platformName = validation.channel?.platformName || "the selected platform";
+    const testAction = validation.channel?.testActionLabel || validation.channel?.label || "one buyer test";
+    const analyticsSource = validation.channel?.analyticsSource || measurement.exposureUnit || "the platform's attributable analytics";
+    const priceText = `A$${(Number(validation.priceCents || experiment.price_cents || 0) / 100).toFixed(2)}`;
+    return {
+      buyer,
+      problem,
+      offer,
+      channel,
+      price: priceText,
+      cap,
+      successMetric: measurement.passRule || successMetric,
+      killCriteria: measurement.stopRule || killCriteria,
+      offerPageCopy: [
+        `Product: ${validation.sample?.packageTitle || offer}`,
+        `For: ${buyer}`,
+        `Problem: ${problem}`,
+        `What it does: ${validation.sample?.customerPromise || offer}`,
+        `Format: editable Excel workbook, setup guide, and previews derived from the real files.`,
+        `Test price: ${priceText}.`,
+      ].join("\n"),
+      productDescription: [
+        validation.sample?.customerPromise || offer,
+        "This is one complete functional validation product, not a placeholder, a full catalogue, a client portal, or an accounting system.",
+        "The wider investment case remains parked until measured buyer and contribution evidence passes the frozen test rule.",
+      ].join(" "),
+      cta: `Buy the ${validation.sample?.item?.title || "validation workbook"}`,
+      channelPlan: [
+        `After a separate exact external-action approval, prepare ${testAction} at ${priceText}.`,
+        "Keep it as the only active listing used for attribution during this test.",
+        `Measure up to ${Number(measurement.exposureTarget || 100)} ${measurement.exposureUnit || "qualified visits"} or ${Number(measurement.durationDays || 30)} days.`,
+        `Approving this pack does not create an account on ${platformName}, accept platform terms, complete KYC, pay a setup fee, publish, advertise, contact a buyer, or spend money.`,
+      ].join(" "),
+      trackingPlan: [
+        `Qualified exposure: ${measurement.qualifiedExposure || "Use attributable marketplace visits."}`,
+        "Track visits, favourites, genuine enquiries, orders, refunds, platform fees, acquisition cost, support time, attributable tools, and actual net cash contribution in AUD.",
+        `Pass: ${measurement.passRule || successMetric}`,
+        `Revise: ${measurement.reviseRule || "Change one variable only when evidence identifies the blocker."}`,
+        `Inconclusive: ${measurement.inconclusiveRule || "Diagnose reach before judging demand."}`,
+        `Stop: ${measurement.stopRule || killCriteria}`,
+      ].join(" "),
+      resultChecklist: [
+        "Before publication: separately approve the exact listing, current platform terms, account/KYC action, and any cash cost.",
+        "At launch: record the listing ID, publication time, exact title, tags, preview set, price, and settled external costs.",
+        `During the test: import or record ${analyticsSource} and paid-order evidence without counting operator test visits.`,
+        "At the boundary: reconcile every attributable cash cost in AUD and apply Pass, Revise, Inconclusive, or Stop exactly as written.",
+      ].join("\n"),
+      validation,
+    };
+  }
 
   const offerPageCopy = [
     `Headline: ${offer}`,
@@ -158,8 +219,21 @@ function executionCopy({ experiment, candidate, brief }) {
 }
 
 function unitEconomics({ experiment, candidate }) {
+  const validation = buyerIntentValidation(experiment, candidate);
   const priceCents = asInt(candidate?.price_cents ?? experiment.price_cents);
   const costCapCents = asInt(candidate?.cost_cap_cents ?? experiment.cost_cap_cents);
+  if (validation) {
+    const platformName = validation.channel?.platformName || "the selected platform";
+    return {
+      priceCents,
+      costCapCents,
+      grossMarginCents: 0,
+      grossMarginKnown: false,
+      marginPercent: "Unverified",
+      breakEvenSales: null,
+      financialRisk: `Actual net cash contribution is unverified until ${platformName} fees, refunds, acquisition, support, attributable tools, and other cash costs are reconciled in AUD.`,
+    };
+  }
   const grossMarginCents = asInt(
     candidate?.gross_margin_cents ?? Math.max(0, priceCents - costCapCents - Math.round(priceCents * 0.08)),
   );
@@ -168,6 +242,7 @@ function unitEconomics({ experiment, candidate }) {
     priceCents,
     costCapCents,
     grossMarginCents,
+    grossMarginKnown: true,
     marginPercent: percentLabel(grossMarginCents, priceCents),
     breakEvenSales,
     financialRisk: costCapCents > priceCents
@@ -176,7 +251,86 @@ function unitEconomics({ experiment, candidate }) {
   };
 }
 
+function grossMarginLabel(economics) {
+  return economics.grossMarginKnown === false
+    ? "unverified until actual order costs are reconciled"
+    : `${moneyLabel(economics.grossMarginCents)} (${economics.marginPercent})`;
+}
+
 function buildChiefOfStaffPacket({ pack, experiment, candidate, copy, economics, workerRuns, handoff }) {
+  const validation = copy.validation || buyerIntentValidation(experiment, candidate);
+  if (validation) {
+    const measurement = validation.measurement || {};
+    const platformName = validation.channel?.platformName || "the selected platform";
+    const sampleFiles = pack.metadata?.sampleDeliverables || [];
+    return {
+      schema: "jarvis_chief_of_staff_decision_packet_v1",
+      source: "buyer_intent_validation",
+      status: handoff?.status || "needs_operator_decision",
+      owner: "chief_of_staff",
+      title: `Decision packet: ${pack.title}`,
+      operatorSummary: `The functional validation workbook passed independent review. Decide whether this exact buyer test should move to a separately protected ${platformName} setup and publication step.`,
+      moneyMove: `Review one measured ${platformName} buyer test. Do not fund a wider catalogue until real orders, format acceptance, and actual contribution support it.`,
+      nextAction: "Approve the test plan, request changes, or deny it. Approval still does not create an account, publish a listing, contact buyers, or spend money.",
+      decision: "Approve this buyer-test plan, request changes, or deny it.",
+      buyer: copy.buyer,
+      problem: copy.problem,
+      offer: copy.offer,
+      channel: copy.channel,
+      expectedUpsideCents: 0,
+      costCapCents: economics.costCapCents,
+      priceCents: economics.priceCents,
+      grossMarginCents: 0,
+      marginPercent: "Unverified",
+      breakEvenSales: null,
+      risk: "medium",
+      evidence: [
+        `Buyer: ${copy.buyer}.`,
+        `Product: ${validation.sample?.packageTitle || copy.offer}.`,
+        `Channel and price hypothesis: ${copy.channel} at A$${(economics.priceCents / 100).toFixed(2)}.`,
+        `${sampleFiles.length} exact customer or preview file${sampleFiles.length === 1 ? "" : "s"} passed the bound Product Builder and Quality Reviewer path.`,
+        `Pass rule: ${measurement.passRule || copy.successMetric}`,
+      ],
+      risks: [
+        economics.financialRisk,
+        "The investment case remains parked; adjacent marketplace activity is not proof that this exact workbook will sell.",
+        "The test still requires separate account, terms, KYC, listing, publication, and any fee decisions.",
+      ],
+      successMetric: measurement.passRule || copy.successMetric,
+      killCriteria: measurement.stopRule || copy.killCriteria,
+      reviseRule: measurement.reviseRule || null,
+      inconclusiveRule: measurement.inconclusiveRule || null,
+      learningSignal: "Paid orders, format objections, refunds, buyer questions, and actual contribution will decide whether to invest, revise one variable, diagnose reach, or stop.",
+      hardStops: [
+        `No ${platformName} account creation, KYC, or acceptance of new platform terms`,
+        "No listing publication",
+        "No public post or customer contact",
+        "No advertising",
+        "No setup fee, subscription, or other external spend",
+        "No wider catalogue build",
+      ],
+      allowedOperatorActions: [
+        "Approve test plan",
+        "Request changes",
+        "Deny test",
+        "Preview or download the validation files",
+      ],
+      continuousImprovement: {
+        hypothesis: experiment.hypothesis,
+        smallestUsefulAction: copy.channelPlan,
+        expectedMetric: measurement.passRule || copy.successMetric,
+        actualResult: "No real-world listing, visit, order, or contribution result exists yet.",
+        learning: "The current files prove build and quality capability, not buyer demand.",
+        improvement: "Apply the frozen pass, revise, inconclusive, and stop rules after the real test boundary is reached.",
+      },
+      workerRunIds: {
+        productBuilder: workerRuns.productRun?.runId || null,
+        qualityReviewer: workerRuns.qualityRun?.runId || null,
+        distribution: workerRuns.distributionRun?.runId || null,
+      },
+      handoffId: handoff?.id || null,
+    };
+  }
   const expectedUpsideCents = economics.grossMarginCents || experiment.price_cents || 0;
   const risk = economics.grossMarginCents <= 0 ? "medium" : "low";
   const moneyMove = `Approve only the smallest manual test for ${copy.offer}, then record the result, reply, or no-response signal from the same pack.`;
@@ -186,7 +340,7 @@ function buildChiefOfStaffPacket({ pack, experiment, candidate, copy, economics,
     `Problem: ${copy.problem}.`,
     `Offer: ${copy.offer}.`,
     `Channel: ${copy.channel}.`,
-    `Price: ${moneyLabel(economics.priceCents)}; estimated gross margin: ${moneyLabel(economics.grossMarginCents)} (${economics.marginPercent}).`,
+    `Price: ${moneyLabel(economics.priceCents)}; estimated gross margin: ${grossMarginLabel(economics)}.`,
     "Product, copy, finance, and distribution workers completed protected checks with no external action.",
   ];
   const risks = [
@@ -844,6 +998,175 @@ function recordExecutionPackWorkers(db, { pack, experiment, candidate, copy }) {
   };
 }
 
+function exactWorkerRun(db, taskId, fallbackAgentId) {
+  const runRecord = taskId ? get(
+    db,
+    `SELECT runs.id, runs.agent_id, runs.mode, runs.status, runs.completed_at,
+            runs.model_call_id, calls.mode AS model_call_mode,
+            calls.status AS model_call_status,
+            calls.outcome_status AS model_call_outcome_status,
+            calls.provider_request_id, calls.completed_at AS model_call_completed_at
+     FROM agent_runs AS runs
+     LEFT JOIN model_calls AS calls
+       ON calls.id = runs.model_call_id
+      AND calls.task_id = runs.task_id
+     WHERE runs.task_id = ?
+     ORDER BY runs.started_at DESC, runs.id DESC
+     LIMIT 1`,
+    [taskId],
+  ) : null;
+  const evaluation = runRecord ? get(
+    db,
+    `SELECT status, score
+     FROM agent_eval_results
+     WHERE run_id = ?
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1`,
+    [runRecord.id],
+  ) : null;
+  const proofIssues = [];
+  if (!runRecord) proofIssues.push("agent_run_missing");
+  else {
+    if (runRecord.mode !== "live") proofIssues.push("agent_run_not_live");
+    if (runRecord.status !== "completed" || !runRecord.completed_at) {
+      proofIssues.push("agent_run_not_completed");
+    }
+    if (!runRecord.model_call_id) proofIssues.push("model_call_binding_missing");
+    if (runRecord.model_call_mode !== "live") proofIssues.push("model_call_not_live");
+    if (!["completed", "succeeded", "provider_completed"].includes(runRecord.model_call_status)) {
+      proofIssues.push("model_call_not_completed");
+    }
+    if (runRecord.model_call_outcome_status !== "known") {
+      proofIssues.push("provider_outcome_not_known");
+    }
+    if (!runRecord.provider_request_id) proofIssues.push("provider_receipt_missing");
+    if (!runRecord.model_call_completed_at) proofIssues.push("model_call_completion_missing");
+    if (!evaluation || evaluation.status !== "passed") proofIssues.push("evaluation_not_passed");
+  }
+  return {
+    runId: runRecord?.id || null,
+    agentId: runRecord?.agent_id || fallbackAgentId,
+    modelCallId: runRecord?.model_call_id || null,
+    evalStatus: evaluation?.status || "not_evaluated",
+    evalScore: Number(evaluation?.score || 0),
+    proofIssues,
+    actualModelBackedRun: proofIssues.length === 0,
+  };
+}
+
+function recordBuyerIntentExecutionPackWorkers(db, {
+  pack,
+  experiment,
+  candidate,
+  copy,
+  actualWorkerTasks,
+}) {
+  const workflowId = pack.workflow_id || experiment.workflow_id || candidate?.workflow_id || null;
+  const economics = unitEconomics({ experiment, candidate });
+  const platformName = copy.validation?.channel?.platformName || "the selected platform";
+  const sharedMetadata = {
+    executionPackId: pack.id,
+    experimentId: experiment.id,
+    candidateId: candidate?.id || null,
+    source: "buyer_intent_validation",
+    executionKind: "deterministic_system_step",
+    providerCallOccurred: false,
+    buyerIntentValidation: copy.validation,
+    actualWorkerTasks,
+  };
+  const productRun = exactWorkerRun(db, actualWorkerTasks?.productBuilder, "product_builder");
+  const qualityRun = exactWorkerRun(db, actualWorkerTasks?.qualityReviewer, "quality_reviewer");
+  if (!productRun.actualModelBackedRun || !qualityRun.actualModelBackedRun) {
+    throw new Error(
+      "The buyer-intent pack requires completed live Product Builder and Quality Reviewer runs "
+      + "with known provider receipts and passing evaluations.",
+    );
+  }
+  const distributionRun = recordProtectedWorkerOutcome(
+    db,
+    {
+      kind: "buyer_intent_distribution_plan",
+      agent: "distribution_operator",
+      workflow_id: workflowId,
+      title: `Prepare the protected ${platformName} buyer test for ${experiment.name}`,
+    },
+    {
+      heading: "Protected buyer-test plan",
+      summary: `Pantheon's distribution checklist converted the frozen measurement contract into one ${platformName} test plan without creating an account, publishing, contacting a buyer, advertising, or spending money.`,
+      evidence: [
+        copy.channelPlan,
+        copy.trackingPlan,
+        `Product Builder run: ${productRun.runId}.`,
+        `Quality Reviewer run: ${qualityRun.runId}.`,
+      ],
+      nextAction: "Daniel can approve, request changes, or deny this test plan. Every external platform action remains separately protected.",
+    },
+    {
+      metadata: sharedMetadata,
+      approvalRequired: true,
+      handoffTo: "chief_of_staff",
+      handoffReason: "The validated product and exact buyer-test contract are ready for one operator decision.",
+      handoffDecisionNeeded: `Decide whether to prepare this exact ${platformName} buyer test, request changes, or stop it.`,
+      trace: [{
+        type: "buyer_test_plan_prepared",
+        title: "Buyer test plan prepared",
+        detail: "A deterministic Pantheon step retained the exact product, measurement, and external-action boundaries in one operator packet.",
+      }],
+    },
+  );
+  const handoff = get(
+    db,
+    "SELECT * FROM agent_handoffs WHERE from_run_id = ? AND to_agent_id = ? LIMIT 1",
+    [distributionRun.runId, "chief_of_staff"],
+  );
+  const packet = buildChiefOfStaffPacket({
+    pack,
+    experiment,
+    candidate,
+    copy,
+    economics,
+    workerRuns: { productRun, qualityRun, distributionRun },
+    handoff: handoff ? { ...handoff, metadata: fromJson(handoff.metadata, {}) } : null,
+  });
+  const chiefRun = recordProtectedWorkerOutcome(
+    db,
+    {
+      kind: "buyer_intent_operator_decision",
+      agent: "chief_of_staff",
+      workflow_id: workflowId,
+      title: `Prepare the buyer-test decision for ${experiment.name}`,
+      cost_budget_cents: 0,
+    },
+    {
+      heading: "Chief of Staff buyer-test decision",
+      summary: packet.operatorSummary,
+      moneyMove: packet.moneyMove,
+      evidence: packet.evidence,
+      risks: packet.risks,
+      operatorDecision: packet.decision,
+      nextAction: packet.nextAction,
+      confidence: "medium_until_real_buyer_results",
+    },
+    {
+      metadata: { ...sharedMetadata, decisionPacket: packet },
+      trace: [{
+        type: "buyer_test_decision_prepared",
+        title: "Buyer-test decision prepared",
+        detail: "Pantheon's deterministic decision compiler compressed the actual product and quality records into one protected operator decision.",
+      }],
+    },
+  );
+  packet.chiefRunId = chiefRun.runId;
+  packet.workerRunIds.chiefOfStaff = chiefRun.runId;
+  return {
+    productRun,
+    qualityRun,
+    distributionRun,
+    chiefRun,
+    chiefOfStaffPacket: packet,
+  };
+}
+
 function generateExecutionPack(db, input = {}) {
   const { experiment, candidate } = experimentFromInput(db, input);
   const existing = getExecutionPackForExperiment(db, experiment.id);
@@ -862,7 +1185,9 @@ function generateExecutionPack(db, input = {}) {
   const ts = now();
   const packId = input.id || `pack_${safeSlug(experiment.name)}_${randomId().slice(0, 8)}`;
   const title = asText(input.title, `Execution pack: ${experiment.name}`);
+  const validation = buyerIntentValidation(experiment, candidate, input);
   const metadata = {
+    ...(input.metadata || {}),
     dryRunOnly: true,
     externalActionsAllowed: false,
     manualOnly: true,
@@ -891,6 +1216,7 @@ function generateExecutionPack(db, input = {}) {
       "Mark No Response when the test produced no measurable signal.",
     ],
     source: input.source || "dashboard",
+    buyerIntentValidation: validation,
   };
 
   run(
@@ -930,7 +1256,15 @@ function generateExecutionPack(db, input = {}) {
     metadata: { experimentId: experiment.id, workflowId: experiment.workflow_id || null, candidateId: candidate?.id || null },
   });
   const pack = getExecutionPack(db, packId);
-  const aiTeam = recordExecutionPackWorkers(db, { pack, experiment, candidate, copy });
+  const aiTeam = validation
+    ? recordBuyerIntentExecutionPackWorkers(db, {
+      pack,
+      experiment,
+      candidate,
+      copy,
+      actualWorkerTasks: input.metadata?.actualWorkerTasks || {},
+    })
+    : recordExecutionPackWorkers(db, { pack, experiment, candidate, copy });
   run(
     db,
     "UPDATE commercial_execution_packs SET status = ?, metadata = ?, updated_at = ? WHERE id = ?",

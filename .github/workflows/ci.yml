@@ -2,6 +2,8 @@ name: Pantheon checks
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -11,10 +13,33 @@ permissions:
 jobs:
   verify:
     runs-on: windows-latest
-    # The full Windows lifecycle suite has reached 20 minutes on slower hosted
-    # runners while still making progress. Keep a bounded failure ceiling with
-    # enough headroom for normal runner variance.
-    timeout-minutes: 30
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+      - name: Use Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm.cmd ci
+      - name: Lint correctness rules
+        run: npm.cmd run lint
+      - name: Audit runtime dependencies
+        # The Agents SDK currently loads its MCP package despite declaring it
+        # optional. Keep advisories visible and fail closed on critical issues
+        # until a compatible upstream release removes the current transitive set.
+        run: npm.cmd audit --omit=dev --audit-level=critical
+
+  tests:
+    name: tests (${{ matrix.shard }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -33,15 +58,33 @@ jobs:
         run: npm.cmd ci
       - name: Install rendering dependencies
         run: python -m pip install --disable-pip-version-check --requirement requirements-runtime.txt
-      - name: Lint correctness rules
-        run: npm.cmd run lint
-      - name: Run isolated test suite
-        # Launcher tests intentionally exercise Windows PowerShell 5.1. Running
-        # npm from the same shell preserves its system module discovery paths.
+      - name: Run isolated test shard
         shell: powershell
+        env:
+          PANTHEON_TEST_SHARD_COUNT: "5"
+          PANTHEON_TEST_SHARD_INDEX: ${{ matrix.shard }}
         run: npm.cmd test
-      - name: Audit runtime dependencies
-        # The Agents SDK currently loads its MCP package despite declaring it
-        # optional. Keep advisories visible and fail closed on critical issues
-        # until a compatible upstream release removes the current transitive set.
-        run: npm.cmd audit --omit=dev --audit-level=critical
+
+  windows-lifecycle:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [containment, repeat]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+      - name: Use Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm.cmd ci
+      - name: Run quarantined Windows lifecycle proof
+        shell: powershell
+        env:
+          PANTHEON_LIFECYCLE_CI: "1"
+          PANTHEON_LIFECYCLE_PHASE: ${{ matrix.phase }}
+        run: npm.cmd run test:lifecycle:ci

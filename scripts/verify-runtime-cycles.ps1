@@ -68,7 +68,10 @@ try {
       -ContentType "application/json" `
       -Body (@{ bootstrap = $bootstrapToken } | ConvertTo-Json -Compress)
 
-    $standbyHealth = Invoke-RestMethod -Uri "$origin/api/health" -Method Get
+    $standbyHealth = Invoke-RestMethod `
+      -Uri "$origin/api/health" `
+      -Method Get `
+      -TimeoutSec $CycleTimeoutSeconds
     if ([int]$standbyHealth.memoryMb -ge 100) {
       throw "Cycle $cycle standby memory was $($standbyHealth.memoryMb) MB; target is below 100 MB."
     }

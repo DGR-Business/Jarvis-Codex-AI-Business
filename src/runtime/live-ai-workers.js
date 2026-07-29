@@ -5,6 +5,10 @@ const { AI_TEAM_DEFINITIONS, ensureAiTeam } = require("./ai-team");
 const { buildWorkerModelPacket } = require("./agent-model-contracts");
 const { buildAgentsSdkCapabilityPlan, buildVisualAssetApprovalBinding } = require("./agent-sdk-capabilities");
 const {
+  buildAgentHarnessDescriptor,
+  buildAgentTraceGroup,
+} = require("./agent-harness");
+const {
   canonicalWorkerApprovalPolicy,
   createExecutionDescriptor,
   scopeHash,
@@ -1260,8 +1264,12 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     || options.parameters?.pantheonProduction?.supervisorOwned === true;
   const qualityReviewedWorker = !pantheonSupervisorOwned
     && ["product_builder", "copy_conversion_agent", "distribution_operator"].includes(workerDefinition.id);
+  const manualApprovalRequired = options.manualApprovalRequired === true
+    || options.parameters?.manualApprovalRequired === true
+    || options.parameters?.operatorChoiceRequired === true;
   const requestParameters = {
     ...(options.parameters || {}),
+    ...(manualApprovalRequired ? { manualApprovalRequired: true } : {}),
     ...(qualityReviewedWorker ? { requiredReviewer: "quality_reviewer" } : {}),
   };
   const effects = Array.isArray(options.effects) ? options.effects : [];
@@ -1423,6 +1431,13 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     payload,
     result: {},
   };
+  const agentHarness = buildAgentHarnessDescriptor({
+    id: workerDefinition.id,
+    definitionHash: actualWorkerDefinitionHash,
+  });
+  const traceGroup = buildAgentTraceGroup(descriptorTask);
+  payload.liveSpendRequest.agentHarness = agentHarness;
+  payload.liveSpendRequest.traceGroup = traceGroup;
   if (toolControls.tools.includes("visual_asset_review")) {
     const capabilityPlan = buildAgentsSdkCapabilityPlan(descriptorTask, workerDefinition);
     const approvedAssetBinding = buildVisualAssetApprovalBinding(db, descriptorTask, capabilityPlan);
@@ -1462,6 +1477,8 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     workerDefinitionHash: actualWorkerDefinitionHash,
     workerApprovalPolicy,
     workerApprovalPolicyHash: scopeHash(workerApprovalPolicy),
+    agentHarness,
+    traceGroup,
     materializedInputHash: scopeHash(materializedPacket),
     sourceStateHash: stableWorkerPacketHash(materializedPacket),
     materializedInput: materializedPacket,

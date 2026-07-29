@@ -122,7 +122,7 @@ const FIELD_TYPES = {
               columns: {
                 type: "array",
                 minItems: 4,
-                maxItems: 12,
+                maxItems: 18,
                 items: {
                   type: "object",
                   additionalProperties: false,
@@ -150,7 +150,7 @@ const FIELD_TYPES = {
                 items: {
                   type: "array",
                   minItems: 4,
-                  maxItems: 12,
+                  maxItems: 18,
                   items: { type: "string" },
                 },
               },
@@ -450,8 +450,8 @@ function zodField(z, type, options = {}) {
       title: z.string(),
       purpose: z.string(),
       instructions: z.array(z.string()).min(2).max(5),
-      columns: z.array(column).min(4).max(12),
-      sampleRows: z.array(z.array(z.string()).min(4).max(12)).min(1).max(3),
+      columns: z.array(column).min(4).max(18),
+      sampleRows: z.array(z.array(z.string()).min(4).max(18)).min(1).max(3),
       calculations: z.array(calculation).max(6),
     }).strict();
     const itemList = z.array(item);

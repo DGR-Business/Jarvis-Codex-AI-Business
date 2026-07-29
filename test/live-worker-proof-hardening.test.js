@@ -255,6 +255,36 @@ test("internal AI work reserves the priced worst case while preserving its hard 
   assert.equal(classification.pricedWorstCaseCents, 35);
 });
 
+test("the internal-work mandate cannot approve a task reserved for Daniel", () => {
+  for (const parameters of [
+    { manualApprovalRequired: true },
+    { operatorChoiceRequired: true },
+  ]) {
+    const classification = classifyInternalApproval({
+      id: `approval-manual-${Object.keys(parameters)[0]}`,
+      status: "pending",
+      risk_level: "low",
+      scope_hash: "scope-manual",
+      payload: JSON.stringify({
+        liveSpendRequest: true,
+        type: "live_ai_worker",
+        tools: [],
+        effects: [],
+        maxCostCents: 100,
+        executionDescriptor: {
+          descriptorHash: "descriptor-manual",
+          externalEffects: [],
+          parameters,
+        },
+        parameters,
+      }),
+    });
+
+    assert.equal(classification.eligible, false);
+    assert.equal(classification.reason, "manual_approval_required");
+  }
+});
+
 test("a reviewed Product Builder correction preserves the exact tool contract", () => {
   const source = fs.readFileSync(
     path.join(__dirname, "..", "src", "runtime", "live-ai-workers.js"),

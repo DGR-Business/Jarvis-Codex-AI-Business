@@ -1016,6 +1016,25 @@ async function runAgentTask(db, task, options = {}) {
             sources: liveWorker.raw.sdkResearch.sources,
           }
           : null,
+        externalActionsAllowed: false,
+        toolActivity: liveWorker.raw.toolActivity || [],
+        execution: {
+          required: true,
+          traceId: liveWorker.raw.traceId || null,
+          modelCallId: liveWorker.modelCall?.id || null,
+          agentHarnessHash: liveWorker.raw.agentHarness?.harnessHash
+            || task.payload?.liveSpendRequest?.agentHarness?.harnessHash
+            || null,
+          traceGroupId: liveWorker.raw.traceGroup?.groupId
+            || task.payload?.liveSpendRequest?.traceGroup?.groupId
+            || null,
+          costStatus: liveWorker.costStatus || liveWorker.modelCall?.costStatus || null,
+          outcomeStatus: liveWorker.status === "completed" ? "known" : liveWorker.status,
+          approvedCapCents: Number(task.payload?.liveSpendRequest?.maxCostCents || task.cost_budget_cents || 0),
+          incurredCents: Number(liveWorker.incurredEstimateCents || 0),
+          approvedTools: task.payload?.liveSpendRequest?.tools || [],
+          capabilityPlan: liveWorker.raw.capabilityPlan || null,
+        },
       });
       if (evalResult.status !== "passed") {
         const qualityError = new Error(
@@ -1066,6 +1085,9 @@ async function runAgentTask(db, task, options = {}) {
           capabilityPlan: liveWorker.raw.capabilityPlan,
           toolActivity: liveWorker.raw.toolActivity,
           sdkResearch: liveWorker.raw.sdkResearch || null,
+          agentHarness: liveWorker.raw.agentHarness || task.payload?.liveSpendRequest?.agentHarness || null,
+          traceGroup: liveWorker.raw.traceGroup || task.payload?.liveSpendRequest?.traceGroup || null,
+          evaluationLayers: evalResult.layers,
           businessDecision: workerDecisionMetadata(output),
           outputContract: output.outputContract,
           toolPolicy: {
@@ -1189,6 +1211,7 @@ async function runAgentTask(db, task, options = {}) {
         task,
         output,
         liveWorker,
+        evaluation: evalResult,
       });
 
       return {

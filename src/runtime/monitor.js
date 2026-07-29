@@ -452,6 +452,7 @@ function collectRuntimeOversightFindings(db, findings, options = {}) {
 
 function collectFindings(db, options = {}) {
   const findings = [];
+  const completedRetryPredecessors = supersededRetryTaskIds(db);
   const staleTaskCutoff = minutesAgo(Number(options.staleTaskMinutes || 30));
   const staleRunCutoff = minutesAgo(Number(options.staleRunMinutes || 30));
   const staleQueuedCutoff = minutesAgo(Number(options.staleQueuedMinutes || 24 * 60));
@@ -526,7 +527,18 @@ function collectFindings(db, options = {}) {
 
   const openEscalations = all(
     db,
-    "SELECT id, subject, severity, metadata FROM messages WHERE status = 'open' AND severity IN ('urgent', 'approval') ORDER BY created_at ASC",
+    `SELECT id, subject, severity, metadata
+     FROM messages
+     WHERE status = 'open'
+       AND severity IN ('urgent', 'approval')
+       AND NOT (
+         json_extract(metadata, '$.source') = 'runtime_monitor'
+         OR (
+           json_extract(metadata, '$.source') IS NULL
+           AND subject LIKE 'Runtime monitor:%'
+         )
+       )
+     ORDER BY created_at ASC`,
   ).filter((message) => {
     if (message.severity !== "approval") return true;
     const linkedApprovalId = fromJson(message.metadata, {}).approvalId;
@@ -623,7 +635,7 @@ function collectFindings(db, options = {}) {
          )
        )
      ORDER BY tasks.updated_at DESC LIMIT 10`,
-  );
+  ).filter((task) => !completedRetryPredecessors.has(task.id));
   if (failedTasks.length > 0) {
     addFinding(findings, {
       severity: "error",
@@ -744,7 +756,6 @@ function collectFindings(db, options = {}) {
      ORDER BY receipts.created_at DESC
      LIMIT 50`,
   );
-  const completedRetryPredecessors = supersededRetryTaskIds(db);
   for (const receipt of incompleteReceipts) {
     if (receipt.status === "needs_review" && completedRetryPredecessors.has(receipt.task_id)) continue;
     const missingFields = fromJson(receipt.missing_fields, []);
@@ -950,31 +961,61 @@ function persistFindings(db, runId, findings) {
 
 function escalateCriticalFindings(db, runId, findings) {
   const criticalFindings = findings.filter((item) => item.severity === "error" && item.category !== "messages");
-  const activeSubjects = criticalFindings.map((finding) => `Runtime monitor: ${finding.title}`);
+  const activeFingerprints = criticalFindings.map(findingFingerprint);
   const resolvedAt = now();
-  if (activeSubjects.length) {
-    const placeholders = activeSubjects.map(() => "?").join(", ");
+  run(
+    db,
+    `UPDATE messages SET status = 'resolved', resolved_at = ?
+     WHERE status = 'open'
+       AND json_extract(metadata, '$.source') IS NULL
+       AND subject LIKE 'Runtime monitor:%'`,
+    [resolvedAt],
+  );
+  if (activeFingerprints.length) {
+    const placeholders = activeFingerprints.map(() => "?").join(", ");
     run(
       db,
       `UPDATE messages SET status = 'resolved', resolved_at = ?
-       WHERE status = 'open' AND subject LIKE 'Runtime monitor:%'
-         AND subject NOT IN (${placeholders})`,
-      [resolvedAt, ...activeSubjects],
+       WHERE status = 'open'
+         AND json_extract(metadata, '$.source') = 'runtime_monitor'
+         AND json_extract(metadata, '$.monitorFingerprint') NOT IN (${placeholders})`,
+      [resolvedAt, ...activeFingerprints],
     );
   } else {
     run(
       db,
-      "UPDATE messages SET status = 'resolved', resolved_at = ? WHERE status = 'open' AND subject LIKE 'Runtime monitor:%'",
+      `UPDATE messages SET status = 'resolved', resolved_at = ?
+       WHERE status = 'open'
+         AND (
+           json_extract(metadata, '$.source') = 'runtime_monitor'
+           OR (
+             json_extract(metadata, '$.source') IS NULL
+             AND subject LIKE 'Runtime monitor:%'
+           )
+         )`,
       [resolvedAt],
     );
   }
 
   for (const finding of criticalFindings) {
+    const monitorFingerprint = findingFingerprint(finding);
     const subject = `Runtime monitor: ${finding.title}`;
     const existing = get(
       db,
-      "SELECT id FROM messages WHERE status = 'open' AND subject = ? ORDER BY created_at DESC LIMIT 1",
-      [subject],
+      `SELECT id FROM messages
+       WHERE status = 'open'
+         AND (
+           (
+             json_extract(metadata, '$.source') = 'runtime_monitor'
+             AND json_extract(metadata, '$.monitorFingerprint') = ?
+           )
+           OR (
+             json_extract(metadata, '$.source') IS NULL
+             AND subject = ?
+           )
+         )
+       ORDER BY created_at DESC LIMIT 1`,
+      [monitorFingerprint, subject],
     );
     if (existing) continue;
     run(
@@ -988,7 +1029,14 @@ function escalateCriticalFindings(db, runId, findings) {
         subject,
         finding.detail || "Runtime monitor found a critical issue.",
         now(),
-        toJson({ runId, category: finding.category, entityType: finding.entityType, entityId: finding.entityId }),
+        toJson({
+          source: "runtime_monitor",
+          monitorFingerprint,
+          runId,
+          category: finding.category,
+          entityType: finding.entityType,
+          entityId: finding.entityId,
+        }),
       ],
     );
   }

@@ -51,6 +51,11 @@ const {
   renderDigitalProductKit,
 } = require("./digital-product-file-factory");
 const { productBlueprintClaimAlignmentIssues } = require("./product-claim-alignment");
+const {
+  buildAgentsSdkGuardrails,
+  summarizeSdkGuardrailResults,
+} = require("./agent-sdk-guardrails");
+const { cacheUsageFromTokenEvidence } = require("./agent-cost-observability");
 
 const AGENTS_SDK_PROVIDER = "openai-agents-sdk";
 
@@ -130,6 +135,16 @@ function sdkHttpStatus(error) {
 
 function classifySdkRunError(error, dispatchStarted, traceId) {
   error.agentSdkTraceId = traceId;
+  if (error?.constructor?.name === "OutputGuardrailTripwireTriggered") {
+    error.providerCallOccurred = true;
+    error.providerResponseReceived = true;
+    error.outcomeUnknown = false;
+    error.needsAttention = true;
+    error.providerDispatchStatus = "response_received_guardrail_blocked";
+    error.errorKind = "sdk_output_guardrail_blocked";
+    error.guardrailResult = error.result?.output || null;
+    return error;
+  }
   if (dispatchStarted && isSdkInvalidFinalOutput(error)) {
     error.providerCallOccurred = true;
     error.providerResponseReceived = true;
@@ -651,6 +666,90 @@ function archiveEntryBytes(downloads, entryName) {
   return null;
 }
 
+function customerPackageEntryNames(manifest) {
+  return [...new Set([
+    ...(manifest.catalogueItems || []).flatMap((item) => item.files || []),
+    ...(manifest.sharedFiles || []),
+  ].map(normalizedArchiveName).filter(Boolean))].sort();
+}
+
+function exactHashSnapshotMatches(expected, candidate) {
+  if (
+    !Array.isArray(expected)
+    || !Array.isArray(candidate)
+    || expected.length !== candidate.length
+  ) {
+    return false;
+  }
+  const expectedIds = expected.map((item) => String(item?.id || ""));
+  const candidateIds = candidate.map((item) => String(item?.id || ""));
+  if (
+    expectedIds.some((id) => !id)
+    || candidateIds.some((id) => !id)
+    || new Set(expectedIds).size !== expectedIds.length
+    || new Set(candidateIds).size !== candidateIds.length
+  ) {
+    return false;
+  }
+  const candidateById = new Map(candidate.map((item) => [String(item.id), item]));
+  return expected.every((item) => {
+    const other = candidateById.get(String(item.id));
+    return Boolean(
+      other
+      && /^[a-f0-9]{64}$/.test(String(item.sha256 || ""))
+      && item.sha256 === other.sha256,
+    );
+  });
+}
+
+function assertManagedSnapshotBytes(items, artifactRoot, label) {
+  if (!Array.isArray(items)) {
+    throw new Error(`Pantheon cannot verify the retained ${label} snapshot.`);
+  }
+  const resolvedArtifactRoot = fs.realpathSync(path.resolve(artifactRoot));
+  const seenIds = new Set();
+  for (const item of items) {
+    const id = String(item?.id || "");
+    const expectedHash = String(item?.sha256 || "");
+    if (!id || seenIds.has(id) || !/^[a-f0-9]{64}$/.test(expectedHash) || !item.filePath) {
+      throw new Error(`Pantheon cannot verify the retained ${label} snapshot.`);
+    }
+    seenIds.add(id);
+    const candidate = path.resolve(
+      path.isAbsolute(item.filePath)
+        ? item.filePath
+        : path.join(CONFIG.rootDir, item.filePath),
+    );
+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
+      throw new Error(`Pantheon's retained ${label} file is missing.`);
+    }
+    const realCandidate = fs.realpathSync(candidate);
+    const relative = path.relative(resolvedArtifactRoot, realCandidate);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error(`Pantheon's retained ${label} file is outside the managed artifact root.`);
+    }
+    const actualHash = crypto.createHash("sha256").update(fs.readFileSync(realCandidate)).digest("hex");
+    if (actualHash !== expectedHash) {
+      throw new Error(`Pantheon's retained ${label} bytes changed before renderer refresh.`);
+    }
+  }
+}
+
+function qualityEvidenceRole(item, index = -1) {
+  if (["workbook_inspection", "setup_guide_inspection"].includes(item?.evidenceRole)) {
+    return item.evidenceRole;
+  }
+  if (/workbook/i.test(String(item?.humanName || item?.filename || ""))) {
+    return "workbook_inspection";
+  }
+  if (/setup[- ]guide/i.test(String(item?.humanName || item?.filename || ""))) {
+    return "setup_guide_inspection";
+  }
+  if (index === 0) return "workbook_inspection";
+  if (index === 1) return "setup_guide_inspection";
+  return null;
+}
+
 function persistStorefrontPreviews(db, task, downloads, previewNames, options = {}) {
   if (!previewNames.length) return [];
   const packageFingerprint = crypto
@@ -736,6 +835,223 @@ function persistStorefrontPreviews(db, task, downloads, previewNames, options = 
   });
 }
 
+function persistCustomerPackageFiles(
+  db,
+  task,
+  downloads,
+  manifest,
+  packageFingerprint,
+  options = {},
+) {
+  const entryNames = customerPackageEntryNames(manifest);
+  if (!entryNames.length) {
+    throw new Error("The product manifest does not identify any customer files.");
+  }
+  const outputDir = path.join(
+    options.artifactRoot || CONFIG.artifactRoot,
+    "workflows",
+    safeId(task.workflow_id),
+    "customer-files",
+    safeId(task.id),
+    packageFingerprint,
+  );
+  fs.mkdirSync(outputDir, { recursive: true });
+  const timestamp = now();
+  return entryNames.map((entryName, index) => {
+    const bytes = archiveEntryBytes(downloads, entryName);
+    if (!bytes) throw new Error(`Pantheon could not extract customer file ${entryName}.`);
+    const originalName = path.basename(entryName);
+    const validation = validateProductFile(bytes, originalName);
+    if (!new Set([".xlsx", ".csv", ".pdf"]).has(validation.extension)) {
+      throw new Error(`Customer file ${entryName} has an unsupported extracted format.`);
+    }
+    const hash = crypto.createHash("sha256").update(bytes).digest("hex");
+    const deliverableId = taskScopedDeliverableId("deliv_customer_file", task.id, index + 1);
+    const filename = `${String(index + 1).padStart(2, "0")}-${safeProductFilename(originalName, `customer-file-${index + 1}`)}`;
+    const outputPath = path.join(outputDir, filename);
+    if (fs.existsSync(outputPath)) {
+      const existingHash = crypto.createHash("sha256").update(fs.readFileSync(outputPath)).digest("hex");
+      if (existingHash !== hash) {
+        throw new Error(`Customer file path ${filename} already contains different bytes.`);
+      }
+    } else {
+      const temporaryPath = `${outputPath}.${process.pid}.${randomId().slice(0, 8)}.tmp`;
+      fs.writeFileSync(temporaryPath, bytes, { flag: "wx" });
+      fs.renameSync(temporaryPath, outputPath);
+    }
+    const relativePath = path.relative(CONFIG.rootDir, outputPath).replace(/\\/g, "/");
+    const mediaType = productMediaType(validation.extension);
+    run(
+      db,
+      `INSERT INTO deliverables
+       (id, workflow_id, command_id, task_id, venture_id, title, human_name,
+        audience, format, status, file_path, summary, metadata, content_hash,
+        version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'Customer Product File', ?, 'operator', ?,
+        'built_pending_quality_review', ?, ?, ?, ?, 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         workflow_id = excluded.workflow_id, command_id = excluded.command_id,
+         task_id = excluded.task_id, venture_id = excluded.venture_id,
+         human_name = excluded.human_name, format = excluded.format,
+         status = excluded.status, file_path = excluded.file_path,
+         summary = excluded.summary, metadata = excluded.metadata,
+         content_hash = excluded.content_hash,
+         version = CASE WHEN deliverables.content_hash IS NOT excluded.content_hash THEN deliverables.version + 1 ELSE deliverables.version END,
+         updated_at = excluded.updated_at`,
+      [
+        deliverableId,
+        task.workflow_id,
+        task.payload?.commandId || null,
+        task.id,
+        task.venture_id,
+        originalName,
+        mediaType,
+        relativePath,
+        "Exact customer file extracted from the verified bundle and retained separately for review and download.",
+        toJson({
+          source: "verified_customer_bundle",
+          archiveEntry: entryName,
+          sha256: hash,
+          bytes: bytes.length,
+          approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
+          localRecovery: options.localRecovery || undefined,
+        }),
+        hash,
+        timestamp,
+        timestamp,
+      ],
+    );
+    return {
+      id: deliverableId,
+      humanName: originalName,
+      filePath: relativePath,
+      format: mediaType,
+      status: "built_pending_quality_review",
+      bytes: bytes.length,
+      sha256: hash,
+      archiveEntry: entryName,
+      customerFile: true,
+    };
+  });
+}
+
+function persistLocalQualityReviewImages(db, task, images, packageFingerprint, options = {}) {
+  if (!Array.isArray(images) || !images.length) return [];
+  const evidenceRevision = String(options.rendererRevision || "").trim();
+  const evidenceRevisionSegment = evidenceRevision
+    ? `${safeId(evidenceRevision).slice(0, 48)}_${crypto.createHash("sha256").update(evidenceRevision).digest("hex").slice(0, 12)}`
+    : "";
+  const outputDir = path.join(
+    options.artifactRoot || CONFIG.artifactRoot,
+    "workflows",
+    safeId(task.workflow_id),
+    "quality-review",
+    safeId(task.id),
+    packageFingerprint,
+    ...(evidenceRevisionSegment ? [evidenceRevisionSegment] : []),
+  );
+  fs.mkdirSync(outputDir, { recursive: true });
+  const ts = now();
+  return images.map((image, index) => {
+    const filename = safeProductFilename(image.filename, `quality-review-${index + 1}.png`);
+    const bytes = Buffer.isBuffer(image.bytes) ? image.bytes : Buffer.from(image.bytes || []);
+    const validation = validateProductFile(bytes, filename);
+    if (validation.extension !== ".png") {
+      throw new Error("Product quality-review images must be valid PNG files.");
+    }
+    const hash = crypto.createHash("sha256").update(bytes).digest("hex");
+    const evidenceRole = ["workbook_inspection", "setup_guide_inspection"].includes(
+      image.metadata?.evidenceRole,
+    )
+      ? image.metadata.evidenceRole
+      : index === 0
+        ? "workbook_inspection"
+        : index === 1
+          ? "setup_guide_inspection"
+          : `product_file_inspection_${index + 1}`;
+    const deliverableScope = evidenceRevision
+      ? `${task.id}:${evidenceRevision}:${evidenceRole}`
+      : task.id;
+    const deliverableId = taskScopedDeliverableId(
+      "deliv_quality_preview",
+      deliverableScope,
+      index + 1,
+    );
+    const outputName = `${String(index + 1).padStart(2, "0")}-${filename}`;
+    const outputPath = path.join(outputDir, outputName);
+    if (fs.existsSync(outputPath)) {
+      const existingHash = crypto.createHash("sha256").update(fs.readFileSync(outputPath)).digest("hex");
+      if (existingHash !== hash) {
+        throw new Error(`Quality-review image path ${outputName} already contains different bytes.`);
+      }
+    } else {
+      const temporaryPath = `${outputPath}.${process.pid}.${randomId().slice(0, 8)}.tmp`;
+      fs.writeFileSync(temporaryPath, bytes, { flag: "wx" });
+      fs.renameSync(temporaryPath, outputPath);
+    }
+    const relativePath = path.relative(CONFIG.rootDir, outputPath).replace(/\\/g, "/");
+    const humanName = evidenceRole === "workbook_inspection"
+      ? "Actual Workbook Review"
+      : evidenceRole === "setup_guide_inspection"
+        ? "Actual Setup Guide Review"
+        : `Product File Review ${index + 1}`;
+    run(
+      db,
+      `INSERT INTO deliverables
+       (id, workflow_id, command_id, task_id, venture_id, title, human_name, audience,
+        format, status, file_path, summary, metadata, content_hash, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'Product File Review', ?, 'internal', 'image/png',
+        'built_pending_quality_review', ?, ?, ?, ?, 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         workflow_id = excluded.workflow_id, command_id = excluded.command_id,
+         task_id = excluded.task_id, venture_id = excluded.venture_id,
+         human_name = excluded.human_name, status = excluded.status,
+         file_path = excluded.file_path, summary = excluded.summary,
+         metadata = excluded.metadata, content_hash = excluded.content_hash,
+         version = CASE WHEN deliverables.content_hash IS NOT excluded.content_hash THEN deliverables.version + 1 ELSE deliverables.version END,
+         updated_at = excluded.updated_at`,
+      [
+        deliverableId,
+        task.workflow_id,
+        task.payload?.commandId || null,
+        task.id,
+        task.venture_id,
+        humanName,
+        relativePath,
+        "QA-only visual rendered from the exact saved customer file for independent product inspection.",
+        toJson({
+          ...(image.metadata || {}),
+          qualityReviewOnly: true,
+          derivedFromActualSavedFile: image.metadata?.derivedFromActualSavedFile === true,
+          evidenceRole,
+          rendererRevision: evidenceRevision || null,
+          sha256: hash,
+          bytes: bytes.length,
+          approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
+          localRecovery: options.localRecovery || undefined,
+        }),
+        hash,
+        ts,
+        ts,
+      ],
+    );
+    return {
+      id: deliverableId,
+      humanName,
+      filePath: relativePath,
+      format: "image/png",
+      status: "built_pending_quality_review",
+      bytes: bytes.length,
+      sha256: hash,
+      qualityReviewOnly: true,
+      derivedFromActualSavedFile: image.metadata?.derivedFromActualSavedFile === true,
+      evidenceRole,
+      rendererRevision: evidenceRevision || null,
+      inspectionCoverage: image.metadata?.inspectionCoverage || null,
+    };
+  });
+}
+
 async function persistGeneratedProductFiles(db, task, capabilityPlan, result, options = {}) {
   const localSpec = capabilityPlan.specs.find((spec) => (
     spec.kind === "runtime_transform" && spec.sdkName === "product_file_factory"
@@ -750,7 +1066,7 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
   if (localSpec) {
     const blueprint = result?.finalOutput?.work?.productBlueprint;
     const buildSpec = task?.payload?.liveSpendRequest?.parameters?.productBuildSpec || {};
-    const normalized = normalizeProductBlueprintForFactory(blueprint);
+    const normalized = normalizeProductBlueprintForFactory(blueprint, buildSpec);
     const claimIssues = productBlueprintClaimAlignmentIssues(normalized.blueprint, buildSpec);
     if (claimIssues.length) {
       const error = new Error(`Product claim preflight failed: ${claimIssues.join(" ")}`);
@@ -806,11 +1122,104 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
     embeddedManifestMatches,
     archiveInventoryVerified,
   } = validateProductManifest(downloads, task);
+  if (options.expectedQualityEvidenceSnapshot) {
+    const expectedEvidence = options.expectedQualityEvidenceSnapshot;
+    const candidateEvidence = (localRender?.qualityReviewImages || []).map((image, index) => {
+      const bytes = Buffer.isBuffer(image.bytes) ? image.bytes : Buffer.from(image.bytes || []);
+      const validation = validateProductFile(
+        bytes,
+        safeProductFilename(image.filename, `quality-review-${index + 1}.png`),
+      );
+      if (validation.extension !== ".png") {
+        throw new Error("Product quality-review images must be valid PNG files.");
+      }
+      return {
+        evidenceRole: qualityEvidenceRole({
+          evidenceRole: image.metadata?.evidenceRole,
+          filename: image.filename,
+        }, index),
+        sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      };
+    });
+    const expectedByRole = new Map(expectedEvidence.map((item, index) => [
+      qualityEvidenceRole(item, index),
+      item,
+    ]));
+    const candidateByRole = new Map(candidateEvidence.map((item) => [
+      item.evidenceRole,
+      item,
+    ]));
+    const expectedRoles = [...expectedByRole.keys()].filter(Boolean);
+    const candidateRoles = [...candidateByRole.keys()].filter(Boolean);
+    const requiredRoles = ["workbook_inspection", "setup_guide_inspection"];
+    if (
+      expectedEvidence.length !== 2
+      || candidateEvidence.length !== 2
+      || expectedByRole.size !== 2
+      || candidateByRole.size !== 2
+      || requiredRoles.some((role) => (
+        !expectedRoles.includes(role) || !candidateRoles.includes(role)
+      ))
+      || expectedByRole.get("workbook_inspection")?.sha256
+        !== candidateByRole.get("workbook_inspection")?.sha256
+    ) {
+      throw new Error(
+        "Pantheon refused the local renderer refresh before persistence because the exact workbook/setup-guide evidence contract changed.",
+      );
+    }
+  }
   const packageFingerprint = crypto
     .createHash("sha256")
     .update(downloads.map((file) => `${file.filename}:${file.sha256}`).sort().join("|"))
     .digest("hex")
     .slice(0, 16);
+  if (options.unchangedProductSnapshot) {
+    const candidateFiles = downloads.map((file, index) => ({
+      id: taskScopedDeliverableId("deliv_product", task.id, index + 1),
+      sha256: file.sha256,
+    }));
+    const customerEntryNames = customerPackageEntryNames(manifest);
+    for (let index = 0; index < customerEntryNames.length; index += 1) {
+      const entryName = customerEntryNames[index];
+      const bytes = archiveEntryBytes(downloads, entryName);
+      if (!bytes) {
+        throw new Error(`Pantheon could not preflight customer file ${entryName}.`);
+      }
+      const validation = validateProductFile(bytes, path.basename(entryName));
+      if (!new Set([".xlsx", ".csv", ".pdf"]).has(validation.extension)) {
+        throw new Error(`Customer file ${entryName} has an unsupported extracted format.`);
+      }
+      candidateFiles.push({
+        id: taskScopedDeliverableId("deliv_customer_file", task.id, index + 1),
+        sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      });
+    }
+    const candidatePreviews = storefrontPreviews.map((entryName, index) => {
+      const bytes = archiveEntryBytes(downloads, entryName);
+      if (!bytes) {
+        throw new Error(`Pantheon could not preflight storefront preview ${entryName}.`);
+      }
+      const validation = validateProductFile(bytes, path.basename(entryName));
+      if (validation.extension !== ".png") {
+        throw new Error("Storefront previews must be valid PNG images.");
+      }
+      return {
+        id: taskScopedDeliverableId("deliv_preview", task.id, index + 1),
+        sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      };
+    });
+    if (
+      !exactHashSnapshotMatches(options.unchangedProductSnapshot.files, candidateFiles)
+      || !exactHashSnapshotMatches(
+        options.unchangedProductSnapshot.previews,
+        candidatePreviews,
+      )
+    ) {
+      throw new Error(
+        "Pantheon refused the local renderer refresh before persistence because the customer package or storefront previews changed.",
+      );
+    }
+  }
   const outputDir = path.join(
     options.artifactRoot || CONFIG.artifactRoot,
     "workflows",
@@ -875,6 +1284,9 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
         toJson({
           provider: localSpec ? "pantheon-local-runtime" : AGENTS_SDK_PROVIDER,
           renderer: localSpec ? sourceType : null,
+          constructionMode: localSpec
+            ? localRender?.constructionMode || "model_blueprint_deterministic_render"
+            : "openai_code_interpreter",
           containerId: file.citation.containerId || null,
           providerFileId: file.citation.fileId || null,
           sourceMetadata: file.sourceMetadata,
@@ -910,13 +1322,32 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
       manifest: file === manifestFile,
     });
   }
+  const customerFiles = persistCustomerPackageFiles(
+    db,
+    task,
+    downloads,
+    manifest,
+    packageFingerprint,
+    options,
+  );
   const previews = persistStorefrontPreviews(db, task, downloads, storefrontPreviews, options);
+  const qualityReviewImages = persistLocalQualityReviewImages(
+    db,
+    task,
+    localRender?.qualityReviewImages || [],
+    packageFingerprint,
+    options,
+  );
   const blueprint = localSpec ? result?.finalOutput?.work?.productBlueprint || null : null;
   return {
-    files: persisted,
+    files: [...persisted, ...customerFiles],
     manifest,
     previews,
+    qualityReviewImages,
     sourceType,
+    constructionMode: localSpec
+      ? localRender?.constructionMode || "model_blueprint_deterministic_render"
+      : "openai_code_interpreter",
     manifestEmbeddedIdentical: embeddedManifestMatches,
     archiveInventoryVerified,
     blueprint,
@@ -934,6 +1365,7 @@ function recoverStoredProductBlueprint(task, options = {}) {
     : fromJson(task.result, {});
   const retained = result.output?.generatedFiles?.blueprint;
   if (retained) return retained;
+  const expectedBlueprintHash = String(options.expectedBlueprintHash || "").trim();
   const production = task.payload?.liveSpendRequest?.parameters?.pantheonProduction || {};
   const spec = task.payload?.liveSpendRequest?.parameters?.productBuildSpec || {};
   const stageRoot = path.join(
@@ -946,23 +1378,40 @@ function recoverStoredProductBlueprint(task, options = {}) {
     throw new Error("Pantheon cannot re-render this package because its approved Product Builder blueprint is unavailable.");
   }
   const candidates = fs.readdirSync(stageRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => (
+      entry.isDirectory()
+      && !entry.name.startsWith(".")
+      && !entry.name.endsWith(".tmp")
+    ))
     .map((entry) => path.join(stageRoot, entry.name, "factory-input.json"))
     .filter((candidate) => fs.existsSync(candidate))
     .map((candidate) => {
       const input = JSON.parse(fs.readFileSync(candidate, "utf8"));
-      return { candidate, input, modified: fs.statSync(candidate).mtimeMs };
+      const blueprint = input.sourceBlueprint || input.blueprint || null;
+      const blueprintHash = blueprint
+        ? crypto.createHash("sha256").update(JSON.stringify(blueprint)).digest("hex")
+        : null;
+      return {
+        candidate,
+        input,
+        blueprint,
+        blueprintHash,
+        modified: fs.statSync(candidate).mtimeMs,
+      };
     })
-    .filter(({ input }) => (
+    .filter(({ input, blueprint, blueprintHash }) => (
       input.schema === "pantheon.digital-product-factory-input.v1"
       && String(input.spec?.planId || "") === String(spec.planId || production.planId || "")
       && Number(input.spec?.revisionNumber || 0) === Number(production.revisionNumber || 0)
+      && blueprint
+      && blueprintHash === input.sourceBlueprintHash
+      && (!expectedBlueprintHash || blueprintHash === expectedBlueprintHash)
     ))
     .sort((left, right) => right.modified - left.modified);
-  if (!candidates.length || !candidates[0].input.blueprint) {
+  if (!candidates.length) {
     throw new Error("Pantheon cannot re-render this package because no matching frozen Product Builder blueprint was found.");
   }
-  return candidates[0].input.blueprint;
+  return candidates[0].blueprint;
 }
 
 async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
@@ -980,10 +1429,51 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
   ) {
     throw new Error("Only a completed, locally rendered Product Builder package can use deterministic re-render recovery.");
   }
-  const blueprint = recoverStoredProductBlueprint(task, options);
   const previousGeneratedFiles = task.result?.output?.generatedFiles || {};
-  const previousBlueprintHash = previousGeneratedFiles.blueprintHash
-    || crypto.createHash("sha256").update(JSON.stringify(blueprint)).digest("hex");
+  const storedBlueprintHash = String(previousGeneratedFiles.blueprintHash || "").trim();
+  const blueprint = recoverStoredProductBlueprint(task, {
+    ...options,
+    expectedBlueprintHash: storedBlueprintHash || undefined,
+  });
+  const recoveredBlueprintHash = crypto
+    .createHash("sha256")
+    .update(JSON.stringify(blueprint))
+    .digest("hex");
+  const previousBlueprintHash = storedBlueprintHash || recoveredBlueprintHash;
+  if (recoveredBlueprintHash !== previousBlueprintHash) {
+    throw new Error(
+      "Pantheon refused the local renderer refresh before persistence because the frozen Product Builder blueprint changed.",
+    );
+  }
+  const rendererRevision = String(
+    options.rendererRevision || "unspecified-local-renderer-revision",
+  ).trim() || "unspecified-local-renderer-revision";
+  const managedArtifactRoot = options.artifactRoot || CONFIG.artifactRoot;
+  assertManagedSnapshotBytes(
+    previousGeneratedFiles.files || [],
+    managedArtifactRoot,
+    "customer package",
+  );
+  assertManagedSnapshotBytes(
+    previousGeneratedFiles.previews || [],
+    managedArtifactRoot,
+    "storefront preview",
+  );
+  assertManagedSnapshotBytes(
+    previousGeneratedFiles.qualityReviewImages || [],
+    managedArtifactRoot,
+    "quality-review evidence",
+  );
+  const unchangedProductSnapshot = {
+    files: (previousGeneratedFiles.files || []).map((file) => ({
+      id: file.id,
+      sha256: file.sha256,
+    })),
+    previews: (previousGeneratedFiles.previews || []).map((file) => ({
+      id: file.id,
+      sha256: file.sha256,
+    })),
+  };
   const generatedFiles = await persistGeneratedProductFiles(
     db,
     task,
@@ -994,13 +1484,18 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
       }],
     },
     { finalOutput: { work: { productBlueprint: blueprint } } },
-    options,
+    {
+      ...options,
+      rendererRevision,
+      unchangedProductSnapshot,
+      expectedQualityEvidenceSnapshot:
+        previousGeneratedFiles.qualityReviewImages || [],
+    },
   );
   if (generatedFiles.blueprintHash !== previousBlueprintHash) {
     throw new Error("Pantheon refused the local renderer refresh because the approved Product Builder blueprint changed.");
   }
   const refreshedAt = now();
-  const rendererRevision = String(options.rendererRevision || "unspecified-local-renderer-revision");
   const localRendererRefresh = {
     schema: "pantheon.local-renderer-refresh.v1",
     refreshedAt,
@@ -1011,13 +1506,53 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
     externalAction: false,
     previousFiles: (previousGeneratedFiles.files || []).map((file) => ({
       id: file.id,
+      humanName: file.humanName,
       sha256: file.sha256,
       filePath: file.filePath,
+      archiveEntry: file.archiveEntry || null,
+      customerFile: file.customerFile === true,
+      manifest: file.manifest === true,
     })),
     currentFiles: (generatedFiles.files || []).map((file) => ({
       id: file.id,
+      humanName: file.humanName,
       sha256: file.sha256,
       filePath: file.filePath,
+      archiveEntry: file.archiveEntry || null,
+      customerFile: file.customerFile === true,
+      manifest: file.manifest === true,
+    })),
+    previousPreviews: (previousGeneratedFiles.previews || []).map((file) => ({
+      id: file.id,
+      humanName: file.humanName,
+      sha256: file.sha256,
+      filePath: file.filePath,
+      sourceArchiveEntry: file.sourceArchiveEntry || null,
+    })),
+    currentPreviews: (generatedFiles.previews || []).map((file) => ({
+      id: file.id,
+      humanName: file.humanName,
+      sha256: file.sha256,
+      filePath: file.filePath,
+      sourceArchiveEntry: file.sourceArchiveEntry || null,
+    })),
+    previousQualityReviewImages: (previousGeneratedFiles.qualityReviewImages || []).map((file) => ({
+      id: file.id,
+      humanName: file.humanName,
+      sha256: file.sha256,
+      filePath: file.filePath,
+      evidenceRole: file.evidenceRole || null,
+      rendererRevision: file.rendererRevision || null,
+      inspectionCoverage: file.inspectionCoverage || null,
+    })),
+    currentQualityReviewImages: (generatedFiles.qualityReviewImages || []).map((file) => ({
+      id: file.id,
+      humanName: file.humanName,
+      sha256: file.sha256,
+      filePath: file.filePath,
+      evidenceRole: file.evidenceRole || null,
+      rendererRevision: file.rendererRevision || null,
+      inspectionCoverage: file.inspectionCoverage || null,
     })),
   };
   const result = task.result;
@@ -1039,6 +1574,7 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
         productManifest: generatedFiles.manifest,
         generatedFileIds: generatedFiles.files.map((file) => file.id),
         storefrontPreviewIds: generatedFiles.previews.map((preview) => preview.id),
+        qualityReviewImageIds: (generatedFiles.qualityReviewImages || []).map((image) => image.id),
         productBundleDeliverableId: generatedFiles.files.find((file) => /\.zip$/i.test(file.humanName))?.id || null,
         localRendererRefreshedAt: refreshedAt,
         localRendererRefresh,
@@ -1067,6 +1603,7 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
       externalAction: false,
       fileIds: generatedFiles.files.map((file) => file.id),
       previewIds: generatedFiles.previews.map((preview) => preview.id),
+      qualityReviewImageIds: (generatedFiles.qualityReviewImages || []).map((image) => image.id),
     },
   });
   return generatedFiles;
@@ -1267,8 +1804,11 @@ function deterministicProductBuilderResult(task, generatedFiles) {
     .map((item) => String(item.id || item.catalogueItemId || ""))
     .filter(Boolean)
     .slice(0, 5);
+  const contractDefined = generatedFiles?.constructionMode === "contract_defined_model_assisted";
   return {
-    summary: `Product Builder designed ${catalogueItems.length} approved catalogue items and Pantheon rendered and validated the exact customer package.`,
+    summary: contractDefined
+      ? "Pantheon rendered the approved buyer-test contract into customer files after Luna checked and completed the bounded product draft."
+      : `Product Builder designed ${catalogueItems.length} approved catalogue items and Pantheon rendered and validated the exact customer package.`,
     recommendation: "Send the retained files and previews to the independent Quality Reviewer before preparing any listing or publication action.",
     evidence: [
       `${files.length} generated package files were opened, hashed, and retained locally by Pantheon.`,
@@ -1284,7 +1824,9 @@ function deterministicProductBuilderResult(task, generatedFiles) {
       productFormat: String(spec.profile || "Validated digital product package"),
       assetPlan: catalogueItems.map((item) => String(item.title || item.id)).filter(Boolean).slice(0, 5),
       productionMethod: generatedFiles?.sourceType === "pantheon-local-digital-product-factory-v1"
-        ? "Luna defined the exact product blueprint once; Pantheon then rendered, opened, hashed, and validated the files locally."
+        ? contractDefined
+          ? "The approved buyer-test contract defined the workbook structure. Luna supplied bounded product judgement and wording; Pantheon deterministically rendered, opened, hashed, and validated the files."
+          : "Luna defined the exact product blueprint once; Pantheon then rendered, opened, hashed, and validated the files locally."
         : "Luna produced the package in an isolated workspace; Pantheon then downloaded, opened, hashed, and validated the files locally.",
       producedFiles,
       catalogueCoverage: coverage,
@@ -1298,7 +1840,7 @@ function deterministicProductBuilderResult(task, generatedFiles) {
         "No buyer demand, conversion, or customer satisfaction result exists until the finished offer is published and measured.",
       ],
       approvalNeeded: "Independent Quality Reviewer pass and Daniel's later publication decision.",
-      channelFit: "Local Gumroad-ready digital download package; nothing has been uploaded or published.",
+      channelFit: `Local download package prepared for ${String(spec.channels?.[0] || "the selected digital channel")}; nothing has been uploaded or published.`,
     },
   };
 }
@@ -1651,7 +2193,21 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
   const { Agent, Runner, RunState, generateTraceId, z } = sdk;
   const traceId = options.traceId || generateTraceId();
   const tracePolicy = approvedTracePolicy(task);
+  const agentHarness = task.payload?.liveSpendRequest?.agentHarness || null;
+  const traceGroup = task.payload?.liveSpendRequest?.traceGroup || null;
   const capabilityPlan = options.capabilityPlan || buildAgentsSdkCapabilityPlan(task, agentDefinition);
+  const guardrails = buildAgentsSdkGuardrails(task, agentDefinition, capabilityPlan);
+  const guardrailPreflight = guardrails.preflight();
+  if (guardrailPreflight.tripwireTriggered) {
+    const error = new Error(`Pantheon blocked the AI request before dispatch: ${guardrailPreflight.outputInfo.findings.join(" ")}`);
+    error.providerCallOccurred = false;
+    error.outcomeUnknown = false;
+    error.providerDispatchStatus = "not_dispatched";
+    error.errorKind = "sdk_input_guardrail_blocked";
+    error.guardrailResult = guardrailPreflight;
+    error.agentSdkTraceId = traceId;
+    throw error;
+  }
   if (testSdkRunner) {
     let dispatchStarted = false;
     try {
@@ -1660,7 +2216,25 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
       }
       dispatchStarted = true;
       const result = await testSdkRunner({ requestBody, task, agentDefinition, policy, options, traceId, tracePolicy, capabilityPlan });
-      return { result, traceId };
+      const hasInterruption = Array.isArray(result?.interruptions) && result.interruptions.length > 0;
+      const outputCheck = hasInterruption ? null : guardrails.checkOutput(result?.finalOutput);
+      if (outputCheck?.tripwireTriggered) {
+        const error = new Error(`Pantheon blocked the AI output: ${outputCheck.outputInfo.findings.join(" ")}`);
+        error.providerCallOccurred = true;
+        error.providerResponseReceived = true;
+        error.outcomeUnknown = false;
+        error.providerDispatchStatus = "response_received_guardrail_blocked";
+        error.errorKind = "sdk_output_guardrail_blocked";
+        error.guardrailResult = outputCheck;
+        throw error;
+      }
+      return {
+        result,
+        traceId,
+        traceGroup,
+        agentHarness,
+        guardrailActivity: summarizeSdkGuardrailResults(result, guardrailPreflight),
+      };
     } catch (error) {
       classifySdkRunError(error, dispatchStarted, traceId);
       throw error;
@@ -1677,6 +2251,8 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     model: requestBody.model,
     tools: sdkTools,
     handoffs: [],
+    inputGuardrails: guardrails.inputGuardrails,
+    outputGuardrails: guardrails.outputGuardrails,
     modelSettings: {
       maxTokens: Math.min(8000, Number(requestBody.max_output_tokens || 1200)),
       toolChoice: capabilityPlan.toolChoice,
@@ -1688,7 +2264,9 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
           ? ["web_search_call.action.sources"]
           : undefined,
         safety_identifier: stableSafetyIdentifier(task),
-        prompt_cache_key: `pantheon_${agentDefinition.id}_${requestBody.metadata.packet_schema}`,
+        prompt_cache_key: `pantheon_${agentDefinition.id}_${String(
+          agentHarness?.harnessHash || requestBody.metadata.packet_schema,
+        ).slice(0, 24)}`,
       },
     },
   };
@@ -1730,6 +2308,7 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
     const result = await runner.run(agent, sdkInput, {
       maxTurns: capabilityPlan.maxTurns,
       traceId,
+      groupId: traceGroup?.groupId || undefined,
       workflowName: `Pantheon ${agentDefinition.name} controlled run`,
       traceIncludeSensitiveData: tracePolicy.providerTraceContent,
       signal,
@@ -1741,6 +2320,10 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
         provider_response_stored: String(tracePolicy.providerResponseStored),
         provider_trace_content: String(tracePolicy.providerTraceContent),
         data_class: tracePolicy.dataClass,
+        trace_group_id: String(traceGroup?.groupId || ""),
+        harness_hash: String(agentHarness?.harnessHash || ""),
+        prompt_policy: String(agentHarness?.versions?.promptPolicy || ""),
+        assurance_policy: String(agentHarness?.versions?.assurancePolicy || ""),
       },
       context: {
         workflowId: task.workflow_id,
@@ -1749,9 +2332,17 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
         provider: AGENTS_SDK_PROVIDER,
         externalActionsAllowed: false,
         approvedSdkTools: capabilityPlan.requestedTools,
+        agentHarnessHash: agentHarness?.harnessHash || null,
+        traceGroupId: traceGroup?.groupId || null,
       },
     });
-    return { result, traceId };
+    return {
+      result,
+      traceId,
+      traceGroup,
+      agentHarness,
+      guardrailActivity: summarizeSdkGuardrailResults(result, guardrailPreflight),
+    };
   } catch (error) {
     classifySdkRunError(error, dispatchStarted, traceId);
     throw error;
@@ -1772,6 +2363,10 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const approvedCapCents = liveWorkerCostEstimateCents(task);
   const tracePolicy = approvedTracePolicy(task);
   const capabilityPlan = buildAgentsSdkCapabilityPlan(task, agentDefinition);
+  const executionIdentity = {
+    agentHarness: task.payload?.liveSpendRequest?.agentHarness || null,
+    traceGroup: task.payload?.liveSpendRequest?.traceGroup || null,
+  };
   if (
     usesDeterministicProductFileResult(agentDefinition, capabilityPlan)
     && capabilityPlan.specs.some((spec) => spec.sdkName === "product_file_factory")
@@ -1832,6 +2427,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
           tracePolicy,
           capabilityPlan,
           inputAssets,
+          ...executionIdentity,
         });
         if (options.taskClaim) {
           markTaskAttemptProviderDispatched(db, options.taskClaim, {
@@ -1858,6 +2454,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     });
     result = sdkRun.result;
     traceId = sdkRun.traceId;
+    executionIdentity.sdkGuardrails = sdkRun.guardrailActivity || null;
   } catch (error) {
     const dispatched = Boolean(dispatchCall);
     if (error.outcomeUnknown === undefined) error.outcomeUnknown = dispatched && error.providerCallOccurred !== false;
@@ -1927,6 +2524,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       providerDispatchStatus: error.providerDispatchStatus,
       tracePolicy,
       inputAssets,
+      ...executionIdentity,
       },
     );
     error.modelCallId = failedCall.id;
@@ -1965,6 +2563,13 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const responseId = sdkResponseId(result) || `agents_sdk_${randomId()}`;
   const cumulativeUsage = sdkUsage(result);
   const usage = sdkUsageDelta(db, cumulativeUsage, resumeSelection);
+  const cacheUsage = cacheUsageFromTokenEvidence({
+    inputTokens: usage.input_tokens_known === false ? undefined : usage.input_tokens,
+    cachedInputTokens: usage.cached_input_tokens_known === false ? undefined : usage.cached_input_tokens,
+    cacheWriteInputTokens: usage.cache_write_input_tokens_known === false
+      ? undefined
+      : usage.cache_write_input_tokens,
+  });
   const pricingEstimate = sdkPricingEstimate(requestBody.model, usage, approvedCapCents, toolActivity, capabilityPlan);
   const estimateCents = pricingEstimate.amountCents;
   const providerCall = recordLiveWorkerModelCall(db, task, { id: responseId, usage, output: [] }, estimateCents, requestBody.model, "provider_completed", {
@@ -1977,12 +2582,14 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     rawResponseCount: Array.isArray(result.rawResponses) ? result.rawResponses.length : 0,
     sdkItemSummary,
     cumulativeUsage,
+    cacheUsage,
     reservedCostCents: approvedCapCents,
     pricingEstimate,
     tracePolicy,
     capabilityPlan,
     toolActivity,
     inputAssets,
+    ...executionIdentity,
     providerReceiptRecordedAt: now(),
   });
   recordLiveWorkerCost(db, task, estimateCents, { id: responseId }, {
@@ -1995,10 +2602,12 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     agentSdkTraceId: traceId,
     approvedCapCents,
     pricingEstimate,
+    cacheUsage,
     tracePolicy,
     capabilityPlan,
     toolActivity,
     inputAssets,
+    ...executionIdentity,
   });
   const providerReceipt = {
     modelCallId: providerCall.id,
@@ -2050,6 +2659,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       sdkResearch,
       inputAssets,
       outcomeUnknown: false,
+      ...executionIdentity,
     });
     for (const invocation of toolInvocations) {
       const interruptedInvocation = invocation.spec === interruptedSpec;
@@ -2224,6 +2834,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     generatedAssets,
     generatedFiles,
     sdkResearch,
+    ...executionIdentity,
     reason: capabilityPlan.requestedTools.length
       ? "Live AI worker used only the exact approved SDK capability; no publishing, contact, account action, legal decision, or money movement was exposed."
       : "Live AI worker used the OpenAI Agents SDK runner after approval; no external tools or side effects were exposed.",
@@ -2251,6 +2862,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       inputAssets,
       generatedAssets,
       generatedFiles,
+      ...executionIdentity,
     },
   });
 
@@ -2330,6 +2942,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       inputAssets,
       generatedAssets,
       toolInvocations: toolInvocations.map((item) => ({ id: item.gate.id, toolId: item.spec.toolId, sdkName: item.spec.sdkName })),
+      ...executionIdentity,
     },
   };
   } catch (error) {
@@ -2370,6 +2983,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         toolActivity,
         inputAssets,
         localStructuredOutput,
+        ...executionIdentity,
       });
       insertEvent(db, {
         level: "error",

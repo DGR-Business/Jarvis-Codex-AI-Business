@@ -8,6 +8,9 @@ const AdmZip = require("adm-zip");
 
 const CONFIG = require("../src/config");
 const {
+  SOCIAL_MEDIA_MANAGER_CLIENT_CONTROL_V1: buyerIntentSpec,
+} = require("../config/buyer-intent-validation-specs");
+const {
   all,
   fromJson,
   get,
@@ -32,8 +35,10 @@ const { getCockpitState, getDecisionsState } = require("../src/runtime/cockpit-s
 const { runOnce } = require("../src/runtime/orchestrator");
 const {
   applyPantheonHandoffDecision,
+  assertQualityReviewRecheckAvailable,
   getProductionState,
   prepareCatalogueBuild,
+  prepareExplicitFinalValidationReview,
   prepareVerifiedLaunchContextRepair,
   publicationPlanPriceText,
   publicationPriceChannelHypothesis,
@@ -42,6 +47,7 @@ const {
   projectCompletedProductionTask,
   recoverQualityReviewAfterEvidenceRepair,
   recoverQualityReviewAfterLocalRendererRepair,
+  recoverValidationQualityReviewAfterInspectionRepair,
 } = require("../src/runtime/pantheon-production");
 const { recoverRetainedProductBuilderResult } = require("../src/runtime/pantheon-recovery");
 const { runPantheonSupervisorCycle } = require("../src/runtime/pantheon-supervisor");
@@ -409,6 +415,132 @@ test("local product factory adds one recorded workflow status without changing t
   assert.equal(assertBlueprintMatchesSpec(spec, crowdedNormalized.blueprint), crowdedNormalized.blueprint);
 });
 
+test("the one-item buyer test is reconciled to its exact 16-field validation contract", () => {
+  const exactItem = {
+    ...buyerIntentSpec.sample.item,
+    id: buyerIntentSpec.sample.item.id,
+  };
+  const spec = {
+    schema: "pantheon.product-build-spec.v1",
+    catalogueItems: [{ id: exactItem.id }],
+    validationSample: {
+      packageTitle: "Social Media Manager Client-Control Validation Sample",
+      customerPromise: buyerIntentSpec.sample.customerPromise,
+      setupSteps: buyerIntentSpec.sample.setupSteps,
+      disclaimers: [
+        "This validation sample is an editable local workbook, not an accounting system.",
+        ...buyerIntentSpec.sample.disclaimers.slice(1),
+      ],
+      exactItemBlueprint: exactItem,
+      noFullCatalogueAuthorised: true,
+    },
+  };
+  const supplied = {
+    schema: "pantheon.product-blueprint.v3",
+    packageTitle: "Draft package",
+    customerPromise: "Draft promise",
+    setupSteps: ["Open the workbook.", "Review the example.", "Replace the example."],
+    disclaimers: [],
+    catalogueItems: [{
+      id: exactItem.id,
+      title: "Draft workbook",
+      purpose: "Draft purpose",
+      instructions: ["Open the workbook.", "Replace the sample row."],
+      columns: exactItem.columns.slice(0, 12),
+      sampleRows: exactItem.sampleRows.map((row) => row.slice(0, 12)),
+      calculations: [],
+    }],
+  };
+
+  const normalized = normalizeProductBlueprintForFactory(supplied, spec);
+  assert.equal(normalized.blueprint.catalogueItems.length, 1);
+  assert.equal(normalized.blueprint.catalogueItems[0].columns.length, 16);
+  assert.deepEqual(normalized.blueprint.catalogueItems[0].columns, exactItem.columns);
+  assert.deepEqual(normalized.blueprint.catalogueItems[0].sampleRows, exactItem.sampleRows);
+  assert.deepEqual(normalized.blueprint.catalogueItems[0].calculations, exactItem.calculations);
+  assert.equal(normalized.blueprint.packageTitle, exactItem.title);
+  assert.doesNotMatch(normalized.blueprint.packageTitle, /validation sample/i);
+  assert.doesNotMatch(JSON.stringify(normalized.blueprint.disclaimers), /validation sample/i);
+  assert.match(normalized.blueprint.disclaimers[0], /^This product is /);
+  assert.ok(normalized.normalizations.some((item) => item.code === "validation_contract_reconciled"));
+  assert.equal(assertBlueprintMatchesSpec(spec, normalized.blueprint), normalized.blueprint);
+});
+
+test("the one-item buyer test renders buyer-ready naming and singular setup guidance", () => {
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-one-item-render-"));
+  try {
+    const exactItem = {
+      ...buyerIntentSpec.sample.item,
+      id: "catalogue_item_social_media_manager_client_control_v1",
+    };
+    const spec = {
+      schema: "pantheon.product-build-spec.v1",
+      planId: "catalogue_validation_social_media_manager_client_control_v1",
+      opportunityId: "opp-buyer-intent-render",
+      ventureId: "venture-portfolio-controller",
+      catalogueItems: [{
+        id: exactItem.id,
+        title: exactItem.title,
+        audience: buyerIntentSpec.buyer,
+        offer: buyerIntentSpec.offer,
+        priceCents: buyerIntentSpec.priceCents,
+      }],
+      manifestFilename: "pantheon-product-manifest.json",
+      bundleFilename: "client-control-and-profitability-workbook.zip",
+      storefrontPreviewCount: 2,
+      validationSample: {
+        packageTitle: exactItem.title,
+        customerPromise: buyerIntentSpec.sample.customerPromise,
+        setupSteps: buyerIntentSpec.sample.setupSteps,
+        disclaimers: buyerIntentSpec.sample.disclaimers,
+        exactItemBlueprint: exactItem,
+        noFullCatalogueAuthorised: true,
+      },
+    };
+    const supplied = {
+      schema: "pantheon.product-blueprint.v3",
+      packageTitle: "Internal validation draft",
+      customerPromise: "Draft promise",
+      setupSteps: ["Open the file.", "Review the sample.", "Replace the sample."],
+      disclaimers: [],
+      catalogueItems: [exactItem],
+    };
+    const rendered = renderDigitalProductKit(
+      {
+        id: "task-one-item-buyer-ready-render",
+        payload: {
+          liveSpendRequest: {
+            parameters: { productBuildSpec: spec },
+          },
+        },
+      },
+      supplied,
+      { artifactRoot },
+    );
+    const manifest = JSON.parse(
+      rendered.files.find((file) => file.filename === spec.manifestFilename).bytes.toString("utf8"),
+    );
+    assert.equal(manifest.packageTitle, "Client Control and Profitability Workbook");
+    assert.equal(manifest.bundle.filename, spec.bundleFilename);
+    assert.match(
+      manifest.setupGuide.quickStart[1],
+      /single included workbook: 01-client-control-and-profitability-workbook\.xlsx/i,
+    );
+    assert.doesNotMatch(JSON.stringify(manifest), /validation sample/i);
+    const guideInspection = rendered.qualityReviewImages.find(
+      (image) => image.filename === "actual-setup-guide.png",
+    );
+    assert.ok(guideInspection);
+    assert.equal(guideInspection.bytes.readUInt32BE(16), 1600);
+    assert.ok(
+      guideInspection.bytes.readUInt32BE(20) > 1000,
+      "The three-page guide inspection must use multiple rows rather than omit its final page.",
+    );
+  } finally {
+    fs.rmSync(artifactRoot, { recursive: true, force: true });
+  }
+});
+
 test("claim alignment rejects unsupported outcomes and accepts explicit product mechanisms", () => {
   const offerIssues = offerClaimAlignmentIssues({
     promise: "Collect better inputs and finish projects faster.",
@@ -528,7 +660,7 @@ function completeTask(db, taskId, output) {
 
 function insertGeneratedDeliverables(runtime, task) {
   const db = runtime.db;
-  const root = path.join(runtime.root, "production-test");
+  const root = path.join(CONFIG.artifactRoot, "production-test");
   fs.mkdirSync(root, { recursive: true });
   const manifestPath = path.join(root, "pantheon-product-manifest.json");
   const bundlePath = path.join(root, "cash-control-catalogue.zip");
@@ -590,7 +722,7 @@ function insertGeneratedDeliverables(runtime, task) {
       format: "application/json",
       filePath: path.relative(CONFIG.rootDir, manifestPath).replace(/\\/g, "/"),
       bytes: fs.statSync(manifestPath).size,
-      sha256: "manifest-fixture-hash",
+      sha256: crypto.createHash("sha256").update(fs.readFileSync(manifestPath)).digest("hex"),
       manifest: true,
     },
     {
@@ -599,7 +731,7 @@ function insertGeneratedDeliverables(runtime, task) {
       format: "application/zip",
       filePath: path.relative(CONFIG.rootDir, bundlePath).replace(/\\/g, "/"),
       bytes: fs.statSync(bundlePath).size,
-      sha256: "bundle-fixture-hash",
+      sha256: crypto.createHash("sha256").update(fs.readFileSync(bundlePath)).digest("hex"),
       manifest: false,
     },
   ];
@@ -627,6 +759,1266 @@ function insertGeneratedDeliverables(runtime, task) {
   }
   return { files, manifest };
 }
+
+function sha256Bytes(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function fixturePng(label) {
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAI0lEQVR4nGP88PUXAymAiSTVDKMaiANMRKqDg1ENxACSQwkA+bAC/1GEth0AAAAASUVORK5CYII=",
+    "base64",
+  );
+  return Buffer.concat([png, Buffer.from(String(label), "utf8")]);
+}
+
+function insertManagedFixtureDeliverable(runtime, task, input) {
+  const absolutePath = path.join(CONFIG.artifactRoot, input.relativePath);
+  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+  fs.writeFileSync(absolutePath, input.bytes);
+  const sha256 = sha256Bytes(input.bytes);
+  const filePath = path.relative(CONFIG.rootDir, absolutePath).replace(/\\/g, "/");
+  const timestamp = now();
+  const metadata = {
+    ...(input.metadata || {}),
+    sha256,
+    bytes: input.bytes.length,
+  };
+  run(
+    runtime.db,
+    `INSERT INTO deliverables
+     (id, workflow_id, task_id, venture_id, title, human_name, audience, format,
+      status, file_path, summary, metadata, content_hash, version, created_at, updated_at)
+     VALUES (?, ?, ?, 'venture-digital-products', ?, ?, ?, ?, 'built_pending_quality_review',
+      ?, 'Exact managed recovery fixture.', ?, ?, 1, ?, ?)`,
+    [
+      input.id,
+      task.workflow_id,
+      task.id,
+      input.title || input.humanName,
+      input.humanName,
+      input.audience || "internal",
+      input.format,
+      filePath,
+      toJson(metadata),
+      sha256,
+      timestamp,
+      timestamp,
+    ],
+  );
+  return {
+    id: input.id,
+    humanName: input.humanName,
+    filePath,
+    format: input.format,
+    status: "built_pending_quality_review",
+    bytes: input.bytes.length,
+    sha256,
+    ...(input.evidenceRole ? { evidenceRole: input.evidenceRole } : {}),
+    ...(input.inspectionCoverage ? { inspectionCoverage: input.inspectionCoverage } : {}),
+  };
+}
+
+function exactThreePageCoverage(guideFile, guideInspectionHash) {
+  const pages = Array.from({ length: 3 }, (_, index) => ({
+    height: 1200 + index,
+    pageNumber: index + 1,
+    rasterSha256: sha256Bytes(Buffer.from(`setup-guide-page-${index + 1}`, "utf8")),
+    width: 900 + index,
+  }));
+  return {
+    sourceFile: "00-customer-setup-guide.pdf",
+    sourceRelativePath: "customer-files/00-customer-setup-guide.pdf",
+    sourceSha256: guideFile.sha256,
+    inspectionFile: "actual-setup-guide.png",
+    inspectionRelativePath: "quality-review/actual-setup-guide.png",
+    inspectionSha256: guideInspectionHash,
+    sourcePageCount: 3,
+    renderedPageCount: 3,
+    completeCoverage: true,
+    columns: 2,
+    rows: 2,
+    pages,
+    orderedPageIdentitySha256: sha256Bytes(Buffer.from(JSON.stringify(pages), "utf8")),
+  };
+}
+
+function updateTaskGeneratedFiles(db, taskId, generated, localRendererRefresh) {
+  const stored = get(db, "SELECT result FROM tasks WHERE id = ?", [taskId]);
+  const result = fromJson(stored.result, {});
+  result.output.generatedFiles = generated;
+  result.output.localRendererRefresh = localRendererRefresh;
+  run(
+    db,
+    "UPDATE tasks SET result = ?, updated_at = ? WHERE id = ?",
+    [toJson(result), now(), taskId],
+  );
+}
+
+function updatePlanRendererRefresh(db, refresh) {
+  const row = get(
+    db,
+    "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
+  );
+  const metadata = fromJson(row.metadata, {});
+  run(
+    db,
+    "UPDATE catalogue_plans SET metadata = ?, updated_at = ? WHERE id = 'plan-pantheon-production'",
+    [
+      toJson({
+        ...metadata,
+        generatedFileIds: refresh.currentFiles.map((file) => file.id),
+        storefrontPreviewIds: refresh.currentPreviews.map((file) => file.id),
+        qualityReviewImageIds: refresh.currentQualityReviewImages.map((file) => file.id),
+        localRendererRefresh: refresh,
+      }),
+      now(),
+    ],
+  );
+}
+
+const INSPECTION_EXPERIMENT_ID = "exp-inspection-evidence-test";
+const INSPECTION_CANDIDATE_ID = "candidate-inspection-evidence-test";
+const INSPECTION_BRIEF_ID = "brief-inspection-evidence-test";
+
+function seedInspectionCommercialRecords(db) {
+  const timestamp = now();
+  run(
+    db,
+    `INSERT INTO commercial_briefs
+     (id, workflow_id, venture_id, source, status, title, metadata, created_at, updated_at)
+     VALUES (?, 'wf-pantheon-production', 'venture-digital-products', 'test',
+       'exact_test_ready', 'Inspection evidence test brief', '{}', ?, ?)`,
+    [INSPECTION_BRIEF_ID, timestamp, timestamp],
+  );
+  run(
+    db,
+    `INSERT INTO commercial_experiments
+     (id, workflow_id, venture_id, name, status, metadata, created_at, updated_at)
+     VALUES (?, 'wf-pantheon-production', 'venture-digital-products',
+       'Inspection evidence buyer test', 'ready', ?, ?, ?)`,
+    [
+      INSPECTION_EXPERIMENT_ID,
+      toJson({
+        buyerIntentValidation: {
+          cataloguePlanId: "plan-pantheon-production",
+        },
+        realStartConfirmed: false,
+      }),
+      timestamp,
+      timestamp,
+    ],
+  );
+  run(
+    db,
+    `INSERT INTO commercial_test_candidates
+     (id, brief_id, workflow_id, venture_id, rank, status, title,
+       promoted_experiment_id, metadata, created_at, updated_at)
+     VALUES (?, ?, 'wf-pantheon-production', 'venture-digital-products', 1,
+       'promoted', 'Inspection evidence buyer test', ?, '{}', ?, ?)`,
+    [
+      INSPECTION_CANDIDATE_ID,
+      INSPECTION_BRIEF_ID,
+      INSPECTION_EXPERIMENT_ID,
+      timestamp,
+      timestamp,
+    ],
+  );
+}
+
+function currentValidationArtifactSnapshot(db) {
+  const plan = get(
+    db,
+    "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
+  );
+  const metadata = fromJson(plan.metadata, {});
+  const ids = [...new Set([
+    ...(metadata.generatedFileIds || []),
+    ...(metadata.storefrontPreviewIds || []),
+    ...(metadata.qualityReviewImageIds || []),
+  ])].sort();
+  if (!ids.length) return [];
+  return all(
+    db,
+    `SELECT id, status, file_path, content_hash, updated_at
+     FROM deliverables
+     WHERE id IN (${ids.map(() => "?").join(", ")})
+     ORDER BY id`,
+    ids,
+  ).map((row) => {
+    const absolutePath = path.resolve(CONFIG.rootDir, row.file_path);
+    return {
+      ...row,
+      diskSha256: sha256Bytes(fs.readFileSync(absolutePath)),
+    };
+  });
+}
+
+function terminalValidationPersistenceState(db) {
+  return {
+    experiment: get(
+      db,
+      "SELECT id, status, ended_at, updated_at FROM commercial_experiments WHERE id = ?",
+      [INSPECTION_EXPERIMENT_ID],
+    ),
+    candidate: get(
+      db,
+      `SELECT id, status, promoted_experiment_id, updated_at
+       FROM commercial_test_candidates WHERE id = ?`,
+      [INSPECTION_CANDIDATE_ID],
+    ),
+    artifacts: currentValidationArtifactSnapshot(db),
+  };
+}
+
+function assertTerminalValidationPersistence(db, beforeArtifacts) {
+  const state = terminalValidationPersistenceState(db);
+  assert.equal(state.experiment.status, "cancelled");
+  assert.ok(state.experiment.ended_at);
+  assert.equal(state.candidate.status, "cancelled");
+  assert.equal(
+    state.candidate.promoted_experiment_id,
+    INSPECTION_EXPERIMENT_ID,
+    "terminal cancellation must retain the historical promotion link",
+  );
+  assert.ok(state.artifacts.length >= 1);
+  assert.equal(
+    state.artifacts.every((artifact) => artifact.status === "needs_changes"),
+    true,
+  );
+  assert.deepEqual(
+    state.artifacts.map(({ id, file_path, content_hash, diskSha256 }) => ({
+      id,
+      file_path,
+      content_hash,
+      diskSha256,
+    })),
+    beforeArtifacts.map(({ id, file_path, content_hash, diskSha256 }) => ({
+      id,
+      file_path,
+      content_hash,
+      diskSha256,
+    })),
+    "terminal persistence must not alter any retained artifact byte or hash",
+  );
+  return state;
+}
+
+function prepareInspectionRecoveryFixture(runtime) {
+  seedInspectionCommercialRecords(runtime.db);
+  const planRow = get(
+    runtime.db,
+    "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
+  );
+  run(
+    runtime.db,
+    "UPDATE catalogue_plans SET metadata = ?, updated_at = ? WHERE id = 'plan-pantheon-production'",
+    [
+      toJson({
+        ...fromJson(planRow.metadata, {}),
+        validationSample: {
+          specId: "inspection-evidence-test",
+          contractHash: "inspection-evidence-contract",
+          experimentId: INSPECTION_EXPERIMENT_ID,
+          candidateId: INSPECTION_CANDIDATE_ID,
+          sample: {
+            packageTitle: "Client Control and Profitability Workbook",
+            item: {
+              title: "Client Control and Profitability Workbook",
+            },
+          },
+          providerPolicy: {
+            productBuilderCapCents: 150,
+            qualityReviewerCapCents: 150,
+            combinedCapCents: 300,
+            automaticPaidRetry: false,
+            correctionLimit: 1,
+            qualityReviewerRoute: "terra",
+          },
+        },
+        storefrontPreviewIds: ["stale-preview-sentinel"],
+        qualityReviewImageIds: ["stale-quality-image-sentinel"],
+      }),
+      now(),
+    ],
+  );
+  const build = prepareCatalogueBuild(runtime.db, {
+    roundId: "round-pantheon-production",
+    opportunityId: "opp-pantheon-production",
+    planId: "plan-pantheon-production",
+    operatorChoiceRequired: false,
+    revisionNumber: 1,
+    revisionFeedback: "Use the corrected product package.",
+  });
+  assert.equal(
+    build.task.title,
+    "Correct and rebuild Client Control and Profitability Workbook",
+  );
+
+  const generated = insertGeneratedDeliverables(runtime, build.task);
+  generated.blueprintHash = "unchanged-validation-blueprint";
+  const guideFile = insertManagedFixtureDeliverable(runtime, build.task, {
+    id: "deliv-validation-setup-guide",
+    humanName: "00-customer-setup-guide.pdf",
+    relativePath: "customer-files/001-setup-guide-source.pdf",
+    format: "application/pdf",
+    audience: "operator",
+    bytes: Buffer.from("%PDF-1.4\n% exact three-page setup-guide fixture\n", "utf8"),
+  });
+  generated.files.push(guideFile);
+  generated.manifest.setupGuide = {
+    path: "customer-files/00-customer-setup-guide.pdf",
+    contentSource: "same_claim_safe_blueprint_used_to_render_pdf",
+    quickStart: [],
+    products: generated.manifest.catalogueItems.map((item) => ({
+      title: item.title,
+      purpose: item.purpose,
+      instructions: [],
+      fields: [],
+    })),
+    disclaimers: [],
+  };
+  const previews = [
+    insertManagedFixtureDeliverable(runtime, build.task, {
+      id: "deliv-validation-preview-one",
+      humanName: "catalogue-overview.png",
+      relativePath: "storefront-previews/catalogue-overview.png",
+      format: "image/png",
+      bytes: fixturePng("preview-one"),
+    }),
+    insertManagedFixtureDeliverable(runtime, build.task, {
+      id: "deliv-validation-preview-two",
+      humanName: "workbook-preview.png",
+      relativePath: "storefront-previews/workbook-preview.png",
+      format: "image/png",
+      bytes: fixturePng("preview-two"),
+    }),
+  ];
+  const previousInspections = [
+    insertManagedFixtureDeliverable(runtime, build.task, {
+      id: "deliv-validation-workbook-inspection-source",
+      humanName: "Actual Workbook Review",
+      relativePath: "quality-review/source/actual-workbook.png",
+      format: "image/png",
+      evidenceRole: "workbook_inspection",
+      metadata: { evidenceRole: "workbook_inspection" },
+      bytes: fixturePng("workbook-source"),
+    }),
+    insertManagedFixtureDeliverable(runtime, build.task, {
+      id: "deliv-validation-guide-inspection-source",
+      humanName: "Actual Setup Guide Review",
+      relativePath: "quality-review/source/actual-setup-guide.png",
+      format: "image/png",
+      evidenceRole: "setup_guide_inspection",
+      metadata: { evidenceRole: "setup_guide_inspection" },
+      bytes: fixturePng("guide-source-two-pages"),
+    }),
+  ];
+  generated.previews = previews;
+  generated.qualityReviewImages = structuredClone(previousInspections);
+  completeTask(runtime.db, build.task.id, {
+    ...workerOutput("Product Builder"),
+    generatedFiles: generated,
+  });
+  const buildProjection = projectCompletedProductionTask(runtime.db, build.task.id);
+  const qualityTask = buildProjection.result.next.task;
+  assert.equal(
+    qualityTask.title,
+    "Review the functional validation workbook for Client Control and Profitability Workbook",
+  );
+  const projectedPlan = fromJson(
+    get(
+      runtime.db,
+      "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
+    ).metadata,
+    {},
+  );
+  assert.deepEqual(
+    projectedPlan.storefrontPreviewIds,
+    previews.map((preview) => preview.id),
+  );
+  assert.deepEqual(
+    projectedPlan.qualityReviewImageIds,
+    previousInspections.map((image) => image.id),
+  );
+  const frozenReviewPacket =
+    qualityTask.payload.liveSpendRequest.parameters.qualityReviewPacket;
+  for (const frozenFact of [
+    ...frozenReviewPacket.packageDeliverables,
+    ...frozenReviewPacket.storefrontPreviews,
+    ...frozenReviewPacket.fileInspectionVisuals,
+  ]) {
+    assert.equal(Object.hasOwn(frozenFact, "filePath"), false);
+  }
+  completeTask(runtime.db, qualityTask.id, {
+    ...workerOutput("Quality Reviewer", {
+      qualityScore: 86,
+      riskFindings: [
+        "File coverage is complete: the verified archive contains the PDF, CSV, XLSX, and two previews.",
+        "The supplied setup-guide inspection visual shows pages 1–2 only despite the PDF being three pages.",
+        "Visual review confirms the visible workbook and previews are legible and consistent with the stated offer.",
+      ],
+      missingEvidence: [
+        "A rendered inspection of page 3 of 00-customer-setup-guide.pdf is missing.",
+      ],
+      claimSafety: "Revise: visible claims accurately describe an editable local workbook and label contribution as an estimate, but page 3 remains uninspected.",
+      operatorRecommendation: "Do not prepare the buyer test until page 3 is visually checked and any presentation defect is corrected.",
+    }),
+    summary: "Revise: file integrity and workbook semantics pass, but the three-page setup guide lacks visual evidence for page 3.",
+    nextAction: "Add a legible rendered image of setup-guide page 3 and confirm it contains no new or unsupported claims.",
+    operatorDecision: "revise",
+    risks: [
+      "PDF page 3 cannot be checked for clipping, legibility, or disclaimer presentation from the supplied two-page visual.",
+      "The product is a narrow validation sample, so approval would support only the stated buyer test.",
+    ],
+  });
+  const failedReview = projectCompletedProductionTask(runtime.db, qualityTask.id);
+  assert.equal(failedReview.result.correctionPrepared, false);
+
+  const currentWorkbook = insertManagedFixtureDeliverable(runtime, build.task, {
+    id: "deliv-validation-workbook-inspection-all-pages-v1",
+    humanName: "Actual Workbook Review",
+    relativePath: "quality-review/all-pages-v1/actual-workbook.png",
+    format: "image/png",
+    evidenceRole: "workbook_inspection",
+    metadata: {
+      evidenceRole: "workbook_inspection",
+      rendererRevision: "all-pdf-pages-v1-test",
+    },
+    bytes: fixturePng("workbook-source"),
+  });
+  const currentGuideBytes = fixturePng("guide-complete-three-pages");
+  const coverage = exactThreePageCoverage(guideFile, sha256Bytes(currentGuideBytes));
+  const currentGuide = insertManagedFixtureDeliverable(runtime, build.task, {
+    id: "deliv-validation-guide-inspection-all-pages-v1",
+    humanName: "Actual Setup Guide Review",
+    relativePath: "quality-review/all-pages-v1/actual-setup-guide.png",
+    format: "image/png",
+    evidenceRole: "setup_guide_inspection",
+    inspectionCoverage: coverage,
+    metadata: {
+      evidenceRole: "setup_guide_inspection",
+      rendererRevision: "all-pdf-pages-v1-test",
+      inspectionCoverage: coverage,
+    },
+    bytes: currentGuideBytes,
+  });
+  const currentInspections = [currentWorkbook, currentGuide];
+  const snapshot = (file) => ({
+    id: file.id,
+    humanName: file.humanName,
+    evidenceRole: file.evidenceRole,
+    sha256: file.sha256,
+    filePath: file.filePath,
+    inspectionCoverage: file.inspectionCoverage || null,
+  });
+  const fileSnapshots = generated.files.map(snapshot).map((file) => {
+    if (file.id !== guideFile.id) return file;
+    const receipt = {
+      ...file,
+      archiveEntry: "customer-files/00-customer-setup-guide.pdf",
+    };
+    delete receipt.humanName;
+    return receipt;
+  });
+  const validRefresh = {
+    schema: "pantheon.local-renderer-refresh.v1",
+    refreshedAt: now(),
+    rendererRevision: "all-pdf-pages-v1-test",
+    sourceTaskId: build.task.id,
+    blueprintHash: generated.blueprintHash,
+    noProviderCall: true,
+    externalAction: false,
+    previousFiles: structuredClone(fileSnapshots),
+    currentFiles: structuredClone(fileSnapshots),
+    previousPreviews: previews.map(snapshot),
+    currentPreviews: previews.map(snapshot),
+    previousQualityReviewImages: previousInspections.map(snapshot),
+    currentQualityReviewImages: currentInspections.map(snapshot),
+  };
+  generated.qualityReviewImages = currentInspections;
+  generated.localRendererRefresh = validRefresh;
+  updateTaskGeneratedFiles(runtime.db, build.task.id, generated, validRefresh);
+  updatePlanRendererRefresh(runtime.db, validRefresh);
+  return {
+    build,
+    generated,
+    guideFile,
+    qualityTask,
+    validRefresh,
+    currentInspections,
+    coverage,
+  };
+}
+
+test("a failed buyer-intent quality review cannot spend beyond its combined approval", () => {
+  const runtime = makeRuntime("buyer-intent-quality-budget");
+  try {
+    const build = prepareBuild(runtime.db);
+    const plan = get(runtime.db, "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'");
+    run(
+      runtime.db,
+      "UPDATE catalogue_plans SET metadata = ?, updated_at = ? WHERE id = 'plan-pantheon-production'",
+      [
+        toJson({
+          ...fromJson(plan.metadata, {}),
+          validationSample: {
+            providerPolicy: {
+              productBuilderCapCents: 150,
+              qualityReviewerCapCents: 150,
+              combinedCapCents: 300,
+              automaticPaidRetry: false,
+              correctionLimit: 1,
+            },
+          },
+        }),
+        now(),
+      ],
+    );
+    const generated = insertGeneratedDeliverables(runtime, build.task);
+    completeTask(runtime.db, build.task.id, {
+      ...workerOutput("Product Builder"),
+      generatedFiles: generated,
+    });
+    const buildProjection = projectCompletedProductionTask(runtime.db, build.task.id);
+    const qualityTask = buildProjection.result.next.task;
+    for (const [id, task, amountCents] of [
+      ["cost-buyer-intent-build-cap", build.task, 150],
+      ["cost-buyer-intent-review-cap", qualityTask, 150],
+    ]) {
+      run(
+        runtime.db,
+        `INSERT INTO costs
+         (id, workflow_id, venture_id, task_id, category, source, status,
+          amount_cents, currency, occurred_at, metadata)
+         VALUES (?, ?, ?, ?, 'live_ai_worker', 'openai-agents-sdk',
+                 'incurred_estimate', ?, 'AUD', ?, '{}')`,
+        [id, task.workflow_id, task.venture_id, task.id, amountCents, now()],
+      );
+    }
+    completeTask(runtime.db, qualityTask.id, {
+      ...workerOutput("Quality Reviewer", {
+        qualityScore: 55,
+        riskFindings: ["The workbook instructions are incomplete."],
+        operatorRecommendation: "Correct the instructions before testing.",
+      }),
+      operatorDecision: "revise",
+    });
+
+    const result = projectCompletedProductionTask(runtime.db, qualityTask.id);
+    assert.equal(result.result.correctionPrepared, false);
+    assert.equal(result.result.additionalApprovalRequired, true);
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM tasks WHERE json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.revisionNumber') = 1").count,
+      0,
+    );
+    const stoppedPlan = get(runtime.db, "SELECT status, metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'");
+    assert.equal(stoppedPlan.status, "needs_attention");
+    assert.equal(fromJson(stoppedPlan.metadata, {}).correctionRequiresNewBudget, true);
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'catalogue.validation_sample_quality_failed'").count,
+      1,
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("a failed buyer-intent review may use its one correction when real exposure remains under the cap", () => {
+  const runtime = makeRuntime("buyer-intent-quality-correction");
+  try {
+    const build = prepareBuild(runtime.db);
+    const plan = get(runtime.db, "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'");
+    run(
+      runtime.db,
+      "UPDATE catalogue_plans SET metadata = ?, updated_at = ? WHERE id = 'plan-pantheon-production'",
+      [
+        toJson({
+          ...fromJson(plan.metadata, {}),
+          validationSample: {
+            providerPolicy: {
+              productBuilderCapCents: 150,
+              qualityReviewerCapCents: 150,
+              combinedCapCents: 300,
+              automaticPaidRetry: false,
+              correctionLimit: 1,
+            },
+          },
+        }),
+        now(),
+      ],
+    );
+    const generated = insertGeneratedDeliverables(runtime, build.task);
+    completeTask(runtime.db, build.task.id, {
+      ...workerOutput("Product Builder"),
+      generatedFiles: generated,
+    });
+    const buildProjection = projectCompletedProductionTask(runtime.db, build.task.id);
+    const qualityTask = buildProjection.result.next.task;
+    for (const [id, task, amountCents] of [
+      ["cost-buyer-intent-build-low", build.task, 15],
+      ["cost-buyer-intent-review-low", qualityTask, 16],
+    ]) {
+      run(
+        runtime.db,
+        `INSERT INTO costs
+         (id, workflow_id, venture_id, task_id, category, source, status,
+          amount_cents, currency, occurred_at, metadata)
+         VALUES (?, ?, ?, ?, 'live_ai_worker', 'openai-agents-sdk',
+                 'incurred_estimate', ?, 'AUD', ?, '{}')`,
+        [id, task.workflow_id, task.venture_id, task.id, amountCents, now()],
+      );
+    }
+    completeTask(runtime.db, qualityTask.id, {
+      ...workerOutput("Quality Reviewer", {
+        qualityScore: 55,
+        riskFindings: ["The workbook instructions are incomplete."],
+        operatorRecommendation: "Correct the instructions before testing.",
+      }),
+      operatorDecision: "revise",
+    });
+
+    const result = projectCompletedProductionTask(runtime.db, qualityTask.id);
+    assert.equal(result.result.correctionPrepared, true);
+    assert.equal(result.result.additionalApprovalRequired, false);
+    assert.ok(["blocked", "queued"].includes(result.result.next.task.status));
+    const correctionPayload = typeof result.result.next.task.payload === "string"
+      ? fromJson(result.result.next.task.payload, {})
+      : result.result.next.task.payload;
+    assert.equal(
+      correctionPayload.liveSpendRequest.parameters.pantheonProduction.revisionNumber,
+      1,
+    );
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'catalogue.validation_sample_correction_prepared'").count,
+      1,
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("inspection-evidence recovery is strict, source-bound, atomic, and idempotent", () => {
+  const runtime = makeRuntime("buyer-intent-inspection-evidence-recheck");
+  try {
+    const state = prepareInspectionRecoveryFixture(runtime);
+    const sourceStored = get(runtime.db, "SELECT result FROM tasks WHERE id = ?", [state.qualityTask.id]);
+    const sourceResult = fromJson(sourceStored.result, {});
+    const storeSourceResult = (result) => run(
+      runtime.db,
+      "UPDATE tasks SET result = ?, updated_at = ? WHERE id = ?",
+      [toJson(result), now(), state.qualityTask.id],
+    );
+    const storeEvidence = (generated, refresh) => {
+      const storedGenerated = structuredClone(generated);
+      const storedRefresh = structuredClone(refresh);
+      storedGenerated.localRendererRefresh = storedRefresh;
+      updateTaskGeneratedFiles(
+        runtime.db,
+        state.build.task.id,
+        storedGenerated,
+        storedRefresh,
+      );
+      updatePlanRendererRefresh(runtime.db, storedRefresh);
+    };
+
+    const materialTopLevelRisk = structuredClone(sourceResult);
+    materialTopLevelRisk.output.risks.push(
+      "The workbook formulas are broken and return incorrect results.",
+    );
+    storeSourceResult(materialTopLevelRisk);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /solely because PDF inspection evidence/i,
+    );
+
+    const negatedVisibleQuality = structuredClone(sourceResult);
+    negatedVisibleQuality.output.roleOutput.riskFindings.push(
+      "The visible workbook is not legible.",
+    );
+    storeSourceResult(negatedVisibleQuality);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /solely because PDF inspection evidence/i,
+    );
+    storeSourceResult(sourceResult);
+
+    const changedFiles = structuredClone(state.validRefresh);
+    changedFiles.currentFiles[0].sha256 = "a".repeat(64);
+    storeEvidence(state.generated, changedFiles);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /unchanged customer files/i,
+    );
+
+    const incompleteCoverageGenerated = structuredClone(state.generated);
+    const incompleteCoverageRefresh = structuredClone(state.validRefresh);
+    const generatedGuide = incompleteCoverageGenerated.qualityReviewImages.find(
+      (image) => image.evidenceRole === "setup_guide_inspection",
+    );
+    const refreshGuide = incompleteCoverageRefresh.currentQualityReviewImages.find(
+      (image) => image.evidenceRole === "setup_guide_inspection",
+    );
+    generatedGuide.inspectionCoverage.sourcePageCount = 4;
+    refreshGuide.inspectionCoverage.sourcePageCount = 4;
+    storeEvidence(incompleteCoverageGenerated, incompleteCoverageRefresh);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /complete PDF page coverage/i,
+    );
+
+    const missingPreviews = structuredClone(state.validRefresh);
+    missingPreviews.currentPreviews = [];
+    storeEvidence(state.generated, missingPreviews);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /unchanged customer files/i,
+    );
+
+    const ambiguousGuide = structuredClone(state.validRefresh);
+    const nonGuide = ambiguousGuide.currentFiles.find(
+      (file) => file.id !== state.guideFile.id,
+    );
+    nonGuide.archiveEntry = "customer-files/00-customer-setup-guide.pdf";
+    storeEvidence(state.generated, ambiguousGuide);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /complete PDF page coverage/i,
+    );
+    storeEvidence(state.generated, state.validRefresh);
+
+    const taskCountBefore = get(runtime.db, "SELECT COUNT(*) AS count FROM tasks").count;
+    const approvalCountBefore = get(
+      runtime.db,
+      "SELECT COUNT(*) AS count FROM approvals",
+    ).count;
+    runtime.db.exec(
+      "CREATE TRIGGER fail_inspection_recheck_event BEFORE INSERT ON events WHEN NEW.type = 'quality_review.pdf_inspection_recheck_ready' BEGIN SELECT RAISE(ABORT, 'forced recovery event failure'); END",
+    );
+    try {
+      assert.throws(
+        () => recoverValidationQualityReviewAfterInspectionRepair(
+          runtime.db,
+          state.qualityTask.id,
+        ),
+        /forced recovery event failure/i,
+      );
+    } finally {
+      runtime.db.exec("DROP TRIGGER fail_inspection_recheck_event");
+    }
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM tasks").count,
+      taskCountBefore,
+    );
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
+      approvalCountBefore,
+    );
+    assert.equal(
+      get(
+        runtime.db,
+        "SELECT COUNT(*) AS count FROM tasks WHERE json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.inspectionEvidenceRecheck') = 1",
+      ).count,
+      0,
+    );
+    const planAfterRollback = fromJson(
+      get(
+        runtime.db,
+        "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
+      ).metadata,
+      {},
+    );
+    assert.equal(planAfterRollback.qualityTaskId, state.qualityTask.id);
+
+    const recovered = recoverValidationQualityReviewAfterInspectionRepair(
+      runtime.db,
+      state.qualityTask.id,
+    );
+    assert.equal(recovered.recovered, true);
+    assert.equal(recovered.unchangedCustomerPackage, true);
+    assert.equal(recovered.completePageCoverage.sourcePageCount, 3);
+    assert.equal(recovered.completePageCoverage.renderedPageCount, 3);
+    assert.equal(recovered.completePageCoverage.pages.length, 3);
+    assert.equal(recovered.task.status, "blocked");
+    assert.equal(recovered.task.cost_budget_cents, 150);
+    assert.match(
+      recovered.task.title,
+      /Client Control and Profitability Workbook/,
+    );
+    assert.match(
+      recovered.approval.title,
+      /Client Control and Profitability Workbook/,
+    );
+    const request = recovered.task.payload.liveSpendRequest;
+    assert.equal(request.model, CONFIG.terraModel);
+    assert.equal(request.maxToolCalls, 0);
+    assert.deepEqual(request.effects, []);
+    assert.equal(request.parameters.manualApprovalRequired, true);
+    assert.equal(
+      request.parameters.pantheonProduction.inspectionEvidenceRecheck,
+      true,
+    );
+    assert.equal(
+      request.parameters.pantheonProduction.inspectionEvidenceSourceQualityTaskId,
+      state.qualityTask.id,
+    );
+    const assetBinding = request.parameters.approvedAssetBinding
+      || request.toolArguments.visual_asset_review.approvedAssetBinding;
+    assert.equal(assetBinding.assets.length, 4);
+    assert.deepEqual(
+      assetBinding.assets.map((asset) => asset.id).sort(),
+      [
+        ...state.generated.qualityReviewImages,
+        ...state.generated.previews,
+      ].map((asset) => asset.id).sort(),
+    );
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM model_calls").count, 0);
+
+    const repeated = recoverValidationQualityReviewAfterInspectionRepair(
+      runtime.db,
+      state.qualityTask.id,
+    );
+    assert.equal(repeated.existing, true);
+    assert.equal(repeated.task.id, recovered.task.id);
+    assert.equal(
+      get(
+        runtime.db,
+        "SELECT COUNT(*) AS count FROM tasks WHERE json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.inspectionEvidenceRecheck') = 1",
+      ).count,
+      1,
+    );
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        recovered.task.id,
+      ),
+      /eligible initial/i,
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("declining the single inspection recheck is terminal and cannot be reissued", () => {
+  const runtime = makeRuntime("buyer-intent-inspection-recheck-declined");
+  try {
+    const state = prepareInspectionRecoveryFixture(runtime);
+    const recovered = recoverValidationQualityReviewAfterInspectionRepair(
+      runtime.db,
+      state.qualityTask.id,
+    );
+    const artifactsBeforeTerminal = currentValidationArtifactSnapshot(runtime.db);
+    const taskCountBeforeTerminal = get(
+      runtime.db,
+      "SELECT COUNT(*) AS count FROM tasks",
+    ).count;
+    const approvalCountBeforeTerminal = get(
+      runtime.db,
+      "SELECT COUNT(*) AS count FROM approvals",
+    ).count;
+    decideApproval(
+      runtime.db,
+      recovered.approval.id,
+      "rejected",
+      "Do not spend the approved amount on this inspection recheck.",
+      { expectedScopeHash: recovered.approval.scope_hash },
+    );
+
+    const planBeforeRollback = get(
+      runtime.db,
+      `SELECT status, metadata, updated_at
+       FROM catalogue_plans WHERE id = 'plan-pantheon-production'`,
+    );
+    const persistenceBeforeRollback = terminalValidationPersistenceState(runtime.db);
+    runtime.db.exec(
+      `CREATE TRIGGER fail_declined_terminal_artifact_update
+       BEFORE UPDATE OF status ON deliverables
+       WHEN NEW.status = 'needs_changes'
+       BEGIN SELECT RAISE(ABORT, 'forced declined terminal persistence failure'); END`,
+    );
+    try {
+      assert.throws(
+        () => recoverValidationQualityReviewAfterInspectionRepair(
+          runtime.db,
+          state.qualityTask.id,
+        ),
+        /forced declined terminal persistence failure/i,
+      );
+    } finally {
+      runtime.db.exec("DROP TRIGGER fail_declined_terminal_artifact_update");
+    }
+    assert.deepEqual(
+      get(
+        runtime.db,
+        `SELECT status, metadata, updated_at
+         FROM catalogue_plans WHERE id = 'plan-pantheon-production'`,
+      ),
+      planBeforeRollback,
+      "declined-terminal plan writes must roll back with terminal persistence",
+    );
+    assert.deepEqual(
+      terminalValidationPersistenceState(runtime.db),
+      persistenceBeforeRollback,
+      "declined-terminal commercial and artifact writes must roll back atomically",
+    );
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM tasks").count,
+      taskCountBeforeTerminal,
+    );
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
+      approvalCountBeforeTerminal,
+    );
+
+    const reconciled = recoverValidationQualityReviewAfterInspectionRepair(
+      runtime.db,
+      state.qualityTask.id,
+    );
+    assert.equal(reconciled.existing, true);
+    assert.equal(reconciled.terminal, true);
+    assert.equal(reconciled.singleUseConsumed, true);
+    assert.equal(reconciled.task.status, "cancelled");
+    assert.equal(reconciled.approval.status, "rejected");
+    const terminalPlan = get(
+      runtime.db,
+      "SELECT status, metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
+    );
+    const terminalMetadata = fromJson(terminalPlan.metadata, {});
+    assert.equal(terminalPlan.status, "needs_attention");
+    assert.equal(
+      terminalMetadata.buildStatus,
+      "inspection_evidence_recheck_declined_terminal",
+    );
+    assert.equal(terminalMetadata.inspectionEvidenceRecheckExhausted, true);
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM tasks").count,
+      taskCountBeforeTerminal,
+    );
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
+      approvalCountBeforeTerminal,
+    );
+    const terminalPersistence = assertTerminalValidationPersistence(
+      runtime.db,
+      artifactsBeforeTerminal,
+    );
+    assert.equal(
+      get(
+        runtime.db,
+        "SELECT COUNT(*) AS count FROM tasks WHERE json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.inspectionEvidenceRecheck') = 1",
+      ).count,
+      1,
+    );
+    const repeated = recoverValidationQualityReviewAfterInspectionRepair(
+      runtime.db,
+      state.qualityTask.id,
+    );
+    assert.equal(repeated.existing, true);
+    assert.equal(repeated.terminal, true);
+    assert.deepEqual(
+      terminalValidationPersistenceState(runtime.db),
+      terminalPersistence,
+      "declined-terminal reconciliation must be idempotent",
+    );
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM tasks").count,
+      taskCountBeforeTerminal,
+    );
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
+      approvalCountBeforeTerminal,
+    );
+    assert.equal(
+      get(
+        runtime.db,
+        "SELECT COUNT(*) AS count FROM events WHERE type = 'quality_review.pdf_inspection_recheck_declined'",
+      ).count,
+      1,
+    );
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM model_calls").count, 0);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("a failed or contradictory inspection recheck is terminal with no retry", () => {
+  for (const fixture of [
+    {
+      name: "known-failure",
+      output: {
+        qualityScore: 86,
+        riskFindings: ["The visible files remain legible."],
+        missingEvidence: ["Setup-guide page 3 is still not shown for inspection."],
+        claimSafety: "Supported visible claims, but page 3 remains uninspected.",
+        operatorRecommendation: "Stop because the single recheck did not close the evidence gap.",
+        decision: "revise",
+      },
+    },
+    {
+      name: "contradictory-approval",
+      output: {
+        qualityScore: 92,
+        riskFindings: ["The workbook formula is broken and produces an incorrect result."],
+        missingEvidence: ["The source PDF hash is not confirmed."],
+        claimSafety: "Unsafe: revise the unsupported claim before any buyer test.",
+        operatorRecommendation: "Do not advance this package.",
+        decision: "approve",
+      },
+    },
+  ]) {
+    const runtime = makeRuntime("buyer-intent-inspection-" + fixture.name);
+    try {
+      const state = prepareInspectionRecoveryFixture(runtime);
+      const recovered = recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      );
+      approve(runtime.db, recovered.approval);
+      const taskCountBefore = get(runtime.db, "SELECT COUNT(*) AS count FROM tasks").count;
+      const approvalCountBefore = get(
+        runtime.db,
+        "SELECT COUNT(*) AS count FROM approvals",
+      ).count;
+      if (fixture.name === "contradictory-approval") {
+        const planRow = get(
+          runtime.db,
+          "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
+        );
+        const planMetadata = fromJson(planRow.metadata, {});
+        delete planMetadata.validationSample.candidateId;
+        run(
+          runtime.db,
+          `UPDATE catalogue_plans SET metadata = ?, updated_at = ?
+           WHERE id = 'plan-pantheon-production'`,
+          [toJson(planMetadata), now()],
+        );
+      }
+      const artifactsBeforeTerminal = currentValidationArtifactSnapshot(runtime.db);
+      completeTask(runtime.db, recovered.task.id, {
+        ...workerOutput("Quality Reviewer", {
+          qualityScore: fixture.output.qualityScore,
+          riskFindings: fixture.output.riskFindings,
+          missingEvidence: fixture.output.missingEvidence,
+          claimSafety: fixture.output.claimSafety,
+          operatorRecommendation: fixture.output.operatorRecommendation,
+        }),
+        operatorDecision: fixture.output.decision,
+      });
+      if (fixture.name === "known-failure") {
+        const planBeforeRollback = get(
+          runtime.db,
+          `SELECT status, metadata, updated_at
+           FROM catalogue_plans WHERE id = 'plan-pantheon-production'`,
+        );
+        const persistenceBeforeRollback = terminalValidationPersistenceState(runtime.db);
+        runtime.db.exec(
+          `CREATE TRIGGER fail_projected_terminal_artifact_update
+           BEFORE UPDATE OF status ON deliverables
+           WHEN NEW.status = 'needs_changes'
+           BEGIN SELECT RAISE(ABORT, 'forced projected terminal persistence failure'); END`,
+        );
+        try {
+          assert.throws(
+            () => projectCompletedProductionTask(runtime.db, recovered.task.id),
+            /forced projected terminal persistence failure/i,
+          );
+        } finally {
+          runtime.db.exec("DROP TRIGGER fail_projected_terminal_artifact_update");
+        }
+        assert.deepEqual(
+          get(
+            runtime.db,
+            `SELECT status, metadata, updated_at
+             FROM catalogue_plans WHERE id = 'plan-pantheon-production'`,
+          ),
+          planBeforeRollback,
+          "failed projection plan writes must roll back with terminal persistence",
+        );
+        assert.deepEqual(
+          terminalValidationPersistenceState(runtime.db),
+          persistenceBeforeRollback,
+          "failed projection commercial and artifact writes must roll back atomically",
+        );
+        assert.equal(
+          get(runtime.db, "SELECT COUNT(*) AS count FROM tasks").count,
+          taskCountBefore,
+        );
+        assert.equal(
+          get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
+          approvalCountBefore,
+        );
+      }
+      const projected = projectCompletedProductionTask(
+        runtime.db,
+        recovered.task.id,
+      );
+      assert.equal(projected.result.terminal, true);
+      assert.equal(projected.result.correctionPrepared, false);
+      assert.equal(projected.result.additionalApprovalRequired, false);
+      assert.equal(projected.result.next, null);
+      assert.equal(
+        get(runtime.db, "SELECT COUNT(*) AS count FROM tasks").count,
+        taskCountBefore,
+      );
+      assert.equal(
+        get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
+        approvalCountBefore,
+      );
+      const terminalPlan = get(
+        runtime.db,
+        "SELECT status, metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
+      );
+      const terminalMetadata = fromJson(terminalPlan.metadata, {});
+      assert.equal(terminalPlan.status, "needs_attention");
+      assert.equal(
+        terminalMetadata.buildStatus,
+        "inspection_evidence_recheck_failed_terminal",
+      );
+      assert.equal(terminalMetadata.inspectionEvidenceRecheckExhausted, true);
+      assert.equal(terminalMetadata.correctionPrepared, false);
+      assert.equal(terminalMetadata.validationExecutionPackId, undefined);
+      const terminalPersistence = assertTerminalValidationPersistence(
+        runtime.db,
+        artifactsBeforeTerminal,
+      );
+      assert.equal(
+        get(
+          runtime.db,
+          "SELECT COUNT(*) AS count FROM commercial_execution_packs WHERE experiment_id = ?",
+          [INSPECTION_EXPERIMENT_ID],
+        ).count,
+        0,
+      );
+
+      const repeated = recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      );
+      assert.equal(repeated.existing, true);
+      assert.equal(repeated.terminal, true);
+      const afterReconcile = get(
+        runtime.db,
+        "SELECT status, metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
+      );
+      assert.equal(afterReconcile.status, "needs_attention");
+      assert.equal(
+        fromJson(afterReconcile.metadata, {}).buildStatus,
+        "inspection_evidence_recheck_failed_terminal",
+      );
+      assert.deepEqual(
+        terminalValidationPersistenceState(runtime.db),
+        terminalPersistence,
+        "failed-terminal reconciliation must be idempotent",
+      );
+      assert.equal(
+        get(runtime.db, "SELECT COUNT(*) AS count FROM tasks").count,
+        taskCountBefore,
+      );
+      assert.equal(
+        get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
+        approvalCountBefore,
+      );
+      assert.equal(
+        get(
+          runtime.db,
+          "SELECT COUNT(*) AS count FROM tasks WHERE json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.inspectionEvidenceRecheck') = 1",
+        ).count,
+        1,
+      );
+    } finally {
+      closeRuntime(runtime);
+    }
+  }
+});
+test("quality-review capacity stops a fourth distinct review for one product revision", () => {
+  const runtime = makeRuntime("quality-review-capacity");
+  try {
+    const timestamp = now();
+    for (let index = 1; index <= 3; index += 1) {
+      run(
+        runtime.db,
+        `INSERT INTO tasks
+         (id, workflow_id, title, kind, agent, status, priority, retries, max_retries,
+          cost_budget_cents, cost_actual_cents, payload, result, created_at, updated_at,
+          outcome_status)
+         VALUES (?, NULL, ?, 'live_ai_worker_execution',
+                 'quality_reviewer', 'completed', 2, 0, 0, 150, 0, ?, '{}', ?, ?, 'known')`,
+        [
+          `task-quality-capacity-${index}`,
+          `Quality review ${index}`,
+          toJson({
+            liveSpendRequest: {
+              parameters: {
+                pantheonProduction: {
+                  planId: "plan-quality-capacity",
+                  stage: "quality_review",
+                  revisionNumber: 0,
+                  reviewFingerprint: `fingerprint-${index}`,
+                },
+              },
+            },
+          }),
+          timestamp,
+          timestamp,
+        ],
+      );
+    }
+    assert.throws(
+      () => assertQualityReviewRecheckAvailable(runtime.db, "plan-quality-capacity", 0),
+      /stopped before creating another quality review/i,
+    );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("the retired final-review override cannot create another paid validation review", () => {
+  const runtime = makeRuntime("explicit-final-quality-review");
+  try {
+    const timestamp = now();
+    const plan = get(runtime.db, "SELECT metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'");
+    run(
+      runtime.db,
+      "UPDATE catalogue_plans SET status = 'needs_attention', metadata = ?, updated_at = ? WHERE id = 'plan-pantheon-production'",
+      [
+        toJson({
+          ...fromJson(plan.metadata, {}),
+          validationSample: buyerIntentSpec,
+        }),
+        timestamp,
+      ],
+    );
+
+    assert.throws(
+      () => prepareExplicitFinalValidationReview(
+        runtime.db,
+        "plan-pantheon-production",
+      ),
+      /final-review override is retired/i,
+    );
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM model_calls").count, 0);
+  } finally {
+    closeRuntime(runtime);
+  }
+});
 
 test("the local Digital Product Kit renderer creates usable workbooks, guide, previews and bundle", () => {
   const runtime = makeRuntime("local-file-renderer");
@@ -702,12 +2094,27 @@ test("the local Digital Product Kit renderer creates usable workbooks, guide, pr
     );
     assert.equal(rendered.renderer, "pantheon-local-digital-product-factory-v1");
     assert.equal(rendered.files.length, 2);
+    assert.equal(rendered.qualityReviewImages.length, 2);
+    assert.deepEqual(
+      rendered.qualityReviewImages.map((image) => image.filename),
+      ["actual-workbook.png", "actual-setup-guide.png"],
+    );
+    assert.ok(rendered.qualityReviewImages.every((image) => image.bytes.subarray(0, 8).equals(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    )));
     const manifestFile = rendered.files.find((file) => file.filename === build.spec.manifestFilename);
     const bundleFile = rendered.files.find((file) => file.filename === build.spec.bundleFilename);
     assert.ok(manifestFile && bundleFile);
     const manifest = JSON.parse(manifestFile.bytes.toString("utf8"));
     assert.equal(manifest.catalogueItems.length, 3);
     assert.equal(manifest.storefrontPreviews.length, 2);
+    assert.equal(manifest.assetProvenance.sourceType, "pantheon_local_generation");
+    assert.deepEqual(manifest.assetProvenance.externalAssetsUsed, []);
+    assert.equal(manifest.assetProvenance.customerDataUsed, false);
+    assert.ok(
+      manifest.catalogueItems[0].validation.sampleCalculationChecks
+        .every((check) => check.results.every((result) => Number.isFinite(result.value))),
+    );
     assert.equal(manifest.customerPromise, "Use these files to collect project inputs in a structured format and track the work.");
     assert.equal(
       manifest.catalogueItems[0].purpose,
@@ -1100,13 +2507,29 @@ test("Product Builder renders and validates a real manifest and bundle before co
     }));
 
     const executed = await runOnce(runtime.db, { taskId: build.task.id });
-    assert.equal(executed.status, "completed", executed.error || JSON.stringify(executed));
-    assert.equal(executed.result.output.generatedFiles.files.length, 2);
+    const evaluation = get(
+      runtime.db,
+      "SELECT status, score, findings, metadata FROM agent_eval_results WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
+      [build.task.id],
+    );
+    assert.equal(executed.status, "completed", JSON.stringify({
+      error: executed.error || null,
+      evaluation: evaluation ? {
+        ...evaluation,
+        findings: fromJson(evaluation.findings, []),
+        metadata: fromJson(evaluation.metadata, {}),
+      } : null,
+    }));
+    assert.equal(executed.result.output.generatedFiles.files.length, 5);
+    assert.equal(
+      executed.result.output.generatedFiles.files.filter((file) => file.customerFile).length,
+      3,
+    );
     assert.equal(executed.result.output.generatedFiles.manifest.planId, build.spec.planId);
     assert.equal(executed.result.qualityGate.status, "not_required");
     assert.equal(
       get(runtime.db, "SELECT COUNT(*) AS count FROM deliverables WHERE task_id = ? AND status = 'built_pending_quality_review'", [build.task.id]).count,
-      2,
+      5,
     );
     assert.equal(
       get(runtime.db, "SELECT COUNT(*) AS count FROM deliverables WHERE workflow_id = ? AND format = 'pdf'", [build.task.workflow_id]).count,

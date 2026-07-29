@@ -20,6 +20,7 @@ const { getOpportunityState } = require("./pantheon-opportunities");
 const { getProductionState } = require("./pantheon-production");
 const { currentOperatorJourney } = require("./pantheon-journey");
 const { getPortfolioState } = require("./portfolio-controller");
+const { getAgentCostObservability } = require("./agent-cost-observability");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -73,6 +74,41 @@ function operatorDeliverable(deliverable) {
   };
 }
 
+function operatorProductionText(db, value, payload = {}) {
+  const text = String(value || "");
+  const parameters = payload?.liveSpendRequest?.parameters || {};
+  const production = parameters.pantheonProduction || {};
+  if (!production.planId || !text) return text;
+  const plan = get(
+    db,
+    "SELECT title, metadata FROM catalogue_plans WHERE id = ?",
+    [production.planId],
+  );
+  if (!plan) return text;
+  const metadata = fromJson(plan.metadata, {});
+  const canonicalTitle = String(
+    metadata.productManifest?.packageTitle
+      || metadata.validationSample?.sample?.item?.title
+      || metadata.buyerIntentValidation?.sample?.item?.title
+      || "",
+  ).trim();
+  if (!canonicalTitle) return text;
+  const aliases = [...new Set([
+    plan.title,
+    metadata.validationSample?.sample?.packageTitle,
+    metadata.buyerIntentValidation?.sample?.packageTitle,
+    parameters.productBuildSpec?.validationSample?.packageTitle,
+  ].map((item) => String(item || "").trim()).filter((item) => (
+    item && item.toLowerCase() !== canonicalTitle.toLowerCase()
+  )))];
+  return aliases.reduce((current, alias) => (
+    current.replace(
+      new RegExp(alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
+      canonicalTitle,
+    )
+  ), text);
+}
+
 function pendingApprovals(db) {
   return all(db, "SELECT * FROM approvals WHERE status = 'pending' ORDER BY CASE risk_level WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, requested_at")
     .map((row) => {
@@ -87,7 +123,7 @@ function pendingApprovals(db) {
     });
 }
 
-function decisionCard(approval) {
+function decisionCard(approval, db = null) {
   const payload = approval.payload || {};
   const liveRequest = approval.taskPayload?.liveSpendRequest || {};
   const modelRoute = liveRequest.modelRoute || null;
@@ -103,16 +139,28 @@ function decisionCard(approval) {
   const dataProtectionPlan = approval.scope === "data_retention_policy";
   const catalogueBuild = production?.stage === "product_build"
     && production.operatorChoiceRequired === true;
+  const validationProductBuild = catalogueBuild && Boolean(productBuildSpec?.validationSample);
   const qualityReview = production?.stage === "quality_review"
     || workerId === "quality_reviewer";
   const correctionNumber = Number(production?.revisionNumber || 0);
-  const finalQualityRecheck = qualityReview && correctionNumber > 0;
-  const maxCostCents = Number(payload.estimatedCostCents || payload.maxCostCents || 0);
+  const explicitOperatorFinalReview = qualityReview
+    && production?.explicitOperatorFinalReview === true;
+  const inspectionEvidenceRecheck = qualityReview
+    && production?.inspectionEvidenceRecheck === true;
+  const finalQualityRecheck = qualityReview
+    && (correctionNumber > 0 || explicitOperatorFinalReview || inspectionEvidenceRecheck);
+  const maxCostCents = Number(payload.maxCostCents || payload.estimatedCostCents || 0);
   return {
     id: approval.id,
     type: "decision",
     decisionKind: "approval",
-    title: catalogueBuild
+    title: inspectionEvidenceRecheck
+      ? "Recheck the complete setup-guide inspection?"
+      : explicitOperatorFinalReview
+      ? "Run one final independent check on the corrected workbook?"
+      : validationProductBuild
+      ? "Build the functional validation workbook?"
+      : catalogueBuild
       ? `Build the ${productBuildSpec?.catalogueItems?.length || "planned"}-product catalogue?`
       : demandResearch
       ? `Decide whether to run live market research${maxCostCents > 0 ? ` (up to A$${(maxCostCents / 100).toFixed(2)})` : ""}`
@@ -123,14 +171,26 @@ function decisionCard(approval) {
     requestedAt: approval.requested_at,
     scopeHash: approval.scope_hash,
     expiresAt: approval.expires_at,
-    recommendation: catalogueBuild
+    recommendation: inspectionEvidenceRecheck
+      ? "Jarvis regenerated only the internal setup-guide inspection so all three pages are visible. The customer package and storefront previews remain byte-for-byte unchanged."
+      : explicitOperatorFinalReview
+      ? "Jarvis corrected the exact workbook, setup guide, calculations, and previews locally at no additional AI cost. Run one final independent review before Pantheon treats the product as ready for a buyer test."
+      : validationProductBuild
+      ? "Pantheon will create one usable local Excel workbook, setup guide, and two previews, then send the exact files through independent quality review. Nothing will be published or sent."
+      : catalogueBuild
       ? "Pantheon will create the complete local product files, retain them in the venture record, and send them through an independent quality review. Nothing will be published or sent."
       : demandResearch
       ? "Demand Validator will search the web for current buyer language, competing products, price signals, and one suitable free audience channel."
       : controlledDemandCheck
         ? "Demand Validator will assess the supplied test evidence and return one recommendation for your review."
         : payload.reason || payload.commercialPurpose || "Review the evidence and choose whether this exact action should continue.",
-    expectedUpside: catalogueBuild
+    expectedUpside: inspectionEvidenceRecheck
+      ? "Lets the independent reviewer inspect the previously unseen page once. If the unchanged package does not pass, Pantheon stops this build permanently."
+      : explicitOperatorFinalReview
+      ? "Confirms whether the corrected customer files are genuinely usable and truthfully represented. If they still fail, Pantheon stops rather than paying for another review."
+      : validationProductBuild
+      ? "Closes the product-format and usability gap with one real sample before any wider catalogue or marketplace action is considered."
+      : catalogueBuild
       ? "Turns the validated offer into customer-usable files so the real launch decision can be based on an actual product rather than a plan."
       : demandResearch
       ? "The result should tell us whether this buyer can be reached and give us one measurable free test with a clear stop rule."
@@ -150,6 +210,16 @@ function decisionCard(approval) {
     productionStage: production?.stage || null,
     correctionNumber,
     finalQualityRecheck,
+    explicitOperatorFinalReview,
+    inspectionEvidenceRecheck,
+    productFiles: (explicitOperatorFinalReview || inspectionEvidenceRecheck) && db
+      ? inspectionEvidenceRecheck
+        ? presentedDeliverablesByIds(
+          db,
+          liveRequest.parameters?.approvedAssetIds || [],
+        )
+        : currentBuyerIntentValidation(db, approval.venture_id, production?.planId)?.files || []
+      : [],
     effects: approval.expectedEffects,
     tools,
     maxTurns: Number(scope.maxTurns || liveRequest.maxTurns || 0),
@@ -170,9 +240,15 @@ function decisionCard(approval) {
     tracePolicy: payload.tracePolicy || null,
     policySummary: Array.isArray(payload.policySummary) ? payload.policySummary : null,
     noDeletion: payload.noDeletion === true,
-    attentionLabel: catalogueBuild ? "Product build ready" : finalQualityRecheck ? "Final quality recheck ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
-    primaryActionLabel: catalogueBuild ? "Review catalogue build" : finalQualityRecheck ? "Review final quality recheck" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
-    approveLabel: catalogueBuild
+    attentionLabel: inspectionEvidenceRecheck ? "Complete inspection ready" : explicitOperatorFinalReview ? "Corrected workbook ready" : validationProductBuild ? "Validation product ready" : catalogueBuild ? "Product build ready" : finalQualityRecheck ? "Final quality recheck ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
+    primaryActionLabel: inspectionEvidenceRecheck ? "Review the evidence recheck" : explicitOperatorFinalReview ? "Review the corrected workbook" : validationProductBuild ? "Review validation product" : catalogueBuild ? "Review catalogue build" : finalQualityRecheck ? "Review final quality recheck" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
+    approveLabel: inspectionEvidenceRecheck
+      ? "Start the evidence recheck"
+      : explicitOperatorFinalReview
+      ? "Run the final independent check"
+      : validationProductBuild
+      ? "Build this validation workbook"
+      : catalogueBuild
       ? "Build this catalogue"
       : finalQualityRecheck
         ? "Start final quality recheck"
@@ -185,6 +261,8 @@ function decisionCard(approval) {
         ? "data_protection"
         : null,
     productBuild: catalogueBuild ? {
+      validationSample: validationProductBuild,
+      channel: productBuildSpec?.validationSample?.channel || null,
       productCount: Number(productBuildSpec?.catalogueItems?.length || 0),
       profile: productBuildSpec?.profile || null,
       formats: productBuildSpec?.allowedFormats || [],
@@ -197,7 +275,11 @@ function decisionCard(approval) {
         priceCents: Number(item.priceCents || 0),
       })),
     } : null,
-    decisionPrompt: catalogueBuild
+    decisionPrompt: inspectionEvidenceRecheck
+      ? "Review the four exact local inspection images, the one-recheck limit, and the A$1.50 ceiling before deciding."
+      : explicitOperatorFinalReview
+      ? "Review the corrected files, the one-review limit, and the A$1.50 maximum before deciding."
+      : catalogueBuild
       ? "Review what Pantheon will create, the cost ceiling, and what remains locked."
       : demandResearch
       ? "See what the AI will research, the maximum cost, and what it cannot do."
@@ -325,7 +407,7 @@ function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
   const consequentialChoices = [
     ...pendingApprovals(db)
       .filter((approval) => belongsToCurrentJourney(approval.taskPayload, currentJourneyId))
-      .map(decisionCard),
+      .map((approval) => decisionCard(approval, db)),
     ...pendingHandoffs(db)
       .filter((handoff) => belongsToCurrentJourney(handoff.source_task_payload, currentJourneyId))
       .map(handoffCard),
@@ -398,7 +480,11 @@ function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
       type: preDispatchRecovery.available
         ? "pre_dispatch_recovery"
         : knownReviewedRetry ? "known_ai_result" : "unknown_outcome",
-      title: correctedRun ? `${task.title}: first call billing check` : task.title,
+      title: operatorProductionText(
+        db,
+        correctedRun ? `${task.title}: first call billing check` : task.title,
+        task.payload,
+      ),
       risk: preDispatchRecovery.available || knownReviewedRetry ? "medium" : "high",
       summary: preDispatchRecovery.available
         ? "Pantheon stopped locally before contacting OpenAI. No API cost occurred."
@@ -449,6 +535,52 @@ function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
       action: null,
     });
   }
+  const activeValidationPlan = get(
+    db,
+    `SELECT id, status, metadata, updated_at
+     FROM catalogue_plans
+     WHERE json_extract(metadata, '$.validationSample') IS NOT NULL
+       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
+       AND status NOT IN ('cancelled', 'paused', 'validation_sample_ready')
+     ORDER BY updated_at DESC LIMIT 1`,
+  );
+  if (activeValidationPlan) {
+    const activePlanMetadata = fromJson(activeValidationPlan.metadata, {});
+    const workflowId = activePlanMetadata.validationSample?.workflowId || null;
+    const latestPlanCycle = get(
+      db,
+      `SELECT supervisor_cycles.*
+       FROM supervisor_cycles
+       LEFT JOIN tasks ON tasks.id = supervisor_cycles.task_id
+       WHERE (
+         supervisor_cycles.workflow_id = ?
+         OR json_extract(
+           tasks.payload,
+           '$.liveSpendRequest.parameters.pantheonProduction.planId'
+         ) = ?
+       )
+       ORDER BY supervisor_cycles.updated_at DESC LIMIT 1`,
+      [workflowId, activeValidationPlan.id],
+    );
+    if (
+      latestPlanCycle?.status === "needs_attention"
+      && latestPlanCycle.next_action_type === "developer_review_required"
+      && Date.parse(latestPlanCycle.updated_at || "") >= Date.parse(activeValidationPlan.updated_at || "")
+      && !items.some((item) => item.id === latestPlanCycle.task_id)
+    ) {
+      items.push({
+        id: latestPlanCycle.id,
+        type: "supervisor_failure",
+        title: "Pantheon could not prepare the next product check",
+        risk: "high",
+        summary: "The completed files are safe, but Pantheon could not apply the next local preparation step.",
+        recommendation: "Jarvis must repair the local workflow before this buyer test can continue. No paid retry is ready.",
+        expectedUpside: "Restores the exact buyer-test path without repeating paid AI work or hiding the failure.",
+        workflowId: latestPlanCycle.workflow_id || workflowId,
+        action: null,
+      });
+    }
+  }
   const urgent = parseRows(all(
     db,
     "SELECT * FROM messages WHERE status = 'open' AND severity = 'urgent' ORDER BY created_at DESC LIMIT 10",
@@ -461,17 +593,19 @@ function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
         || message.metadata?.outcomeUnknown === true
       )
     ) continue;
+    let messageTaskPayload = {};
     if (message.task_id) {
       const messageTask = get(db, "SELECT payload FROM tasks WHERE id = ?", [message.task_id]);
+      messageTaskPayload = fromJson(messageTask?.payload, {});
       if (messageTask && !belongsToCurrentJourney(fromJson(messageTask.payload, {}), currentJourneyId)) continue;
     }
     if (items.some((item) => item.id === message.task_id || item.title === message.subject)) continue;
     items.push({
       id: message.id,
       type: "attention",
-      title: message.subject,
+      title: operatorProductionText(db, message.subject, messageTaskPayload),
       risk: "high",
-      recommendation: message.body,
+      recommendation: operatorProductionText(db, message.body, messageTaskPayload),
       expectedUpside: "Resolve the issue that is stopping trusted progress.",
     });
   }
@@ -508,7 +642,7 @@ function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
     items.push({
       id: task.id,
       type: execution.safe_to_run ? "queued_work" : "approved_work",
-      title: `${task.title} is waiting to start`,
+      title: `${operatorProductionText(db, task.title, task.payload)} is waiting to start`,
       risk: execution.safe_to_run ? "low" : "medium",
       recommendation: execution.safe_to_run
         ? `${task.worker_name || task.agent || "The AI team"} has a protected internal step queued. Run this exact item now or leave it queued.`
@@ -536,13 +670,195 @@ function currentTest(db, ventureId) {
   const row = get(
     db,
     `SELECT * FROM commercial_experiments
-     WHERE venture_id = ?
+     WHERE (
+         venture_id = ?
+         OR json_extract(metadata, '$.buyerIntentValidation') IS NOT NULL
+       )
        AND status IN ('ready', 'running')
        AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
-     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
-    [ventureId],
+     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
+              CASE WHEN venture_id = ? THEN 0 ELSE 1 END,
+              updated_at DESC LIMIT 1`,
+    [ventureId, ventureId],
   );
   return row ? { ...row, status: testStatus(row.status), metadata: fromJson(row.metadata) } : null;
+}
+
+function retainedTerminalBuyerIntentTest(db, validation) {
+  if (!validation?.terminal || !validation.experimentId) return null;
+  const row = get(
+    db,
+    "SELECT * FROM commercial_experiments WHERE id = ?",
+    [validation.experimentId],
+  );
+  const marketResultCount = Number(validation.marketResultCount || 0);
+  return {
+    ...(row || { id: validation.experimentId }),
+    name: validation.name || row?.name || "Buyer-intent validation product",
+    status: "stopped_permanently",
+    storedStatus: row?.status || null,
+    hypothesis: validation.measurement?.qualificationQuestion || row?.hypothesis || "",
+    buyer: validation.buyer || row?.buyer || "",
+    offer: validation.offer || row?.offer || "",
+    channel: validation.channel?.label || row?.channel || "",
+    price_cents: Number(validation.priceCents || row?.price_cents || 0),
+    expected_metric: validation.measurement?.passRule || row?.expected_metric || "",
+    metadata: fromJson(row?.metadata, {}),
+    retainedTerminal: true,
+    marketTestRunning: false,
+    marketResultCount,
+    marketEvidenceRecorded: marketResultCount > 0,
+    actionable: false,
+  };
+}
+
+function presentedDeliverablesByIds(db, sourceIds = []) {
+  const ids = [...new Set(sourceIds.filter(Boolean))];
+  if (!ids.length) return [];
+  const rows = all(
+    db,
+    `SELECT *
+     FROM deliverables
+     WHERE id IN (${ids.map(() => "?").join(", ")})
+       AND status <> 'archived'`,
+    ids,
+  ).map((row) => operatorDeliverable({
+    ...row,
+    metadata: fromJson(row.metadata, {}),
+  }));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return ids.map((id) => byId.get(id)).filter(Boolean).map((row) => ({
+    id: row.id,
+    name: row.human_name,
+    format: row.format,
+    bytes: Number(row.metadata?.bytes || 0),
+    status: row.status,
+    summary: row.summary,
+    qualityReviewOnly: row.metadata?.qualityReviewOnly === true,
+    derivedFromActualSavedFile: row.metadata?.derivedFromActualSavedFile === true,
+  }));
+}
+
+function validationSampleDeliverables(db, plan) {
+  const metadata = plan?.metadata || {};
+  return presentedDeliverablesByIds(db, [
+    ...(metadata.generatedFileIds || []),
+    ...(metadata.storefrontPreviewIds || []),
+  ]);
+}
+
+function currentBuyerIntentValidation(db, ventureId = null, planId = null) {
+  const planRow = get(
+    db,
+    `SELECT *
+     FROM catalogue_plans
+     WHERE json_extract(metadata, '$.validationSample') IS NOT NULL
+       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
+       AND (? IS NULL OR venture_id = ?)
+       AND (? IS NULL OR id = ?)
+     ORDER BY updated_at DESC LIMIT 1`,
+    [ventureId, ventureId, planId, planId],
+  );
+  if (!planRow) return null;
+  const plan = {
+    ...planRow,
+    metadata: fromJson(planRow.metadata, {}),
+  };
+  const contract = plan.metadata.validationSample || {};
+  const experiment = contract.experimentId
+    ? get(db, "SELECT id, name, status, updated_at FROM commercial_experiments WHERE id = ?", [contract.experimentId])
+    : null;
+  const marketResultCount = experiment?.id
+    ? Number(get(
+      db,
+      "SELECT COUNT(*) AS count FROM commercial_results WHERE experiment_id = ?",
+      [experiment.id],
+    )?.count || 0)
+    : 0;
+  const finalTaskId = plan.metadata.inspectionEvidenceRecheckTaskId
+    || plan.metadata.qualityTaskId
+    || plan.metadata.explicitFinalReviewTaskId
+    || null;
+  const finalTask = finalTaskId
+    ? get(
+      db,
+      "SELECT id, title, status, approval_id, cost_budget_cents, updated_at FROM tasks WHERE id = ?",
+      [finalTaskId],
+    )
+    : null;
+  const recordedQualityReviewTasks = Number(get(
+    db,
+    `SELECT COUNT(DISTINCT json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.reviewFingerprint')) AS count
+     FROM tasks
+     WHERE kind = 'live_ai_worker_execution'
+       AND status IN ('running', 'completed', 'failed', 'needs_attention')
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') = ?
+       AND json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage') = 'quality_review'`,
+    [plan.id],
+  )?.count || 0);
+  const recordedFiles = Array.isArray(plan.metadata.validationSampleDeliverables)
+    ? plan.metadata.validationSampleDeliverables
+    : [];
+  const terminalInspectionRecheck = new Set([
+    "inspection_evidence_recheck_failed_terminal",
+    "inspection_evidence_recheck_declined_terminal",
+  ]).has(plan.metadata.buildStatus);
+  let status = "product_being_built";
+  if (terminalInspectionRecheck) status = "stopped_permanently";
+  else if (plan.status === "needs_attention") status = "product_needs_attention";
+  else if (
+    plan.status === "validation_sample_ready"
+    && plan.metadata.validationSampleDeliverables?.length
+  ) status = "buyer_test_ready";
+  else if (finalTask?.status === "running") status = "final_review_running";
+  else if (["blocked", "waiting_approval"].includes(finalTask?.status)) {
+    status = "waiting_for_final_review_decision";
+  } else if (["queued", "planned"].includes(finalTask?.status)) {
+    status = "final_review_queued";
+  } else if (plan.metadata.qualityReviewLimitReached === true) {
+    status = "corrected_files_waiting_for_review";
+  }
+  return {
+    planId: plan.id,
+    opportunityId: plan.opportunity_id,
+    experimentId: experiment?.id || contract.experimentId || null,
+    name: plan.metadata.productManifest?.packageTitle
+      || contract.sample?.item?.title
+      || experiment?.name
+      || contract.sample?.packageTitle
+      || "Buyer-intent validation product",
+    buyer: contract.buyer || null,
+    offer: contract.offer || null,
+    priceCents: Number(contract.priceCents || 0),
+    channel: contract.channel || null,
+    measurement: contract.measurement || null,
+    status,
+    planStatus: plan.status,
+    buildStatus: plan.metadata.buildStatus || null,
+    recordedQualityReviewTasks,
+    inspectionEvidenceRecheckLimit: 1,
+    inspectionEvidenceRecheckExhausted:
+      plan.metadata.inspectionEvidenceRecheckExhausted === true,
+    finalTask,
+    finalApprovalId: finalTask?.approval_id
+      || plan.metadata.inspectionEvidenceRecheckApprovalId
+      || plan.metadata.explicitFinalReviewApprovalId
+      || null,
+    finalReviewCapCents: Number(
+      contract.providerPolicy?.qualityReviewerCapCents || finalTask?.cost_budget_cents || 0,
+    ),
+    inspectionEvidenceRecheck:
+      plan.metadata.buildStatus === "inspection_evidence_repaired_pending_recheck",
+    terminal: terminalInspectionRecheck,
+    terminalReason: terminalInspectionRecheck
+      ? plan.metadata.buildStatus
+      : null,
+    marketResultCount,
+    marketEvidenceRecorded: marketResultCount > 0,
+    investmentCaseRemainsParked: contract.investmentCaseRemainsParked !== false,
+    externalActionsAllowed: contract.externalActionsAllowed === true,
+    files: recordedFiles.length ? recordedFiles : validationSampleDeliverables(db, plan),
+  };
 }
 
 function digestWithCurrentAttention(db, digest, work, ventureId, currentJourneyId = null) {
@@ -620,7 +936,8 @@ function teamState(db, ventureId, currentJourneyId = latestOperatorJourneyId(db)
   return definitions.map((definition) => {
     const latestRun = get(
       db,
-      `SELECT agent_runs.*, tasks.title AS task_title, tasks.status AS task_status
+      `SELECT agent_runs.*, tasks.title AS task_title, tasks.status AS task_status,
+              tasks.payload AS task_payload
        FROM agent_runs LEFT JOIN tasks ON tasks.id = agent_runs.task_id
        WHERE agent_runs.agent_id = ?
          AND (agent_runs.venture_id = ? OR agent_runs.venture_id = 'venture-portfolio-controller' OR agent_runs.venture_id IS NULL)
@@ -653,13 +970,20 @@ function teamState(db, ventureId, currentJourneyId = latestOperatorJourneyId(db)
       ));
     const capability = agentCapabilities[0];
     const rawStatus = activeTask?.status || "standby";
+    const latestTaskPayload = fromJson(latestRun?.task_payload, {});
     return {
       id: definition.id,
       name: definition.name,
       group: groupByAgent[definition.id] || "control",
       status: humanTaskStatus(rawStatus),
-      assignment: activeTask?.title || "No current assignment",
-      lastOutcome: latestRun?.output_summary || "No reviewed result yet",
+      assignment: activeTask
+        ? operatorProductionText(db, activeTask.title, activeTask.payload)
+        : "No current assignment",
+      lastOutcome: operatorProductionText(
+        db,
+        latestRun?.output_summary || "No reviewed result yet",
+        latestTaskPayload,
+      ),
       autonomy: capability
         ? {
             status: capability.status,
@@ -717,15 +1041,34 @@ function getCockpitState(db) {
   const currentJourney = currentOperatorJourney(db);
   const currentJourneyId = currentJourney?.id || null;
   const journeyTask = currentJourney?.metadata?.currentTaskId
-    ? get(
-      db,
-      "SELECT id, title, agent, status, outcome_status, error, updated_at FROM tasks WHERE id = ?",
-      [currentJourney.metadata.currentTaskId],
-    )
+    ? (() => {
+      const row = get(
+        db,
+        `SELECT id, title, agent, status, outcome_status, error, payload, updated_at
+         FROM tasks WHERE id = ?`,
+        [currentJourney.metadata.currentTaskId],
+      );
+      if (!row) return null;
+      const payload = fromJson(row.payload, {});
+      return {
+        ...row,
+        title: operatorProductionText(db, row.title, payload),
+        payload: undefined,
+      };
+    })()
     : null;
   const team = teamState(db, commercial.venture.id, currentJourneyId);
   const work = importantWork(db, currentJourneyId);
-  const test = currentTest(db, commercial.venture.id);
+  const buyerIntentValidation = currentBuyerIntentValidation(db);
+  let test = currentTest(db, commercial.venture.id);
+  if (!test && buyerIntentValidation?.terminal) {
+    test = retainedTerminalBuyerIntentTest(db, buyerIntentValidation);
+  } else if (test && buyerIntentValidation?.experimentId === test.id) {
+    test.name = buyerIntentValidation.name;
+    test.status = buyerIntentValidation.status === "buyer_test_ready"
+      ? "ready"
+      : buyerIntentValidation.status;
+  }
   const operationalTasks = parseRows(all(
     db,
     "SELECT status, payload FROM tasks WHERE status IN ('planned','queued','running','failed','needs_attention')",
@@ -740,6 +1083,7 @@ function getCockpitState(db) {
     ventureCase: commercial.ventureCase,
     importantWork: work,
     currentTest: test,
+    buyerIntentValidation,
     activeRuns,
     nextMoneyMove: commercial.ventureCase.next_money_move,
     economics: commercial.economics,
@@ -798,7 +1142,7 @@ function getCockpitState(db) {
 
 function getDecisionsState(db) {
   const approvals = [
-    ...pendingApprovals(db).map(decisionCard),
+    ...pendingApprovals(db).map((approval) => decisionCard(approval, db)),
     ...pendingHandoffs(db).map(handoffCard),
   ];
   const reviews = parseRows(all(
@@ -817,23 +1161,69 @@ function getDecisionsState(db) {
   }));
   const suggestions = parseRows(all(
     db,
-    "SELECT * FROM messages WHERE status = 'open' AND severity NOT IN ('urgent','approval') ORDER BY created_at DESC LIMIT 20",
-  )).map((message) => ({ id: message.id, title: message.subject, summary: message.body, createdAt: message.created_at }));
+    `SELECT messages.*, tasks.payload AS task_payload
+     FROM messages
+     LEFT JOIN tasks ON tasks.id = messages.task_id
+     WHERE messages.status = 'open'
+       AND messages.severity NOT IN ('urgent','approval')
+     ORDER BY messages.created_at DESC LIMIT 20`,
+  ), ["metadata", "task_payload"]).map((message) => ({
+    id: message.id,
+    title: operatorProductionText(
+      db,
+      message.subject,
+      message.task_payload || {},
+    ),
+    summary: operatorProductionText(
+      db,
+      message.body,
+      message.task_payload || {},
+    ),
+    createdAt: message.created_at,
+  }));
   const approvalHistory = parseRows(all(
     db,
-    "SELECT * FROM approvals WHERE status <> 'pending' ORDER BY decided_at DESC LIMIT 30",
-  )).map((approval) => ({ id: approval.id, title: approval.title, decision: approval.status, note: approval.decision_note, decidedAt: approval.decided_at }));
+    `SELECT approvals.*, tasks.payload AS task_payload
+     FROM approvals
+     LEFT JOIN tasks ON tasks.id = approvals.task_id
+     WHERE approvals.status <> 'pending'
+     ORDER BY approvals.decided_at DESC LIMIT 30`,
+  )).map((approval) => ({
+    id: approval.id,
+    title: operatorProductionText(
+      db,
+      approval.title,
+      fromJson(approval.task_payload, {}),
+    ),
+    decision: approval.status,
+    note: approval.decision_note,
+    decidedAt: approval.decided_at,
+  }));
   const handoffHistory = parseRows(all(
     db,
-    `SELECT * FROM agent_handoffs
-     WHERE status NOT IN ('needs_operator_decision', 'waiting_for_review', 'waiting_approval')
-       AND resolved_at IS NOT NULL
-     ORDER BY resolved_at DESC LIMIT 30`,
-  )).map((handoff) => ({
+    `SELECT agent_handoffs.*, source_tasks.payload AS source_task_payload
+     FROM agent_handoffs
+     LEFT JOIN tasks AS source_tasks ON source_tasks.id = agent_handoffs.task_id
+     WHERE agent_handoffs.status NOT IN (
+       'needs_operator_decision',
+       'waiting_for_review',
+       'waiting_approval'
+     )
+       AND agent_handoffs.resolved_at IS NOT NULL
+     ORDER BY agent_handoffs.resolved_at DESC LIMIT 30`,
+  ), ["metadata", "source_task_payload"]).map((handoff) => ({
     id: handoff.id,
-    title: handoff.decision_needed || "AI team next step",
+    title: operatorProductionText(
+      db,
+      handoff.decision_needed || "AI team next step",
+      handoff.source_task_payload || {},
+    ),
     decision: handoff.status,
-    note: handoff.metadata?.operatorDecision?.note || handoff.summary,
+    note: operatorProductionText(
+      db,
+      handoff.metadata?.operatorDecision?.note || handoff.summary,
+      handoff.source_task_payload || {},
+    ),
     decidedAt: handoff.resolved_at,
   }));
   const history = [...approvalHistory, ...handoffHistory]
@@ -846,14 +1236,38 @@ function getBusinessTestsState(db) {
   const commercial = commercialFoundationState(db);
   const opportunity = getOpportunityState(db);
   const production = getProductionState(db);
+  const buyerIntentValidation = currentBuyerIntentValidation(db);
   const experiments = parseRows(all(
     db,
-    `SELECT * FROM commercial_experiments
-     WHERE venture_id = ?
-       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
-     ORDER BY updated_at DESC`,
+    `SELECT commercial_experiments.*, ventures.name AS venture_name,
+            ventures.is_active AS venture_is_active
+     FROM commercial_experiments
+     LEFT JOIN ventures ON ventures.id = commercial_experiments.venture_id
+     WHERE (
+         commercial_experiments.venture_id = ?
+         OR json_extract(commercial_experiments.metadata, '$.buyerIntentValidation') IS NOT NULL
+       )
+       AND COALESCE(json_extract(commercial_experiments.metadata, '$.archivedFromOperator'), 0) <> 1
+     ORDER BY commercial_experiments.updated_at DESC`,
     [commercial.venture.id],
-  )).map((experiment) => ({ ...experiment, status: testStatus(experiment.status) }));
+  )).map((experiment) => {
+    const currentBuyerIntentTest = buyerIntentValidation?.experimentId === experiment.id;
+    return {
+      ...experiment,
+      name: currentBuyerIntentTest
+        ? buyerIntentValidation.name
+        : experiment.name,
+      status: currentBuyerIntentTest && buyerIntentValidation.status !== "buyer_test_ready"
+        ? buyerIntentValidation.terminal
+          ? "cancelled"
+          : "candidate"
+        : testStatus(experiment.status),
+      workflowStatus: currentBuyerIntentTest
+        ? buyerIntentValidation.status
+        : null,
+      preVenture: Boolean(experiment.metadata?.buyerIntentValidation),
+    };
+  });
   const tests = { candidate: [], ready: [], running: [], completed: [], cancelled: [] };
   for (const experiment of experiments) tests[experiment.status].push(experiment);
   return {
@@ -866,6 +1280,7 @@ function getBusinessTestsState(db) {
     cataloguePlans: opportunity.cataloguePlans,
     catalogueItems: opportunity.catalogueItems,
     production,
+    buyerIntentValidation,
     tests,
     workPackages: parseRows(all(db, "SELECT * FROM work_packages WHERE venture_id = ? ORDER BY created_at DESC", [commercial.venture.id])),
     evidence: commercial.evidence,
@@ -1010,6 +1425,10 @@ function observedToolsForRun(db, runId) {
 
 function executionKindForRun(runRecord, modelCall, task, cost, receipt) {
   const runMode = String(runRecord.mode || "").toLowerCase();
+  const runMetadata = fromJson(runRecord.metadata, {});
+  if (runMetadata.executionKind === "deterministic_system_step") {
+    return "deterministic_system_step";
+  }
   const callMode = String(modelCall?.mode || "").toLowerCase();
   const callStatus = String(modelCall?.status || "").toLowerCase();
   const costMetadata = cost?.metadata || {};
@@ -1032,8 +1451,23 @@ function executionKindForRun(runRecord, modelCall, task, cost, receipt) {
     || modelCall?.outcome_status === "unknown"
     || ["unknown", "outcome_unknown"].includes(callStatus)
     || costMetadata.outcomeUnknown === true
-    || fromJson(runRecord.metadata, {}).outcomeUnknown === true;
-  return outcomeUnknown ? "provider_outcome_unknown" : "model_backed";
+    || runMetadata.outcomeUnknown === true;
+  if (outcomeUnknown) return "provider_outcome_unknown";
+  const terminalProviderEvidence = Boolean(
+    providerEvidence
+    && callMode === "live"
+    && [
+      "completed",
+      "succeeded",
+      "provider_completed",
+      "failed",
+      "needs_attention",
+    ].includes(callStatus)
+    && modelCall?.outcome_status === "known"
+    && modelCall?.provider_request_id
+    && modelCall?.completed_at
+  );
+  return terminalProviderEvidence ? "model_backed" : "provider_evidence_missing";
 }
 
 function runExecutionContext(db, runRecord, taskRow = null) {
@@ -1045,9 +1479,17 @@ function runExecutionContext(db, runRecord, taskRow = null) {
   const cost = exactCostForRun(db, runRecord, task, modelCall);
   const receipt = latestAgentRunReceipt(db, runRecord.id);
   const kind = executionKindForRun(runRecord, modelCall, task, cost, receipt);
-  const protectedRehearsal = kind === "protected_rehearsal";
+  const protectedRehearsal = ["protected_rehearsal", "deterministic_system_step"].includes(kind);
   const liveRequest = task?.payload?.liveSpendRequest || {};
   const modelMetadata = modelCall?.metadata || {};
+  const agentHarness = modelMetadata.agentHarness
+    || runMetadata.agentHarness
+    || liveRequest.agentHarness
+    || null;
+  const traceGroup = modelMetadata.traceGroup
+    || runMetadata.traceGroup
+    || liveRequest.traceGroup
+    || null;
   const usageCaptured = !protectedRehearsal && Boolean(
     modelCall
     && modelCall.status !== "not_called"
@@ -1152,16 +1594,50 @@ function runExecutionContext(db, runRecord, taskRow = null) {
     tools,
     research,
     receipt,
+    agentHarness,
+    traceGroup,
+    sdkGuardrails: modelMetadata.sdkGuardrails || runMetadata.sdkGuardrails || null,
+    cacheUsage: modelMetadata.cacheUsage || null,
   };
 }
 
 function executionLabel(kind) {
   return {
     protected_rehearsal: "Internal rehearsal",
+    deterministic_system_step: "System-generated step",
     provider_not_contacted: "Stopped before OpenAI",
     model_backed: "OpenAI used",
     provider_outcome_unknown: "Outcome needs review",
+    provider_evidence_missing: "Provider proof incomplete",
   }[kind] || "Run recorded";
+}
+
+function workGroupLabel(traceGroup, fallbackTitle) {
+  if (!traceGroup) return fallbackTitle || "Recorded AI work";
+  return {
+    journey: "Commercial journey",
+    opportunity: "Opportunity review",
+    investment_case: "Investment review",
+    discovery_round: "Market discovery round",
+    work_package: "Business work package",
+    workflow: "Business workflow",
+    task: fallbackTitle || "AI task",
+  }[traceGroup.scopeType] || fallbackTitle || "Related AI work";
+}
+
+function runAssuranceSummary(context) {
+  const layers = context.evaluation?.metadata?.evaluationLayers
+    || context.runMetadata.evaluationLayers
+    || null;
+  return {
+    status: context.evaluation?.status || "not_reviewed",
+    score: context.evaluation?.score ?? null,
+    structural: layers?.structural?.status || null,
+    behavioral: layers?.behavioral?.status || null,
+    trace: layers?.trace?.status || null,
+    operatorUsefulness: layers?.operatorUsefulness?.status || "not_reviewed",
+    commercialOutcome: layers?.commercialOutcome?.status || "not_measured",
+  };
 }
 
 function agentRunSummary(db, row, supersededTaskIds = new Set()) {
@@ -1189,7 +1665,20 @@ function agentRunSummary(db, row, supersededTaskIds = new Set()) {
         || ["needs_attention", "failed"].includes(row.status)
         || context.receipt?.status === "needs_review"
       )
-    );
+  );
+  const traceGroup = context.traceGroup;
+  const displayTaskTitle = operatorProductionText(
+    db,
+    row.task_title || context.runMetadata.taskTitle || "AI worker run",
+    context.task?.payload || {},
+  );
+  const workGroup = {
+    id: traceGroup?.groupId || `pantheon_run_group_${row.id}`,
+    scopeType: traceGroup?.scopeType || "task",
+    scopeId: traceGroup?.scopeId || row.task_id || row.id,
+    label: workGroupLabel(traceGroup, displayTaskTitle),
+    versioned: Boolean(traceGroup?.groupId),
+  };
   return {
     id: row.id,
     executionKind: context.kind,
@@ -1204,8 +1693,12 @@ function agentRunSummary(db, row, supersededTaskIds = new Set()) {
     workerId: row.agent_id,
     workerName: row.worker_name || row.agent_id,
     taskId: row.task_id,
-    taskTitle: row.task_title || context.runMetadata.taskTitle || "AI worker run",
-    summary: context.task?.result?.output?.summary || row.output_summary || "No result summary was captured.",
+    taskTitle: displayTaskTitle,
+    summary: operatorProductionText(
+      db,
+      context.task?.result?.output?.summary || row.output_summary || "No result summary was captured.",
+      context.task?.payload || {},
+    ),
     error: error || null,
     provider: context.protectedRehearsal ? null : (context.modelCall?.metadata?.provider || context.liveRequest.provider || context.modelCall?.provider || null),
     requestedProvider: context.liveRequest.provider || context.modelCall?.provider || null,
@@ -1232,6 +1725,15 @@ function agentRunSummary(db, row, supersededTaskIds = new Set()) {
       requested: Array.isArray(context.liveRequest.tools) ? context.liveRequest.tools : [],
       observedCount: context.tools.length,
     },
+    workGroup,
+    harness: context.agentHarness ? {
+      hash: context.agentHarness.harnessHash || null,
+      promptPolicy: context.agentHarness.versions?.promptPolicy || null,
+      assurancePolicy: context.agentHarness.versions?.assurancePolicy || null,
+      guardrailPolicy: context.agentHarness.versions?.guardrailPolicy || null,
+    } : null,
+    assurance: runAssuranceSummary(context),
+    cacheUsage: context.cacheUsage,
     groundedSourceCount: context.research.sources.filter((source) => source.grounded).length,
     reviewStatus: context.review?.operator_verdict || context.evaluation?.status || "not_reviewed",
     receipt: context.receipt ? {
@@ -1253,6 +1755,57 @@ function agentRunSummary(db, row, supersededTaskIds = new Set()) {
     responseId: context.responseId,
     updatedAt: row.completed_at || latestTrace?.ts || row.started_at,
   };
+}
+
+function groupAgentRuns(runs) {
+  const groups = new Map();
+  for (const item of runs) {
+    const identity = item.workGroup || {
+      id: `pantheon_run_group_${item.id}`,
+      scopeType: "task",
+      scopeId: item.taskId || item.id,
+      label: item.taskTitle,
+      versioned: false,
+    };
+    const group = groups.get(identity.id) || {
+      ...identity,
+      runIds: [],
+      workers: [],
+      runCount: 0,
+      activeCount: 0,
+      needsReviewCount: 0,
+      estimatedCostCents: 0,
+      actualCostCents: 0,
+      actualCostComplete: true,
+      latestAt: null,
+    };
+    group.runIds.push(item.id);
+    if (!group.workers.includes(item.workerName)) group.workers.push(item.workerName);
+    group.runCount += 1;
+    if (item.active) group.activeCount += 1;
+    if (item.attentionRequired) group.needsReviewCount += 1;
+    group.estimatedCostCents += Number(item.cost?.estimatedCents || 0);
+    if (item.cost?.actualCents === null || item.cost?.actualCents === undefined) {
+      group.actualCostComplete = false;
+    } else {
+      group.actualCostCents += Number(item.cost.actualCents || 0);
+    }
+    if (!group.latestAt || String(item.updatedAt || "") > String(group.latestAt)) {
+      group.latestAt = item.updatedAt;
+    }
+    groups.set(identity.id, group);
+  }
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      status: group.activeCount
+        ? "working"
+        : group.needsReviewCount
+          ? "needs_review"
+          : "completed",
+      actualCostCents: group.actualCostComplete ? group.actualCostCents : null,
+    }))
+    .sort((left, right) => String(right.latestAt || "").localeCompare(String(left.latestAt || "")));
 }
 
 function getAgentRunsState(db, filters = {}) {
@@ -1293,10 +1846,13 @@ function getAgentRunsState(db, filters = {}) {
       active: summaries.filter((item) => item.active).length,
       modelBacked: summaries.filter((item) => item.executionKind === "model_backed").length,
       protectedRehearsals: summaries.filter((item) => item.executionKind === "protected_rehearsal").length,
+      deterministicSteps: summaries.filter((item) => item.executionKind === "deterministic_system_step").length,
       needsReview: summaries.filter((item) => item.attentionRequired || item.reviewStatus === "pending").length,
       reconciledCostCents: summaries.reduce((total, item) => total + Number(item.cost.reconciledCents || 0), 0),
     },
     totalMatching: matches.length,
+    workGroups: groupAgentRuns(matches),
+    costObservability: getAgentCostObservability(db),
     runs: matches.slice(0, limit),
   };
 }
@@ -1374,7 +1930,22 @@ function activityState(db) {
        )
      ORDER BY id DESC LIMIT 40`,
     [foundationAt],
-  )).map((event) => ({ ...event, message: humanActivityMessage(event) }));
+  )).map((event) => {
+    const taskId = event.entity_type === "task"
+      ? event.entity_id
+      : event.metadata?.taskId || null;
+    const taskPayload = taskId
+      ? fromJson(get(db, "SELECT payload FROM tasks WHERE id = ?", [taskId])?.payload, {})
+      : {};
+    return {
+      ...event,
+      message: operatorProductionText(
+        db,
+        humanActivityMessage(event),
+        taskPayload,
+      ),
+    };
+  });
 }
 
 function operatorConnectionsState(db) {
@@ -1413,7 +1984,8 @@ function agentSystemChecks(db) {
   const resolvedTaskIds = supersededRetryTaskIds(db);
   const receiptRows = all(
     db,
-    `SELECT receipts.*, agents.name AS worker_name, tasks.title AS task_title
+    `SELECT receipts.*, agents.name AS worker_name, tasks.title AS task_title,
+            tasks.payload AS task_payload
      FROM agent_run_receipts AS receipts
      LEFT JOIN agent_runs AS runs ON runs.id = receipts.run_id
      LEFT JOIN agent_definitions AS agents ON agents.id = runs.agent_id
@@ -1433,9 +2005,13 @@ function agentSystemChecks(db) {
     kind: "agent_receipt",
     severity: row.status === "incomplete" ? "error" : "warning",
     status: row.status,
-    title: row.status === "incomplete"
-      ? `Execution record incomplete: ${row.task_title || "AI work"}`
-      : `Execution needs review: ${row.task_title || "AI work"}`,
+    title: operatorProductionText(
+      db,
+      row.status === "incomplete"
+        ? `Execution record incomplete: ${row.task_title || "AI work"}`
+        : `Execution needs review: ${row.task_title || "AI work"}`,
+      fromJson(row.task_payload, {}),
+    ),
     detail: [
       ...fromJson(row.missing_fields, []),
       ...fromJson(row.warnings, []),
@@ -1448,7 +2024,7 @@ function agentSystemChecks(db) {
   const missingRows = all(
     db,
     `SELECT runs.id AS run_id, runs.task_id, runs.completed_at, agents.name AS worker_name,
-            tasks.title AS task_title
+            tasks.title AS task_title, tasks.payload AS task_payload
      FROM agent_runs AS runs
      LEFT JOIN agent_definitions AS agents ON agents.id = runs.agent_id
      LEFT JOIN tasks ON tasks.id = runs.task_id
@@ -1461,7 +2037,11 @@ function agentSystemChecks(db) {
     kind: "missing_agent_receipt",
     severity: "error",
     status: "incomplete",
-    title: `Execution record missing: ${row.task_title || "AI work"}`,
+    title: operatorProductionText(
+      db,
+      `Execution record missing: ${row.task_title || "AI work"}`,
+      fromJson(row.task_payload, {}),
+    ),
     detail: "The worker finished without an immutable local receipt. Pantheon will keep this visible until the record is repaired.",
     workerName: row.worker_name || null,
     runId: row.run_id,
@@ -1673,8 +2253,83 @@ function getSystemState(db) {
 function getTestDetail(db, id) {
   const experiment = get(db, "SELECT * FROM commercial_experiments WHERE id = ?", [id]);
   if (!experiment) return null;
+  const parsedExperiment = {
+    ...experiment,
+    status: testStatus(experiment.status),
+    metadata: fromJson(experiment.metadata),
+  };
+  const packRow = get(
+    db,
+    `SELECT *
+     FROM commercial_execution_packs
+     WHERE experiment_id = ?
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+    [id],
+  );
+  const pack = packRow ? { ...packRow, metadata: fromJson(packRow.metadata) } : null;
+  const candidateId = parsedExperiment.metadata?.candidateId || null;
+  const candidateRow = candidateId
+    ? get(db, "SELECT * FROM commercial_test_candidates WHERE id = ?", [candidateId])
+    : null;
+  const candidate = candidateRow ? { ...candidateRow, metadata: fromJson(candidateRow.metadata) } : null;
+  const contract = parsedExperiment.metadata?.buyerIntentValidation
+    || candidate?.metadata?.buyerIntentValidation
+    || pack?.metadata?.buyerIntentValidation
+    || null;
+  const planRow = contract?.cataloguePlanId
+    ? get(db, "SELECT * FROM catalogue_plans WHERE id = ?", [contract.cataloguePlanId])
+    : null;
+  const plan = planRow ? {
+    ...planRow,
+    audience_segments: fromJson(planRow.audience_segments, []),
+    channels: fromJson(planRow.channels, []),
+    geographies: fromJson(planRow.geographies, []),
+    languages: fromJson(planRow.languages, []),
+    metadata: fromJson(planRow.metadata, {}),
+  } : null;
+  const distributionRunId = pack?.metadata?.aiTeam?.distributionRun?.runId || null;
+  const decisionHandoff = distributionRunId ? parseRows(all(
+    db,
+    `SELECT * FROM agent_handoffs
+     WHERE from_run_id = ? AND to_agent_id = 'chief_of_staff'
+     ORDER BY created_at DESC LIMIT 1`,
+    [distributionRunId],
+  ))[0] || null : null;
+  const packedSampleDeliverables = Array.isArray(pack?.metadata?.sampleDeliverables)
+    ? pack.metadata.sampleDeliverables
+    : [];
+  const plannedSampleDeliverables = Array.isArray(plan?.metadata?.validationSampleDeliverables)
+    ? plan.metadata.validationSampleDeliverables
+    : [];
+  const sampleDeliverables = packedSampleDeliverables.length
+    ? packedSampleDeliverables
+    : plannedSampleDeliverables.length
+      ? plannedSampleDeliverables
+      : validationSampleDeliverables(db, plan);
+  const displayName = plan?.metadata?.productManifest?.packageTitle
+    || contract?.sample?.item?.title
+    || contract?.sample?.packageTitle
+    || parsedExperiment.name;
+  const buyerIntentValidation = contract && plan
+    ? {
+      ...contract,
+      ...currentBuyerIntentValidation(db, plan.venture_id, plan.id),
+      sample: contract.sample,
+      providerPolicy: contract.providerPolicy,
+    }
+    : contract;
   return {
-    experiment: { ...experiment, status: testStatus(experiment.status), metadata: fromJson(experiment.metadata) },
+    experiment: {
+      ...parsedExperiment,
+      name: displayName,
+    },
+    candidate,
+    pack,
+    plan,
+    buyerIntentValidation,
+    sampleDeliverables,
+    decisionHandoff,
     evidence: parseRows(all(db, "SELECT * FROM commercial_evidence WHERE experiment_id = ? ORDER BY captured_at", [id])),
     results: parseRows(all(db, "SELECT * FROM commercial_results WHERE experiment_id = ? ORDER BY occurred_at", [id])),
     feedback: parseRows(all(db, "SELECT * FROM commercial_feedback WHERE experiment_id = ? ORDER BY occurred_at", [id])),
@@ -1722,7 +2377,9 @@ function productionRecommendationDisplay(db, task, output, recommendation) {
     .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
     .join("|");
   const normalize = (value) => {
-    if (typeof value !== "string" || !priceCents) return value;
+    if (typeof value !== "string") return value;
+    const presented = operatorProductionText(db, value, task?.payload || {});
+    if (!priceCents) return presented;
     const foreignPrefix = new RegExp(
       `\\b(?:US\\$|USD\\s*)(${variants})(?!\\d|\\.\\d)`,
       "gi",
@@ -1735,7 +2392,7 @@ function productionRecommendationDisplay(db, task, output, recommendation) {
       `(^|[^A-Za-z])\\$(${variants})(?!\\d|\\.\\d)`,
       "g",
     );
-    return value
+    return presented
       .replace(foreignPrefix, (_match, amount) => `A$${amount}`)
       .replace(foreignSuffix, (_match, prefix, amount) => `${prefix}A$${amount}`)
       .replace(barePrice, (_match, prefix, amount) => `${prefix}A$${amount}`);
@@ -1894,6 +2551,11 @@ function getAgentRunDetail(db, id) {
       })),
     })),
   } : null;
+  const displayTaskTitle = operatorProductionText(
+    db,
+    task?.title || runMetadata.taskTitle || "AI worker run",
+    task?.payload || {},
+  );
 
   return {
     schema: "jarvis_agent_run_review_v1",
@@ -1903,7 +2565,7 @@ function getAgentRunDetail(db, id) {
       workerName: definition?.name || runRecord.agent_id,
       workerRole: definition?.role || "Specialist worker",
       taskId: runRecord.task_id,
-      taskTitle: task?.title || runMetadata.taskTitle || "AI worker run",
+      taskTitle: displayTaskTitle,
       status: runRecord.status,
       executionKind: context.kind,
       executionLabel: executionLabel(context.kind),
@@ -1917,7 +2579,11 @@ function getAgentRunDetail(db, id) {
     },
     process: {
       explanation: "This is a structured account of the evidence, judgement and result. It does not expose hidden private model chain-of-thought.",
-      question: fixture?.question || task?.title || task?.payload?.subject || "No question was recorded.",
+      question: operatorProductionText(
+        db,
+        fixture?.question || task?.title || task?.payload?.subject || "No question was recorded.",
+        task?.payload || {},
+      ),
       buyer: fixture?.buyer || output.businessDecision?.buyer || "No buyer was recorded.",
       hypothesis: productionRecommendationDisplay(db, task, output, {
         priceChannelHypothesis: fixture?.hypothesis
@@ -1996,6 +2662,18 @@ function getAgentRunDetail(db, id) {
         resolvedAt: handoff.resolved_at,
       })),
       externalEffects: task?.payload?.liveSpendRequest?.effects || [],
+      workGroup: context.traceGroup ? {
+        id: context.traceGroup.groupId || null,
+        scopeType: context.traceGroup.scopeType || null,
+        scopeId: context.traceGroup.scopeId || null,
+        label: workGroupLabel(context.traceGroup, displayTaskTitle),
+      } : null,
+      harness: context.agentHarness ? {
+        hash: context.agentHarness.harnessHash || null,
+        versions: context.agentHarness.versions || {},
+      } : null,
+      sdkGuardrails: context.sdkGuardrails,
+      cacheUsage: context.cacheUsage,
       tracePolicy: {
         ...tracePolicy,
         legacyPolicyInferred: !context.protectedRehearsal && approvedTracePolicy === null,
@@ -2025,6 +2703,10 @@ function getAgentRunDetail(db, id) {
       criteria: evaluation.criteria,
       findings: evaluation.findings,
       evaluationId: evaluation.id,
+      evaluatorVersion: evaluation.evaluator_version || null,
+      layers: evaluation.metadata?.evaluationLayers
+        || runMetadata.evaluationLayers
+        || null,
     } : null,
     receipt: context.receipt ? {
       id: context.receipt.id,
@@ -2045,6 +2727,10 @@ function getAgentRunDetail(db, id) {
       researchRunId: context.research.run?.id || null,
       structuredOutput: output,
       traceEvents: context.traces,
+      agentHarness: context.agentHarness,
+      traceGroup: context.traceGroup,
+      sdkGuardrails: context.sdkGuardrails,
+      cacheUsage: context.cacheUsage,
     },
   };
 }

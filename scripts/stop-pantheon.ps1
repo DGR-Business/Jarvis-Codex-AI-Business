@@ -28,6 +28,40 @@ function Get-RecordedDescendants($Metadata) {
   return @()
 }
 
+function Invoke-BoundedTaskkill {
+  param(
+    [Parameter(Mandatory = $true)][int]$ProcessId,
+    [ValidateRange(1, 30)][int]$TimeoutSeconds = 8
+  )
+
+  $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $taskkill
+  $startInfo.Arguments = "/PID $ProcessId /T /F"
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  try {
+    if (-not $process.Start()) {
+      throw "Windows could not start its bounded process-tree stop command."
+    }
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+      try { $process.Kill() } catch {}
+      throw "Windows did not finish its process-tree stop command within $TimeoutSeconds seconds."
+    }
+    return [pscustomobject]@{
+      ExitCode = [int]$process.ExitCode
+      Stdout = $process.StandardOutput.ReadToEnd()
+      Stderr = $process.StandardError.ReadToEnd()
+    }
+  } finally {
+    $process.Dispose()
+  }
+}
+
 function Stop-OnePantheon {
   param(
     [Parameter(Mandatory = $true)][int]$TargetPort,
@@ -35,6 +69,7 @@ function Stop-OnePantheon {
   )
 
   $runtimePath = Get-PantheonRuntimePath -StateRoot $stateRoot -Port $TargetPort
+  $supervisorPath = Get-PantheonSupervisorPath -StateRoot $stateRoot -Port $TargetPort
   $legacyRuntimePath = Join-Path $stateRoot "jarvis-server-$TargetPort.json"
   $healthUrl = "http://127.0.0.1:$TargetPort/api/health"
   $launcherLock = $null
@@ -59,6 +94,15 @@ function Stop-OnePantheon {
     }
 
     if (-not $metadata) {
+      if (Test-Path -LiteralPath $supervisorPath) {
+        Stop-PantheonSupervisor `
+          -StateRoot $stateRoot `
+          -Port $TargetPort `
+          -WorkspaceRoot $root `
+          -TimeoutSeconds $GracefulTimeoutSeconds
+        [void](Wait-PantheonPortAvailable -Port $TargetPort -TimeoutSeconds $GracefulTimeoutSeconds)
+        $health = Get-PantheonHealth -Port $TargetPort
+      }
       if ($health) {
         throw "A Pantheon-compatible service is running on port $TargetPort, but this launcher does not own it. It was not stopped."
       }
@@ -98,6 +142,11 @@ function Stop-OnePantheon {
         throw "Pantheon's recorded process has exited, but port $TargetPort is still occupied. The unknown process was not stopped."
       }
       Remove-Item -LiteralPath $runtimePath -Force
+      Stop-PantheonSupervisor `
+        -StateRoot $stateRoot `
+        -Port $TargetPort `
+        -WorkspaceRoot $root `
+        -TimeoutSeconds $GracefulTimeoutSeconds
       Write-Host "Pantheon on port $TargetPort was already stopped; stale ownership data was removed."
       return
     }
@@ -136,9 +185,8 @@ function Stop-OnePantheon {
       if (-not (Test-PantheonSnapshotMatches -Expected $rootSnapshot -Actual $currentRoot)) {
         throw "Pantheon's process identity changed during shutdown. The replacement process was not stopped."
       }
-      $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
-      & $taskkill /PID $serverPid /T /F | Out-Null
-      if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) {
+      $taskkillResult = Invoke-BoundedTaskkill -ProcessId $serverPid -TimeoutSeconds 8
+      if ($taskkillResult.ExitCode -ne 0 -and (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) {
         throw "Windows could not terminate Pantheon's exact process tree. Try STOP PANTHEON.cmd from the same Windows permission level used to start it."
       }
       if (-not (Wait-PantheonProcessExit -ProcessId $serverPid -TimeoutSeconds 8)) {
@@ -154,6 +202,12 @@ function Stop-OnePantheon {
     if (Get-Process -Id $serverPid -ErrorAction SilentlyContinue) {
       throw "Pantheon's server process is still running after shutdown verification."
     }
+    Stop-PantheonSupervisor `
+      -StateRoot $stateRoot `
+      -Port $TargetPort `
+      -WorkspaceRoot $root `
+      -TimeoutSeconds $GracefulTimeoutSeconds
+
     if (Get-PantheonHealth -Port $TargetPort) {
       throw "A service is still responding on Pantheon's port after its exact process exited. The new service was not stopped."
     }
@@ -179,15 +233,19 @@ if ($All) {
       $candidatePort = [int]$Matches[1]
       if ($candidatePort -ge 1 -and $candidatePort -le 65535) { $targetPorts += $candidatePort }
     }
+    if ($file.Name -match "^pantheon-supervisor-(\d+)\.json$") {
+      $candidatePort = [int]$Matches[1]
+      if ($candidatePort -ge 1 -and $candidatePort -le 65535) { $targetPorts += $candidatePort }
+    }
   }
   if ($PSBoundParameters.ContainsKey("Port")) { $targetPorts += $Port }
-  $targetPorts = @($targetPorts | Sort-Object -Unique)
+  $targetPorts = @($targetPorts | Sort-Object -Unique -Descending)
   if ($targetPorts.Count -eq 0) {
     Write-Host "Pantheon is already stopped; no launcher-owned Windows processes are recorded."
     exit 0
   }
 } else {
-  $targetPorts = @($Port | Sort-Object -Unique)
+  $targetPorts = @($Port | Sort-Object -Unique -Descending)
 }
 
 $failures = @()

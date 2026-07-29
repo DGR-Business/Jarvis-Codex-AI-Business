@@ -667,28 +667,35 @@ function startSchedulerLoop(db, options = {}) {
   recoverExpiredSchedulerLocks(db, { leaseSeconds: options.leaseSeconds });
   const pollMs = Math.max(10_000, Number(options.pollMs || CONFIG.schedulerPollMs || 60_000));
   let active = false;
+  let activeTick = null;
+  let stopped = false;
   const tick = async () => {
+    if (stopped) return { status: "skipped", reason: "scheduler_stopped" };
     if (active) return { status: "skipped", reason: "scheduler_already_running" };
     active = true;
-    try {
-      return await runDueSchedulerJobs(db, {
-        limit: options.limit || CONFIG.schedulerMaxJobsPerTick || 2,
-        leaseSeconds: options.leaseSeconds || DEFAULT_LEASE_SECONDS,
-        actor: "scheduler-loop",
-      });
-    } catch (error) {
-      insertEvent(db, {
-        level: "error",
-        actor: "scheduler",
-        type: "scheduler.loop.failed",
-        entityType: "scheduler",
-        entityId: "local-loop",
-        message: error.message,
-      });
-      return { status: "failed", error: error.message };
-    } finally {
-      active = false;
-    }
+    activeTick = (async () => {
+      try {
+        return await runDueSchedulerJobs(db, {
+          limit: options.limit || CONFIG.schedulerMaxJobsPerTick || 2,
+          leaseSeconds: options.leaseSeconds || DEFAULT_LEASE_SECONDS,
+          actor: "scheduler-loop",
+        });
+      } catch (error) {
+        insertEvent(db, {
+          level: "error",
+          actor: "scheduler",
+          type: "scheduler.loop.failed",
+          entityType: "scheduler",
+          entityId: "local-loop",
+          message: error.message,
+        });
+        return { status: "failed", error: error.message };
+      } finally {
+        active = false;
+        activeTick = null;
+      }
+    })();
+    return activeTick;
   };
   const timer = setInterval(tick, pollMs);
   if (timer.unref) timer.unref();
@@ -696,7 +703,14 @@ function startSchedulerLoop(db, options = {}) {
     pollMs,
     tick,
     stop() {
+      stopped = true;
       clearInterval(timer);
+    },
+    async drain() {
+      stopped = true;
+      clearInterval(timer);
+      if (activeTick) await activeTick;
+      return { status: "drained" };
     },
   };
 }

@@ -20,10 +20,13 @@ const {
 const { canPrepareReviewedRetry } = require("./live-ai-retry-policy");
 const { updateJourney } = require("./pantheon-journey");
 const { projectCompletedCommercialTask } = require("./pantheon-opportunities");
-const { projectCompletedProductionTask } = require("./pantheon-production");
+const {
+  assertQualityReviewRecheckAvailable,
+  projectCompletedProductionTask,
+} = require("./pantheon-production");
 
 const RETAINED_OUTPUT_RECOVERY_SCHEMA = "pantheon.retained-provider-output-recovery.v1";
-const LOCAL_FACTORY_RECOVERY_REVISION = "quality-evidence-coverage-v3";
+const LOCAL_FACTORY_RECOVERY_REVISION = "validation-final-local-correction-v9";
 const RETAINED_COMMERCIAL_OUTPUT_RECOVERY_SCHEMA = "pantheon.retained-commercial-output-recovery.v1";
 const RETAINED_PRODUCTION_OUTPUT_RECOVERY_SCHEMA = "pantheon.retained-production-output-recovery.v1";
 const OFFER_EVALUATOR_RECOVERY_REVISION = "claim-negation-context-v1";
@@ -32,6 +35,20 @@ const PRODUCTION_EVALUATOR_RECOVERY_STAGES = new Set([
   "distribution_plan",
   "chief_brief",
 ]);
+
+function withRecoverySavepoint(db, name, work) {
+  const savepoint = `recovery_${String(name).replace(/[^a-zA-Z0-9_]/g, "_")}`;
+  db.exec(`SAVEPOINT ${savepoint}`);
+  try {
+    const result = work();
+    db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+    return result;
+  } catch (error) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+    db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+    throw error;
+  }
+}
 
 function sha256(value) {
   const bytes = typeof value === "string" ? value : JSON.stringify(value);
@@ -826,6 +843,26 @@ async function recoverRetainedProductBuilderResult(db, sourceTaskId, options = {
     const projection = projectCompletedProductionTask(db, existing.id);
     return { recovered: true, existing: true, source, task: existing, projection };
   }
+  const production = productionMetadata(source.sourceTask);
+  let reviewCapacityExhausted = false;
+  if (production.planId) {
+    try {
+      assertQualityReviewRecheckAvailable(
+        db,
+        production.planId,
+        Number(production.revisionNumber || 0),
+      );
+    } catch (error) {
+      if (
+        options.prepareUnreviewedCorrection === true
+        && /stopped before creating another quality review/i.test(String(error.message || ""))
+      ) {
+        reviewCapacityExhausted = true;
+      } else {
+        throw error;
+      }
+    }
+  }
 
   const recoveryTask = buildRecoveryTask(source, identity, rendererRevision);
   const attemptId = `attempt_local_recovery_${identity}`;
@@ -904,9 +941,81 @@ async function recoverRetainedProductBuilderResult(db, sourceTaskId, options = {
       [toJson(result), now(), recoveryTask.id],
     );
     const completedTask = parseTask(get(db, "SELECT * FROM tasks WHERE id = ?", [recoveryTask.id]));
-    supersedePriorRecoveryDeliverables(db, source, completedTask);
-    reopenJourneyForRecoveredTask(db, source, completedTask);
-    const projection = projectCompletedProductionTask(db, completedTask.id);
+    if (reviewCapacityExhausted) {
+      const plan = get(db, "SELECT metadata FROM catalogue_plans WHERE id = ?", [production.planId]);
+      const planMetadata = fromJson(plan?.metadata, {});
+      const generatedFiles = rendered.generatedFiles;
+      const bundle = generatedFiles.files.find((file) => /\.zip$/i.test(file.humanName));
+      supersedePriorRecoveryDeliverables(db, source, completedTask);
+      run(
+        db,
+        `UPDATE catalogue_plans
+         SET status = 'needs_attention', metadata = ?, updated_at = ?
+         WHERE id = ?`,
+        [
+          toJson({
+            ...planMetadata,
+            productManifest: generatedFiles.manifest,
+            generatedFileIds: generatedFiles.files.map((file) => file.id),
+            storefrontPreviewIds: generatedFiles.previews.map((preview) => preview.id),
+            qualityReviewImageIds: (generatedFiles.qualityReviewImages || []).map((image) => image.id),
+            productBundleDeliverableId: bundle?.id || null,
+            buildStatus: "local_correction_waiting_for_explicit_review",
+            qualityReviewLimitReached: true,
+            unreviewedCorrectionTaskId: completedTask.id,
+            unreviewedCorrectionPreparedAt: now(),
+          }),
+          now(),
+          production.planId,
+        ],
+      );
+      result.output.localRecovery = {
+        ...(result.output.localRecovery || {}),
+        qualityReviewLimitReached: true,
+        noFurtherPaidReviewPrepared: true,
+      };
+      result.raw.qualityReviewLimitReached = true;
+      result.raw.projectionSkipped = true;
+      run(
+        db,
+        "UPDATE tasks SET result = ?, updated_at = ? WHERE id = ?",
+        [toJson(result), now(), completedTask.id],
+      );
+      insertEvent(db, {
+        actor: "jarvis",
+        type: "catalogue.local_correction_stopped_at_review_limit",
+        entityType: "catalogue_plan",
+        entityId: production.planId,
+        message: "Jarvis retained the corrected local package but stopped at the review limit. No further paid review was prepared.",
+        metadata: {
+          recoveryTaskId: completedTask.id,
+          generatedFileIds: generatedFiles.files.map((file) => file.id),
+          previewIds: generatedFiles.previews.map((preview) => preview.id),
+          qualityReviewImageIds: (generatedFiles.qualityReviewImages || []).map((image) => image.id),
+          noProviderCall: true,
+          reviewCapacityExhausted: true,
+        },
+      });
+      return {
+        recovered: true,
+        existing: false,
+        source,
+        task: parseTask(get(db, "SELECT * FROM tasks WHERE id = ?", [completedTask.id])),
+        receipt,
+        generatedFiles,
+        projection: {
+          projected: false,
+          reason: "review_limit_reached",
+          noFurtherPaidReviewPrepared: true,
+        },
+      };
+    }
+    const projection = withRecoverySavepoint(db, identity, () => {
+      reopenJourneyForRecoveredTask(db, source, completedTask);
+      const projected = projectCompletedProductionTask(db, completedTask.id);
+      supersedePriorRecoveryDeliverables(db, source, completedTask);
+      return projected;
+    });
     insertEvent(db, {
       actor: "jarvis",
       type: "product_builder.retained_output_recovered",
@@ -932,6 +1041,13 @@ async function recoverRetainedProductBuilderResult(db, sourceTaskId, options = {
     };
   } catch (error) {
     const failedAt = now();
+    run(
+      db,
+      `UPDATE deliverables
+       SET status = 'superseded', updated_at = ?
+       WHERE task_id = ? AND status <> 'superseded'`,
+      [failedAt, recoveryTask.id],
+    );
     run(
       db,
       `UPDATE tasks

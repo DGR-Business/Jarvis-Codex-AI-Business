@@ -117,7 +117,16 @@ const { getCapabilityAssuranceState } = require("./runtime/capability-assurance"
 const { listVentureKits } = require("./runtime/venture-kit-registry");
 const { approveInternalWorkWithinMandate } = require("./runtime/pantheon-policy");
 const { getPantheonSupervisorState, runPantheonSupervisorCycle } = require("./runtime/pantheon-supervisor");
-const { applyPantheonHandoffDecision, getProductionState } = require("./runtime/pantheon-production");
+const {
+  applyPantheonHandoffDecision,
+  getProductionState,
+  prepareCatalogueBuild,
+} = require("./runtime/pantheon-production");
+const { prepareBuyerIntentValidationRecords } = require("./runtime/buyer-intent-validation");
+const {
+  BUYER_INTENT_VALIDATION_SPECS,
+  getBuyerIntentValidationSpec,
+} = require("../config/buyer-intent-validation-specs");
 const {
   getJourneyState,
   isTerminalJourneyStatus,
@@ -251,6 +260,7 @@ function resolveWorkspaceFile(filePath) {
   const root = path.resolve(CONFIG.rootDir);
   const candidate = path.isAbsolute(filePath) ? filePath : path.join(root, filePath);
   const resolved = path.resolve(candidate);
+  const canonical = fs.existsSync(resolved) ? fs.realpathSync.native(resolved) : resolved;
   const configuredPackRoot = process.env.PANTHEON_APPROVAL_PACK_DIR
     || process.env.JARVIS_APPROVAL_PACK_DIR
     || null;
@@ -260,13 +270,22 @@ function resolveWorkspaceFile(filePath) {
     ...(configuredPackRoot ? [path.resolve(configuredPackRoot)] : []),
   ];
   return allowedRoots.some((allowedRoot) => {
-    const relative = path.relative(allowedRoot, resolved);
+    const canonicalRoot = fs.existsSync(allowedRoot)
+      ? fs.realpathSync.native(allowedRoot)
+      : allowedRoot;
+    const relative = path.relative(canonicalRoot, canonical);
     return !relative.startsWith("..") && !path.isAbsolute(relative);
-  }) ? resolved : null;
+  }) ? canonical : null;
 }
 
-function serveDeliverableFile(db, res, id) {
-  const deliverable = get(db, "SELECT id, human_name, format, file_path FROM deliverables WHERE id = ?", [id]);
+function serveDeliverableFile(db, res, id, options = {}) {
+  const download = options.download === true;
+  const deliverable = get(
+    db,
+    `SELECT id, human_name, format, status, file_path, content_hash, metadata
+     FROM deliverables WHERE id = ?`,
+    [id],
+  );
   if (!deliverable) {
     notFound(res);
     return;
@@ -275,7 +294,7 @@ function serveDeliverableFile(db, res, id) {
   const previewableFormat = format === "pdf"
     || format === "application/pdf"
     || format.startsWith("image/");
-  if (!previewableFormat) {
+  if (!download && !previewableFormat) {
     jsonResponse(res, 415, { error: "Preview is available for PDF and image review outputs only." });
     return;
   }
@@ -290,19 +309,50 @@ function serveDeliverableFile(db, res, id) {
   }
   const stats = fs.statSync(filePath);
   const extension = path.extname(filePath).toLowerCase();
-  if (!new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif"]).has(extension)) {
+  const previewExtensions = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+  const downloadExtensions = new Set([
+    ...previewExtensions,
+    ".zip",
+    ".xlsx",
+    ".csv",
+    ".txt",
+    ".md",
+    ".json",
+    ".docx",
+    ".pptx",
+  ]);
+  if (!(download ? downloadExtensions : previewExtensions).has(extension)) {
     jsonResponse(res, 415, { error: "This review output format cannot be previewed safely." });
     return;
+  }
+  if (stats.size > 150 * 1024 * 1024) {
+    jsonResponse(res, 413, { error: "This file exceeds Pantheon's 150 MB operator-download limit." });
+    return;
+  }
+  const bytes = fs.readFileSync(filePath);
+  const metadata = fromJson(deliverable.metadata, {});
+  const expectedHash = String(deliverable.content_hash || metadata.sha256 || "");
+  if (download && !/^[a-f0-9]{64}$/i.test(expectedHash)) {
+    jsonResponse(res, 409, { error: "This file is not bound to a verified content hash." });
+    return;
+  }
+  if (expectedHash) {
+    const actualHash = crypto.createHash("sha256").update(bytes).digest("hex");
+    if (actualHash !== expectedHash) {
+      jsonResponse(res, 409, { error: "This file changed after Pantheon recorded it. Review is required." });
+      return;
+    }
   }
   const filename = path.basename(filePath).replace(/["\r\n]/g, "");
   res.writeHead(200, {
     "content-type": CONTENT_TYPES[extension] || "application/octet-stream",
-    "content-length": stats.size,
-    "content-disposition": `inline; filename="${filename}"`,
+    "content-length": bytes.length,
+    "content-disposition": `${download ? "attachment" : "inline"}; filename="${filename}"`,
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
+    "x-pantheon-content-hash": expectedHash || "unbound",
   });
-  fs.createReadStream(filePath).pipe(res);
+  res.end(bytes);
 }
 
 function ensureRuntimeFoundation(db) {
@@ -666,6 +716,7 @@ function createApp(options = {}) {
           jsonResponse(res, 403, { error: "Runtime control token rejected." });
           return;
         }
+        server.beginShutdown?.();
         jsonResponse(res, 202, { ok: true, instanceId });
         setImmediate(() => server.shutdown?.());
         return;
@@ -777,7 +828,65 @@ function createApp(options = {}) {
       if (req.method === "GET" && investmentCaseDetail) {
         const result = getInvestmentCase(db, investmentCaseDetail.id);
         if (!result) notFound(res);
-        else jsonResponse(res, 200, result);
+        else {
+          const buyerIntentSpec = BUYER_INTENT_VALIDATION_SPECS.find(
+            (spec) => spec.status === "active" && spec.decisionHash === result.decision_hash,
+          );
+          jsonResponse(res, 200, {
+            ...result,
+            buyerIntentOption: buyerIntentSpec ? {
+              specId: buyerIntentSpec.id,
+              label: "Prepare one buyer test",
+              summary: `Build one functional validation workbook and check it before deciding whether to prepare ${buyerIntentSpec.channel.testActionLabel || buyerIntentSpec.channel.label}.`,
+              platformName: buyerIntentSpec.channel.platformName || null,
+              expectedDecisionHash: result.decision_hash,
+              internalAiCapCents: buyerIntentSpec.providerPolicy.combinedCapCents,
+              externalActionsAllowed: false,
+            } : null,
+          });
+        }
+        return;
+      }
+
+      const prepareBuyerIntent = routeMatch(
+        url.pathname,
+        "/api/commercial/investment-cases/:id/prepare-buyer-intent-test",
+      );
+      if (req.method === "POST" && prepareBuyerIntent) {
+        const body = await readBody(req);
+        const spec = getBuyerIntentValidationSpec(body?.specId);
+        if (!spec) {
+          jsonResponse(res, 400, { error: "This buyer-intent test specification is not available." });
+          return;
+        }
+        const savepoint = "prepare_buyer_intent_and_build";
+        db.exec(`SAVEPOINT ${savepoint}`);
+        let prepared;
+        let build;
+        try {
+          prepared = prepareBuyerIntentValidationRecords(db, prepareBuyerIntent.id, {
+            specId: spec.id,
+            expectedDecisionHash: body.expectedDecisionHash,
+          });
+          build = prepareCatalogueBuild(db, {
+            planId: prepared.plan.id,
+            opportunityId: prepared.opportunity.id,
+            operatorChoiceRequired: true,
+          });
+          db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+        } catch (error) {
+          db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+          db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+          throw error;
+        }
+        broadcastState();
+        jsonResponse(res, build.existing ? 200 : 201, {
+          prepared,
+          build,
+          nextAction: build.approval?.id
+            ? "Review the one functional validation workbook build."
+            : "The validation workbook build is already in progress or complete.",
+        });
         return;
       }
 
@@ -1186,6 +1295,11 @@ function createApp(options = {}) {
       const deliverableFile = routeMatch(url.pathname, "/api/deliverables/:id/file");
       if (req.method === "GET" && deliverableFile) {
         serveDeliverableFile(db, res, deliverableFile.id);
+        return;
+      }
+      const deliverableDownload = routeMatch(url.pathname, "/api/deliverables/:id/download");
+      if (req.method === "GET" && deliverableDownload) {
+        serveDeliverableFile(db, res, deliverableDownload.id, { download: true });
         return;
       }
 
@@ -1784,23 +1898,30 @@ function createApp(options = {}) {
     }
   });
 
-  let shuttingDown = false;
-  server.shutdown = () => {
-    if (shuttingDown) return Promise.resolve();
-    shuttingDown = true;
+  let shutdownPromise = null;
+  server.beginShutdown = () => {
     server.schedulerLoop?.stop?.();
     runtimeState.schedulerRunning = false;
-    for (const client of wss.clients) client.terminate();
-    return new Promise((resolve) => {
-      const finish = () => {
-        if (!options.db) db.close();
-        resolve();
-      };
-      wss.close(() => {
-        if (server.listening) server.close(finish);
-        else finish();
+    runtimeState.shuttingDown = true;
+  };
+  server.shutdown = () => {
+    if (shutdownPromise) return shutdownPromise;
+    server.beginShutdown();
+    shutdownPromise = (async () => {
+      await server.schedulerLoop?.drain?.();
+      for (const client of wss.clients) client.terminate();
+      await new Promise((resolve) => {
+        const finish = () => {
+          if (!options.db) db.close();
+          resolve();
+        };
+        wss.close(() => {
+          if (server.listening) server.close(finish);
+          else finish();
+        });
       });
-    });
+    })();
+    return shutdownPromise;
   };
 
   server.runtimeState = runtimeState;
