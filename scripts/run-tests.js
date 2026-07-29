@@ -2,7 +2,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { selectTestShard } = require("./test-shards");
+const {
+  LOCAL_ORDINARY_SHARD_COUNT,
+  planTestInvocations,
+} = require("./test-shards");
 
 const workspaceRoot = path.resolve(__dirname, "..");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-test-runtime-"));
@@ -28,7 +31,7 @@ function restorePdfTemp() {
   if (fs.existsSync(pdfSnapshot)) fs.cpSync(pdfSnapshot, pdfTempRoot, { recursive: true });
 }
 
-function requestedTestFiles(args) {
+function requestedTestInvocations(args) {
   const lifecycleCi = process.env.CI === "true"
     && process.env.PANTHEON_LIFECYCLE_CI === "1";
   const requested = args.length
@@ -56,23 +59,32 @@ function requestedTestFiles(args) {
     const normalized = value.replace(/\\/g, "/");
     return lifecycleCi || !processIntegrationTests.has(path.basename(normalized));
   });
-  if (args.length || process.env.CI !== "true") return runnable;
-
-  const shardCount = Number(process.env.PANTHEON_TEST_SHARD_COUNT || 1);
-  const shardIndex = Number(process.env.PANTHEON_TEST_SHARD_INDEX || 0);
-  if (
-    !Number.isInteger(shardCount)
-    || shardCount < 1
-    || !Number.isInteger(shardIndex)
-    || shardIndex < 0
-    || shardIndex >= shardCount
-  ) {
-    throw new Error("Pantheon received an invalid CI test-shard configuration.");
+  const ordinaryCi = process.env.CI === "true" && !lifecycleCi && !args.length;
+  let shardCount = 1;
+  let shardIndex = 0;
+  if (ordinaryCi) {
+    shardCount = Number(process.env.PANTHEON_TEST_SHARD_COUNT || 1);
+    shardIndex = Number(process.env.PANTHEON_TEST_SHARD_INDEX || 0);
+    if (
+      !Number.isInteger(shardCount)
+      || shardCount < 1
+      || !Number.isInteger(shardIndex)
+      || shardIndex < 0
+      || shardIndex >= shardCount
+    ) {
+      throw new Error("Pantheon received an invalid CI test-shard configuration.");
+    }
   }
-  return selectTestShard(
+  return planTestInvocations(
     runnable,
-    shardCount,
-    shardIndex,
+    {
+      explicit: args.length > 0,
+      ci: ordinaryCi,
+      lifecycleCi,
+      shardCount,
+      shardIndex,
+      localShardCount: LOCAL_ORDINARY_SHARD_COUNT,
+    },
     (value) => fs.statSync(path.join(workspaceRoot, value)).size,
   );
 }
@@ -122,31 +134,43 @@ try {
     : process.env.CI === "true"
       ? 12 * 60_000
       : 4 * 60_000;
-  const nodeTestArguments = [
-    "--test",
-    "--test-isolation=none",
-    ...(lifecycleCi ? ["--test-concurrency=1"] : []),
-    ...requestedTestFiles(process.argv.slice(2)),
-  ];
-  const result = spawnSync(
-    process.execPath,
-    nodeTestArguments,
-    {
-      cwd: workspaceRoot,
-      env,
-      stdio: "inherit",
-      windowsHide: true,
-      timeout: testDeadlineMs,
-      killSignal: "SIGKILL",
-    },
-  );
-  if (result.error?.code === "ETIMEDOUT") {
-    throw new Error(
-      `The ${lifecycleCi ? "Windows lifecycle" : "ordinary"} test process exceeded its external deadline.`,
+  const invocations = requestedTestInvocations(process.argv.slice(2));
+  for (let index = 0; index < invocations.length; index += 1) {
+    const files = invocations[index];
+    if (invocations.length > 1) {
+      process.stdout.write(
+        `Pantheon local ordinary tests: shard ${index + 1}/${invocations.length} (${files.length} files).\n`,
+      );
+    }
+    const nodeTestArguments = [
+      "--test",
+      "--test-isolation=none",
+      ...(lifecycleCi ? ["--test-concurrency=1"] : []),
+      ...files,
+    ];
+    const result = spawnSync(
+      process.execPath,
+      nodeTestArguments,
+      {
+        cwd: workspaceRoot,
+        env,
+        stdio: "inherit",
+        windowsHide: true,
+        timeout: testDeadlineMs,
+        killSignal: "SIGKILL",
+      },
     );
+    if (result.error?.code === "ETIMEDOUT") {
+      throw new Error(
+        `The ${lifecycleCi ? "Windows lifecycle" : "ordinary"} test process exceeded its external deadline.`,
+      );
+    }
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      process.exitCode = result.status ?? 1;
+      break;
+    }
   }
-  if (result.error) throw result.error;
-  process.exitCode = result.status ?? 1;
 } finally {
   restorePdfTemp();
   fs.rmSync(root, {

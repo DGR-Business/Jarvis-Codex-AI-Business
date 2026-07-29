@@ -15,45 +15,63 @@ commercial move.
 
 ## Current Position
 
-- Product direction: evidence-led opportunity selection before venture creation.
-  No venture currently has authority to enter production.
-- Channel direction: selected from evidence per opportunity. Gumroad, Etsy,
-  marketplaces, direct commerce, service channels, affiliate networks, and
-  other lawful routes are options, not generic defaults.
+- Product direction: reconcile the current release and prepare a separate
+  low-touch Social Media Manager Client Approval & Scope Guard Kit hypothesis.
+  No venture currently has authority to enter production or an external test.
+- Commercial hypothesis: freelance or independent social media managers,
+  fragmented approval and scope control, a practical low-touch kit, and an
+  initial A$29 price. The buyer, problem, offer, price, format, channel, reach
+  rule, duration, and conversion assumptions remain unproven.
+- Channel direction: Etsy is the primary hypothesis and Gumroad is a fallback
+  hypothesis for the new kit. Each must earn selection through current evidence.
+  Neither is a generic default.
 - Runtime: Node.js 24, CommonJS, built-in SQLite schema 24, local signed operator
   session, scheduler-backed supervisor, independent monitor, Portfolio
   Controller, and a registered non-universal `digital_product_v1` Venture Kit.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
-- Active engineering: the First Buyer-Intent Proof reached its terminal quality
-  branch. A zero-spend refresh preserved all seven customer and storefront
-  hashes and proved all three setup-guide pages. The one manually approved
-  Terra evidence recheck returned `revise`, score 78, so Pantheon permanently
-  stopped the build. The release proof passed locally, in Chrome, and in all
-  seven private CI jobs at implementation commit `c5c2436`.
+- Active engineering: commercial-truth and owner-absent kit readiness work is in
+  progress on the current integrated tree. Canonical Git state, runtime
+  reconciliation, compatibility, Doctor, recovery, accounting, channel
+  neutrality, dual buyer-and-cash evidence, and the owner journey have not yet
+  completed their new release proof.
 - Current commercial result: two bounded rounds retained ten hypotheses,
   performed comparable live demand and finance review on six finalists, and
   completed two Sol investment reviews. Pantheon selected no investment.
-- Current operator state: no worker or provider call is running and there is no
-  unknown provider outcome. The buyer-intent workbook is not quality-passed,
-  the build exposes no retry or buyer-test decision, and no market test,
-  publication, account action, customer contact, or external spend is
-  authorised.
+- Terminal buyer-intent result: the First Buyer-Intent Proof preserved all seven
+  customer and storefront hashes, proved all three setup-guide pages, and used
+  its one manually approved Terra evidence recheck. The `revise`, score-78
+  result permanently stopped that build. Its exact release passed locally, in
+  Chrome, and in all seven private CI jobs at commit `c5c2436`.
+- Current truth status: inspection found retained runtime and owner-facing
+  records that need explicit reconciliation before the current release can be
+  called canonical. This work is in progress and no migration, recovery,
+  accounting, or owner-screen fix is claimed here as released.
+- Commercial reality: no buyer contact, call, email, message, publication,
+  listing, public post, advertisement, account action, KYC, OAuth, MFA, paid
+  market test, external spend, order, revenue, refund, or actual net cash
+  contribution has occurred for the new kit.
 - Historical product: the Job Search Evidence Tracker package remains
   recoverable engineering evidence but is parked after an unbiased comparison.
   It is not an active venture or publication recommendation.
 - External actions: locked by default.
-- Operator budget: eight hours per week in the build and first-proof phase.
+- Owner operating model: Daniel supplies guidance and exact protected approvals;
+  Pantheon is intended to perform routine work through implemented and proved
+  capabilities. Public operation is truthful and brand-led, without depending
+  on Daniel's face, personal voice, or routine labour.
+- Current external budget: A$0. This session is preparation-only. Contact,
+  publishing, advertising, account work, legal acceptance, and money movement
+  remain separately protected.
 - Pre-revenue AI and tool cap: A$100 per month. The production database records
   July runtime exposure of A$9.44, comprising A$3.10 reconciled provider usage
   and A$6.34 incurred estimates. The complete retained buyer-intent workflow
   accounts for A$1.00 of billing-pending estimates. There are no unknown
   provider outcomes.
-- Operations: Stopped, Standby, and Working remain the intended interface.
-  The native Windows supervisor and Job Object release passed local, Chrome,
-  command-file, and private CI proof. Lifecycle integration remains quarantined
-  to disposable, externally bounded Windows CI rather than ordinary local
-  tests.
+- Operations: Stopped, Standby, and Working remain the intended interface. The
+  native Windows supervisor and Job Object passed their exact prior release
+  proof. The current candidate still requires its own compatibility, recovery,
+  browser, and private CI evidence. Lifecycle integration remains quarantined
+  to disposable, externally bounded Windows CI rather than ordinary local tests.
 
 ## Durable Decisions
 
@@ -99,6 +117,7 @@ commercial move.
 | 2026-07-28 | Release the native Windows supervisor while retaining lifecycle tests in disposable CI. | Ten hosted lifecycle cycles, forced supervisor failure, real command files, and Chrome proved exact Job Object ownership without harming unrelated Node processes. |
 | 2026-07-29 | Permit one approved QA-evidence recheck only when customer files are unchanged. | The independent reviewer saw only two pages of a three-page PDF. Jarvis may repair the internal contact sheet at zero provider cost, but a new model verdict requires exact approval, immutable customer hashes, complete page coverage, idempotency, and no further recheck. |
 | 2026-07-29 | Enforce the single recheck's non-pass as a permanent build stop. | The manually approved Terra recheck returned `revise`, score 78. The recorded rule forbids another paid retry, fallback, revision of this build, buyer-test pack, or external-test decision. |
+| 2026-07-29 | Adopt an owner-absent, truthful brand-operated model and prepare a separate low-touch Social Media Manager Client Approval & Scope Guard Kit hypothesis. | Daniel should provide guidance and protected approvals rather than routine execution; the new test must use attributable buyer and actual AUD cash evidence without reopening the stopped build or treating Etsy, Gumroad, or A$29 as proved. |
 
 ## 2026-07-22 Full Journey Rehearsal: Genuine Quality Stop
 
@@ -1795,7 +1814,7 @@ confirmed in Standby with the business runtime stopped. Exact evidence is
 retained in
 `docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`.
 
-## Current Next Best Work
+## Superseded Next Best Work - Terminal Build Closeout
 
 The continuation is released and Pantheon is in Standby. No further action is
 authorised for this terminal build.
@@ -1805,3 +1824,100 @@ evidence plan. Do not create another review, buyer pack, or external-test
 decision for this build. Do not begin Venture Factory, a second Venture Kit,
 concurrent ventures, or new OpenAI capability adoption merely to route around
 the terminal quality result.
+
+## 2026-07-29 Commercial Truth And Owner-Absent Kit Readiness Started
+
+Daniel approved the next long working-session direction:
+
+- integrate and verify the current released implementation rather than restart
+  discovery;
+- retire the obsolete Claude worktree while preserving historical evidence;
+- reconcile compatibility, recovery, accounting, runtime, channel, and
+  commercial truth before new product or customer action;
+- prepare a low-touch digital kit;
+- remove Daniel from routine execution while retaining strategy, guidance, and
+  protected approvals;
+- support both imported platform evidence and manual receipt-backed evidence;
+- keep the current session preparation-only with A$0 external spend; and
+- preserve owner-first reporting, closed historical work, safe recovery with
+  receipts, and a proportionate split between safe patches and major upgrades.
+
+Decision 0009 defines owner-absent as truthful, brand-operated business activity,
+not anonymity, deception, or identity avoidance. Daniel need not supply his face,
+personal voice, or daily labour to public operations. A platform or law may still
+require his private identity, KYC, MFA, OAuth, or legal acceptance through a
+separately protected action.
+
+The new preparation hypothesis is the Social Media Manager Client Approval &
+Scope Guard Kit:
+
+- buyer: freelance or independent social media managers managing retained
+  clients;
+- problem: fragmented approval, scope-change, revision, delivery-acceptance, and
+  evidence handling;
+- offer: a practical low-touch kit of templates, checklists, scripts, and logs;
+- price hypothesis: A$29;
+- primary channel hypothesis: Etsy; and
+- fallback channel hypothesis: Gumroad.
+
+Every element remains unproven. This is a new commercial case, not a revision or
+renaming of the stopped Client Control and Profitability Workbook. The previous
+A$29.95, 100-qualified-visit, and 30-day test terms do not transfer
+automatically.
+
+The buyer-and-cash proof contract will distinguish:
+
+1. an attributable platform export or API import with source, hash, transaction,
+   fees, refunds, currency, attribution, and reconciliation; and
+2. a manual operator-attested entry backed by a retained receipt, invoice,
+   settlement reference, or equivalent source, with provenance and revision
+   history.
+
+The proof gate remains three independent paying buyers and positive actual net
+cash contribution in AUD after revenue, refunds, marketplace and payment fees,
+advertising, fulfilment, paid tools, model usage, and every other attributable
+cash cost.
+
+The starting inspection found system-truth work to reconcile across terminal
+history, current runtime states, recovery compatibility, accounting
+classification, channel-specific assumptions, and owner-facing status. That
+implementation is in progress. No correction is represented here as migrated,
+released, recovered, or browser-proved.
+
+No buyer contact, call, email, message, publication, listing, public post,
+advertisement, account action, KYC, OAuth, MFA, external spend, order, revenue,
+refund, or actual net cash contribution occurred in this documentation and
+planning step.
+
+The exact active plan is
+`docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
+
+## Current Next Best Work
+
+> Make Pantheon’s current release the canonical, compatibility-verified
+> baseline; align what the system reports with what it can actually prove;
+> establish one channel-consistent path from a selected offer to attributable
+> buyer and cash evidence; prove the owner journey end to end; and prepare the
+> next commercial test without contacting customers, publishing, or spending
+> money until separately approved.
+
+Execute that goal in this order:
+
+1. establish the exact canonical Git and dirty-worktree baseline;
+2. reconcile runtime, historical, owner-facing, and monitor truth without
+   erasing evidence;
+3. prove compatibility, Doctor, encrypted recovery, database integrity, and
+   safe Windows ownership on the exact candidate release;
+4. align accounting and implement distinct imported and manual receipt-backed
+   buyer-and-cash evidence;
+5. remove channel-specific assumptions from the generic path;
+6. complete evidence-backed diligence and a versioned test specification for
+   the new kit;
+7. prove the complete protected owner journey in the real dashboard; and
+8. run all release gates, commit, push, pass private CI, record the factual
+   result, and leave Pantheon in Standby.
+
+Do not contact customers, publish, advertise, create or connect accounts, accept
+terms, move money, or incur external spend during this goal. Do not begin
+Venture Factory, a second Venture Kit, concurrent venture lanes, or broad
+capability expansion.

@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
 const { DatabaseSync, backup } = require("node:sqlite");
 const CONFIG = require("../config");
+const { LATEST_SCHEMA_VERSION, openDatabase, verifyDatabase } = require("../db");
 
 const MAGIC = Buffer.from("JARVISBK1", "ascii");
 const AUTH_TAG_BYTES = 16;
@@ -17,6 +18,12 @@ const RECOVERY_METADATA_DIR = ".pantheon-recovery";
 const RECOVERY_MANIFEST_PATH = `${RECOVERY_METADATA_DIR}/manifest.json`;
 const RECOVERY_VERIFICATION_PATH = `${RECOVERY_METADATA_DIR}/restore-verification.json`;
 const BACKUP_KINDS = new Set(["source", "database", "artifacts", "set", "file"]);
+const LAST_RELEASED_SCHEMA_VERSION = 24;
+const SUPPORTED_ARCHIVE_SCHEMA_VERSIONS = new Set([
+  LAST_RELEASED_SCHEMA_VERSION,
+  LATEST_SCHEMA_VERSION - 1,
+  LATEST_SCHEMA_VERSION,
+]);
 
 function preferredEnvironment(suffix) {
   const preferred = process.env[`PANTHEON_${suffix}`];
@@ -355,23 +362,116 @@ function createArtifactArchive(sourceRoot, archivePath, options = {}) {
   }
 }
 
-function validateSqliteDatabase(dbPath) {
-  let db;
+function sqliteIntegrityProof(db) {
+  const quick = db.prepare("PRAGMA quick_check").all();
+  const integrity = db.prepare("PRAGMA integrity_check").all();
+  const foreignKeys = db.prepare("PRAGMA foreign_key_check").all();
+  const quickOk = quick.length === 1 && Object.values(quick[0])[0] === "ok";
+  const integrityOk = integrity.length === 1 && Object.values(integrity[0])[0] === "ok";
+  if (!quickOk || !integrityOk || foreignKeys.length) {
+    throw new Error(
+      `SQLite validation failed (quick=${quickOk}, integrity=${integrityOk}, foreignKeys=${foreignKeys.length}).`,
+    );
+  }
+  return {
+    quickCheck: "ok",
+    integrityCheck: "ok",
+    foreignKeyViolations: 0,
+  };
+}
+
+function archiveSchemaVersion(db) {
+  const table = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+  ).get();
+  if (!table) throw new Error("Pantheon schema_migrations is missing.");
+  const rows = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all();
+  if (
+    !rows.length
+    || rows.some((row, index) => Number(row.version) !== index + 1)
+  ) {
+    throw new Error("Pantheon schema migration history is incomplete or non-contiguous.");
+  }
+  return Number(rows.at(-1).version);
+}
+
+function proveDisposableDatabaseMigration(dbPath, fromVersion, sourceSha256) {
+  const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-db-migration-proof-"));
+  const disposablePath = path.join(workRoot, "runtime.sqlite");
+  let migrated;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
-    const quick = db.prepare("PRAGMA quick_check").all();
-    const integrity = db.prepare("PRAGMA integrity_check").all();
-    const foreignKeys = db.prepare("PRAGMA foreign_key_check").all();
-    const quickOk = quick.length === 1 && Object.values(quick[0])[0] === "ok";
-    const integrityOk = integrity.length === 1 && Object.values(integrity[0])[0] === "ok";
-    if (!quickOk || !integrityOk || foreignKeys.length) {
-      throw new Error(`SQLite validation failed (quick=${quickOk}, integrity=${integrityOk}, foreignKeys=${foreignKeys.length}).`);
+    fs.copyFileSync(dbPath, disposablePath, fs.constants.COPYFILE_EXCL);
+    const db = openDatabase(disposablePath);
+    try {
+      migrated = verifyDatabase(db);
+    } finally {
+      db.close();
     }
-    return { quickCheck: "ok", integrityCheck: "ok", foreignKeyViolations: 0 };
+    if (sha256File(dbPath) !== sourceSha256) {
+      throw new Error("Source archive changed while its disposable migration was being proved.");
+    }
+    return {
+      completed: true,
+      sourceUnchanged: true,
+      fromSchemaVersion: fromVersion,
+      toSchemaVersion: migrated.schemaVersion,
+      openedWith: "openDatabase",
+    };
+  } finally {
+    fs.rmSync(workRoot, { recursive: true, force: true });
+  }
+}
+
+function validateSqliteDatabase(dbPath) {
+  const sourcePath = path.resolve(dbPath);
+  const sourceSha256 = sha256File(sourcePath);
+  let db;
+  let integrity;
+  let schemaVersion;
+  let currentProof = null;
+  try {
+    db = new DatabaseSync(sourcePath, { readOnly: true });
+    integrity = sqliteIntegrityProof(db);
+    schemaVersion = archiveSchemaVersion(db);
+    if (!SUPPORTED_ARCHIVE_SCHEMA_VERSIONS.has(schemaVersion)) {
+      const supported = [...SUPPORTED_ARCHIVE_SCHEMA_VERSIONS]
+        .sort((left, right) => left - right)
+        .join(", ");
+      throw new Error(
+        `Runtime schema ${schemaVersion} is not a supported archive schema (${supported}).`,
+      );
+    }
+    if (schemaVersion === LATEST_SCHEMA_VERSION) currentProof = verifyDatabase(db);
   } catch (error) {
-    throw new Error(`Database backup is not a valid, consistent SQLite database: ${error.message}`);
+    throw new Error(`Database backup is not a valid, compatible Pantheon database: ${error.message}`);
   } finally {
     if (db) db.close();
+  }
+  try {
+    const migrationProof = schemaVersion < LATEST_SCHEMA_VERSION
+      ? proveDisposableDatabaseMigration(sourcePath, schemaVersion, sourceSha256)
+      : null;
+    if (sha256File(sourcePath) !== sourceSha256) {
+      throw new Error("Database archive changed during compatibility validation.");
+    }
+    return {
+      ...integrity,
+      schemaVersion,
+      archiveSchemaVersion: schemaVersion,
+      currentSchemaVersion: LATEST_SCHEMA_VERSION,
+      compatibility: currentProof
+        ? "current_ready"
+        : schemaVersion === LATEST_SCHEMA_VERSION - 1
+          ? "supported_n_minus_one"
+          : "supported_last_release",
+      currentReady: Boolean(currentProof),
+      migrationRequired: !currentProof,
+      migrationProof,
+      sourceSha256,
+      sourceUnchanged: true,
+    };
+  } catch (error) {
+    throw new Error(`Database backup is not a valid, compatible Pantheon database: ${error.message}`);
   }
 }
 
@@ -422,6 +522,140 @@ function isSafeRelativeArchivePath(value) {
   return !path.posix.isAbsolute(normalized)
     && !/^[a-zA-Z]:/.test(normalized)
     && !parts.includes("..");
+}
+
+function readRequiredRecoveryJson(filePath, label) {
+  let value;
+  try {
+    value = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new Error(`Recovery source ${label} is not valid JSON: ${error.message}`);
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Recovery source ${label} must contain a JSON object.`);
+  }
+  return value;
+}
+
+function dependencyMapsMatch(left = {}, right = {}) {
+  return JSON.stringify(Object.entries(left).sort(([a], [b]) => a.localeCompare(b)))
+    === JSON.stringify(Object.entries(right).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function configuredStartPath(packageJson) {
+  const command = String(packageJson?.scripts?.start || "").trim();
+  const match = command.match(/^node(?:\.exe)?\s+(?:"([^"]+)"|'([^']+)'|([^\s]+))$/i);
+  const suppliedPath = String(match?.[1] || match?.[2] || match?.[3] || "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "");
+  if (
+    !match
+    || !isSafeRelativeArchivePath(suppliedPath)
+    || /[;&|<>]/.test(suppliedPath)
+    || ![".js", ".cjs", ".mjs"].includes(path.posix.extname(suppliedPath).toLowerCase())
+  ) {
+    throw new Error(
+      "Recovery source package.json must configure one safe `node <relative-entrypoint>` start command.",
+    );
+  }
+  return {
+    command,
+    path: path.posix.normalize(suppliedPath),
+  };
+}
+
+function validateRecoverySourceBundle(restoredRoot) {
+  const root = path.resolve(restoredRoot);
+  const packagePath = path.join(root, "package.json");
+  const lockPath = path.join(root, "package-lock.json");
+  for (const [relativePath, absolutePath] of [
+    ["package.json", packagePath],
+    ["package-lock.json", lockPath],
+    ["src/server.js", path.join(root, "src", "server.js")],
+    ["public/index.html", path.join(root, "public", "index.html")],
+    ["public/app.js", path.join(root, "public", "app.js")],
+    ["public/styles.css", path.join(root, "public", "styles.css")],
+    ["requirements-runtime.txt", path.join(root, "requirements-runtime.txt")],
+    ["scripts/compose-storefront-cover.py", path.join(root, "scripts", "compose-storefront-cover.py")],
+    ["scripts/render-approval-pack.py", path.join(root, "scripts", "render-approval-pack.py")],
+    ["scripts/render-digital-product-kit.py", path.join(root, "scripts", "render-digital-product-kit.py")],
+  ]) {
+    if (
+      !fs.existsSync(absolutePath)
+      || !fs.lstatSync(absolutePath).isFile()
+      || fs.lstatSync(absolutePath).isSymbolicLink()
+    ) {
+      throw new Error(`Recovery source is missing required file ${relativePath}.`);
+    }
+  }
+  const packageJson = readRequiredRecoveryJson(packagePath, "package.json");
+  const lock = readRequiredRecoveryJson(lockPath, "package-lock.json");
+  const start = configuredStartPath(packageJson);
+  const startPath = path.resolve(root, ...start.path.split("/"));
+  if (
+    relativePathWithin(root, startPath) !== start.path
+    || !fs.existsSync(startPath)
+    || !fs.lstatSync(startPath).isFile()
+    || fs.lstatSync(startPath).isSymbolicLink()
+  ) {
+    throw new Error(`Recovery source is missing its configured start path ${start.path}.`);
+  }
+  const lockedRoot = lock.packages?.[""];
+  const declaredDependencies = {
+    dependencies: packageJson.dependencies || {},
+    devDependencies: packageJson.devDependencies || {},
+  };
+  const lockedDependencies = {
+    dependencies: lockedRoot?.dependencies || {},
+    devDependencies: lockedRoot?.devDependencies || {},
+  };
+  if (
+    !Number.isInteger(Number(lock.lockfileVersion))
+    || Number(lock.lockfileVersion) < 2
+    || !lockedRoot
+    || packageJson.name !== lock.name
+    || packageJson.version !== lock.version
+    || packageJson.name !== lockedRoot.name
+    || packageJson.version !== lockedRoot.version
+  ) {
+    throw new Error("Recovery source package-lock.json does not match package.json root metadata.");
+  }
+  if (
+    !dependencyMapsMatch(declaredDependencies.dependencies, lockedDependencies.dependencies)
+    || !dependencyMapsMatch(declaredDependencies.devDependencies, lockedDependencies.devDependencies)
+  ) {
+    throw new Error("Recovery source package-lock.json does not match package.json dependency metadata.");
+  }
+  const missingLockedPackages = Object.keys({
+    ...declaredDependencies.dependencies,
+    ...declaredDependencies.devDependencies,
+  }).filter((name) => !String(lock.packages?.[`node_modules/${name}`]?.version || ""));
+  if (missingLockedPackages.length) {
+    throw new Error(
+      `Recovery source package-lock.json is missing ${missingLockedPackages.length} declared package record(s).`,
+    );
+  }
+  return {
+    packageName: String(packageJson.name),
+    packageVersion: String(packageJson.version),
+    dependencyCount: Object.keys(declaredDependencies.dependencies).length,
+    developmentDependencyCount: Object.keys(declaredDependencies.devDependencies).length,
+    startCommand: start.command,
+    startPath: start.path,
+    requiredFiles: [...new Set([
+      "package.json",
+      "package-lock.json",
+      "public/app.js",
+      "public/index.html",
+      "public/styles.css",
+      "requirements-runtime.txt",
+      "scripts/compose-storefront-cover.py",
+      "scripts/render-approval-pack.py",
+      "scripts/render-digital-product-kit.py",
+      "src/server.js",
+      start.path,
+    ])].sort(),
+  };
 }
 
 function recoveryComponentForPath(relativePath) {
@@ -518,6 +752,7 @@ async function createRecoverySetArchive(sourceRoot, archivePath, options = {}) {
     });
     validateArchiveEntries(sourceArchive, "source");
     runTar(["-xf", sourceArchive, "-C", stageRoot]);
+    const sourceContract = validateRecoverySourceBundle(stageRoot);
 
     const restoredDbPath = path.join(stageRoot, "data", "runtime.sqlite");
     await createDatabaseSnapshot(dbPath, restoredDbPath);
@@ -549,6 +784,7 @@ async function createRecoverySetArchive(sourceRoot, archivePath, options = {}) {
         required: true,
         present: true,
         restorePath: ".",
+        bootContract: sourceContract,
         ...summarizeInventory(inventory, "source"),
       },
       database: {
@@ -683,6 +919,7 @@ function validateRecoverySetDirectory(restoredRoot, options = {}) {
       throw new Error(`Recovery-set file verification failed: ${expected.path || actual.path}`);
     }
   }
+  const sourceContract = validateRecoverySourceBundle(root);
 
   const componentNames = [
     "source",
@@ -725,6 +962,13 @@ function validateRecoverySetDirectory(restoredRoot, options = {}) {
     ) {
       throw new Error(`Recovery-set component verification failed: ${componentName}`);
     }
+    if (
+      componentName === "source"
+      && expected.bootContract !== undefined
+      && JSON.stringify(expected.bootContract) !== JSON.stringify(sourceContract)
+    ) {
+      throw new Error("Recovery-set source startup contract does not match the restored files.");
+    }
   }
   if (manifest.components.database.fileCount !== 1) {
     throw new Error("Recovery set must contain exactly one runtime database snapshot.");
@@ -748,6 +992,7 @@ function validateRecoverySetDirectory(restoredRoot, options = {}) {
     fileCount: actualInventory.length,
     bytes: actualInventory.reduce((sum, item) => sum + item.bytes, 0),
     components: manifest.components,
+    source: sourceContract,
     sqlite,
     manifest,
   };
@@ -885,20 +1130,56 @@ function pathsOverlap(left, right) {
   return a === b || a.startsWith(`${b}${path.sep}`) || b.startsWith(`${a}${path.sep}`);
 }
 
-function assertRestoreDestinationIsInactive(kind, destinationPath) {
+function currentActiveRestoreConfiguration() {
+  return {
+    rootDir: path.resolve(CONFIG.rootDir),
+    dbPath: path.resolve(CONFIG.dbPath),
+    artifactRoot: path.resolve(CONFIG.artifactRoot),
+    approvalPackRoot: path.resolve(
+      preferredEnvironment("APPROVAL_PACK_DIR")
+        || path.join(CONFIG.rootDir, "output", "pdf"),
+    ),
+    privateOperatorRoot: path.resolve(
+      preferredEnvironment("PRIVATE_OPERATOR_DIR")
+        || path.join(CONFIG.rootDir, "private"),
+    ),
+  };
+}
+
+function assertRestoreDestinationIsInactive(
+  kind,
+  destinationPath,
+  activeConfiguration = currentActiveRestoreConfiguration(),
+) {
   const destination = path.resolve(destinationPath);
-  if (kind === "database" && pathsOverlap(destination, CONFIG.dbPath)) {
+  if (kind === "database" && pathsOverlap(destination, activeConfiguration.dbPath)) {
     throw new Error("Restore refused: destination is the active runtime database. Restore to a separate location, verify it, stop Pantheon, then perform a controlled swap.");
   }
-  if (kind === "source" && pathsOverlap(destination, CONFIG.rootDir)) {
+  if (kind === "source" && pathsOverlap(destination, activeConfiguration.rootDir)) {
     throw new Error("Restore refused: destination overlaps the active source workspace.");
   }
-  if (kind === "set" && pathsOverlap(destination, CONFIG.rootDir)) {
-    throw new Error("Restore refused: recovery-set destination overlaps the active Pantheon workspace.");
+  if (kind === "set") {
+    const activeComponents = [
+      ["source workspace", activeConfiguration.rootDir],
+      ["runtime database", activeConfiguration.dbPath],
+      ["runtime artifacts", activeConfiguration.artifactRoot],
+      ["approval packs", activeConfiguration.approvalPackRoot],
+      ["private operator references", activeConfiguration.privateOperatorRoot],
+    ];
+    const overlap = activeComponents.find(([, activePath]) => (
+      activePath && pathsOverlap(destination, activePath)
+    ));
+    if (overlap) {
+      throw new Error(
+        `Restore refused: recovery-set destination overlaps active ${overlap[0]}.`,
+      );
+    }
   }
   if (kind === "artifacts") {
-    const activePackRoot = preferredEnvironment("APPROVAL_PACK_DIR") || path.join(CONFIG.rootDir, "output", "pdf");
-    if (pathsOverlap(destination, CONFIG.artifactRoot) || pathsOverlap(destination, activePackRoot)) {
+    if (
+      pathsOverlap(destination, activeConfiguration.artifactRoot)
+      || pathsOverlap(destination, activeConfiguration.approvalPackRoot)
+    ) {
       throw new Error("Restore refused: destination overlaps active runtime artifacts.");
     }
   }
@@ -1110,6 +1391,8 @@ function pruneBackups(destinationRoot = CONFIG.backupDestination, options = {}) 
 }
 
 module.exports = {
+  LAST_RELEASED_SCHEMA_VERSION,
+  assertRestoreDestinationIsInactive,
   authenticateEncryptedBackup,
   backupKeyId,
   createBackup,
@@ -1117,6 +1400,7 @@ module.exports = {
   createDatabaseSnapshot,
   createRecoverySetArchive,
   createSourceArchive,
+  currentActiveRestoreConfiguration,
   decryptFile,
   encryptFile,
   extractArchive,
@@ -1131,6 +1415,7 @@ module.exports = {
   sha256File,
   validateArchiveEntries,
   validateRecoverySetDirectory,
+  validateRecoverySourceBundle,
   validateSqliteDatabase,
   verifyBackup,
 };

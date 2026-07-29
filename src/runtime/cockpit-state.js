@@ -1,3 +1,5 @@
+const crypto = require("node:crypto");
+
 const CONFIG = require("../config");
 const { all, fromJson, get } = require("../db");
 const { ensureApprovalScope } = require("./approval-scope");
@@ -6,7 +8,7 @@ const { commercialFoundationState } = require("./venture-case");
 const { ensureCapabilityAutonomy } = require("./capability-autonomy");
 const { getLiveAiWorkerReadiness } = require("./live-ai-worker-readiness");
 const { getLiveResearchReadiness } = require("./live-research-readiness");
-const { getLatestDigest } = require("./executive-digest");
+const { getCanonicalOwnerDigest } = require("./executive-digest");
 const { getAccountingSummary } = require("./accounting-ledger");
 const { monthlyBudgetExposure } = require("./cost-ledger");
 const { latestAgentRunReceipt, verifyAgentRunReceiptChain } = require("./agent-execution-evidence");
@@ -21,6 +23,14 @@ const { getProductionState } = require("./pantheon-production");
 const { currentOperatorJourney } = require("./pantheon-journey");
 const { getPortfolioState } = require("./portfolio-controller");
 const { getAgentCostObservability } = require("./agent-cost-observability");
+const {
+  COMMERCIAL_LIFECYCLE_APPROVAL_SCOPE_SCHEMA,
+  classifyCommercialTaskSafety,
+  classifyCommercialWorkflowSafety,
+} = require("./commercial-authority");
+const {
+  getCommercialOwnerTestsState,
+} = require("./commercial-owner-state");
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
@@ -136,6 +146,18 @@ function decisionCard(approval, db = null) {
   const controlledDemandCheck = workerId === "demand_validator" && Boolean(fixture);
   const production = liveRequest.parameters?.pantheonProduction || null;
   const productBuildSpec = liveRequest.parameters?.productBuildSpec || null;
+  const lifecycleApprovalScope = payload.commercialTestApprovalScope
+    || payload.commercialLifecycleApprovalScope
+    || payload.approvalScope
+    || payload.scope
+    || null;
+  const commercialLifecycleDecision = (
+    lifecycleApprovalScope?.schema === COMMERCIAL_LIFECYCLE_APPROVAL_SCOPE_SCHEMA
+    && ["accepted", "activated"].includes(lifecycleApprovalScope.eventType)
+  );
+  const lifecycleEventType = commercialLifecycleDecision
+    ? lifecycleApprovalScope.eventType
+    : null;
   const dataProtectionPlan = approval.scope === "data_retention_policy";
   const catalogueBuild = production?.stage === "product_build"
     && production.operatorChoiceRequired === true;
@@ -153,8 +175,14 @@ function decisionCard(approval, db = null) {
   return {
     id: approval.id,
     type: "decision",
-    decisionKind: "approval",
-    title: inspectionEvidenceRecheck
+    decisionKind: commercialLifecycleDecision
+      ? "commercial_lifecycle"
+      : "approval",
+    title: commercialLifecycleDecision
+      ? lifecycleEventType === "accepted"
+        ? "Accept this exact commercial test?"
+        : "Activate this exact commercial test?"
+      : inspectionEvidenceRecheck
       ? "Recheck the complete setup-guide inspection?"
       : explicitOperatorFinalReview
       ? "Run one final independent check on the corrected workbook?"
@@ -171,7 +199,11 @@ function decisionCard(approval, db = null) {
     requestedAt: approval.requested_at,
     scopeHash: approval.scope_hash,
     expiresAt: approval.expires_at,
-    recommendation: inspectionEvidenceRecheck
+    recommendation: commercialLifecycleDecision
+      ? lifecycleEventType === "accepted"
+        ? "Accept the exact buyer, offer, channel, price, evidence period, and stop rules as the commercial decision on record."
+        : "Activate only this accepted test so Pantheon can prepare contract-bound internal work and evidence collection."
+      : inspectionEvidenceRecheck
       ? "Jarvis regenerated only the internal setup-guide inspection so all three pages are visible. The customer package and storefront previews remain byte-for-byte unchanged."
       : explicitOperatorFinalReview
       ? "Jarvis corrected the exact workbook, setup guide, calculations, and previews locally at no additional AI cost. Run one final independent review before Pantheon treats the product as ready for a buyer test."
@@ -184,7 +216,11 @@ function decisionCard(approval, db = null) {
       : controlledDemandCheck
         ? "Demand Validator will assess the supplied test evidence and return one recommendation for your review."
         : payload.reason || payload.commercialPurpose || "Review the evidence and choose whether this exact action should continue.",
-    expectedUpside: inspectionEvidenceRecheck
+    expectedUpside: commercialLifecycleDecision
+      ? lifecycleEventType === "accepted"
+        ? "Creates one accountable commercial decision without starting a test, publishing, contacting buyers, or spending money."
+        : "Makes one exact test the active commercial authority while every external action remains separately protected."
+      : inspectionEvidenceRecheck
       ? "Lets the independent reviewer inspect the previously unseen page once. If the unchanged package does not pass, Pantheon stops this build permanently."
       : explicitOperatorFinalReview
       ? "Confirms whether the corrected customer files are genuinely usable and truthfully represented. If they still fail, Pantheon stops rather than paying for another review."
@@ -240,9 +276,13 @@ function decisionCard(approval, db = null) {
     tracePolicy: payload.tracePolicy || null,
     policySummary: Array.isArray(payload.policySummary) ? payload.policySummary : null,
     noDeletion: payload.noDeletion === true,
-    attentionLabel: inspectionEvidenceRecheck ? "Complete inspection ready" : explicitOperatorFinalReview ? "Corrected workbook ready" : validationProductBuild ? "Validation product ready" : catalogueBuild ? "Product build ready" : finalQualityRecheck ? "Final quality recheck ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
-    primaryActionLabel: inspectionEvidenceRecheck ? "Review the evidence recheck" : explicitOperatorFinalReview ? "Review the corrected workbook" : validationProductBuild ? "Review validation product" : catalogueBuild ? "Review catalogue build" : finalQualityRecheck ? "Review final quality recheck" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
-    approveLabel: inspectionEvidenceRecheck
+    attentionLabel: commercialLifecycleDecision ? "Commercial decision ready" : inspectionEvidenceRecheck ? "Complete inspection ready" : explicitOperatorFinalReview ? "Corrected workbook ready" : validationProductBuild ? "Validation product ready" : catalogueBuild ? "Product build ready" : finalQualityRecheck ? "Final quality recheck ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
+    primaryActionLabel: commercialLifecycleDecision ? "Review the exact commercial decision" : inspectionEvidenceRecheck ? "Review the evidence recheck" : explicitOperatorFinalReview ? "Review the corrected workbook" : validationProductBuild ? "Review validation product" : catalogueBuild ? "Review catalogue build" : finalQualityRecheck ? "Review final quality recheck" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
+    approveLabel: commercialLifecycleDecision
+      ? lifecycleEventType === "accepted"
+        ? "Accept this exact test"
+        : "Activate this exact test"
+      : inspectionEvidenceRecheck
       ? "Start the evidence recheck"
       : explicitOperatorFinalReview
       ? "Run the final independent check"
@@ -255,7 +295,9 @@ function decisionCard(approval, db = null) {
       : dataProtectionPlan
         ? "Activate this protection plan"
         : null,
-    decisionActionKind: catalogueBuild
+    decisionActionKind: commercialLifecycleDecision
+      ? "commercial_lifecycle"
+      : catalogueBuild
       ? "catalogue_build"
       : dataProtectionPlan
         ? "data_protection"
@@ -275,7 +317,12 @@ function decisionCard(approval, db = null) {
         priceCents: Number(item.priceCents || 0),
       })),
     } : null,
-    decisionPrompt: inspectionEvidenceRecheck
+    lifecycleEventType,
+    decisionPrompt: commercialLifecycleDecision
+      ? lifecycleEventType === "accepted"
+        ? "Review the exact buyer, offer, channel, price, evidence rules, and boundaries before accepting the test."
+        : "Confirm that this accepted test should become Pantheon's one active controlled commercial test."
+      : inspectionEvidenceRecheck
       ? "Review the four exact local inspection images, the one-recheck limit, and the A$1.50 ceiling before deciding."
       : explicitOperatorFinalReview
       ? "Review the corrected files, the one-review limit, and the A$1.50 maximum before deciding."
@@ -374,11 +421,119 @@ function handoffCard(handoff) {
   };
 }
 
-function taskExecutionPresentation(task) {
+function safetyReason(safety, fallback) {
+  return safety?.code
+    || safety?.classification
+    || fallback;
+}
+
+function ownerCommercialTestRef(testId, testVersion) {
+  if (!testId || !testVersion) return null;
+  const digest = crypto
+    .createHash("sha256")
+    .update(
+      `pantheon.owner-commercial-test.v1\0${String(testId)}\0${String(testVersion)}`,
+      "utf8",
+    )
+    .digest("hex")
+    .slice(0, 20);
+  return `test-${digest}`;
+}
+
+function exactOwnerCommercialSafety(safety, currentTest) {
+  const assessment = safety?.assessment;
+  const program = assessment?.program;
+  const binding = assessment?.binding;
+  return Boolean(
+    currentTest?.canonicalOwnerProjection === true
+      && currentTest.status === "activated"
+      && safety?.safe === true
+      && safety?.requiresCommercialAuthority === true
+      && safety?.classification === "authorized_commercial"
+      && program?.decisionHash
+      && binding?.decisionHash
+      && program.decisionHash === binding.decisionHash
+      && currentTest.id === ownerCommercialTestRef(
+        program.testId,
+        program.testVersion,
+      )
+  );
+}
+
+function journeyExecutionState(db, journey, task, currentTest) {
+  if (!journey) return null;
+  const workflowSafety = journey.workflow_id
+    ? classifyCommercialWorkflowSafety(db, journey.workflow_id)
+    : null;
+  const workflowAuthorized = exactOwnerCommercialSafety(
+    workflowSafety,
+    currentTest,
+  );
+  const taskSafety = task
+    ? classifyCommercialTaskSafety(db, task)
+    : null;
+  const workflowDecisionHash = workflowSafety?.assessment?.binding?.decisionHash;
+  const taskDecisionHash = taskSafety?.assessment?.binding?.decisionHash;
+  const taskAuthorized = Boolean(
+    workflowAuthorized
+      && task
+      && task.workflow_id === journey.workflow_id
+      && exactOwnerCommercialSafety(taskSafety, currentTest)
+      && workflowDecisionHash
+      && workflowDecisionHash === taskDecisionHash
+  );
+  const taskRecorded = Boolean(task);
+  const blocked = taskRecorded && !taskAuthorized;
+  const authorized = workflowAuthorized && !blocked;
+  const running = authorized && taskAuthorized && task.status === "running";
+  const reason = !workflowAuthorized
+    ? workflowSafety?.message
+      || "This recorded journey has no exact accepted and activated commercial authority."
+    : blocked
+      ? taskSafety?.message
+        || "The recorded task does not match this journey's exact commercial authority."
+      : null;
+  return {
+    schema: "pantheon.owner-journey-execution.v1",
+    authorized,
+    taskAuthorized,
+    running,
+    readOnly: !authorized,
+    blocked,
+    status: running
+      ? "running"
+      : blocked
+        ? "blocked"
+        : authorized
+          ? "authorised_not_running"
+          : "read_only",
+    reason,
+  };
+}
+
+function taskExecutionPresentation(db, task, queueEligible = true) {
   const payload = task.payload && typeof task.payload === "object"
     ? task.payload
     : fromJson(task.payload, {});
   const unsafeReason = unsafeTaskReason({ ...task, payload });
+  const workflowSafety = classifyCommercialWorkflowSafety(
+    db,
+    task.workflow_id,
+  );
+  const taskSafety = classifyCommercialTaskSafety(db, {
+    ...task,
+    payload,
+  });
+  const authorityReason = !workflowSafety.safe
+    ? safetyReason(workflowSafety, "commercial_workflow_not_authorized")
+    : !taskSafety.safe
+      ? safetyReason(taskSafety, "commercial_task_not_authorized")
+      : null;
+  const authorityAllowsRun = Boolean(
+    workflowSafety.safe
+    && taskSafety.safe,
+  );
+  const canRun = Boolean(queueEligible) && authorityAllowsRun;
   const liveRequest = payload.liveSpendRequest || {};
   const maxCostCents = Math.max(
     0,
@@ -390,11 +545,22 @@ function taskExecutionPresentation(task) {
     ),
   );
   return {
-    safe_to_run: !unsafeReason,
-    execution_kind: unsafeReason ? "approved_ai_or_external" : "internal",
-    safety_reason: unsafeReason,
+    can_run: canRun,
+    safe_to_run: authorityAllowsRun && !unsafeReason,
+    execution_kind: authorityReason
+      ? "authority_blocked"
+      : unsafeReason ? "approved_ai_or_external" : "internal",
+    safety_reason: authorityReason || unsafeReason,
+    safety_classification: taskSafety.classification,
+    workflow_safety_classification: workflowSafety.classification,
+    commercial_authority_required: Boolean(
+      taskSafety.requiresCommercialAuthority
+      || workflowSafety.requiresCommercialAuthority,
+    ),
     max_cost_cents: maxCostCents,
-    run_label: unsafeReason
+    run_label: authorityReason
+      ? "Review commercial authority"
+      : unsafeReason
       ? maxCostCents > 0
         ? "Start approved AI work"
         : "Start approved work"
@@ -638,16 +804,25 @@ function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
   for (const task of waitingTasks) {
     if (!belongsToCurrentJourney(task.payload, currentJourneyId)) continue;
     if (items.some((item) => item.id === task.id)) continue;
-    const execution = taskExecutionPresentation(task);
+    const execution = taskExecutionPresentation(db, task);
+    const authorityBlocked = execution.execution_kind === "authority_blocked";
     items.push({
       id: task.id,
-      type: execution.safe_to_run ? "queued_work" : "approved_work",
-      title: `${operatorProductionText(db, task.title, task.payload)} is waiting to start`,
+      type: authorityBlocked
+        ? "authority_blocked_work"
+        : execution.safe_to_run ? "queued_work" : "approved_work",
+      title: `${operatorProductionText(db, task.title, task.payload)} ${
+        authorityBlocked ? "cannot start" : "is waiting to start"
+      }`,
       risk: execution.safe_to_run ? "low" : "medium",
-      recommendation: execution.safe_to_run
+      recommendation: authorityBlocked
+        ? "This retained work is not authorised to run. Review the exact current commercial authority in Tests & Results before continuing."
+        : execution.safe_to_run
         ? `${task.worker_name || task.agent || "The AI team"} has a protected internal step queued. Run this exact item now or leave it queued.`
         : `${task.worker_name || task.agent || "The AI team"} has an exact approved action ready. Starting it is not internal-only${execution.max_cost_cents > 0 ? ` and may use up to ${execution.max_cost_cents} cents AUD` : ""}.`,
-      expectedUpside: execution.safe_to_run
+      expectedUpside: authorityBlocked
+        ? "Prevents unbound, terminal, or separately protected commercial work from being presented as runnable."
+        : execution.safe_to_run
         ? "Advances protected work without enabling broad autopilot or an external action."
         : "Runs only the exact previously approved action while keeping its provider, tools, limits and cost cap fixed.",
       workflowId: task.workflow_id,
@@ -664,52 +839,6 @@ function testStatus(status) {
   if (["completed", "finished", "measured"].includes(normalized)) return "completed";
   if (["cancelled", "killed", "paused"].includes(normalized)) return "cancelled";
   return "candidate";
-}
-
-function currentTest(db, ventureId) {
-  const row = get(
-    db,
-    `SELECT * FROM commercial_experiments
-     WHERE (
-         venture_id = ?
-         OR json_extract(metadata, '$.buyerIntentValidation') IS NOT NULL
-       )
-       AND status IN ('ready', 'running')
-       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
-     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
-              CASE WHEN venture_id = ? THEN 0 ELSE 1 END,
-              updated_at DESC LIMIT 1`,
-    [ventureId, ventureId],
-  );
-  return row ? { ...row, status: testStatus(row.status), metadata: fromJson(row.metadata) } : null;
-}
-
-function retainedTerminalBuyerIntentTest(db, validation) {
-  if (!validation?.terminal || !validation.experimentId) return null;
-  const row = get(
-    db,
-    "SELECT * FROM commercial_experiments WHERE id = ?",
-    [validation.experimentId],
-  );
-  const marketResultCount = Number(validation.marketResultCount || 0);
-  return {
-    ...(row || { id: validation.experimentId }),
-    name: validation.name || row?.name || "Buyer-intent validation product",
-    status: "stopped_permanently",
-    storedStatus: row?.status || null,
-    hypothesis: validation.measurement?.qualificationQuestion || row?.hypothesis || "",
-    buyer: validation.buyer || row?.buyer || "",
-    offer: validation.offer || row?.offer || "",
-    channel: validation.channel?.label || row?.channel || "",
-    price_cents: Number(validation.priceCents || row?.price_cents || 0),
-    expected_metric: validation.measurement?.passRule || row?.expected_metric || "",
-    metadata: fromJson(row?.metadata, {}),
-    retainedTerminal: true,
-    marketTestRunning: false,
-    marketResultCount,
-    marketEvidenceRecorded: marketResultCount > 0,
-    actionable: false,
-  };
 }
 
 function presentedDeliverablesByIds(db, sourceIds = []) {
@@ -735,6 +864,7 @@ function presentedDeliverablesByIds(db, sourceIds = []) {
     status: row.status,
     summary: row.summary,
     qualityReviewOnly: row.metadata?.qualityReviewOnly === true,
+    evidenceRole: row.metadata?.evidenceRole || null,
     derivedFromActualSavedFile: row.metadata?.derivedFromActualSavedFile === true,
   }));
 }
@@ -861,7 +991,14 @@ function currentBuyerIntentValidation(db, ventureId = null, planId = null) {
   };
 }
 
-function digestWithCurrentAttention(db, digest, work, ventureId, currentJourneyId = null) {
+function digestWithCurrentAttention(
+  db,
+  digest,
+  work,
+  ventureId,
+  currentJourneyId = null,
+  commercialTests = null,
+) {
   if (!digest) return null;
   const importantItems = work.length;
   const completedWork = Number(currentJourneyId
@@ -886,42 +1023,128 @@ function digestWithCurrentAttention(db, digest, work, ventureId, currentJourneyI
          AND completed_at >= ? AND completed_at < ?`,
       [ventureId, digest.period_start, digest.period_end],
     )?.count || 0);
-  const currentTest = get(
-    db,
-    `SELECT name, status, expected_metric
-     FROM commercial_experiments
-     WHERE venture_id = ? AND status IN ('ready', 'running')
-       AND COALESCE(json_extract(metadata, '$.archivedFromOperator'), 0) <> 1
-     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
-    [ventureId],
+  const canonicalMetrics = digest.metrics || {};
+  const commercialIntegrityOk = (
+    canonicalMetrics.commercialIntegrityStatus === "ok"
   );
-  const independentBuyers = Number(digest.metrics?.independentBuyers || 0);
+  const currentTest = commercialIntegrityOk
+    && canonicalMetrics.currentTest
+    && canonicalMetrics.currentTest.canonicalOwnerProjection === true
+    ? canonicalMetrics.currentTest
+    : null;
+  const verifiedBuyers = commercialIntegrityOk
+    && Number.isSafeInteger(canonicalMetrics.verifiedBuyerCount)
+    && canonicalMetrics.verifiedBuyerCount >= 0
+    ? canonicalMetrics.verifiedBuyerCount
+    : null;
+  const buyerTarget = Number.isSafeInteger(canonicalMetrics.buyerTarget)
+    ? canonicalMetrics.buyerTarget
+    : currentTest
+      ? 3
+      : null;
+  const cashSettled = (
+    commercialIntegrityOk
+    && canonicalMetrics.cashStatus === "settled"
+    && canonicalMetrics.salesCurrency === "AUD"
+    && Number.isSafeInteger(canonicalMetrics.cashContributionCents)
+  );
+  const buyerStatement = !commercialIntegrityOk
+    ? "Verified buyer count is withheld."
+    : !currentTest
+      ? "No current commercial test buyer result is available."
+      : verifiedBuyers === null
+        ? "Verified buyer count is withheld."
+        : `${verifiedBuyers} of ${buyerTarget} verified independent paying buyers recorded.`;
+  const cashStatement = !commercialIntegrityOk
+    ? "Net cash contribution is withheld."
+    : !currentTest
+      ? "No current commercial test cash result is available."
+    : cashSettled
+      ? `A$${(canonicalMetrics.cashContributionCents / 100).toFixed(2)} settled net cash contribution recorded.`
+      : "Net cash contribution: Not settled.";
+  const testStatement = !commercialIntegrityOk
+    ? commercialTests?.integrity?.message
+      || "Commercial test authority could not be verified."
+    : currentTest
+      ? `The canonical commercial test is ${String(
+        currentTest.status || "recorded",
+      ).replace(/[_-]+/g, " ")}.`
+      : "No commercial test is authorised.";
   const summary = [
     `${completedWork} internal work item${completedWork === 1 ? "" : "s"} completed this week.`,
-    `${independentBuyers} independent paying buyer${independentBuyers === 1 ? "" : "s"} recorded.`,
-    currentTest
-      ? `The current business test is ${String(currentTest.status).replace(/[_-]+/g, " ")}.`
-      : "No real-world business test is running yet.",
+    buyerStatement,
+    cashStatement,
+    testStatement,
     importantItems
       ? `${importantItems} item${importantItems === 1 ? " needs" : "s need"} operator attention.`
-      : "No consequential exception needs operator attention.",
+      : digest.status === "attention_needed"
+        ? "Commercial or operating truth needs operator attention."
+        : "No consequential exception needs operator attention.",
   ].join(" ");
   return {
     ...digest,
-    status: importantItems ? "attention_needed" : "on_track",
+    status: importantItems || digest.status === "attention_needed"
+      ? "attention_needed"
+      : "on_track",
     summary,
     metrics: {
-      ...(digest.metrics || {}),
+      ...canonicalMetrics,
       completedWork,
-      currentTest: currentTest
-        ? { name: currentTest.name, status: currentTest.status, metric: currentTest.expected_metric }
-        : null,
       liveImportantItems: importantItems,
     },
   };
 }
 
-function teamState(db, ventureId, currentJourneyId = latestOperatorJourneyId(db)) {
+function retiredPortfolioTask(db, task) {
+  const roundId = task?.payload?.liveSpendRequest?.parameters
+    ?.pantheonCommercial?.roundId;
+  if (!roundId) return null;
+  const round = get(
+    db,
+    "SELECT id, mode, status FROM opportunity_rounds WHERE id = ?",
+    [roundId],
+  );
+  if (!round || !["portfolio_discovery", "targeted_diligence"].includes(round.mode)) {
+    return null;
+  }
+  return round;
+}
+
+function teamTaskPresentation(db, task) {
+  const retainedRound = retiredPortfolioTask(db, task);
+  if (retainedRound) {
+    return {
+      kind: "retained",
+      status: "Retained history",
+      assignment: "Earlier portfolio work is retained for audit; no work is running.",
+      authorityClassification: "retired_portfolio_history",
+    };
+  }
+  const safety = classifyCommercialTaskSafety(db, task);
+  if (!safety.safe) {
+    return {
+      kind: "blocked",
+      status: "Needs attention",
+      assignment: `Recorded work is blocked until its exact authority is valid: ${
+        operatorProductionText(db, task.title, task.payload)
+      }`,
+      authorityClassification: safety.classification || "authority_blocked",
+    };
+  }
+  return {
+    kind: "active",
+    status: humanTaskStatus(task.status),
+    assignment: operatorProductionText(db, task.title, task.payload),
+    authorityClassification: safety.classification,
+  };
+}
+
+function teamState(
+  db,
+  ventureId,
+  currentJourneyId = latestOperatorJourneyId(db),
+  currentJourneyTaskId = null,
+) {
   ensureCapabilityAutonomy(db);
   const definitions = listAgentDefinitions(db);
   const capabilities = parseRows(all(db, "SELECT * FROM capability_autonomy ORDER BY capability_key"));
@@ -944,23 +1167,28 @@ function teamState(db, ventureId, currentJourneyId = latestOperatorJourneyId(db)
        ORDER BY agent_runs.started_at DESC LIMIT 1`,
       [definition.id, ventureId],
     );
-    const activeTask = parseRows(all(
+    const taskCandidates = parseRows(all(
       db,
       `SELECT * FROM tasks
        WHERE (venture_id = ? OR venture_id = 'venture-portfolio-controller') AND agent = ?
          AND status IN ('running','queued','blocked','waiting_approval','needs_attention')
        ORDER BY updated_at DESC LIMIT 20`,
       [ventureId, definition.id],
-    ), ["payload", "result"]).find((task) => (
+    ), ["payload", "result"]).filter((task) => (
       belongsToCurrentJourney(task.payload, currentJourneyId)
       && !resolvedTaskIds.has(task.id)
-      && (() => {
-        const roundId = task.payload?.liveSpendRequest?.parameters?.pantheonCommercial?.roundId;
-        if (!roundId) return true;
-        const round = get(db, "SELECT status FROM opportunity_rounds WHERE id = ?", [roundId]);
-        return !["completed", "no_investment", "stopped_unknown_outcome", "stopped_after_correction"].includes(round?.status);
-      })()
-    )) || null;
+    ));
+    const presentedTasks = taskCandidates.map((task) => ({
+      task,
+      presentation: teamTaskPresentation(db, task),
+    }));
+    const selectedTask = presentedTasks.find(
+      (item) => item.task.id === currentJourneyTaskId,
+    ) || presentedTasks.find(
+      (item) => item.presentation.kind === "active",
+    ) || presentedTasks[0] || null;
+    const activeTask = selectedTask?.task || null;
+    const taskPresentation = selectedTask?.presentation || null;
     const agentCapabilities = capabilities
       .filter((item) => item.agent_id === definition.id)
       .sort((left, right) => (
@@ -969,16 +1197,13 @@ function teamState(db, ventureId, currentJourneyId = latestOperatorJourneyId(db)
         || String(left.capability_key).localeCompare(String(right.capability_key))
       ));
     const capability = agentCapabilities[0];
-    const rawStatus = activeTask?.status || "standby";
     const latestTaskPayload = fromJson(latestRun?.task_payload, {});
     return {
       id: definition.id,
       name: definition.name,
       group: groupByAgent[definition.id] || "control",
-      status: humanTaskStatus(rawStatus),
-      assignment: activeTask
-        ? operatorProductionText(db, activeTask.title, activeTask.payload)
-        : "No current assignment",
+      status: taskPresentation?.status || "Standby",
+      assignment: taskPresentation?.assignment || "No current assignment",
       lastOutcome: operatorProductionText(
         db,
         latestRun?.output_summary || "No reviewed result yet",
@@ -998,6 +1223,8 @@ function teamState(db, ventureId, currentJourneyId = latestOperatorJourneyId(db)
         modelClass: definition.model_class,
         mode: definition.mode,
         lastRunId: latestRun?.id || null,
+        authorityClassification:
+          taskPresentation?.authorityClassification || "no_current_assignment",
       },
     };
   });
@@ -1034,47 +1261,137 @@ function spendState(db) {
   };
 }
 
+function canonicalCockpitCommercialState(ownerTests) {
+  const integrityOk = ownerTests?.integrity?.status === "ok";
+  const current = integrityOk
+    ? ownerTests.current
+    : null;
+  const hasCurrent = Boolean(current);
+  const netCash = current?.proof?.netCashContribution || {};
+  const buyers = integrityOk && hasCurrent
+    ? Number.isSafeInteger(current?.proof?.buyers?.verifiedPositive)
+      ? current.proof.buyers.verifiedPositive
+      : 0
+    : null;
+  const cashSettled = (
+    integrityOk
+    && netCash.status === "settled"
+    && netCash.currency === "AUD"
+    && Number.isSafeInteger(netCash.amountCents)
+  );
+  return {
+    currentTest: current ? {
+      id: current.auditRef,
+      name: current.title,
+      status: current.lifecycle?.status || "proposed",
+      hypothesis: current.hypothesis,
+      buyer: current.buyer,
+      problem: current.problem,
+      offer: current.offer?.description || "",
+      channel: current.channel?.label || current.channel?.id || "",
+      price_cents: current.price?.currency === "AUD"
+        ? current.price.amountCents
+        : null,
+      reportingPeriod: current.reportingPeriod,
+      proof: current.proof,
+      evidenceQuality: current.evidenceQuality,
+      canonicalOwnerProjection: true,
+    } : null,
+    economics: {
+      schema: "pantheon.owner-commercial-economics.v1",
+      salesCurrency: "AUD",
+      independentBuyers: buyers,
+      buyerTarget: integrityOk && hasCurrent
+        ? Number.isSafeInteger(current?.proof?.buyers?.target)
+          ? current.proof.buyers.target
+          : 3
+        : null,
+      commercialIntegrityStatus: ownerTests?.integrity?.status || "attention",
+      commercialAuthorityStatus:
+        ownerTests?.integrity?.authorityStatus || "unavailable",
+      buyerProofStatus: integrityOk
+        ? hasCurrent ? "verified" : "not_current"
+        : "withheld",
+      cashContributionStatus: integrityOk
+        ? hasCurrent
+          ? cashSettled ? "settled" : "not_settled"
+          : "not_current"
+        : "withheld",
+      cashContributionCents: cashSettled ? netCash.amountCents : null,
+      cashContributionLabel: integrityOk
+        ? hasCurrent
+          ? cashSettled ? netCash.label : "Not settled"
+          : "No current test result"
+        : "Withheld — commercial truth needs review",
+    },
+  };
+}
+
 function getCockpitState(db) {
   const commercial = commercialFoundationState(db);
+  const commercialTests = getCommercialOwnerTestsState(db);
+  const canonicalCommercial = canonicalCockpitCommercialState(commercialTests);
   const opportunity = getOpportunityState(db);
   const production = getProductionState(db);
   const currentJourney = currentOperatorJourney(db);
   const currentJourneyId = currentJourney?.id || null;
-  const journeyTask = currentJourney?.metadata?.currentTaskId
-    ? (() => {
-      const row = get(
-        db,
-        `SELECT id, title, agent, status, outcome_status, error, payload, updated_at
-         FROM tasks WHERE id = ?`,
-        [currentJourney.metadata.currentTaskId],
-      );
-      if (!row) return null;
-      const payload = fromJson(row.payload, {});
-      return {
-        ...row,
-        title: operatorProductionText(db, row.title, payload),
-        payload: undefined,
-      };
-    })()
+  const journeyTaskRecord = currentJourney?.metadata?.currentTaskId
+    ? get(
+      db,
+      `SELECT id, workflow_id, title, kind, agent, status, approval_id,
+              outcome_status, error, payload, updated_at
+       FROM tasks WHERE id = ?`,
+      [currentJourney.metadata.currentTaskId],
+    )
     : null;
-  const team = teamState(db, commercial.venture.id, currentJourneyId);
+  const journeyTask = journeyTaskRecord
+    ? {
+      ...journeyTaskRecord,
+      title: operatorProductionText(
+        db,
+        journeyTaskRecord.title,
+        fromJson(journeyTaskRecord.payload, {}),
+      ),
+      payload: undefined,
+    }
+    : null;
+  const journeyExecution = journeyExecutionState(
+    db,
+    currentJourney,
+    journeyTaskRecord,
+    canonicalCommercial.currentTest,
+  );
+  const team = teamState(
+    db,
+    commercial.venture.id,
+    currentJourneyId,
+    currentJourney?.metadata?.currentTaskId || null,
+  );
   const work = importantWork(db, currentJourneyId);
-  const buyerIntentValidation = currentBuyerIntentValidation(db);
-  let test = currentTest(db, commercial.venture.id);
-  if (!test && buyerIntentValidation?.terminal) {
-    test = retainedTerminalBuyerIntentTest(db, buyerIntentValidation);
-  } else if (test && buyerIntentValidation?.experimentId === test.id) {
-    test.name = buyerIntentValidation.name;
-    test.status = buyerIntentValidation.status === "buyer_test_ready"
-      ? "ready"
-      : buyerIntentValidation.status;
-  }
+  const legacyBuyerIntentValidation = currentBuyerIntentValidation(db);
+  const buyerIntentValidation = null;
+  const test = canonicalCommercial.currentTest;
   const operationalTasks = parseRows(all(
     db,
-    "SELECT status, payload FROM tasks WHERE status IN ('planned','queued','running','failed','needs_attention')",
+    "SELECT * FROM tasks WHERE status IN ('planned','queued','running','failed','needs_attention')",
   ), ["payload"]).filter((task) => belongsToCurrentJourney(task.payload, currentJourneyId));
-  const queueCount = operationalTasks.filter((task) => ["planned", "queued", "running"].includes(task.status)).length;
-  const failedCount = operationalTasks.filter((task) => ["failed", "needs_attention"].includes(task.status)).length;
+  const operationalTaskStates = operationalTasks.map((task) => ({
+    task,
+    retained: Boolean(retiredPortfolioTask(db, task)),
+    safety: classifyCommercialTaskSafety(db, task),
+  }));
+  const queueCount = operationalTaskStates.filter(({ task, retained, safety }) => (
+    !retained
+      && safety.safe
+      && ["planned", "queued", "running"].includes(task.status)
+  )).length;
+  const failedCount = operationalTaskStates.filter(({ task, retained, safety }) => (
+    !retained
+      && (
+        ["failed", "needs_attention"].includes(task.status)
+        || !safety.safe
+      )
+  )).length;
   const activeRuns = getAgentRunsState(db, { state: "active", limit: 10 }).runs;
   const portfolio = getPortfolioState(db);
   return {
@@ -1083,16 +1400,26 @@ function getCockpitState(db) {
     ventureCase: commercial.ventureCase,
     importantWork: work,
     currentTest: test,
+    commercialTests,
     buyerIntentValidation,
+    historicalCommercialContext: legacyBuyerIntentValidation ? {
+      exists: true,
+      label: "Historical buyer-intent record retained for audit only.",
+      authoritative: false,
+      currentBuyerOrCashEvidence: false,
+    } : null,
     activeRuns,
-    nextMoneyMove: commercial.ventureCase.next_money_move,
-    economics: commercial.economics,
+    nextMoneyMove: commercialTests.current?.moneyMove?.title
+      || commercialTests.emptyState?.title
+      || "No commercial test is authorised.",
+    economics: canonicalCommercial.economics,
     spend: spendState(db),
     teamPulse: {
       working: team.filter((agent) => agent.status === "Working").length,
       waiting: team.filter((agent) => agent.status === "Waiting to start").length,
       needsAttention: team.filter((agent) => agent.status === "Needs attention").length,
       standby: team.filter((agent) => agent.status === "Standby").length,
+      retainedHistory: team.filter((agent) => agent.status === "Retained history").length,
       agents: team,
     },
     health: {
@@ -1107,10 +1434,11 @@ function getCockpitState(db) {
     },
     weeklyDigest: digestWithCurrentAttention(
       db,
-      getLatestDigest(db, commercial.venture.id),
+      getCanonicalOwnerDigest(db),
       work,
       commercial.venture.id,
       currentJourneyId,
+      commercialTests,
     ),
     currentJourney: currentJourney ? {
       id: currentJourney.id,
@@ -1120,6 +1448,7 @@ function getCockpitState(db) {
       model: currentJourney.model,
       updatedAt: currentJourney.updated_at,
       currentTask: journeyTask,
+      execution: journeyExecution,
     } : null,
     commercialDiscovery: {
       activeRound: opportunity.activeRound,
@@ -1233,6 +1562,10 @@ function getDecisionsState(db) {
 }
 
 function getBusinessTestsState(db) {
+  return getCommercialOwnerTestsState(db);
+}
+
+function getHistoricalBusinessTestsState(db) {
   const commercial = commercialFoundationState(db);
   const opportunity = getOpportunityState(db);
   const production = getProductionState(db);
@@ -1859,9 +2192,15 @@ function getAgentRunsState(db, filters = {}) {
 
 function getAiTeamState(db) {
   const commercial = commercialFoundationState(db);
+  const journey = currentOperatorJourney(db);
   return {
     activeVenture: commercial.venture,
-    agents: teamState(db, commercial.venture.id),
+    agents: teamState(
+      db,
+      commercial.venture.id,
+      journey?.id || null,
+      journey?.metadata?.currentTaskId || null,
+    ),
     liveRuns: getAgentRunsState(db, { execution: "all", limit: 100 }),
   };
 }
@@ -2226,7 +2565,7 @@ function getSystemState(db) {
               tasks.updated_at DESC LIMIT 50`,
   ), ["payload", "result"]).map((task) => ({
     ...task,
-    ...taskExecutionPresentation(task),
+    ...taskExecutionPresentation(db, task, Boolean(task.can_run)),
   }));
   return {
     health: {
@@ -2246,11 +2585,11 @@ function getSystemState(db) {
     )).map(operatorDeliverable),
     activity: activityState(db),
     checks: agentSystemChecks(db),
-    weeklyDigest: getLatestDigest(db),
+    weeklyDigest: getCanonicalOwnerDigest(db),
   };
 }
 
-function getTestDetail(db, id) {
+function getHistoricalTestDetail(db, id) {
   const experiment = get(db, "SELECT * FROM commercial_experiments WHERE id = ?", [id]);
   if (!experiment) return null;
   const parsedExperiment = {
@@ -2743,8 +3082,9 @@ module.exports = {
   getBusinessTestsState,
   getCockpitState,
   getDecisionsState,
+  getHistoricalBusinessTestsState,
+  getHistoricalTestDetail,
   getSystemState,
-  getTestDetail,
   humanTaskStatus,
   spendState,
 };

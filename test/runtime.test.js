@@ -56,12 +56,13 @@ const { recordAiPilotReviewDecision } = require("../src/runtime/ai-pilot-review"
 const { generateWeeklyDigest } = require("../src/runtime/executive-digest");
 const { collectFindings, runMonitorCycle } = require("../src/runtime/monitor");
 const {
-  createLiveAiWorkerSmokeTest,
   prepareReviewedLiveAiWorkerRetry,
   refreshOutdatedLiveAiWorkerApproval,
   requestLiveAiWorker,
 } = require("../src/runtime/live-ai-workers");
-const { createLiveResearchSmokeTest, requestLiveResearch } = require("../src/runtime/live-research");
+const {
+  requestLiveResearch,
+} = require("../src/runtime/live-research");
 const {
   getRetentionPolicyState,
   prepareRetentionPolicyDecision,
@@ -76,16 +77,38 @@ const {
   finishAgentRun,
 } = require("../src/runtime/ai-team");
 const { ensureSchedulerJobs, runDueSchedulerJobs, runSchedulerJob, setSchedulerJobStatus } = require("../src/runtime/scheduler");
-const { recordCommercialFeedback, recordCommercialResult } = require("../src/runtime/commercial-results");
+const {
+  recordCommercialFeedbackForTest,
+  recordCommercialResultForTest,
+} = require("../src/runtime/commercial-results");
+const { recordEvidence } = require("../src/runtime/venture-case");
 const {
   createResearchToExperimentPlan,
   createResearchToExperimentPlanFromResearch,
   createRevisionPlanFromLearning,
+  inspectHistoricalCandidatePromotion,
+  inspectHistoricalResearchToExperimentPlan,
   promoteCandidateToExperiment,
 } = require("../src/runtime/research-to-experiment");
 const { generateExecutionPack, recordExecutionPackOutcome } = require("../src/runtime/test-execution-pack");
 const { upsertWorkflowScorecard } = require("../src/runtime/scorecard");
-const { all, get, openDatabase, run, seedDatabase, toJson } = require("../src/db");
+const {
+  all,
+  get,
+  insertEvent,
+  openDatabase,
+  run,
+  seedDatabase,
+  toJson,
+} = require("../src/db");
+const {
+  bindTaskToCommercialTest,
+  bindWorkflowToCommercialTest,
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
+const {
+  classifyCommercialTaskSafety,
+} = require("../src/runtime/commercial-authority");
 
 function tempDbPath(name) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `jarvis-codex-${name}-`));
@@ -96,6 +119,301 @@ function seededDb(name) {
   const db = openDatabase(tempDbPath(name));
   seedDatabase(db, { includeDemoProof: true });
   return db;
+}
+
+function authorizeCommercialWorkflow(db, workflowId, suffix) {
+  return installActivatedCommercialTestFixture(db, {
+    suffix,
+    workflowIds: [workflowId],
+    taskIds: all(
+      db,
+      "SELECT id FROM tasks WHERE workflow_id = ? ORDER BY priority, created_at, id",
+      [workflowId],
+    ).map((task) => task.id),
+  });
+}
+
+function bindCommercialWorkflowToFixture(db, workflowId, fixture) {
+  bindWorkflowToCommercialTest(db, workflowId, fixture.binding);
+  for (const task of all(
+    db,
+    "SELECT id FROM tasks WHERE workflow_id = ? ORDER BY priority, created_at, id",
+    [workflowId],
+  )) {
+    bindTaskToCommercialTest(db, task.id, fixture.binding);
+  }
+  return fixture;
+}
+
+function prepareBoundLiveResearchSmokeTest(db, options = {}) {
+  const estimatedCostCents = Number(options.estimatedCostCents || 100);
+  const planned = createCommandPlan(db, {
+    text: [
+      "Live research smoke test: evaluate a low-risk digital product idea before any publishing or paid creation.",
+      "Idea: premium Notion finance dashboard template for freelancers who want a simple monthly cashflow view.",
+      "Goal: prove the live research adapter can capture current demand, competitor/pricing evidence, risks, and a keep/revise/kill recommendation with citations.",
+    ].join(" "),
+    source: "live-research-smoke-test",
+    createFiles: false,
+  });
+  authorizeCommercialWorkflow(
+    db,
+    planned.workflow.id,
+    options.suffix || "runtime-live-research-smoke",
+  );
+  const liveResearch = requestLiveResearch(db, planned.workflow.id, {
+    estimatedCostCents,
+    requestedBy: "operator",
+    reason: "First bound live-research smoke test with a tiny approval cap.",
+  });
+  insertEvent(db, {
+    level: "warn",
+    actor: "operator",
+    type: "live_research.smoke_test_prepared",
+    entityType: "workflow",
+    entityId: planned.workflow.id,
+    message: "Prepared a bound capped live-research smoke test.",
+    metadata: {
+      workflowId: planned.workflow.id,
+      taskId: liveResearch.task.id,
+      approvalId: liveResearch.approval.id,
+      estimatedCostCents,
+    },
+  });
+  return {
+    status: "prepared",
+    command: planned.command,
+    workflow: planned.workflow,
+    liveResearch,
+    estimatedCostCents,
+  };
+}
+
+function prepareBoundLiveAiWorkerSmokeTest(db, options = {}) {
+  const estimatedCostCents = Number(options.estimatedCostCents || 100);
+  const planned = createCommandPlan(db, {
+    text: [
+      "Live AI worker smoke test: prepare a tiny digital-product business decision without publishing.",
+      "Idea: premium Notion cashflow checklist for freelancers who want a weekly money-control habit.",
+      "Goal: prove the live worker rail can request approval, respect cost caps, capture traces, and return a bounded recommendation.",
+    ].join(" "),
+    source: "live-ai-worker-smoke-test",
+    createFiles: false,
+  });
+  authorizeCommercialWorkflow(
+    db,
+    planned.workflow.id,
+    options.suffix || "runtime-live-ai-smoke",
+  );
+  const liveWorker = requestLiveAiWorker(db, planned.workflow.id, {
+    estimatedCostCents,
+    requestedBy: "operator",
+    worker: options.worker || "demand_validator",
+    reason: "First bound live-worker smoke test with a tiny approval cap.",
+  });
+  insertEvent(db, {
+    level: "warn",
+    actor: "operator",
+    type: "live_ai_worker.smoke_test_prepared",
+    entityType: "workflow",
+    entityId: planned.workflow.id,
+    message: "Prepared a bound capped live-worker smoke test.",
+    metadata: {
+      workflowId: planned.workflow.id,
+      taskId: liveWorker.task.id,
+      approvalId: liveWorker.approval.id,
+      estimatedCostCents,
+    },
+  });
+  return {
+    status: "prepared",
+    command: planned.command,
+    workflow: planned.workflow,
+    liveWorker,
+    estimatedCostCents,
+  };
+}
+
+function seedHistoricalResearchExperiment(db, input = {}) {
+  const workflowId = input.workflowId || "wf-digital-product-pilot-proof";
+  const workflow = get(
+    db,
+    "SELECT id, venture_id FROM workflows WHERE id = ?",
+    [workflowId],
+  );
+  assert.ok(workflow, `Historical fixture workflow not found: ${workflowId}`);
+  const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+  const briefId = `brief_historical_${suffix}`;
+  const candidateId = `candidate_historical_${suffix}`;
+  const experimentId = `experiment_historical_${suffix}`;
+  const timestamp = new Date().toISOString();
+  const buyer = input.buyer || "Freelance designers";
+  const problem = input.problem || "Inconsistent client handovers create avoidable support work.";
+  const offer = input.offer || "Client handover checklist template pack";
+  const channel = input.channel || "Historical manual channel";
+  const priceCents = Number(input.priceCents || 2900);
+  const promoted = input.promoted !== false;
+
+  run(
+    db,
+    `INSERT INTO commercial_briefs
+     (id, workflow_id, venture_id, source, status, title, idea, buyer, problem,
+      evidence_summary, research_basis, metadata, created_at, updated_at)
+     VALUES (?, ?, ?, 'historical_test_fixture', ?, ?, ?, ?, ?,
+       'Retained historical fixture evidence.', 'Test-only historical fixture.',
+       ?, ?, ?)`,
+    [
+      briefId,
+      workflow.id,
+      workflow.venture_id,
+      promoted ? "experiment_promoted" : "candidate_tests_ready",
+      input.title || offer,
+      input.title || offer,
+      buyer,
+      problem,
+      toJson({
+        frameworks: [
+          "Money Move Contract",
+          "AARRR funnel",
+          "ICE prioritisation",
+          "Unit Economics Gate",
+          "Build Measure Learn",
+        ],
+        channel,
+        offer,
+        priceCents,
+        retiredLegacyFixture: true,
+      }),
+      timestamp,
+      timestamp,
+    ],
+  );
+  if (promoted) {
+    run(
+      db,
+      `INSERT INTO commercial_experiments
+       (id, workflow_id, venture_id, name, status, hypothesis, buyer, offer, channel,
+        price_cents, expected_metric, target_value, target_unit, cost_cap_cents,
+        metadata, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, 3, 'leads', 0, ?, ?, ?)`,
+      [
+        experimentId,
+        workflow.id,
+        workflow.venture_id,
+        input.title || offer,
+        `If ${buyer} sees ${offer}, the historical test expected a measurable response.`,
+        buyer,
+        offer,
+        channel,
+        priceCents,
+        "At least 3 qualified leads or one paid sale.",
+        toJson({
+          source: "retired_research_to_experiment_bridge",
+          briefId,
+          candidateId,
+          dryRunOnly: true,
+        }),
+        timestamp,
+        timestamp,
+      ],
+    );
+  }
+  run(
+    db,
+    `INSERT INTO commercial_test_candidates
+     (id, brief_id, workflow_id, venture_id, rank, status, title, buyer, problem,
+      offer, channel, price_cents, gross_margin_cents, cost_cap_cents,
+      evidence_score, confidence, hypothesis, smallest_action, expected_metric,
+      target_value, target_unit, success_metric, kill_criteria, risk, rationale,
+      promoted_experiment_id, metadata, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, 75, 'medium',
+       ?, 'Retained historical action.', ?, 3, 'leads',
+       'Three leads or one paid sale.', 'Stop when the retained historical limit is reached.',
+       'low', 'Retained only for downstream compatibility tests.', ?, ?, ?, ?)`,
+    [
+      candidateId,
+      briefId,
+      workflow.id,
+      workflow.venture_id,
+      promoted ? "promoted" : "planned_test",
+      input.title || offer,
+      buyer,
+      problem,
+      offer,
+      channel,
+      priceCents,
+      Math.max(0, priceCents - Math.round(priceCents * 0.08)),
+      `If ${buyer} sees ${offer}, the historical test expected a measurable response.`,
+      "At least 3 qualified leads or one paid sale.",
+      promoted ? experimentId : null,
+      toJson({
+        source: "retired_research_to_experiment_bridge",
+        frameworks: [
+          "Money Move Contract",
+          "AARRR funnel",
+          "ICE prioritisation",
+          "Unit Economics Gate",
+          "Build Measure Learn",
+        ],
+      }),
+      timestamp,
+      timestamp,
+    ],
+  );
+
+  const historical = inspectHistoricalResearchToExperimentPlan(db, briefId);
+  return {
+    ...historical,
+    experiment: promoted
+      ? get(db, "SELECT * FROM commercial_experiments WHERE id = ?", [experimentId])
+      : null,
+  };
+}
+
+function assertLegacyCommercialRetirement(operation, expectedPath) {
+  assert.throws(operation, (error) => {
+    assert.equal(error.statusCode, 410);
+    assert.equal(error.code, "legacy_commercial_path_retired");
+    assert.equal(error.details.path, expectedPath);
+    assert.equal(
+      error.details.replacement,
+      "pantheon.commercial-test-contract.v2",
+    );
+    return true;
+  });
+}
+
+function legacyCommercialRecordCounts(db) {
+  return {
+    briefs: get(db, "SELECT COUNT(*) AS count FROM commercial_briefs").count,
+    candidates: get(
+      db,
+      "SELECT COUNT(*) AS count FROM commercial_test_candidates",
+    ).count,
+    experiments: get(
+      db,
+      "SELECT COUNT(*) AS count FROM commercial_experiments",
+    ).count,
+    events: get(db, "SELECT COUNT(*) AS count FROM events").count,
+  };
+}
+
+function retiredCommercialRouteCounts(db) {
+  return {
+    commands: get(db, "SELECT COUNT(*) AS count FROM commands").count,
+    workflows: get(db, "SELECT COUNT(*) AS count FROM workflows").count,
+    tasks: get(db, "SELECT COUNT(*) AS count FROM tasks").count,
+    approvals: get(db, "SELECT COUNT(*) AS count FROM approvals").count,
+    costs: get(db, "SELECT COUNT(*) AS count FROM costs").count,
+    results: get(db, "SELECT COUNT(*) AS count FROM commercial_results").count,
+    feedback: get(db, "SELECT COUNT(*) AS count FROM commercial_feedback").count,
+    briefs: get(db, "SELECT COUNT(*) AS count FROM commercial_briefs").count,
+    candidates: get(db, "SELECT COUNT(*) AS count FROM commercial_test_candidates").count,
+    experiments: get(db, "SELECT COUNT(*) AS count FROM commercial_experiments").count,
+    packs: get(db, "SELECT COUNT(*) AS count FROM commercial_execution_packs").count,
+    learning: get(db, "SELECT COUNT(*) AS count FROM commercial_learning_cycles").count,
+    events: get(db, "SELECT COUNT(*) AS count FROM events").count,
+  };
 }
 
 async function activateRetentionPolicyForTest(db) {
@@ -232,18 +550,25 @@ test("agent playbook rehearsal runs protected worker proof against manual market
 
   const db = seededDb("agent-playbook-rehearsal");
   try {
-    const plan = createResearchToExperimentPlan(db, {
-      idea: "Client handover checklist templates for boutique agencies.",
+    const historical = seedHistoricalResearchExperiment(db, {
+      title: "Client handover checklist templates for boutique agencies.",
       buyer: "Boutique digital agencies",
       problem: "Project handovers are inconsistent and create avoidable support work.",
       offer: "Client handover checklist template pack",
       channel: "Agency owner LinkedIn posts",
       priceCents: 2900,
     });
-    const promoted = promoteCandidateToExperiment(db, plan.recommended.id, { promotedBy: "test" });
-    const packResult = generateExecutionPack(db, { experimentId: promoted.experiment.id, source: "test" });
+    const packResult = generateExecutionPack(db, {
+      experimentId: historical.experiment.id,
+      source: "test",
+    });
 
     const queued = queueAgentPlaybookRehearsal(db, "distribution_operator");
+    authorizeCommercialWorkflow(
+      db,
+      queued.workflow.id,
+      "runtime-playbook-rehearsal",
+    );
     assert.equal(queued.worker.id, "distribution_operator");
     assert.equal(queued.playbook.agentId, "distribution_operator");
     assert.equal(queued.marketContext.sourceType, "execution_pack");
@@ -308,6 +633,11 @@ test("agent playbook rehearsal suite runs selected workers without model connect
       offer: "A printable cable-planning template and shopping checklist.",
       channel: "Digital Product",
     });
+    authorizeCommercialWorkflow(
+      db,
+      queued.workflow.id,
+      "runtime-playbook-rehearsal-suite",
+    );
     assert.equal(queued.team.workerCount, 3);
     assert.equal(queued.tasks.length, 3);
     assert.equal(queued.workflow.title, "AI Team - Digital product playbook rehearsal");
@@ -382,6 +712,11 @@ test("agent model readiness packs persist connection contracts before OpenAI set
       offer: "A printable cable-planning template and shopping checklist.",
       channel: "Digital Product",
     });
+    authorizeCommercialWorkflow(
+      db,
+      queued.workflow.id,
+      "runtime-model-readiness-local-proof",
+    );
     const loop = await runUntilBlocked(db, { workflowId: queued.workflow.id, maxSteps: queued.tasks.length + 2 });
     assert.equal(loop.status, "ready_for_review");
 
@@ -417,7 +752,7 @@ test("agent model readiness packs persist connection contracts before OpenAI set
   }
 });
 
-test("agent model comparison packet queues a capped decision without model connection", async () => {
+test("agent model comparison packet fails closed without an exact commercial binding", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
   delete process.env.OPENAI_API_KEY;
@@ -433,54 +768,57 @@ test("agent model comparison packet queues a capped decision without model conne
       offer: "A printable cable-planning template and shopping checklist.",
       channel: "Digital Product",
     });
+    authorizeCommercialWorkflow(
+      db,
+      queued.workflow.id,
+      "runtime-model-comparison-packet-proof",
+    );
     const loop = await runUntilBlocked(db, { workflowId: queued.workflow.id, maxSteps: queued.tasks.length + 2 });
     assert.equal(loop.status, "ready_for_review");
 
-    const result = queueAgentModelComparisonPacket(db, "demand_validator", { estimatedCostCents: 140 });
-    const packet = result.packet;
-    const storedPackets = storedComparisonPackets(db);
-    const state = getDashboardState(db);
-    const approval = state.approvals.find((item) => item.id === packet.approvalId);
-    const task = state.tasks.find((item) => item.id === packet.taskId);
-    const workflow = state.workflows.find((item) => item.id === packet.workflowId);
+    const before = {
+      workflows: get(db, "SELECT COUNT(*) AS count FROM workflows").count,
+      commands: get(db, "SELECT COUNT(*) AS count FROM commands").count,
+      tasks: get(db, "SELECT COUNT(*) AS count FROM tasks").count,
+      approvals: get(db, "SELECT COUNT(*) AS count FROM approvals").count,
+      attempts: get(db, "SELECT COUNT(*) AS count FROM task_attempts").count,
+      modelCalls: get(db, "SELECT COUNT(*) AS count FROM model_calls").count,
+      agentRuns: get(db, "SELECT COUNT(*) AS count FROM agent_runs").count,
+      costs: get(db, "SELECT COUNT(*) AS count FROM costs").count,
+    };
 
-    assert.equal(packet.schema, "jarvis_agent_model_comparison_packet_v1");
-    assert.equal(packet.status, "waiting_for_decision");
-    assert.equal(packet.agentId, "demand_validator");
-    assert.equal(packet.fixtureId, "agent_eval_case_demand_validator_contract");
-    assert.equal(packet.protectedBaseline.noSpendOccurred, true);
-    assert.equal(packet.comparisonPlan.costCapCents, 140);
-    assert.match(packet.operatorDecision.decisionNeeded, /Approve, request changes, or deny/);
-    assert.equal(storedPackets.length, 1);
-    assert.equal(storedPackets[0].approvalId, packet.approvalId);
-    assert.equal(workflow.type, "agent_model_comparison_packet");
-    assert.equal(workflow.status, "blocked_for_approval");
-    assert.equal(workflow.metadata.modelComparisonPacket.id, packet.id);
-    assert.equal(task.kind, "live_ai_worker_execution");
-    assert.equal(task.status, "blocked");
-    assert.equal(task.payload.comparisonSource.type, "agent_model_readiness_pack");
-    assert.equal(task.payload.comparisonSource.packetId, packet.id);
-    assert.equal(approval.status, "pending");
-    assert.equal(approval.scope, "live_ai_worker_spend");
-    assert.equal(approval.payload.comparisonSource.type, "agent_model_readiness_pack");
-    assert.equal(approval.payload.comparisonPacket.id, packet.id);
-    assert.equal(approval.payload.noSpendOccurred, true);
-    assert.equal(state.agentModelReadiness.summary.comparisonPackets, 1);
-    assert.equal(state.agentModelReadiness.summary.pendingComparisonPackets, 1);
-    assert.equal(state.agentModelReadiness.byAgent.demand_validator.latestComparisonPacket.id, packet.id);
-    assert.equal(state.preOpenAiReadiness.status, "ready_before_model_connection");
-    assert.equal(state.preOpenAiReadiness.foundationReady, true);
-    assert.equal(state.preOpenAiReadiness.metrics.modelComparisonPackets, 1);
-    assert.equal(state.decisionInbox.metrics.liveComparisons, 1);
-    assert.ok(state.decisionInbox.items.some((item) => item.approvalId === packet.approvalId && item.type === "live_comparison"));
-    assert.equal(state.aiPilotReview.status, "waiting_for_approval");
-    assert.equal(state.aiPilotReview.cost.capCents, 140);
-    assert.equal(state.aiPilotReview.actions.some((action) => action.action === "approval" && action.decision === "approve"), true);
-    assert.equal(state.operatorCockpit.aiTeam.pilotStatus, "waiting_for_approval");
-    assert.equal(state.metrics.aiPilotReview.actions >= 1, true);
-    assert.equal(state.modelCalls.filter((call) => call.mode !== "dry-run").length, 0);
-    assert.equal(state.metrics.modelCalls.actualCostCents, 0);
-    assert.ok(state.events.some((event) => event.type === "agent.model_comparison_packet_prepared" && event.entity_id === packet.workflowId));
+    assert.throws(
+      () => queueAgentModelComparisonPacket(db, "demand_validator", { estimatedCostCents: 140 }),
+      (error) => {
+        assert.equal(error.code, "commercial_binding_required");
+        return true;
+      },
+    );
+
+    const after = {
+      workflows: get(db, "SELECT COUNT(*) AS count FROM workflows").count,
+      commands: get(db, "SELECT COUNT(*) AS count FROM commands").count,
+      tasks: get(db, "SELECT COUNT(*) AS count FROM tasks").count,
+      approvals: get(db, "SELECT COUNT(*) AS count FROM approvals").count,
+      attempts: get(db, "SELECT COUNT(*) AS count FROM task_attempts").count,
+      modelCalls: get(db, "SELECT COUNT(*) AS count FROM model_calls").count,
+      agentRuns: get(db, "SELECT COUNT(*) AS count FROM agent_runs").count,
+      costs: get(db, "SELECT COUNT(*) AS count FROM costs").count,
+    };
+    assert.equal(after.workflows, before.workflows + 1);
+    assert.equal(after.commands, before.commands + 1);
+    assert.equal(after.tasks, before.tasks);
+    assert.equal(after.approvals, before.approvals);
+    assert.equal(after.attempts, before.attempts);
+    assert.equal(after.modelCalls, before.modelCalls);
+    assert.equal(after.agentRuns, before.agentRuns);
+    assert.equal(after.costs, before.costs);
+    assert.equal(storedComparisonPackets(db).length, 0);
+    const unboundWorkflow = get(
+      db,
+      "SELECT status FROM workflows WHERE type = 'agent_model_comparison_packet' ORDER BY created_at DESC LIMIT 1",
+    );
+    assert.equal(unboundWorkflow.status, "planned");
   } finally {
     db.close();
     if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -1240,6 +1578,11 @@ test("agent tool approval decisions resume or stop paused worker tool work", asy
     "UPDATE workflows SET status = 'ready', current_step = 'Run approved internal work' WHERE id = ?",
     [baseTask.workflow_id],
   );
+  authorizeCommercialWorkflow(
+    db,
+    baseTask.workflow_id,
+    "runtime-tool-approval-resume",
+  );
 
   const paused = await runOnce(db, { workflowId: baseTask.workflow_id });
   assert.equal(paused.status, "blocked");
@@ -1323,6 +1666,11 @@ test("agent workbench turns protected worker evidence into live-test readiness",
       source: "test",
       createFiles: false,
     });
+    authorizeCommercialWorkflow(
+      db,
+      planned.workflow.id,
+      "runtime-workbench-ready",
+    );
     await runUntilBlocked(db, { workflowId: planned.workflow.id, maxSteps: 12 });
 
     const workbench = getAgentWorkbenchState(db);
@@ -1371,6 +1719,11 @@ test("agent workbench proof drill queues and runs a selected protected worker", 
       offer: "A Notion cashflow dashboard with setup guide.",
       channel: "Digital Product",
     });
+    authorizeCommercialWorkflow(
+      db,
+      queued.workflow.id,
+      "runtime-workbench-proof",
+    );
 
     assert.equal(queued.worker.id, "demand_validator");
     assert.equal(queued.task.kind, "workbench_proof");
@@ -1427,6 +1780,11 @@ test("agent workbench team drill runs protected proof across core workers", asyn
       offer: "A printable cable-planning template and shopping checklist.",
       channel: "Digital Product",
     });
+    authorizeCommercialWorkflow(
+      db,
+      queued.workflow.id,
+      "runtime-workbench-team-proof",
+    );
 
     assert.equal(queued.team.workerCount, 3);
     assert.equal(queued.tasks.length, 3);
@@ -1503,6 +1861,11 @@ test("agent workbench prepares capped live comparison from protected team proof"
       offer: "A printable cable-planning template and shopping checklist.",
       channel: "Digital Product",
     });
+    authorizeCommercialWorkflow(
+      db,
+      queued.workflow.id,
+      "runtime-workbench-live-comparison",
+    );
     const loop = await runUntilBlocked(db, { workflowId: queued.workflow.id, maxSteps: 5 });
     assert.equal(loop.status, "ready_for_review");
 
@@ -1566,6 +1929,11 @@ test("pre-OpenAI readiness reports the local foundation without connecting model
       offer: "A printable cable-planning template and shopping checklist.",
       channel: "Digital Product",
     });
+    const preOpenFixture = authorizeCommercialWorkflow(
+      db,
+      queued.workflow.id,
+      "runtime-pre-openai-workbench-proof",
+    );
     const loop = await runUntilBlocked(db, { workflowId: queued.workflow.id, maxSteps: 5 });
     assert.equal(loop.status, "ready_for_review");
     const comparison = requestAgentWorkbenchLiveComparison(db, queued.workflow.id, { estimatedCostCents: 130 });
@@ -1587,6 +1955,11 @@ test("pre-OpenAI readiness reports the local foundation without connecting model
       offer: "A printable cable-planning template and shopping checklist.",
       channel: "Digital Product",
     });
+    bindCommercialWorkflowToFixture(
+      db,
+      rehearsal.workflow.id,
+      preOpenFixture,
+    );
     const rehearsalLoop = await runUntilBlocked(db, { workflowId: rehearsal.workflow.id, maxSteps: 3 });
     assert.equal(rehearsalLoop.status, "ready_for_review");
 
@@ -1643,6 +2016,11 @@ test("pre-OpenAI readiness reports the local foundation without connecting model
         offer: "A printable cable-planning template and shopping checklist.",
         channel: "Digital Product",
       });
+      const beforeComparisonFixture = authorizeCommercialWorkflow(
+        beforeComparisonDb,
+        queuedBeforeComparison.workflow.id,
+        "runtime-pre-openai-before-comparison-proof",
+      );
       await runUntilBlocked(beforeComparisonDb, { workflowId: queuedBeforeComparison.workflow.id, maxSteps: 5 });
       let beforeComparison = getPreOpenAiReadinessState(beforeComparisonDb);
       assert.equal(beforeComparison.status, "needs_playbook_rehearsal");
@@ -1656,6 +2034,11 @@ test("pre-OpenAI readiness reports the local foundation without connecting model
         offer: "A printable cable-planning template and shopping checklist.",
         channel: "Digital Product",
       });
+      bindCommercialWorkflowToFixture(
+        beforeComparisonDb,
+        beforeComparisonRehearsal.workflow.id,
+        beforeComparisonFixture,
+      );
       await runUntilBlocked(beforeComparisonDb, { workflowId: beforeComparisonRehearsal.workflow.id, maxSteps: 3 });
       beforeComparison = getPreOpenAiReadinessState(beforeComparisonDb);
       assert.equal(beforeComparison.status, "needs_live_comparison_request");
@@ -1700,9 +2083,8 @@ test("commercial brain prioritizes operator money moves and continuous improveme
 
 test("commercial results ledger records outcomes, learning cycles, and scorecard evidence", () => {
   const db = seededDb("commercial-results");
-  const result = recordCommercialResult(db, {
+  const result = recordCommercialResultForTest(db, {
     workflowId: "wf-digital-product-pilot-proof",
-    source: "test",
     views: 240,
     clicks: 38,
     leads: 8,
@@ -1713,19 +2095,19 @@ test("commercial results ledger records outcomes, learning cycles, and scorecard
     timeSpentMinutes: 45,
     notes: "Small controlled channel test produced paid demand.",
   });
-  assert.equal(result.learning.verdict, "continue");
+  assert.equal(result.learning.verdict, "signal_observed");
+  assert.equal(result.experiment.status, "continue_testing");
   assert.match(result.learning.actual_result, /4 sales/);
   assert.equal(result.aiTeamRun.agentId, "growth_analyst");
   assert.equal(result.aiTeamRun.evalStatus, "passed");
 
-  const feedback = recordCommercialFeedback(db, {
+  const feedback = recordCommercialFeedbackForTest(db, {
     experimentId: result.experiment.id,
-    source: "test",
     sentiment: "positive",
     rating: 5,
     summary: "Buyer liked the template and wanted a business version.",
   });
-  assert.equal(feedback.learning.verdict, "continue");
+  assert.equal(feedback.learning.verdict, "signal_observed");
   assert.equal(feedback.aiTeamRun.agentId, "customer_voice_agent");
   assert.equal(feedback.aiTeamRun.evalStatus, "passed");
 
@@ -1752,43 +2134,36 @@ test("commercial results ledger records outcomes, learning cycles, and scorecard
   db.close();
 });
 
-test("research-to-experiment bridge creates ranked test options and money moves", () => {
+test("research-to-experiment planning is permanently retired and writes no records", () => {
   const db = seededDb("research-to-experiment");
-  const plan = createResearchToExperimentPlan(db, {
-    workflowId: "wf-digital-product-pilot-proof",
-    source: "test",
-    idea: "Premium Notion finance dashboard for freelancers who want monthly cashflow clarity.",
-    buyer: "Freelance designers earning project income",
-    problem: "They do not know whether this month is profitable until it is too late.",
-    offer: "A Notion cashflow dashboard with setup guide and monthly review checklist",
-    channel: "LinkedIn creator posts and freelancer communities",
-    priceCents: 2900,
-    evidenceSummary: "Freelancers already search for simple cashflow templates and ask for monthly visibility.",
-  });
-  const state = getDashboardState(db);
-  const nextTestMove = state.commercialBrain.moneyMoves.find((move) => move.type === "next_test");
+  const before = legacyCommercialRecordCounts(db);
 
-  assert.equal(plan.brief.status, "candidate_tests_ready");
-  assert.equal(plan.candidates.length, 3);
-  assert.equal(plan.recommended.rank, 1);
-  assert.equal(plan.recommended.price_cents, 2900);
-  assert.equal(plan.recommended.cost_cap_cents, 0);
-  assert.ok(plan.recommended.evidence_score >= 70);
-  assert.match(plan.recommended.hypothesis, /Freelance designers/i);
-  assert.match(plan.recommended.kill_criteria, /Stop|Do not|Rework/i);
-  assert.deepEqual(plan.recommended.metadata.frameworks, ["Money Move Contract", "AARRR funnel", "ICE prioritisation", "Unit Economics Gate", "Build Measure Learn"]);
-  assert.equal(state.metrics.commercial.briefs, 1);
-  assert.equal(state.metrics.commercial.testCandidates, 3);
-  assert.equal(state.metrics.commercial.plannedTests, 3);
-  assert.ok(nextTestMove);
-  assert.equal(nextTestMove.candidateId, plan.recommended.id);
-  assert.match(nextTestMove.successMetric, /lead|sale|reply/i);
-  assert.match(nextTestMove.killCriteria, /Stop|Do not|Rework/i);
+  assertLegacyCommercialRetirement(
+    () => createResearchToExperimentPlan(db, {
+      workflowId: "wf-digital-product-pilot-proof",
+      source: "test",
+      idea: "Premium Notion finance dashboard for freelancers who want monthly cashflow clarity.",
+      buyer: "Freelance designers earning project income",
+      problem: "They do not know whether this month is profitable until it is too late.",
+      offer: "A Notion cashflow dashboard with setup guide and monthly review checklist",
+      channel: "LinkedIn creator posts and freelancer communities",
+      priceCents: 2900,
+      evidenceSummary: "Freelancers already search for simple cashflow templates and ask for monthly visibility.",
+      activeVenture: true,
+      clientMode: true,
+      commercialProgram: {
+        schema: "pantheon.commercial-test-contract.v2",
+        status: "active",
+      },
+    }),
+    "research_to_experiment_plan",
+  );
+  assert.deepEqual(legacyCommercialRecordCounts(db), before);
 
   db.close();
 });
 
-test("completed live research creates one idempotent next-test bridge", () => {
+test("completed live research cannot recreate the retired next-test bridge", () => {
   const db = seededDb("live-research-to-experiment");
   const ts = "2026-07-07T00:00:00.000Z";
   const researchRunId = "research_live_bridge_unit";
@@ -1849,81 +2224,98 @@ test("completed live research creates one idempotent next-test bridge", () => {
     );
   }
 
-  const first = createResearchToExperimentPlanFromResearch(db, researchRunId, { createdBy: "test" });
-  const second = createResearchToExperimentPlanFromResearch(db, researchRunId, { createdBy: "test" });
-  const state = getDashboardState(db);
-  const bridgeBriefs = state.commercialBriefs.filter((brief) => brief.metadata.sourceResearchRunId === researchRunId);
-  const bridgeCandidates = state.commercialTestCandidates.filter((candidate) => candidate.brief_id === first.brief.id);
-
-  assert.equal(first.skipped, false);
-  assert.equal(first.alreadyCreated, false);
-  assert.equal(first.brief.source, "live_research");
-  assert.equal(first.brief.metadata.researchEvidence.verdict, "revise");
-  assert.equal(first.brief.metadata.researchEvidence.sourceCount, 3);
-  assert.equal(first.candidates.length, 3);
-  assert.equal(first.recommended.metadata.sourceResearchRunId, researchRunId);
-  assert.equal(first.recommended.metadata.source, "live_research");
-  assert.match(first.recommended.hypothesis, /Digital Product|dashboard|cashflow|Freelance/i);
-  assert.equal(second.alreadyCreated, true);
-  assert.equal(second.brief.id, first.brief.id);
-  assert.equal(second.candidates.length, 3);
-  assert.equal(bridgeBriefs.length, 1);
-  assert.equal(bridgeCandidates.length, 3);
-  assert.ok(state.commercialBrain.moneyMoves.some((move) => move.candidateId === first.recommended.id));
-  assert.ok(state.events.some((event) => event.type === "commercial_test.live_research_bridge_created"));
+  const before = legacyCommercialRecordCounts(db);
+  assertLegacyCommercialRetirement(
+    () => createResearchToExperimentPlanFromResearch(
+      db,
+      researchRunId,
+      { createdBy: "test", activeVenture: true, clientMode: true },
+    ),
+    "research_to_experiment_live_research_plan",
+  );
+  assert.deepEqual(legacyCommercialRecordCounts(db), before);
 
   db.close();
 });
 
-test("promoting a research test candidate creates a commercial experiment without spend", () => {
+test("retired candidate promotion cannot create an experiment and remains readable", () => {
   const db = seededDb("promote-research-test");
-  const plan = createResearchToExperimentPlan(db, {
+  const plan = seedHistoricalResearchExperiment(db, {
     workflowId: "wf-digital-product-pilot-proof",
-    idea: "Spreadsheet budget planner for solo consultants",
+    title: "Spreadsheet budget planner for solo consultants",
     buyer: "Solo consultants",
     problem: "They need simple monthly cash and tax visibility.",
     offer: "A spreadsheet budget planner with monthly review prompts",
     channel: "Direct outreach to consultant communities",
     priceCents: 1900,
+    promoted: false,
   });
-  const promoted = promoteCandidateToExperiment(db, plan.recommended.id, { promotedBy: "test" });
-  const state = getDashboardState(db);
-  const candidate = state.commercialTestCandidates.find((item) => item.id === plan.recommended.id);
-  const experiment = state.commercialExperiments.find((item) => item.id === promoted.experiment.id);
+  const before = legacyCommercialRecordCounts(db);
+  const candidateBefore = get(
+    db,
+    "SELECT status, promoted_experiment_id, updated_at FROM commercial_test_candidates WHERE id = ?",
+    [plan.recommended.id],
+  );
+  const briefBefore = get(
+    db,
+    "SELECT status, updated_at FROM commercial_briefs WHERE id = ?",
+    [plan.brief.id],
+  );
 
-  assert.equal(promoted.alreadyPromoted, false);
-  assert.equal(candidate.status, "promoted");
-  assert.equal(candidate.promoted_experiment_id, promoted.experiment.id);
-  assert.equal(experiment.workflow_id, "wf-digital-product-pilot-proof");
-  assert.equal(experiment.price_cents, 1900);
-  assert.equal(experiment.metadata.source, "research_to_experiment_bridge");
-  assert.equal(experiment.metadata.candidateId, candidate.id);
-  assert.match(experiment.metadata.killCriteria, /Stop|Do not|Rework/i);
-  assert.equal(state.metrics.commercial.promotedTests, 1);
-  assert.equal(state.metrics.budget.monthlySpendCents, 0);
-  assert.equal(state.metrics.budget.monthlyRevenueCents, 0);
-  assert.ok(state.events.some((event) => event.type === "commercial_test.promoted"));
+  assertLegacyCommercialRetirement(
+    () => promoteCandidateToExperiment(
+      db,
+      plan.recommended.id,
+      {
+        promotedBy: "test",
+        activeVenture: true,
+        clientMode: true,
+        commercialProgram: { schema: "pantheon.commercial-test-contract.v2" },
+      },
+    ),
+    "research_to_experiment_candidate_promotion",
+  );
 
-  const second = promoteCandidateToExperiment(db, plan.recommended.id, { promotedBy: "test" });
-  assert.equal(second.alreadyPromoted, true);
-  assert.equal(second.experiment.id, promoted.experiment.id);
+  assert.deepEqual(legacyCommercialRecordCounts(db), before);
+  assert.deepEqual(
+    get(
+      db,
+      "SELECT status, promoted_experiment_id, updated_at FROM commercial_test_candidates WHERE id = ?",
+      [plan.recommended.id],
+    ),
+    candidateBefore,
+  );
+  assert.deepEqual(
+    get(
+      db,
+      "SELECT status, updated_at FROM commercial_briefs WHERE id = ?",
+      [plan.brief.id],
+    ),
+    briefBefore,
+  );
+  const historical = inspectHistoricalResearchToExperimentPlan(db, plan.brief.id);
+  assert.deepEqual(historical.brief, plan.brief);
+  assert.deepEqual(historical.candidates, plan.candidates);
+  assert.equal(
+    inspectHistoricalCandidatePromotion(db, plan.recommended.id).experiment,
+    null,
+  );
 
   db.close();
 });
 
 test("execution pack turns a promoted test into a ready manual market-contact pack", () => {
   const db = seededDb("execution-pack");
-  const plan = createResearchToExperimentPlan(db, {
+  const plan = seedHistoricalResearchExperiment(db, {
     workflowId: "wf-digital-product-pilot-proof",
-    idea: "Template bundle for boutique consultants to package client onboarding.",
+    title: "Template bundle for boutique consultants to package client onboarding.",
     buyer: "Boutique consultants",
     problem: "Client onboarding takes too long and feels inconsistent.",
     offer: "A client onboarding template bundle with checklist and email copy",
     channel: "LinkedIn posts and direct replies to consultant threads",
     priceCents: 3900,
-    evidenceSummary: "Consultants already ask for onboarding templates and reusable client systems.",
   });
-  const promoted = promoteCandidateToExperiment(db, plan.recommended.id, { promotedBy: "test" });
+  const promoted = { experiment: plan.experiment };
   let state = getDashboardState(db);
   const packNeeded = state.commercialBrain.moneyMoves.find((move) => move.type === "execution_pack_needed");
 
@@ -2037,16 +2429,16 @@ test("execution pack turns a promoted test into a ready manual market-contact pa
 
 test("execution pack outcomes feed results, feedback, and learning without live spend", () => {
   const db = seededDb("execution-pack-outcome");
-  const plan = createResearchToExperimentPlan(db, {
+  const plan = seedHistoricalResearchExperiment(db, {
     workflowId: "wf-digital-product-pilot-proof",
-    idea: "Cashflow checklist for project-based freelancers.",
+    title: "Cashflow checklist for project-based freelancers.",
     buyer: "Project-based freelancers",
     problem: "Cashflow surprises make tax and bills stressful.",
     offer: "A cashflow checklist and calendar template",
     channel: "Freelancer newsletter swaps",
     priceCents: 1900,
   });
-  const promoted = promoteCandidateToExperiment(db, plan.recommended.id, { promotedBy: "test" });
+  const promoted = { experiment: plan.experiment };
   const generated = generateExecutionPack(db, { experimentId: promoted.experiment.id, source: "test" });
 
   const noResponse = recordExecutionPackOutcome(db, generated.pack.id, {
@@ -2115,54 +2507,53 @@ test("execution pack outcomes feed results, feedback, and learning without live 
   db.close();
 });
 
-test("learning cycles can generate revised test options without model calls", () => {
+test("learning cycles cannot reopen the retired revision planner", () => {
   const db = seededDb("learning-revision-plan");
-  const plan = createResearchToExperimentPlan(db, {
+  const plan = seedHistoricalResearchExperiment(db, {
     workflowId: "wf-digital-product-pilot-proof",
-    idea: "Client onboarding checklist for boutique consultants.",
+    title: "Client onboarding checklist for boutique consultants.",
     buyer: "Boutique consultants",
     problem: "Client onboarding creates avoidable admin drag.",
     offer: "A client onboarding checklist and email template pack",
     channel: "Manual LinkedIn post and consultant community replies",
     priceCents: 2900,
   });
-  const promoted = promoteCandidateToExperiment(db, plan.recommended.id, { promotedBy: "test" });
+  const promoted = { experiment: plan.experiment };
   const generated = generateExecutionPack(db, { experimentId: promoted.experiment.id, source: "test" });
   const outcome = recordExecutionPackOutcome(db, generated.pack.id, {
-    outcomeType: "result",
-    views: 64,
-    clicks: 9,
-    leads: 3,
-    sales: 1,
-    revenueCents: 2900,
-    spendCents: 0,
-    notes: "One buyer paid and two asked for a more agency-specific version.",
+    outcomeType: "no_response",
+    notes: "The bounded test produced no verified buyer response.",
     verified: true,
-    verificationNote: "Operator confirmed these measured results from the controlled test.",
+    verificationNote: "Operator confirmed no response for this exact execution pack.",
   });
 
-  const revision = createRevisionPlanFromLearning(db, outcome.recorded.learning.id, { createdBy: "test" });
-  const state = getDashboardState(db);
-  const brief = state.commercialBriefs.find((item) => item.id === revision.brief.id);
-  const revisedCandidates = state.commercialTestCandidates.filter((item) => item.brief_id === revision.brief.id);
-  const revisionEvent = state.events.find((event) => event.type === "commercial_learning.revision_plan_created");
-  const nextMove = state.commercialBrain.moneyMoves.find((move) => move.candidateId === revision.recommended.id);
-
-  assert.equal(revision.alreadyCreated, false);
-  assert.equal(revision.candidates.length, 3);
-  assert.equal(brief.metadata.sourceLearningId, outcome.recorded.learning.id);
-  assert.equal(brief.metadata.sourceExecutionPackId, generated.pack.id);
-  assert.equal(revisedCandidates.length, 3);
-  assert.equal(revisedCandidates[0].metadata.sourceLearningId, outcome.recorded.learning.id);
-  assert.match(revision.recommended.offer, /next controlled sample|latest market signal|reworked/i);
-  assert.ok(revisionEvent);
-  assert.equal(revisionEvent.entity_id, outcome.recorded.learning.id);
-  assert.ok(nextMove);
-  assert.equal(nextMove.type, "next_test");
-
-  const second = createRevisionPlanFromLearning(db, outcome.recorded.learning.id, { createdBy: "test" });
-  assert.equal(second.alreadyCreated, true);
-  assert.equal(second.brief.id, revision.brief.id);
+  const before = legacyCommercialRecordCounts(db);
+  const learningBefore = get(
+    db,
+    "SELECT * FROM commercial_learning_cycles WHERE id = ?",
+    [outcome.recorded.learning.id],
+  );
+  assertLegacyCommercialRetirement(
+    () => createRevisionPlanFromLearning(
+      db,
+      outcome.recorded.learning.id,
+      { createdBy: "test", activeVenture: true, clientMode: true },
+    ),
+    "research_to_experiment_learning_revision_plan",
+  );
+  assert.deepEqual(legacyCommercialRecordCounts(db), before);
+  assert.deepEqual(
+    get(
+      db,
+      "SELECT * FROM commercial_learning_cycles WHERE id = ?",
+      [outcome.recorded.learning.id],
+    ),
+    learningBefore,
+  );
+  assert.equal(
+    inspectHistoricalCandidatePromotion(db, plan.recommended.id).experiment.id,
+    promoted.experiment.id,
+  );
 
   db.close();
 });
@@ -2217,6 +2608,7 @@ test("dry-run agent runner executes planned workflow steps with guardrails", asy
     createFiles: false,
   });
   const workflowId = result.workflow.id;
+  authorizeCommercialWorkflow(db, workflowId, "runtime-agent-runner");
 
   const firstStep = await runOnce(db, { workflowId });
   assert.equal(firstStep.status, "completed");
@@ -2340,6 +2732,7 @@ test("run-until-blocked executes scoped dry-run workflow to review", async () =>
     createFiles: false,
   });
   const workflowId = result.workflow.id;
+  authorizeCommercialWorkflow(db, workflowId, "runtime-run-loop");
 
   try {
     const loop = await runUntilBlocked(db, { workflowId, maxSteps: 12 });
@@ -2383,6 +2776,11 @@ test("worker handoff decision requests changes and stops linked workflow", async
     createFiles: false,
   });
   const workflowId = result.workflow.id;
+  authorizeCommercialWorkflow(
+    db,
+    workflowId,
+    "runtime-handoff-decision",
+  );
 
   try {
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
@@ -2427,6 +2825,11 @@ test("approved worker handoff queues and runs Chief of Staff follow-up", async (
     createFiles: false,
   });
   const workflowId = result.workflow.id;
+  const commercialFixture = authorizeCommercialWorkflow(
+    db,
+    workflowId,
+    "runtime-handoff-followup",
+  );
 
   try {
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
@@ -2441,6 +2844,10 @@ test("approved worker handoff queues and runs Chief of Staff follow-up", async (
     assert.equal(decision.followupTask.agent, "chief_of_staff");
     assert.equal(decision.followupTask.status, "queued");
     assert.equal(decision.handoff.metadata.operatorDecision.followupTaskId, decision.followupTask.id);
+    assert.deepEqual(
+      JSON.parse(decision.followupTask.payload).commercialTestContract,
+      commercialFixture.binding,
+    );
 
     let workflow = get(db, "SELECT status, current_step FROM workflows WHERE id = ?", [workflowId]);
     assert.equal(workflow.status, "agent_running");
@@ -2527,6 +2934,11 @@ test("cockpit surfaces queued work and exact-task execution cannot start a diffe
     source: "test",
     createFiles: false,
   });
+  authorizeCommercialWorkflow(
+    db,
+    planned.workflow.id,
+    "runtime-cockpit-exact-task",
+  );
   const tasks = all(db, "SELECT * FROM tasks WHERE workflow_id = ? ORDER BY priority", [planned.workflow.id]);
 
   try {
@@ -2574,6 +2986,11 @@ test("approved Demand Validator interest handoff prepares one capped web-researc
     source: "test",
     createFiles: false,
   });
+  const commercialFixture = authorizeCommercialWorkflow(
+    db,
+    planned.workflow.id,
+    "runtime-demand-interest-handoff",
+  );
   const sourceTask = get(db, "SELECT * FROM tasks WHERE workflow_id = ? ORDER BY priority LIMIT 1", [planned.workflow.id]);
   run(db, "UPDATE tasks SET status = 'completed' WHERE workflow_id = ?", [planned.workflow.id]);
   getAiTeamState(db);
@@ -2613,6 +3030,10 @@ test("approved Demand Validator interest handoff prepares one capped web-researc
   try {
     const handoff = getDashboardState(db).aiTeam.handoffs.find((item) => item.from_run_id === sourceRun.id);
     const decision = decideAgentHandoff(db, handoff.id, "approve", "Advance to the bounded interest-test preparation step.");
+    assert.deepEqual(
+      JSON.parse(decision.followupTask.payload).commercialTestContract,
+      commercialFixture.binding,
+    );
     assert.equal(get(db, "SELECT status FROM messages WHERE id = 'msg-source-review-proof'").status, "resolved");
     const completed = await runOnce(db, { taskId: decision.followupTask.id });
 
@@ -2694,7 +3115,7 @@ test("approved Demand Validator interest handoff prepares one capped web-researc
   }
 });
 
-test("dry-run agent runner retries recoverable failures", async () => {
+test("unbound commercial dry-run work fails closed before retry bookkeeping", async () => {
   const db = seededDb("agent-retry");
   const result = createCommandPlan(db, {
     text: "Evaluate a reusable study planner template and prepare a decision pack",
@@ -2711,40 +3132,34 @@ test("dry-run agent runner retries recoverable failures", async () => {
     [toJson({ ...payload, failureProof: { failFirstAttempt: true, message: "Recoverable dry-run proof failure" } }), task.id],
   );
 
-  const first = await runOnce(db, { workflowId });
-  assert.equal(first.status, "queued");
-  assert.equal(first.retries, 1);
-  assert.match(first.error, /Recoverable dry-run proof failure/);
+  const before = {
+    attempts: get(db, "SELECT COUNT(*) AS count FROM task_attempts").count,
+    modelCalls: get(db, "SELECT COUNT(*) AS count FROM model_calls").count,
+    researchRuns: get(db, "SELECT COUNT(*) AS count FROM research_runs").count,
+    agentRuns: get(db, "SELECT COUNT(*) AS count FROM agent_runs").count,
+    events: get(db, "SELECT COUNT(*) AS count FROM events").count,
+  };
+  const blocked = await runOnce(db, { workflowId });
+  assert.equal(blocked.status, "safety_blocked");
+  assert.equal(blocked.reason, "commercial_binding_required");
 
-  let state = getDashboardState(db);
-  let workflow = state.workflows.find((item) => item.id === workflowId);
-  let retriedTask = state.tasks.find((item) => item.id === task.id);
-  assert.equal(workflow.status, "agent_retrying");
-  assert.equal(retriedTask.status, "queued");
-  assert.equal(retriedTask.retries, 1);
-  assert.match(retriedTask.error, /Recoverable dry-run proof failure/);
-
-  const retryEvent = get(db, "SELECT type, level FROM events WHERE entity_id = ? ORDER BY id DESC LIMIT 1", [task.id]);
-  assert.equal(retryEvent.type, "task.retry");
-  assert.equal(retryEvent.level, "warn");
-
-  const second = await runOnce(db, { workflowId });
-  assert.equal(second.status, "completed");
-  assert.equal(second.result.mode, "dry-run-agent");
-
-  state = getDashboardState(db);
-  workflow = state.workflows.find((item) => item.id === workflowId);
-  retriedTask = state.tasks.find((item) => item.id === task.id);
-  assert.equal(workflow.status, "agent_running");
-  assert.equal(retriedTask.status, "completed");
-  assert.equal(retriedTask.retries, 1);
-  assert.equal(retriedTask.error, null);
-  assert.equal(retriedTask.result.cost.actualCents, 0);
+  const state = getDashboardState(db);
+  const workflow = state.workflows.find((item) => item.id === workflowId);
+  const blockedTask = state.tasks.find((item) => item.id === task.id);
+  assert.equal(workflow.status, "planned");
+  assert.equal(blockedTask.status, "planned");
+  assert.equal(blockedTask.retries, 0);
+  assert.equal(blockedTask.error, null);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM task_attempts").count, before.attempts);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM model_calls").count, before.modelCalls);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM research_runs").count, before.researchRuns);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM agent_runs").count, before.agentRuns);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM events").count, before.events);
 
   db.close();
 });
 
-test("dry-run agent runner escalates exhausted failures", async () => {
+test("unbound commercial dry-run work fails closed before terminal failure handling", async () => {
   const db = seededDb("agent-failure");
   const result = createCommandPlan(db, {
     text: "Evaluate a home office checklist digital product and prepare a decision pack",
@@ -2761,30 +3176,34 @@ test("dry-run agent runner escalates exhausted failures", async () => {
     [toJson({ ...payload, failureProof: { alwaysFail: true, message: "Permanent dry-run proof failure" } }), task.id],
   );
 
-  const failed = await runOnce(db, { workflowId });
-  assert.equal(failed.status, "failed");
-  assert.equal(failed.retries, 1);
-  assert.match(failed.error, /Permanent dry-run proof failure/);
+  const before = {
+    attempts: get(db, "SELECT COUNT(*) AS count FROM task_attempts").count,
+    modelCalls: get(db, "SELECT COUNT(*) AS count FROM model_calls").count,
+    researchRuns: get(db, "SELECT COUNT(*) AS count FROM research_runs").count,
+    agentRuns: get(db, "SELECT COUNT(*) AS count FROM agent_runs").count,
+    events: get(db, "SELECT COUNT(*) AS count FROM events").count,
+    messages: get(db, "SELECT COUNT(*) AS count FROM messages").count,
+  };
+  const blocked = await runOnce(db, { workflowId });
+  assert.equal(blocked.status, "safety_blocked");
+  assert.equal(blocked.reason, "commercial_binding_required");
 
   const state = getDashboardState(db);
   const workflow = state.workflows.find((item) => item.id === workflowId);
   const command = state.commands.find((item) => item.workflow_id === workflowId);
-  const failedTask = state.tasks.find((item) => item.id === task.id);
+  const blockedTask = state.tasks.find((item) => item.id === task.id);
   const downstream = state.tasks.filter((item) => item.workflow_id === workflowId && item.id !== task.id);
-  const message = state.messages.find((item) => item.task_id === task.id && item.severity === "urgent");
-
-  assert.equal(workflow.status, "failed");
-  assert.equal(workflow.current_step, "failed: Prepare the Evidence Brief");
-  assert.equal(command.status, "failed");
-  assert.equal(failedTask.status, "failed");
-  assert.equal(failedTask.retries, 1);
-  assert.ok(downstream.every((item) => item.status === "cancelled"));
-  assert.equal(message.subject, "Task failed: Prepare the Evidence Brief");
-  assert.match(message.body, /Permanent dry-run proof failure/);
-
-  const failureEvent = get(db, "SELECT type, level FROM events WHERE entity_id = ? ORDER BY id DESC LIMIT 1", [task.id]);
-  assert.equal(failureEvent.type, "task.failed");
-  assert.equal(failureEvent.level, "error");
+  assert.equal(workflow.status, "planned");
+  assert.equal(command.status, "planned");
+  assert.equal(blockedTask.status, "planned");
+  assert.equal(blockedTask.retries, 0);
+  assert.ok(downstream.every((item) => ["planned", "queued"].includes(item.status)));
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM task_attempts").count, before.attempts);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM model_calls").count, before.modelCalls);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM research_runs").count, before.researchRuns);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM agent_runs").count, before.agentRuns);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM events").count, before.events);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM messages").count, before.messages);
 
   db.close();
 });
@@ -2858,9 +3277,9 @@ test("scheduler seeds maintenance jobs and runs monitor job", async () => {
   const safeWorkJob = state.schedulerJobs.find((job) => job.id === "job-safe-work-loop");
   assert.equal(state.schedulerJobs.length, 4);
   assert.equal(monitorJob.status, "enabled");
-  assert.equal(supervisorJob.status, "enabled");
+  assert.equal(supervisorJob.status, "disabled");
   assert.equal(safeWorkJob.status, "disabled");
-  assert.equal(state.metrics.scheduler.enabled, 3);
+  assert.equal(state.metrics.scheduler.enabled, 2);
 
   const result = await runSchedulerJob(db, "job-monitor-cycle", { manual: true });
   assert.equal(result.status, "completed");
@@ -2884,11 +3303,9 @@ test("scheduler keeps safe work disabled until explicitly enabled", async () => 
 
   try {
     const due = await runDueSchedulerJobs(db, { limit: 5 });
-    assert.equal(due.dueCount, 3);
+    assert.equal(due.dueCount, 2);
     assert.equal(due.runs[0].jobId, "job-monitor-cycle");
-    assert.equal(due.runs[1].jobId, "job-pantheon-supervisor");
-    assert.equal(due.runs[1].result.status, "idle");
-    assert.equal(due.runs[2].jobId, "job-weekly-executive-digest");
+    assert.equal(due.runs[1].jobId, "job-weekly-executive-digest");
 
     const skipped = await runSchedulerJob(db, "job-safe-work-loop", { manual: true });
     assert.equal(skipped.status, "skipped");
@@ -2904,13 +3321,17 @@ test("scheduler keeps safe work disabled until explicitly enabled", async () => 
 
     assert.equal(runResult.status, "completed");
     assert.equal(runResult.result.kind, "safe_work_loop");
-    assert.equal(runResult.result.workflowId, planned.workflow.id);
-    assert.equal(runResult.result.status, "ready_for_review");
-    assert.ok(runResult.result.workflowRunId);
+    assert.equal(runResult.result.status, "idle");
 
     const state = getDashboardState(db);
     const workflow = state.workflows.find((item) => item.id === planned.workflow.id);
-    assert.equal(workflow.status, "ready_for_review");
+    assert.equal(workflow.status, "planned");
+    assert.equal(
+      state.tasks.some(
+        (task) => task.workflow_id === planned.workflow.id && task.status === "completed",
+      ),
+      false,
+    );
     assert.ok(state.schedulerRuns.some((runRecord) => runRecord.id === runResult.id && runRecord.status === "completed"));
   } finally {
     db.close();
@@ -3044,7 +3465,10 @@ test("live research readiness and smoke test create approval-gated work without 
     assert.ok(readiness.blockers.some((blocker) => blocker.includes("OpenAI API key")));
     assert.ok(readiness.checklist.some((item) => item.id === "approval" && item.status === "blocked"));
 
-    const smoke = createLiveResearchSmokeTest(db, { estimatedCostCents: 100 });
+    const smoke = prepareBoundLiveResearchSmokeTest(db, {
+      estimatedCostCents: 100,
+      suffix: "runtime-live-research-smoke",
+    });
     assert.equal(smoke.status, "prepared");
     assert.equal(smoke.estimatedCostCents, 100);
     assert.equal(smoke.liveResearch.status, "blocked");
@@ -3099,7 +3523,10 @@ test("live AI worker readiness and smoke test create approval-gated work without
     assert.ok(readiness.blockers.some((blocker) => blocker.includes("OpenAI API key")));
     assert.ok(readiness.checklist.some((item) => item.id === "approval" && item.status === "blocked"));
 
-    const smoke = createLiveAiWorkerSmokeTest(db, { estimatedCostCents: 100 });
+    const smoke = prepareBoundLiveAiWorkerSmokeTest(db, {
+      estimatedCostCents: 100,
+      suffix: "runtime-live-ai-smoke",
+    });
     assert.equal(smoke.status, "prepared");
     assert.equal(smoke.estimatedCostCents, 100);
     assert.equal(smoke.liveWorker.status, "blocked");
@@ -3164,6 +3591,11 @@ test("live research request creates approval gate and blocks until provider is r
       createFiles: false,
     });
     const workflowId = planned.workflow.id;
+    authorizeCommercialWorkflow(
+      db,
+      workflowId,
+      "runtime-live-research-request",
+    );
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
 
     const requested = requestLiveResearch(db, workflowId, { estimatedCostCents: 180 });
@@ -3242,6 +3674,11 @@ test("live AI worker request creates approval gate and blocks until provider is 
       createFiles: false,
     });
     const workflowId = planned.workflow.id;
+    authorizeCommercialWorkflow(
+      db,
+      workflowId,
+      "runtime-live-ai-request",
+    );
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
 
     const requested = requestLiveAiWorker(db, workflowId, { estimatedCostCents: 120, worker: "demand_validator" });
@@ -3400,6 +3837,11 @@ test("approved live AI worker uses OpenAI Agents SDK runner, records traces, cos
       createFiles: false,
     });
     const workflowId = planned.workflow.id;
+    authorizeCommercialWorkflow(
+      db,
+      workflowId,
+      "runtime-live-ai-success",
+    );
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
 
     const requested = requestLiveAiWorker(db, workflowId, {
@@ -3626,6 +4068,11 @@ test("a verified pre-dispatch failure gets a fresh approval without consuming a 
       source: "test",
       createFiles: false,
     });
+    authorizeCommercialWorkflow(
+      db,
+      planned.workflow.id,
+      "runtime-live-ai-predispatch-recovery",
+    );
     const requested = requestLiveAiWorker(db, planned.workflow.id, {
       estimatedCostCents: 80,
       worker: "demand_validator",
@@ -3868,6 +4315,11 @@ test("SDK tool interruption uses Jarvis approval and resumes the same serialized
       createFiles: false,
     });
     const workflowId = planned.workflow.id;
+    authorizeCommercialWorkflow(
+      db,
+      workflowId,
+      "runtime-sdk-tool-resume",
+    );
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
     const requested = requestLiveAiWorker(db, workflowId, {
       estimatedCostCents: 200,
@@ -4004,6 +4456,11 @@ test("live AI worker provider failure records failed run and no-spend evidence",
       createFiles: false,
     });
     const workflowId = planned.workflow.id;
+    authorizeCommercialWorkflow(
+      db,
+      workflowId,
+      "runtime-live-ai-provider-failure",
+    );
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
 
     const requested = requestLiveAiWorker(db, workflowId, { estimatedCostCents: 140, worker: "chief_of_staff" });
@@ -4101,6 +4558,11 @@ test("Agents SDK definite HTTP rejection releases the reservation and records ze
       createFiles: false,
     });
     const workflowId = planned.workflow.id;
+    authorizeCommercialWorkflow(
+      db,
+      workflowId,
+      "runtime-sdk-definite-rejection",
+    );
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
 
     const requested = requestLiveAiWorker(db, workflowId, {
@@ -4204,6 +4666,11 @@ test("Agents SDK invalid structured output is recorded as a known provider respo
       createFiles: false,
     });
     const workflowId = planned.workflow.id;
+    authorizeCommercialWorkflow(
+      db,
+      workflowId,
+      "runtime-sdk-invalid-output",
+    );
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
 
     const requested = requestLiveAiWorker(db, workflowId, {
@@ -4393,6 +4860,11 @@ test("dashboard recovery prepares and completes a new exact Luna attempt without
       createFiles: false,
     });
     const workflowId = planned.workflow.id;
+    authorizeCommercialWorkflow(
+      db,
+      workflowId,
+      "runtime-dashboard-known-retry",
+    );
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
     const requestOptions = {
       estimatedCostCents: 100,
@@ -4562,6 +5034,11 @@ test("approved live research uses provider adapter, records sources, cost, and s
       createFiles: false,
     });
     const workflowId = planned.workflow.id;
+    authorizeCommercialWorkflow(
+      db,
+      workflowId,
+      "runtime-live-research-success",
+    );
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
 
     const requested = requestLiveResearch(db, workflowId, { estimatedCostCents: 220 });
@@ -4577,10 +5054,22 @@ test("approved live research uses provider adapter, records sources, cost, and s
     assert.equal(completed.result.cost.actualCents, 0);
     assert.equal(completed.result.output.liveEvidence, true);
     assert.equal(completed.result.output.verdict, "revise");
-    assert.equal(completed.result.researchBridge.skipped, false);
-    assert.equal(completed.result.researchBridge.candidateCount, 3);
-    assert.ok(completed.result.researchBridge.recommendedCandidateId);
-    assert.equal(completed.result.output.commercialTestBridge.candidateCount, 3);
+    assert.equal(completed.result.researchBridge.skipped, true);
+    assert.equal(
+      completed.result.researchBridge.status,
+      "v2_contract_proposal_required",
+    );
+    assert.equal(
+      completed.result.researchBridge.contractSchema,
+      "pantheon.commercial-test-contract.v2",
+    );
+    assert.equal(completed.result.researchBridge.legacyCreationRetired, true);
+    assert.deepEqual(
+      completed.result.output.commercialTestReadiness,
+      completed.result.researchBridge,
+    );
+    assert.equal(completed.result.output.commercialTestBridge, undefined);
+    assert.match(completed.result.output.nextAction, /immutable v2 commercial-test contract/i);
     assert.equal(completed.result.modelPolicy.mode, "live");
     assert.equal(completed.result.modelPolicy.selectedModel, "gpt-5.5");
     assert.equal(capturedRequest.body.tools[0].type, "web_search");
@@ -4609,7 +5098,7 @@ test("approved live research uses provider adapter, records sources, cost, and s
     const bridgeCandidates = state.commercialTestCandidates.filter((candidate) => candidate.brief_id === bridgeBrief?.id);
     const bridgeTrace = all(db, "SELECT * FROM agent_trace_events WHERE run_id = ? AND type = ?", [
       completed.result.aiTeam.runId,
-      "research_test_candidates_created",
+      "commercial_test_contract_required",
     ]);
 
     assert.equal(liveTask.status, "completed");
@@ -4636,15 +5125,12 @@ test("approved live research uses provider adapter, records sources, cost, and s
     assert.match(scorecard.dimensions.demand_signal.note, /no buyer action/i);
     assert.notEqual(scorecard.verdict, "research_required");
     assert.equal(state.metrics.research.providerReady, true);
-    assert.ok(bridgeBrief);
-    assert.equal(bridgeBrief.source, "live_research");
-    assert.equal(bridgeBrief.metadata.researchEvidence.verdict, "revise");
-    assert.equal(bridgeBrief.metadata.researchEvidence.sourceCount, sources.length);
-    assert.equal(bridgeCandidates.length, 3);
-    assert.equal(bridgeCandidates[0].metadata.sourceResearchRunId, researchRun.id);
-    assert.equal(bridgeCandidates[0].metadata.source, "live_research");
-    assert.ok(state.commercialBrain.moneyMoves.some((move) => move.candidateId === completed.result.researchBridge.recommendedCandidateId));
-    assert.ok(state.events.some((event) => event.type === "commercial_test.live_research_bridge_created"));
+    assert.equal(bridgeBrief, undefined);
+    assert.equal(bridgeCandidates.length, 0);
+    assert.equal(
+      state.events.some((event) => event.type === "commercial_test.live_research_bridge_created"),
+      false,
+    );
     assert.equal(bridgeTrace.length, 1);
   } finally {
     db.close();
@@ -4688,6 +5174,11 @@ test("definite live research rejection releases the reservation and fails safely
       createFiles: false,
     });
     const workflowId = planned.workflow.id;
+    authorizeCommercialWorkflow(
+      db,
+      workflowId,
+      "runtime-live-research-rejection",
+    );
     await runUntilBlocked(db, { workflowId, maxSteps: 12 });
     const requested = requestLiveResearch(db, workflowId, { estimatedCostCents: 210 });
     decideApproval(db, requested.approval.id, "approved", "approve failing live research proof");
@@ -4723,7 +5214,7 @@ test("definite live research rejection releases the reservation and fails safely
   }
 });
 
-test("paid live work without an immutable descriptor fails before approval", async () => {
+test("unbound paid live work fails closed before approval or execution evidence", async () => {
   const db = seededDb("spend-gate");
   const result = createCommandPlan(db, {
     text: "Evaluate a travel checklist digital product and prepare a decision pack",
@@ -4753,14 +5244,39 @@ test("paid live work without an immutable descriptor fails before approval", asy
     ],
   );
 
-  const failed = await runOnce(db, { workflowId });
-  assert.equal(failed.status, "failed");
-  assert.match(failed.error, /immutable execution descriptor/i);
+  const before = {
+    attempts: get(db, "SELECT COUNT(*) AS count FROM task_attempts").count,
+    modelCalls: get(db, "SELECT COUNT(*) AS count FROM model_calls").count,
+    researchRuns: get(db, "SELECT COUNT(*) AS count FROM research_runs").count,
+    agentRuns: get(db, "SELECT COUNT(*) AS count FROM agent_runs").count,
+    events: get(db, "SELECT COUNT(*) AS count FROM events").count,
+  };
+  const commercialSafety = classifyCommercialTaskSafety(db, task.id);
+  assert.equal(
+    commercialSafety.code,
+    "commercial_execution_descriptor_unknown",
+  );
+  assert.ok(
+    commercialSafety.intent.unknownExternalDescriptors.some((descriptor) => (
+      descriptor.value === "model"
+      && descriptor.surface === "execution_kind"
+      && descriptor.path === "$.task.payload.liveSpendRequest.type"
+    )),
+  );
+  const blocked = await runOnce(db, { workflowId });
+  assert.equal(blocked.status, "safety_blocked");
+  assert.equal(blocked.reason, "commercial_execution_descriptor_unknown");
   const state = getDashboardState(db);
-  const failedTask = state.tasks.find((item) => item.id === task.id);
-  assert.equal(failedTask.status, "failed");
+  const blockedTask = state.tasks.find((item) => item.id === task.id);
+  assert.equal(blockedTask.status, "planned");
+  assert.equal(blockedTask.retries, 0);
   assert.equal(state.approvals.some((item) => item.task_id === task.id), false);
   assert.equal(state.costs.some((item) => item.workflow_id === workflowId && item.status === "approval_requested"), false);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM task_attempts").count, before.attempts);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM model_calls").count, before.modelCalls);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM research_runs").count, before.researchRuns);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM agent_runs").count, before.agentRuns);
+  assert.equal(get(db, "SELECT COUNT(*) AS count FROM events").count, before.events);
 
   db.close();
 });
@@ -4827,23 +5343,22 @@ test("HTTP API prepares live research smoke test without live spend", async () =
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
+    const before = retiredCommercialRouteCounts(db);
     const health = await fetch(`${baseUrl}/api/health`).then((response) => response.json());
     assert.equal(health.liveResearch.ready, false);
     assert.equal(health.liveResearch.canPrepareSmokeTest, true);
 
-    const smoke = await fetch(`${baseUrl}/api/live-research/smoke-test`, {
+    const response = await fetch(`${baseUrl}/api/live-research/smoke-test`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ estimatedCostCents: 100 }),
-    }).then((response) => response.json());
+    });
+    const payload = await response.json();
 
-    assert.equal(smoke.result.status, "prepared");
-    assert.equal(smoke.result.liveResearch.status, "blocked");
-    assert.equal(smoke.result.liveResearch.approval.status, "pending");
-    const state = getDashboardState(db);
-    assert.equal(state.runtime.liveResearch.pendingApprovals, 1);
-    assert.equal(state.runtime.liveResearch.smokeTests, 1);
-    assert.ok(state.costs.some((cost) => cost.workflow_id === smoke.result.workflow.id && cost.status === "approval_requested" && cost.amount_cents === 0));
+    assert.equal(response.status, 410);
+    assert.equal(payload.code, "commercial_route_retired");
+    assert.equal(payload.commercialAuthority.retiredRoute, true);
+    assert.deepEqual(retiredCommercialRouteCounts(db), before);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -4874,27 +5389,22 @@ test("HTTP API prepares live AI worker smoke test without live spend", async () 
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
+    const before = retiredCommercialRouteCounts(db);
     const health = await fetch(`${baseUrl}/api/health`).then((response) => response.json());
     assert.equal(health.liveAiWorkers.ready, false);
     assert.equal(health.liveAiWorkers.canPrepareSmokeTest, true);
 
-    const smoke = await fetch(`${baseUrl}/api/live-ai-workers/smoke-test`, {
+    const response = await fetch(`${baseUrl}/api/live-ai-workers/smoke-test`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ estimatedCostCents: 100, worker: "demand_validator" }),
-    }).then((response) => response.json());
+    });
+    const payload = await response.json();
 
-    assert.equal(smoke.result.status, "prepared");
-    assert.equal(smoke.result.liveWorker.status, "blocked");
-    assert.equal(smoke.result.liveWorker.worker.id, "demand_validator");
-    assert.equal(smoke.result.liveWorker.worker.name, "Demand Validator");
-    assert.equal(smoke.result.liveWorker.approval.status, "pending");
-    const state = getDashboardState(db);
-    assert.equal(state.runtime.liveAiWorkers.pendingApprovals, 1);
-    assert.equal(state.runtime.liveAiWorkers.smokeTests, 1);
-    assert.ok(state.tasks.some((task) => task.workflow_id === smoke.result.workflow.id && task.kind === "live_ai_worker_execution" && task.agent === "demand_validator"));
-    assert.ok(state.approvals.some((approval) => approval.id === smoke.result.liveWorker.approval.id && approval.payload.worker.id === "demand_validator"));
-    assert.ok(state.costs.some((cost) => cost.workflow_id === smoke.result.workflow.id && cost.status === "approval_requested" && cost.amount_cents === 0));
+    assert.equal(response.status, 410);
+    assert.equal(payload.code, "commercial_route_retired");
+    assert.equal(payload.commercialAuthority.retiredRoute, true);
+    assert.deepEqual(retiredCommercialRouteCounts(db), before);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -4910,7 +5420,7 @@ test("HTTP API prepares live AI worker smoke test without live spend", async () 
   }
 });
 
-test("HTTP API runs a protected AI worker proof from the Workbench", async () => {
+test("HTTP API retires the Workbench worker proof route without writes", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
   delete process.env.OPENAI_API_KEY;
@@ -4923,6 +5433,7 @@ test("HTTP API runs a protected AI worker proof from the Workbench", async () =>
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
+    const before = retiredCommercialRouteCounts(db);
     const response = await fetch(`${baseUrl}/api/agent-workbench/demand_validator/proof-run`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4935,17 +5446,10 @@ test("HTTP API runs a protected AI worker proof from the Workbench", async () =>
     });
     const payload = await response.json();
 
-    assert.equal(response.status, 201);
-    assert.equal(payload.result.worker.id, "demand_validator");
-    assert.equal(payload.result.task.kind, "workbench_proof");
-    assert.equal(payload.result.run.status, "completed");
-    assert.equal(payload.result.run.result.aiTeam.agentId, "demand_validator");
-    assert.equal(payload.result.run.result.aiTeam.evalStatus, "passed");
-    const state = getDashboardState(db);
-    assert.equal(state.aiTeam.workbench.byAgent.demand_validator.comparison.dryRun.evalStatus, "passed");
-    assert.equal(state.aiTeam.workbench.byAgent.demand_validator.promotionGate.requirements.find((item) => item.id === "protected_quality").ok, true);
-    assert.equal(state.aiTeam.workbench.byAgent.demand_validator.promotionGate.requirements.find((item) => item.id === "protected_trace").ok, true);
-    assert.ok(state.events.some((event) => event.type === "agent.workbench_proof_queued"));
+    assert.equal(response.status, 410);
+    assert.equal(payload.code, "commercial_route_retired");
+    assert.equal(payload.commercialAuthority.retiredRoute, true);
+    assert.deepEqual(retiredCommercialRouteCounts(db), before);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -4957,7 +5461,7 @@ test("HTTP API runs a protected AI worker proof from the Workbench", async () =>
   }
 });
 
-test("HTTP API runs a protected AI worker playbook rehearsal", async () => {
+test("HTTP API retires the worker playbook rehearsal route without writes", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
   delete process.env.OPENAI_API_KEY;
@@ -4970,6 +5474,7 @@ test("HTTP API runs a protected AI worker playbook rehearsal", async () => {
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
+    const before = retiredCommercialRouteCounts(db);
     const response = await fetch(`${baseUrl}/api/agent-playbooks/distribution_operator/rehearsal`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4983,20 +5488,10 @@ test("HTTP API runs a protected AI worker playbook rehearsal", async () => {
     });
     const payload = await response.json();
 
-    assert.equal(response.status, 201);
-    assert.equal(payload.result.worker.id, "distribution_operator");
-    assert.equal(payload.result.playbook.agentId, "distribution_operator");
-    assert.equal(payload.result.task.kind, "workbench_proof");
-    assert.equal(payload.result.run.status, "completed");
-    assert.equal(payload.result.run.result.aiTeam.agentId, "distribution_operator");
-    assert.equal(payload.result.run.result.aiTeam.evalStatus, "passed");
-    const state = getDashboardState(db);
-    assert.equal(state.agentPlaybooks.summary.rehearsals, 1);
-    assert.equal(state.agentPlaybooks.summary.passedRehearsals, 1);
-    assert.equal(state.agentPlaybooks.summary.actualCostCents, 0);
-    assert.equal(state.agentPlaybooks.byAgent.distribution_operator.rehearsalStatus, "rehearsed");
-    assert.equal(state.agentPlaybooks.byAgent.distribution_operator.latestRehearsal.context.subject, "Client handover checklist rehearsal");
-    assert.ok(state.events.some((event) => event.type === "agent.playbook_rehearsal_queued"));
+    assert.equal(response.status, 410);
+    assert.equal(payload.code, "commercial_route_retired");
+    assert.equal(payload.commercialAuthority.retiredRoute, true);
+    assert.deepEqual(retiredCommercialRouteCounts(db), before);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -5008,7 +5503,7 @@ test("HTTP API runs a protected AI worker playbook rehearsal", async () => {
   }
 });
 
-test("HTTP API runs a protected AI Team playbook rehearsal suite", async () => {
+test("HTTP API retires the AI Team playbook rehearsal suite route without writes", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
   delete process.env.OPENAI_API_KEY;
@@ -5021,6 +5516,7 @@ test("HTTP API runs a protected AI Team playbook rehearsal suite", async () => {
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
+    const before = retiredCommercialRouteCounts(db);
     const response = await fetch(`${baseUrl}/api/agent-playbooks/rehearsal-suite`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -5036,18 +5532,10 @@ test("HTTP API runs a protected AI Team playbook rehearsal suite", async () => {
     });
     const payload = await response.json();
 
-    assert.equal(response.status, 201);
-    assert.equal(payload.result.team.workerCount, 2);
-    assert.equal(payload.result.tasks.length, 2);
-    assert.equal(payload.result.loop.status, "ready_for_review");
-    const state = getDashboardState(db);
-    assert.equal(state.agentPlaybooks.summary.rehearsals, 2);
-    assert.equal(state.agentPlaybooks.summary.passedRehearsals, 2);
-    assert.equal(state.agentPlaybooks.summary.rehearsedWorkers, 2);
-    assert.equal(state.agentPlaybooks.summary.actualCostCents, 0);
-    assert.equal(state.preOpenAiReadiness.metrics.rehearsedPlaybookWorkers, 2);
-    assert.equal(state.preOpenAiReadiness.checklist.find((item) => item.id === "playbook_rehearsal").ok, true);
-    assert.ok(state.events.some((event) => event.type === "agent.playbook_rehearsal_suite_queued"));
+    assert.equal(response.status, 410);
+    assert.equal(payload.code, "commercial_route_retired");
+    assert.equal(payload.commercialAuthority.retiredRoute, true);
+    assert.deepEqual(retiredCommercialRouteCounts(db), before);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -5100,55 +5588,31 @@ test("HTTP API exposes durable AI worker model readiness packs", async () => {
   }
 });
 
-test("HTTP API prepares a worker model comparison packet without live model use", async () => {
+test("HTTP API retires the model comparison packet route without writes", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
   delete process.env.OPENAI_API_KEY;
   delete process.env.JARVIS_ENABLE_LIVE_MODELS;
 
   const db = seededDb("server-agent-model-comparison-packet");
-  const readyQueue = queueAgentPlaybookRehearsalSuite(db, {
-    teamName: "Server model comparison packet proof",
-    subject: "Compact desk cable template",
-    buyer: "Home-office workers",
-    problem: "They want a tidier desk without buying a full cable-management kit.",
-    offer: "A printable cable-planning template and shopping checklist.",
-    channel: "Digital Product",
-  });
-  await runUntilBlocked(db, { workflowId: readyQueue.workflow.id, maxSteps: readyQueue.tasks.length + 2 });
-
   const app = createApp({ db, dbPath: tempDbPath("server-agent-model-comparison-packet-unused"), security: false });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const port = app.server.address().port;
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
+    const before = retiredCommercialRouteCounts(db);
     const response = await fetch(`${baseUrl}/api/agent-model-readiness/demand_validator/comparison-packet`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ estimatedCostCents: 125 }),
     });
     const payload = await response.json();
-    const packet = payload.result.packet;
-    const packetList = await fetch(`${baseUrl}/api/agent-model-comparison-packets`).then((res) => res.json());
-    const state = getDashboardState(db);
-    const approval = state.approvals.find((item) => item.id === packet.approvalId);
 
-    assert.equal(response.status, 202);
-    assert.equal(packet.status, "waiting_for_decision");
-    assert.equal(packet.agentId, "demand_validator");
-    assert.equal(packet.estimatedCostCents, 125);
-    assert.equal(payload.result.liveWorker.approval.status, "pending");
-    assert.equal(packetList.schema, "jarvis_agent_model_comparison_packets_v1");
-    assert.equal(packetList.packets.length, 1);
-    assert.equal(packetList.packets[0].id, packet.id);
-    assert.equal(approval.payload.comparisonSource.type, "agent_model_readiness_pack");
-    assert.equal(approval.payload.comparisonPacket.fixtureTitle, packet.fixtureTitle);
-    assert.equal(state.agentModelReadiness.summary.pendingComparisonPackets, 1);
-    assert.equal(state.preOpenAiReadiness.status, "ready_before_model_connection");
-    assert.equal(state.decisionInbox.metrics.liveComparisons, 1);
-    assert.equal(state.modelCalls.filter((call) => call.mode !== "dry-run").length, 0);
-    assert.equal(state.metrics.modelCalls.actualCostCents, 0);
+    assert.equal(response.status, 410);
+    assert.equal(payload.code, "commercial_route_retired");
+    assert.equal(payload.commercialAuthority.retiredRoute, true);
+    assert.deepEqual(retiredCommercialRouteCounts(db), before);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -5160,7 +5624,7 @@ test("HTTP API prepares a worker model comparison packet without live model use"
   }
 });
 
-test("HTTP API runs a protected AI Team proof drill from the Workbench", async () => {
+test("HTTP API retires the Workbench team proof route without writes", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
   delete process.env.OPENAI_API_KEY;
@@ -5173,6 +5637,7 @@ test("HTTP API runs a protected AI Team proof drill from the Workbench", async (
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
+    const before = retiredCommercialRouteCounts(db);
     const response = await fetch(`${baseUrl}/api/agent-workbench/proof-suite`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -5187,51 +5652,10 @@ test("HTTP API runs a protected AI Team proof drill from the Workbench", async (
     });
     const payload = await response.json();
 
-    assert.equal(response.status, 201);
-    assert.equal(payload.result.team.workerCount, 2);
-    assert.equal(payload.result.tasks.length, 2);
-    assert.equal(payload.result.loop.status, "ready_for_review");
-    assert.equal(payload.result.loop.stepsRun, 2);
-    assert.ok(payload.result.loop.steps.every((step) => step.status === "completed"));
-    let state = getDashboardState(db);
-    const workflow = state.workflows.find((item) => item.id === payload.result.workflow.id);
-    assert.equal(workflow.type, "agent_workbench_team_proof");
-    assert.equal(workflow.metadata.teamProofSummary.schema, "jarvis_agent_team_drill_summary_v1");
-    assert.equal(workflow.metadata.teamProofSummary.workerCount, 2);
-    assert.equal(workflow.metadata.teamProofSummary.passedWorkers, 2);
-    assert.equal(workflow.metadata.teamProofSummary.actualCostCents, 0);
-    assert.ok(workflow.metadata.teamProofSummary.chiefRunId);
-    assert.ok(state.events.some((event) => event.type === "agent.workbench_team_proof_queued"));
-    assert.ok(state.events.some((event) => event.type === "agent.team_drill_summary_ready" && event.entity_id === payload.result.workflow.id));
-    assert.ok(state.messages.some((message) => message.subject === "AI Team drill summary ready" && message.metadata.teamProofSummary));
-
-    for (const workerId of ["copy_conversion_agent", "finance_analyst"]) {
-      const worker = state.aiTeam.workbench.byAgent[workerId];
-      assert.equal(worker.comparison.dryRun.evalStatus, "passed");
-      assert.equal(worker.promotionGate.requirements.find((item) => item.id === "protected_quality").ok, true);
-      assert.equal(worker.promotionGate.requirements.find((item) => item.id === "protected_trace").ok, true);
-      assert.equal(worker.promotionGate.status, "provider_setup_needed");
-    }
-
-    const comparisonResponse = await fetch(`${baseUrl}/api/agent-workbench/${encodeURIComponent(payload.result.workflow.id)}/live-comparison`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ estimatedCostCents: 150 }),
-    });
-    const comparisonPayload = await comparisonResponse.json();
-    state = getDashboardState(db);
-    const comparisonWorkflow = state.workflows.find((item) => item.id === payload.result.workflow.id);
-    const comparisonApproval = state.approvals.find((item) => item.id === comparisonPayload.result.comparisonRequest.approvalId);
-
-    assert.equal(comparisonResponse.status, 202);
-    assert.equal(comparisonPayload.result.liveWorker.worker.id, "copy_conversion_agent");
-    assert.equal(comparisonPayload.result.liveWorker.approval.status, "pending");
-    assert.equal(comparisonPayload.result.comparisonRequest.estimatedCostCents, 150);
-    assert.equal(comparisonWorkflow.metadata.teamProofSummary.liveComparisonRequest.workerId, "copy_conversion_agent");
-    assert.equal(comparisonApproval.payload.comparisonSource.type, "agent_workbench_team_proof");
-    assert.equal(comparisonApproval.payload.comparisonSource.protectedWorkerId, "copy_conversion_agent");
-    assert.ok(comparisonApproval.payload.protectedEvidence.some((item) => /protected proof/i.test(item)));
-    assert.ok(state.events.some((event) => event.type === "agent.live_comparison_requested" && event.entity_id === payload.result.workflow.id));
+    assert.equal(response.status, 410);
+    assert.equal(payload.code, "commercial_route_retired");
+    assert.equal(payload.commercialAuthority.retiredRoute, true);
+    assert.deepEqual(retiredCommercialRouteCounts(db), before);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -5245,6 +5669,11 @@ test("HTTP API runs a protected AI Team proof drill from the Workbench", async (
 
 test("HTTP API prepares a guarded Product Builder asset without calling a model", async () => {
   const db = seededDb("server-product-builder-asset");
+  authorizeCommercialWorkflow(
+    db,
+    "wf-digital-product-pilot-proof",
+    "runtime-http-product-builder-asset",
+  );
   const app = createApp({ db, dbPath: tempDbPath("server-product-builder-asset-unused"), security: false });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   const port = app.server.address().port;
@@ -5390,7 +5819,7 @@ test("HTTP API serves registered PDF and image review outputs for dashboard prev
   }
 });
 
-test("HTTP API records commercial results and updates learning state", async () => {
+test("HTTP API keeps legacy financial and operator evidence out of commercial truth", async () => {
   const db = seededDb("server-commercial-results");
   const app = createApp({ db, dbPath: tempDbPath("server-commercial-results-unused"), security: false });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
@@ -5398,49 +5827,25 @@ test("HTTP API records commercial results and updates learning state", async () 
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
-    const response = await fetch(`${baseUrl}/api/commercial/results`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        workflowId: "wf-digital-product-pilot-proof",
-        source: "operator",
-        verified: true,
-        verificationNote: "Checked against the controlled test result fixture.",
-        views: 150,
-        clicks: 24,
-        leads: 6,
-        sales: 2,
-        revenueCents: 3800,
-        spendCents: 0,
-        notes: "Manual proof result from dashboard path.",
-      }),
-    });
-    assert.equal(response.status, 201);
-    const payload = await response.json();
-    assert.equal(payload.result.learning.verdict, "continue");
-    let state = getDashboardState(db);
-    assert.equal(state.commercialResults.length, 1);
-    assert.equal(state.metrics.commercial.sales, 2);
-    assert.ok(state.commercialBrain.moneyMoves.some((move) => move.type === "learning_signal"));
-    assert.equal(payload.result.scorecard.metadata.commercialEvidence.sales, 2);
-
-    const feedback = await fetch(`${baseUrl}/api/commercial/feedback`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        experimentId: payload.result.experiment.id,
-        source: "operator",
-        verified: true,
-        verificationNote: "Checked against the controlled feedback fixture.",
-        sentiment: "positive",
-        rating: 5,
-        summary: "Manual buyer feedback from dashboard path.",
-      }),
-    }).then((item) => item.json());
-    assert.equal(feedback.result.learning.verdict, "continue");
-    state = getDashboardState(db);
-    assert.equal(state.commercialFeedback.length, 1);
-    assert.equal(state.commercialLearningCycles.length, 2);
+    const before = retiredCommercialRouteCounts(db);
+    for (const pathname of ["/api/commercial/results", "/api/commercial/feedback"]) {
+      const response = await fetch(`${baseUrl}${pathname}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          workflowId: "wf-digital-product-pilot-proof",
+          source: "operator",
+          verified: true,
+          sales: 99,
+          revenueCents: 999900,
+        }),
+      });
+      const payload = await response.json();
+      assert.equal(response.status, 410, pathname);
+      assert.equal(payload.code, "commercial_route_retired", pathname);
+      assert.equal(payload.commercialAuthority.retiredRoute, true, pathname);
+    }
+    assert.deepEqual(retiredCommercialRouteCounts(db), before);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -5448,7 +5853,7 @@ test("HTTP API records commercial results and updates learning state", async () 
   }
 });
 
-test("HTTP API generates next-test options and promotes one safely", async () => {
+test("HTTP API retires unbound next-test planning and promotion without writes", async () => {
   const db = seededDb("server-research-to-experiment");
   const app = createApp({ db, dbPath: tempDbPath("server-research-to-experiment-unused"), security: false });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
@@ -5456,42 +5861,25 @@ test("HTTP API generates next-test options and promotes one safely", async () =>
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
-    const response = await fetch(`${baseUrl}/api/research-to-experiment/plans`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        workflowId: "wf-digital-product-pilot-proof",
-        source: "test",
-        idea: "A template pack for freelancers to forecast monthly cashflow.",
-        buyer: "Freelancers with uneven project income",
-        problem: "They cannot see cash gaps early enough.",
-        offer: "Cashflow forecast template pack",
-        channel: "LinkedIn posts and freelancer newsletter swaps",
-        priceCents: 2400,
-        evidenceSummary: "Freelancers already buy finance templates and ask for simple monthly dashboards.",
-      }),
-    });
-    assert.equal(response.status, 201);
-    const payload = await response.json();
-    assert.equal(payload.result.candidates.length, 3);
-    let state = getDashboardState(db);
-    assert.equal(state.commercialBriefs.length, 1);
-    assert.equal(state.commercialTestCandidates.length, 3);
-    assert.equal(state.metrics.commercial.plannedTests, 3);
-    assert.ok(state.commercialBrain.moneyMoves.some((move) => move.type === "next_test"));
-
-    const promote = await fetch(`${baseUrl}/api/research-to-experiment/candidates/${encodeURIComponent(payload.result.recommended.id)}/promote`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ promotedBy: "test" }),
-    });
-    assert.equal(promote.status, 201);
-    const promoted = await promote.json();
-    assert.equal(promoted.result.experiment.price_cents, 2400);
-    state = getDashboardState(db);
-    assert.equal(state.metrics.commercial.promotedTests, 1);
-    assert.equal(state.metrics.budget.monthlySpendCents, 0);
-    assert.equal(state.commercialExperiments.some((experiment) => experiment.id === promoted.result.experiment.id), true);
+    const before = retiredCommercialRouteCounts(db);
+    for (const pathname of [
+      "/api/research-to-experiment/plans",
+      "/api/research-to-experiment/candidates/legacy-candidate/promote",
+    ]) {
+      const response = await fetch(`${baseUrl}${pathname}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          workflowId: "wf-digital-product-pilot-proof",
+          source: "test",
+        }),
+      });
+      const payload = await response.json();
+      assert.equal(response.status, 410, pathname);
+      assert.equal(payload.code, "commercial_route_retired", pathname);
+      assert.equal(payload.commercialAuthority.retiredRoute, true, pathname);
+    }
+    assert.deepEqual(retiredCommercialRouteCounts(db), before);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -5499,7 +5887,7 @@ test("HTTP API generates next-test options and promotes one safely", async () =>
   }
 });
 
-test("HTTP API creates execution packs and records pack outcomes safely", async () => {
+test("HTTP API retires unbound execution packs, outcomes, and revisions without writes", async () => {
   const db = seededDb("server-execution-pack");
   const app = createApp({ db, dbPath: tempDbPath("server-execution-pack-unused"), security: false });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
@@ -5507,104 +5895,25 @@ test("HTTP API creates execution packs and records pack outcomes safely", async 
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
-    const plan = await fetch(`${baseUrl}/api/research-to-experiment/plans`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        workflowId: "wf-digital-product-pilot-proof",
-        source: "test",
-        idea: "Client handover checklist templates for small agencies.",
-        buyer: "Small digital agencies",
-        problem: "Project handovers are inconsistent and create support drag.",
-        offer: "Client handover checklist template pack",
-        channel: "Agency owner LinkedIn posts",
-        priceCents: 2900,
-      }),
-    }).then((response) => response.json());
-
-    const promoted = await fetch(`${baseUrl}/api/research-to-experiment/candidates/${encodeURIComponent(plan.result.recommended.id)}/promote`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ promotedBy: "test" }),
-    }).then((response) => response.json());
-
-    const packResponse = await fetch(`${baseUrl}/api/execution-packs`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ experimentId: promoted.result.experiment.id, source: "test" }),
-    });
-    assert.equal(packResponse.status, 201);
-    const packPayload = await packResponse.json();
-    assert.equal(packPayload.result.pack.status, "ready_to_test");
-    let state = getDashboardState(db);
-    assert.equal(state.commercialExecutionPacks.length, 1);
-    const readyMove = state.commercialBrain.moneyMoves.find((move) => move.type === "execution_ready");
-    assert.ok(readyMove);
-    assert.equal(readyMove.source, "chief_of_staff_packet");
-    assert.ok(readyMove.handoffId);
-    assert.equal(packPayload.result.pack.metadata.aiTeam.chiefOfStaffPacket.handoffId, readyMove.handoffId);
-
-    const cockpitResponse = await fetch(`${baseUrl}/api/manual-market-cockpit`);
-    assert.equal(cockpitResponse.status, 200);
-    const cockpitPayload = await cockpitResponse.json();
-    assert.equal(cockpitPayload.manualMarketCockpit.schema, "jarvis_manual_market_test_cockpit_v1");
-    assert.equal(cockpitPayload.manualMarketCockpit.status, "decision_ready");
-    assert.equal(cockpitPayload.manualMarketCockpit.topAction.packId, packPayload.result.pack.id);
-    assert.equal(cockpitPayload.manualMarketCockpit.topAction.actions.some((action) => action.label === "Record Result"), true);
-    assert.equal(cockpitPayload.manualMarketCockpit.topAction.actions.some((action) => action.label === "Mark No Response"), true);
-    assert.equal(cockpitPayload.metrics.readyPacks, 1);
-
-    const outcomeResponse = await fetch(`${baseUrl}/api/execution-packs/${encodeURIComponent(packPayload.result.pack.id)}/outcomes`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        outcomeType: "no_response",
-        notes: "No response after a controlled manual post.",
-        verified: true,
-        verificationNote: "Operator confirmed the controlled post produced no response.",
-      }),
-    });
-    assert.equal(outcomeResponse.status, 201);
-    const outcomePayload = await outcomeResponse.json();
-    assert.equal(outcomePayload.result.recorded.learning.verdict, "needs_evidence");
-    assert.equal(outcomePayload.result.outcomeDecision.schema, "jarvis_chief_of_staff_outcome_packet_v1");
-    assert.ok(outcomePayload.result.outcomeDecision.handoffId);
-    state = getDashboardState(db);
-    assert.equal(state.commercialResults.length, 1);
-    assert.equal(state.metrics.commercial.results, 1);
-    assert.equal(state.metrics.budget.monthlySpendCents, 0);
-    assert.equal(state.metrics.budget.monthlyRevenueCents, 0);
-    const outcomeMove = state.commercialBrain.moneyMoves.find((move) => move.learningId === outcomePayload.result.recorded.learning.id);
-    const outcomePack = state.commercialExecutionPacks.find((pack) => pack.id === packPayload.result.pack.id);
-    assert.equal(outcomeMove.source, "chief_of_staff_outcome_packet");
-    assert.equal(outcomeMove.handoffId, outcomePayload.result.outcomeDecision.handoffId);
-    assert.equal(outcomePack.metadata.latestOutcomeDecisionPacket.learningId, outcomePayload.result.recorded.learning.id);
-
-    const afterOutcomeCockpit = await fetch(`${baseUrl}/api/manual-market-cockpit`).then((response) => response.json());
-    assert.equal(afterOutcomeCockpit.manualMarketCockpit.metrics.packsWithOutcomes, 1);
-    assert.equal(afterOutcomeCockpit.manualMarketCockpit.topAction.latestOutcome.learningId, outcomePayload.result.recorded.learning.id);
-    assert.equal(afterOutcomeCockpit.manualMarketCockpit.topAction.latestOutcome.verdict, "needs_evidence");
-
-    const revisionResponse = await fetch(`${baseUrl}/api/commercial/learning/${encodeURIComponent(outcomePayload.result.recorded.learning.id)}/revision-plan`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ createdBy: "test" }),
-    });
-    assert.equal(revisionResponse.status, 201);
-    const revisionPayload = await revisionResponse.json();
-    assert.equal(revisionPayload.result.alreadyCreated, false);
-    assert.equal(revisionPayload.result.candidates.length, 3);
-    assert.equal(revisionPayload.result.brief.metadata.sourceLearningId, outcomePayload.result.recorded.learning.id);
-    state = getDashboardState(db);
-    assert.equal(state.commercialTestCandidates.some((candidate) => candidate.id === revisionPayload.result.recommended.id), true);
-
-    const secondRevision = await fetch(`${baseUrl}/api/commercial/learning/${encodeURIComponent(outcomePayload.result.recorded.learning.id)}/revision-plan`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ createdBy: "test" }),
-    }).then((response) => response.json());
-    assert.equal(secondRevision.result.alreadyCreated, true);
-    assert.equal(secondRevision.result.brief.id, revisionPayload.result.brief.id);
+    const before = retiredCommercialRouteCounts(db);
+    for (const pathname of [
+      "/api/research-to-experiment/plans",
+      "/api/research-to-experiment/candidates/legacy-candidate/promote",
+      "/api/execution-packs",
+      "/api/execution-packs/legacy-pack/outcomes",
+      "/api/commercial/learning/legacy-learning/revision-plan",
+    ]) {
+      const response = await fetch(`${baseUrl}${pathname}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source: "test" }),
+      });
+      const payload = await response.json();
+      assert.equal(response.status, 410, pathname);
+      assert.equal(payload.code, "commercial_route_retired", pathname);
+      assert.equal(payload.commercialAuthority.retiredRoute, true, pathname);
+    }
+    assert.deepEqual(retiredCommercialRouteCounts(db), before);
   } finally {
     await new Promise((resolve) => app.wss.close(resolve));
     await new Promise((resolve) => app.server.close(resolve));
@@ -5686,10 +5995,11 @@ test("HTTP API exposes focused cockpit sections and retires unsafe legacy routes
     assert.equal(cockpit.activeVenture.id, "venture-digital-products");
     assert.ok(Array.isArray(cockpit.importantWork));
     assert.ok(Array.isArray(decisions.approvals));
-    assert.ok(Array.isArray(tests.tests.candidate));
-    assert.ok(Array.isArray(tests.tests.ready));
-    assert.ok(Array.isArray(tests.tests.running));
-    assert.ok(Array.isArray(tests.tests.completed));
+    assert.equal(tests.schema, "pantheon.owner-tests-results.v1");
+    assert.equal(tests.readOnly, true);
+    assert.equal(tests.current, null);
+    assert.ok(tests.integrity && typeof tests.integrity === "object");
+    assert.ok(Array.isArray(tests.closedHistory.items));
     assert.equal(team.activeVenture.id, "venture-digital-products");
     assert.ok(Array.isArray(team.agents));
     assert.equal(system.health.database, "ok");
@@ -5699,6 +6009,7 @@ test("HTTP API exposes focused cockpit sections and retires unsafe legacy routes
     const retiredState = await fetch(`${baseUrl}/api/state`);
     assert.equal(retiredState.status, 410);
 
+    const beforeRetiredCommand = retiredCommercialRouteCounts(db);
     const plannedResponse = await fetch(`${baseUrl}/api/commands`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -5711,11 +6022,10 @@ test("HTTP API exposes focused cockpit sections and retires unsafe legacy routes
       }),
     });
     const planned = await plannedResponse.json();
-    assert.equal(plannedResponse.status, 201);
-    assert.equal(planned.result.command.status, "planned");
-    assert.equal(planned.loop, null);
-    assert.equal(get(db, "SELECT status FROM commands WHERE id = ?", [planned.result.command.id]).status, "planned");
-    assert.equal(get(db, "SELECT venture_id FROM workflows WHERE id = ?", [planned.result.workflow.id]).venture_id, "venture-digital-products");
+    assert.equal(plannedResponse.status, 410);
+    assert.equal(planned.code, "commercial_route_retired");
+    assert.equal(planned.commercialAuthority.retiredRoute, true);
+    assert.deepEqual(retiredCommercialRouteCounts(db), beforeRetiredCommand);
 
     const monitorResponse = await fetch(`${baseUrl}/api/monitor/run`, {
       method: "POST",

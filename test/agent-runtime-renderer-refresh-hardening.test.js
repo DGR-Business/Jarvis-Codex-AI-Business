@@ -19,6 +19,7 @@ const {
   toJson,
 } = require("../src/db");
 const {
+  __setDigitalProductFactoryForTests,
   refreshLocalDigitalProductFiles,
   renderRetainedProductBuilderOutput,
 } = require("../src/runtime/agent-runtime");
@@ -205,6 +206,30 @@ function retainedByteSnapshot(generatedFiles) {
   })).sort((left, right) => left.id.localeCompare(right.id));
 }
 
+function artifactTreeSnapshot(root) {
+  const entries = [];
+  const walk = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const fullPath = path.join(directory, entry.name);
+      const relativePath = path.relative(root, fullPath).replace(/\\/g, "/");
+      if (entry.isDirectory()) {
+        entries.push({ type: "directory", path: relativePath });
+        walk(fullPath);
+      } else if (entry.isFile()) {
+        const bytes = fs.readFileSync(fullPath);
+        entries.push({
+          type: "file",
+          path: relativePath,
+          bytes: bytes.length,
+          sha256: sha256(bytes),
+        });
+      }
+    }
+  };
+  if (fs.existsSync(root)) walk(root);
+  return entries.sort((left, right) => left.path.localeCompare(right.path));
+}
+
 function frozenFactoryInputs(runtime) {
   const stageRoot = path.join(
     runtime.artifactRoot,
@@ -233,7 +258,11 @@ function databaseSnapshot(runtime) {
       runtime.db,
       "SELECT * FROM deliverables ORDER BY id",
     )),
-    events: get(runtime.db, "SELECT COUNT(*) AS count FROM events").count,
+    events: JSON.stringify(all(runtime.db, "SELECT * FROM events ORDER BY id")),
+    cataloguePlans: JSON.stringify(all(
+      runtime.db,
+      "SELECT * FROM catalogue_plans ORDER BY id",
+    )),
   };
 }
 
@@ -251,8 +280,12 @@ function assertDatabaseSnapshot(runtime, expected) {
     expected.deliverables,
   );
   assert.equal(
-    get(runtime.db, "SELECT COUNT(*) AS count FROM events").count,
+    JSON.stringify(all(runtime.db, "SELECT * FROM events ORDER BY id")),
     expected.events,
+  );
+  assert.equal(
+    JSON.stringify(all(runtime.db, "SELECT * FROM catalogue_plans ORDER BY id")),
+    expected.cataloguePlans,
   );
 }
 
@@ -288,6 +321,7 @@ test("renderer refresh recovers the exact source blueprint and retains immutable
     const historicalQa = runtime.generatedFiles.qualityReviewImages.map((item) => ({
       ...item,
       bytes: fs.readFileSync(resolvedFilePath(item)),
+      row: get(runtime.db, "SELECT * FROM deliverables WHERE id = ?", [item.id]),
     }));
     const originalPackage = exactIdHashSnapshot(runtime.generatedFiles.files);
     const originalPreviews = exactIdHashSnapshot(runtime.generatedFiles.previews);
@@ -323,11 +357,10 @@ test("renderer refresh recovers the exact source blueprint and retains immutable
     for (const historical of historicalQa) {
       const row = get(
         runtime.db,
-        "SELECT file_path, content_hash FROM deliverables WHERE id = ?",
+        "SELECT * FROM deliverables WHERE id = ?",
         [historical.id],
       );
-      assert.equal(row.file_path, historical.filePath);
-      assert.equal(row.content_hash, historical.sha256);
+      assert.deepEqual(row, historical.row);
       assert.deepEqual(fs.readFileSync(resolvedFilePath(historical)), historical.bytes);
     }
     assert.equal(
@@ -372,6 +405,8 @@ test("renderer refresh recovers the exact source blueprint and retains immutable
       0,
     );
 
+    const repeatState = databaseSnapshot(runtime);
+    const repeatArtifacts = artifactTreeSnapshot(runtime.artifactRoot);
     const repeated = await refreshLocalDigitalProductFiles(
       runtime.db,
       runtime.fixture.task.id,
@@ -395,6 +430,8 @@ test("renderer refresh recovers the exact source blueprint and retains immutable
       ).count,
       originalQaRowCount + 2,
     );
+    assertDatabaseSnapshot(runtime, repeatState);
+    assert.deepEqual(artifactTreeSnapshot(runtime.artifactRoot), repeatArtifacts);
   } finally {
     closeRefreshRuntime(runtime);
   }
@@ -436,6 +473,7 @@ test("changed or corrupt fallback candidates leave DB and current files untouche
     );
 
     const stateBefore = databaseSnapshot(runtime);
+    const artifactsBefore = artifactTreeSnapshot(runtime.artifactRoot);
     const currentBytesBefore = retainedByteSnapshot(changedResult.output.generatedFiles);
     await assert.rejects(
       refreshLocalDigitalProductFiles(
@@ -453,6 +491,42 @@ test("changed or corrupt fallback candidates leave DB and current files untouche
       retainedByteSnapshot(changedResult.output.generatedFiles),
       currentBytesBefore,
     );
+    assert.deepEqual(artifactTreeSnapshot(runtime.artifactRoot), artifactsBefore);
+
+    const missingHashResult = fromJson(
+      get(runtime.db, "SELECT result FROM tasks WHERE id = ?", [runtime.fixture.task.id]).result,
+      {},
+    );
+    missingHashResult.output.generatedFiles.blueprintHash = null;
+    run(
+      runtime.db,
+      "UPDATE tasks SET result = ? WHERE id = ?",
+      [toJson(missingHashResult), runtime.fixture.task.id],
+    );
+    const missingHashState = databaseSnapshot(runtime);
+    const missingHashArtifacts = artifactTreeSnapshot(runtime.artifactRoot);
+    await assert.rejects(
+      refreshLocalDigitalProductFiles(
+        runtime.db,
+        runtime.fixture.task.id,
+        {
+          artifactRoot: runtime.artifactRoot,
+          rendererRevision: "rejected-pdf-renderer-v2",
+        },
+      ),
+      /exact frozen Product Builder blueprint hash is unavailable/i,
+    );
+    assertDatabaseSnapshot(runtime, missingHashState);
+    assert.deepEqual(
+      artifactTreeSnapshot(runtime.artifactRoot),
+      missingHashArtifacts,
+    );
+    missingHashResult.output.generatedFiles.blueprintHash = changedHash;
+    run(
+      runtime.db,
+      "UPDATE tasks SET result = ? WHERE id = ?",
+      [toJson(missingHashResult), runtime.fixture.task.id],
+    );
 
     for (const { filePath, input } of frozenFactoryInputs(runtime)) {
       if (input.sourceBlueprintHash !== changedHash) continue;
@@ -466,6 +540,7 @@ test("changed or corrupt fallback candidates leave DB and current files untouche
       );
     }
     const corruptFallbackState = databaseSnapshot(runtime);
+    const corruptFallbackArtifacts = artifactTreeSnapshot(runtime.artifactRoot);
     const corruptFallbackBytes = retainedByteSnapshot(
       changedResult.output.generatedFiles,
     );
@@ -485,7 +560,88 @@ test("changed or corrupt fallback candidates leave DB and current files untouche
       retainedByteSnapshot(changedResult.output.generatedFiles),
       corruptFallbackBytes,
     );
+    assert.deepEqual(
+      artifactTreeSnapshot(runtime.artifactRoot),
+      corruptFallbackArtifacts,
+    );
   } finally {
+    closeRefreshRuntime(runtime);
+  }
+});
+
+test("historical QA revision IDs reject changed replay bytes without partial mutation", async () => {
+  const runtime = await setupRefreshRuntime("immutable-qa-replay");
+  try {
+    const revisionOne = await refreshLocalDigitalProductFiles(
+      runtime.db,
+      runtime.fixture.task.id,
+      {
+        artifactRoot: runtime.artifactRoot,
+        rendererRevision: "immutable-qa-v1",
+      },
+    );
+    await refreshLocalDigitalProductFiles(
+      runtime.db,
+      runtime.fixture.task.id,
+      {
+        artifactRoot: runtime.artifactRoot,
+        rendererRevision: "immutable-qa-v2",
+      },
+    );
+    const historicalRows = revisionOne.qualityReviewImages.map((item) => ({
+      item,
+      row: get(runtime.db, "SELECT * FROM deliverables WHERE id = ?", [item.id]),
+      bytes: fs.readFileSync(resolvedFilePath(item)),
+    }));
+    const stateBefore = databaseSnapshot(runtime);
+    const artifactsBefore = artifactTreeSnapshot(runtime.artifactRoot);
+
+    __setDigitalProductFactoryForTests(async (task, blueprint, options) => {
+      const rendered = renderDigitalProductKit(task, blueprint, options);
+      const workbook = rendered.qualityReviewImages.find(
+        (item) => item.metadata?.evidenceRole === "workbook_inspection",
+      );
+      return {
+        ...rendered,
+        qualityReviewImages: rendered.qualityReviewImages.map((item) => (
+          item.metadata?.evidenceRole === "setup_guide_inspection"
+            ? {
+              ...item,
+              bytes: workbook.bytes,
+              metadata: {
+                ...item.metadata,
+                inspectionCoverage: {
+                  ...(item.metadata?.inspectionCoverage || {}),
+                  inspectionSha256: sha256(workbook.bytes),
+                },
+              },
+            }
+            : item
+        )),
+      };
+    });
+    await assert.rejects(
+      refreshLocalDigitalProductFiles(
+        runtime.db,
+        runtime.fixture.task.id,
+        {
+          artifactRoot: runtime.artifactRoot,
+          rendererRevision: "immutable-qa-v1",
+        },
+      ),
+      /before persistence because quality-review revision immutable-qa-v1 already contains different bytes/i,
+    );
+    assertDatabaseSnapshot(runtime, stateBefore);
+    assert.deepEqual(artifactTreeSnapshot(runtime.artifactRoot), artifactsBefore);
+    for (const historical of historicalRows) {
+      assert.deepEqual(
+        get(runtime.db, "SELECT * FROM deliverables WHERE id = ?", [historical.item.id]),
+        historical.row,
+      );
+      assert.deepEqual(fs.readFileSync(resolvedFilePath(historical.item)), historical.bytes);
+    }
+  } finally {
+    __setDigitalProductFactoryForTests(null);
     closeRefreshRuntime(runtime);
   }
 });

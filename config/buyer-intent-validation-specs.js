@@ -154,13 +154,34 @@ const BUYER_INTENT_VALIDATION_SPECS = Object.freeze([
   SOCIAL_MEDIA_MANAGER_CLIENT_CONTROL_V1,
 ]);
 
+const BUYER_INTENT_VALIDATION_SPEC_LIFECYCLE = Object.freeze({
+  [SOCIAL_MEDIA_MANAGER_CLIENT_CONTROL_V1.id]: Object.freeze({
+    status: "terminal_stopped",
+    terminalAt: "2026-07-29",
+    reason: "inspection_evidence_recheck_failed_terminal",
+    frozenSourceStatus: SOCIAL_MEDIA_MANAGER_CLIENT_CONTROL_V1.status,
+    reuseAllowed: false,
+  }),
+});
+
 function getBuyerIntentValidationSpec(id) {
   return BUYER_INTENT_VALIDATION_SPECS.find((spec) => spec.id === id) || null;
 }
 
+function getBuyerIntentValidationSpecLifecycle(id) {
+  return BUYER_INTENT_VALIDATION_SPEC_LIFECYCLE[id] || null;
+}
+
+function buyerIntentValidationSpecIsActive(id) {
+  return getBuyerIntentValidationSpecLifecycle(id)?.status === "active";
+}
+
 module.exports = {
   BUYER_INTENT_VALIDATION_SPEC_VERSION,
+  BUYER_INTENT_VALIDATION_SPEC_LIFECYCLE,
   BUYER_INTENT_VALIDATION_SPECS,
+  buyerIntentValidationSpecIsActive,
   getBuyerIntentValidationSpec,
+  getBuyerIntentValidationSpecLifecycle,
   SOCIAL_MEDIA_MANAGER_CLIENT_CONTROL_V1,
 };

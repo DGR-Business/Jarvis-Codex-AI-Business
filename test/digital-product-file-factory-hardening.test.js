@@ -77,6 +77,32 @@ function productCase(overrides = {}) {
   };
 }
 
+test("factory readiness cache follows the currently configured Python interpreter", () => {
+  const previousPython = process.env.PANTHEON_PYTHON;
+  const restorePython = () => {
+    if (previousPython === undefined) delete process.env.PANTHEON_PYTHON;
+    else process.env.PANTHEON_PYTHON = previousPython;
+  };
+  try {
+    const baseline = factoryReadiness({ refresh: true });
+    assert.equal(baseline.ready, true, baseline.reason);
+
+    process.env.PANTHEON_PYTHON = process.execPath;
+    const wrongInterpreter = factoryReadiness({ refresh: true });
+    assert.equal(wrongInterpreter.python, process.execPath);
+    assert.equal(wrongInterpreter.ready, false);
+
+    restorePython();
+    const recovered = factoryReadiness();
+    assert.equal(recovered.python, baseline.python);
+    assert.equal(recovered.renderer, baseline.renderer);
+    assert.equal(recovered.ready, true, recovered.reason);
+  } finally {
+    restorePython();
+    factoryReadiness({ refresh: true });
+  }
+});
+
 test("digital-product rendering is fresh, atomic, and proves ordered three-page evidence", () => {
   const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-render-hardening-"));
   try {
@@ -148,6 +174,82 @@ test("digital-product rendering is fresh, atomic, and proves ordered three-page 
     const finalStages = fs.readdirSync(taskStageRoot);
     assert.equal(finalStages.length, 2);
     assert.ok(finalStages.every((name) => !name.endsWith(".tmp")));
+  } finally {
+    fs.rmSync(artifactRoot, { recursive: true, force: true });
+  }
+});
+
+test("direct renderer rejects dirty-stage replay and inventories only exact build outputs", () => {
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-render-replay-"));
+  try {
+    const readiness = factoryReadiness({ refresh: true });
+    assert.equal(readiness.ready, true, readiness.reason);
+    const fixture = productCase({ taskId: "task-render-replay" });
+    const inputPath = path.join(artifactRoot, "factory-input.json");
+    const outputRoot = path.join(artifactRoot, "rendered");
+    fs.writeFileSync(inputPath, JSON.stringify({
+      schema: "pantheon.digital-product-factory-input.v1",
+      spec: fixture.spec,
+      blueprint: fixture.blueprint,
+      runtimeNormalizations: [],
+    }), "utf8");
+
+    fs.mkdirSync(path.join(outputRoot, "customer-files"), { recursive: true });
+    const stalePath = path.join(outputRoot, "customer-files", "stale-secret.txt");
+    fs.writeFileSync(stalePath, "must not be trusted as renderer output", "utf8");
+    const rejected = spawnSync(
+      readiness.python,
+      [readiness.renderer, inputPath, outputRoot],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    assert.notEqual(rejected.status, 0);
+    assert.match(
+      String(rejected.stderr || rejected.stdout),
+      /output directory must be absent or empty before atomic commit/i,
+    );
+    assert.equal(fs.readFileSync(stalePath, "utf8"), "must not be trusted as renderer output");
+    assert.equal(fs.existsSync(path.join(outputRoot, fixture.spec.bundleFilename)), false);
+    assert.equal(
+      fs.readdirSync(artifactRoot).some((name) => (
+        name.startsWith(".pantheon-render-") && name.endsWith(".tmp")
+      )),
+      false,
+    );
+
+    fs.rmSync(outputRoot, { recursive: true, force: true });
+    const rendered = spawnSync(
+      readiness.python,
+      [readiness.renderer, inputPath, outputRoot],
+      { encoding: "utf8", timeout: 120_000 },
+    );
+    assert.equal(rendered.status, 0, String(rendered.stderr || rendered.stdout));
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(outputRoot, fixture.spec.manifestFilename), "utf8"),
+    );
+    assert.equal(manifest.files.some((file) => file.path.includes("stale-secret")), false);
+    assert.deepEqual(
+      manifest.files.map((file) => file.path).sort(),
+      [
+        "customer-files/00-customer-setup-guide.pdf",
+        "customer-files/01-client-control-and-profitability-workbook-sample.csv",
+        "customer-files/01-client-control-and-profitability-workbook.xlsx",
+        "storefront-previews/catalogue-overview.png",
+        "storefront-previews/workbook-preview.png",
+      ],
+    );
+    const archive = new AdmZip(
+      fs.readFileSync(path.join(outputRoot, fixture.spec.bundleFilename)),
+    );
+    assert.equal(
+      archive.getEntries().some((entry) => entry.entryName.includes("stale-secret")),
+      false,
+    );
+    assert.equal(
+      fs.readdirSync(artifactRoot).some((name) => (
+        name.startsWith(".pantheon-render-") && name.endsWith(".tmp")
+      )),
+      false,
+    );
   } finally {
     fs.rmSync(artifactRoot, { recursive: true, force: true });
   }
@@ -230,23 +332,32 @@ test("renderer output names are safe leaves in both JavaScript and Python", () =
 
     const readiness = factoryReadiness({ refresh: true });
     assert.equal(readiness.ready, true, readiness.reason);
-    const fixture = productCase({ spec: { bundleFilename: "..\\escaped-python.zip" } });
-    const inputPath = path.join(artifactRoot, "unsafe-input.json");
-    const outputRoot = path.join(artifactRoot, "python-output");
-    fs.writeFileSync(inputPath, JSON.stringify({
-      schema: "pantheon.digital-product-factory-input.v1",
-      spec: fixture.spec,
-      blueprint: fixture.blueprint,
-      runtimeNormalizations: [],
-    }), "utf8");
-    const python = spawnSync(
-      readiness.python,
-      [readiness.renderer, inputPath, outputRoot],
-      { encoding: "utf8", timeout: 30_000 },
-    );
-    assert.notEqual(python.status, 0);
-    assert.match(String(python.stderr || python.stdout), /safe leaf filename/i);
+    for (const [index, [field, value]] of [
+      ["bundleFilename", "..\\escaped-python.zip"],
+      ["bundleFilename", "nested/escaped-python.zip"],
+      ["manifestFilename", "C:\\escaped-python.json"],
+      ["manifestFilename", "\\\\server\\share\\escaped-python.json"],
+    ].entries()) {
+      const fixture = productCase({ spec: { [field]: value } });
+      const inputPath = path.join(artifactRoot, `unsafe-input-${index}.json`);
+      const outputRoot = path.join(artifactRoot, `python-output-${index}`);
+      fs.writeFileSync(inputPath, JSON.stringify({
+        schema: "pantheon.digital-product-factory-input.v1",
+        spec: fixture.spec,
+        blueprint: fixture.blueprint,
+        runtimeNormalizations: [],
+      }), "utf8");
+      const python = spawnSync(
+        readiness.python,
+        [readiness.renderer, inputPath, outputRoot],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+      assert.notEqual(python.status, 0);
+      assert.match(String(python.stderr || python.stdout), /safe leaf filename/i);
+      assert.equal(fs.existsSync(outputRoot), false);
+    }
     assert.equal(fs.existsSync(path.join(artifactRoot, "escaped-python.zip")), false);
+    assert.equal(fs.existsSync(path.join(artifactRoot, "escaped-python.json")), false);
   } finally {
     fs.rmSync(artifactRoot, { recursive: true, force: true });
   }

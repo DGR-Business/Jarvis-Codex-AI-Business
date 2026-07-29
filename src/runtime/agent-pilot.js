@@ -4,6 +4,7 @@ const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require(
 const { canonicalJson } = require("./approval-scope");
 const { recordCapabilityReview } = require("./capability-autonomy");
 const { appendReceiptForOperatorUsefulnessReview } = require("./agent-execution-evidence");
+const { assertCommercialAuthority } = require("./commercial-authority");
 const { requestLiveAiWorker } = require("./live-ai-workers");
 
 const PILOT_CAPABILITY = "demand_validator.reasoning_on_supplied_evidence";
@@ -206,6 +207,24 @@ function prepareFixtureRun(db, fixture, options = {}, retryContext = null) {
     priorOutcome: "unknown",
     priorOutcomeAcknowledged: true,
   } : { attemptNumber, technicalRetry: false };
+  const workflowMetadata = {
+    fixtureId: fixture.id,
+    fixtureHash: fixture.fixture_hash,
+    capabilityKey: PILOT_CAPABILITY,
+    baselineExcludedFromWorker: true,
+    ...retryMetadata,
+    commercialTestContract: options.commercialTestContract,
+  };
+  const authority = assertCommercialAuthority(db, {
+    workflow: {
+      id: workflowId,
+      venture_id: fixture.venture_id,
+      type: "agent_sdk_pilot",
+      title: "Demand Validator controlled proof",
+      metadata: workflowMetadata,
+    },
+  });
+  workflowMetadata.commercialTestContract = authority.binding;
   run(
     db,
     `INSERT INTO workflows
@@ -217,13 +236,7 @@ function prepareFixtureRun(db, fixture, options = {}, retryContext = null) {
       fixture.venture_id,
       "Demand Validator controlled proof",
       amountCents,
-      toJson({
-        fixtureId: fixture.id,
-        fixtureHash: fixture.fixture_hash,
-        capabilityKey: PILOT_CAPABILITY,
-        baselineExcludedFromWorker: true,
-        ...retryMetadata,
-      }),
+      toJson(workflowMetadata),
       ts,
       ts,
     ],
@@ -372,7 +385,12 @@ function prepareDemandValidatorPilotRetry(db, fixtureId, options = {}) {
         operatorNote: String(options.operatorNote || ""),
       },
     });
-    const prepared = prepareFixtureRun(db, fixture, options, {
+    const prepared = prepareFixtureRun(db, fixture, {
+      ...options,
+      commercialTestContract:
+        options.commercialTestContract
+        || previousTask.payload?.commercialTestContract,
+    }, {
       previousTaskId: previousTask.id,
       attemptNumber: 2,
     });

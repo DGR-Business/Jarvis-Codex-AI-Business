@@ -534,30 +534,17 @@ function createRoundRecords(db, input, venture) {
   return parseRow(get(db, "SELECT * FROM opportunity_rounds WHERE id = ?", [id]));
 }
 
-function startOpportunityRound(db, input = {}) {
-  const active = activeOpportunityRound(db);
-  if (active && input.force !== true) {
-    return { round: active, alreadyRunning: true, state: getOpportunityState(db) };
-  }
-  const venture = input.portfolioControllerV1 === true
-    ? ensurePortfolioWorkspace(db)
-    : activeVenture(db);
-  const round = createRoundRecords(db, input, venture);
-  const queued = queueCommercialWorker(db, round.id, "opportunity_scout", {
-    ...input,
-    modelLocked: input.modelLocked === true,
-  });
-  insertEvent(db, {
-    actor: "pantheon",
-    type: "commercial_discovery.started",
-    entityType: "opportunity_round",
-    entityId: round.id,
-    message: input.idea
-      ? "Pantheon started a commercial review of Daniel's business idea."
-      : "Pantheon started a broad commercial opportunity scan.",
-    metadata: { workflowId: round.metadata.workflowId, taskId: queued.task?.id || null, mode: round.mode },
-  });
-  return { round: updateRound(db, round.id), queued, alreadyRunning: false, state: getOpportunityState(db) };
+function startOpportunityRound() {
+  const error = new Error(
+    "Legacy pre-venture commercial discovery is retired until Pantheon has a narrow, auditable pre-venture research authority.",
+  );
+  error.statusCode = 410;
+  error.code = "legacy_commercial_path_retired";
+  error.details = {
+    path: "pantheon_opportunity_round_start",
+    replacement: "bounded_preventure_research_authority_pending",
+  };
+  throw error;
 }
 
 function evidenceIdsForScout(db, task, round, output) {

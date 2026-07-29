@@ -8,6 +8,20 @@ const {
   verifyAgentRunReceiptChain,
 } = require("./agent-execution-evidence");
 const { verifyAgentContextSnapshot } = require("./agent-context");
+const { getCanonicalTerminalView } = require("./commercial-truth-reconciliation");
+
+const ALWAYS_ACTIONABLE_SAFETY_CATEGORIES = new Set([
+  "agent_context",
+  "agent_receipts",
+  "approval_integrity",
+  "budget",
+  "chief_assignment",
+  "cost",
+  "integrations",
+  "runtime_oversight",
+  "unknown_outcome",
+  "unsafe_retry",
+]);
 
 function minutesAgo(minutes) {
   return new Date(Date.now() - minutes * 60 * 1000).toISOString();
@@ -110,6 +124,128 @@ function addFinding(findings, finding) {
     detail: finding.detail || "",
     metadata: finding.metadata || {},
     fingerprintKey: finding.fingerprintKey || null,
+  });
+}
+
+function terminalViewInput(db, record = {}, overrides = {}) {
+  const metadata = record.metadata && typeof record.metadata === "object"
+    ? record.metadata
+    : fromJson(record.metadata, {});
+  const entityType = overrides.entityType || record.entityType || record.entity_type || null;
+  const entityId = overrides.entityId || record.entityId || record.entity_id || null;
+  const input = {
+    workflowId: overrides.workflowId
+      || record.workflowId
+      || record.workflow_id
+      || metadata.workflowId
+      || metadata.workflow_id
+      || null,
+    taskId: overrides.taskId
+      || record.taskId
+      || record.task_id
+      || metadata.taskId
+      || metadata.task_id
+      || null,
+    deliverableId: overrides.deliverableId
+      || record.deliverableId
+      || record.deliverable_id
+      || metadata.deliverableId
+      || metadata.deliverable_id
+      || null,
+    findingId: overrides.findingId
+      || record.findingId
+      || record.finding_id
+      || metadata.findingId
+      || metadata.finding_id
+      || null,
+    planId: overrides.planId
+      || record.planId
+      || record.plan_id
+      || metadata.planId
+      || metadata.plan_id
+      || metadata.cataloguePlanId
+      || null,
+    opportunityId: overrides.opportunityId
+      || record.opportunityId
+      || record.opportunity_id
+      || metadata.opportunityId
+      || metadata.opportunity_id
+      || null,
+    experimentId: overrides.experimentId
+      || record.experimentId
+      || record.experiment_id
+      || metadata.experimentId
+      || metadata.experiment_id
+      || null,
+  };
+
+  const directBindings = {
+    task: "taskId",
+    deliverable: "deliverableId",
+    monitor_finding: "findingId",
+    catalogue_plan: "planId",
+    opportunity: "opportunityId",
+    commercial_experiment: "experimentId",
+    workflow: "workflowId",
+  };
+  if (entityId && directBindings[entityType] && !input[directBindings[entityType]]) {
+    input[directBindings[entityType]] = entityId;
+  }
+
+  if (!input.taskId && entityId && entityType === "task_attempt") {
+    const attempt = get(db, "SELECT task_id, workflow_id FROM task_attempts WHERE id = ?", [entityId]);
+    input.taskId = attempt?.task_id || null;
+    input.workflowId = input.workflowId || attempt?.workflow_id || null;
+  }
+  if (!input.taskId && entityId && entityType === "agent_run") {
+    const agentRun = get(db, "SELECT task_id, workflow_id FROM agent_runs WHERE id = ?", [entityId]);
+    input.taskId = agentRun?.task_id || null;
+    input.workflowId = input.workflowId || agentRun?.workflow_id || null;
+  }
+  if (!input.workflowId && entityId && entityType === "workflow_run") {
+    input.workflowId = get(
+      db,
+      "SELECT workflow_id FROM workflow_runs WHERE id = ?",
+      [entityId],
+    )?.workflow_id || null;
+  }
+  if ((!input.taskId || !input.workflowId) && entityId && entityType === "approval") {
+    const approval = get(
+      db,
+      "SELECT task_id, workflow_id FROM approvals WHERE id = ?",
+      [entityId],
+    );
+    input.taskId = input.taskId || approval?.task_id || null;
+    input.workflowId = input.workflowId || approval?.workflow_id || null;
+  }
+  if ((!input.taskId || !input.workflowId) && metadata.approvalId) {
+    const approval = get(
+      db,
+      "SELECT task_id, workflow_id FROM approvals WHERE id = ?",
+      [metadata.approvalId],
+    );
+    input.taskId = input.taskId || approval?.task_id || null;
+    input.workflowId = input.workflowId || approval?.workflow_id || null;
+  }
+
+  return input;
+}
+
+function isCanonicalTerminalRecord(db, record = {}, overrides = {}) {
+  const input = terminalViewInput(db, record, overrides);
+  if (!Object.values(input).some(Boolean)) return false;
+  return getCanonicalTerminalView(db, input).terminal;
+}
+
+function keepActionableRecord(db, record, overrides = {}) {
+  return !isCanonicalTerminalRecord(db, record, overrides);
+}
+
+function keepActionableFinding(db, finding) {
+  if (ALWAYS_ACTIONABLE_SAFETY_CATEGORIES.has(finding.category)) return true;
+  return keepActionableRecord(db, finding, {
+    entityType: finding.entityType,
+    entityId: finding.entityId,
   });
 }
 
@@ -459,7 +595,16 @@ function collectFindings(db, options = {}) {
 
   collectRuntimeOversightFindings(db, findings, options);
 
-  const pendingApprovals = all(db, "SELECT id, title, risk_level FROM approvals WHERE status = 'pending' ORDER BY requested_at ASC");
+  const pendingApprovals = all(
+    db,
+    `SELECT id, workflow_id, task_id, title, risk_level
+     FROM approvals
+     WHERE status = 'pending'
+     ORDER BY requested_at ASC`,
+  ).filter((approval) => keepActionableRecord(db, approval, {
+    entityType: "approval",
+    entityId: approval.id,
+  }));
   const pendingApprovalIds = new Set(pendingApprovals.map((approval) => approval.id));
   if (pendingApprovals.length > 0) {
     addFinding(findings, {
@@ -476,14 +621,17 @@ function collectFindings(db, options = {}) {
 
   const expiredApprovals = all(
     db,
-    `SELECT id, title, expires_at
+    `SELECT id, workflow_id, task_id, title, expires_at
      FROM approvals
      WHERE status = 'pending'
        AND expires_at IS NOT NULL
        AND expires_at <= ?
      ORDER BY expires_at ASC`,
     [options.at || now()],
-  );
+  ).filter((approval) => keepActionableRecord(db, approval, {
+    entityType: "approval",
+    entityId: approval.id,
+  }));
   for (const approval of expiredApprovals) {
     addFinding(findings, {
       severity: "warn",
@@ -499,7 +647,8 @@ function collectFindings(db, options = {}) {
   const continuedAfterDenial = all(
     db,
     `SELECT approvals.id AS approval_id, approvals.title, approvals.decided_at,
-            tasks.id AS task_id, tasks.title AS task_title, tasks.status, tasks.updated_at
+            tasks.id AS task_id, tasks.workflow_id, tasks.title AS task_title,
+            tasks.status, tasks.updated_at
      FROM approvals
      JOIN tasks ON tasks.approval_id = approvals.id
      WHERE approvals.status IN ('rejected', 'needs_changes')
@@ -527,7 +676,7 @@ function collectFindings(db, options = {}) {
 
   const openEscalations = all(
     db,
-    `SELECT id, subject, severity, metadata
+    `SELECT id, task_id, subject, severity, metadata
      FROM messages
      WHERE status = 'open'
        AND severity IN ('urgent', 'approval')
@@ -539,7 +688,10 @@ function collectFindings(db, options = {}) {
          )
        )
      ORDER BY created_at ASC`,
-  ).filter((message) => {
+  ).filter((message) => keepActionableRecord(db, message, {
+    entityType: "message",
+    entityId: message.id,
+  })).filter((message) => {
     if (message.severity !== "approval") return true;
     const linkedApprovalId = fromJson(message.metadata, {}).approvalId;
     return !linkedApprovalId || !pendingApprovalIds.has(linkedApprovalId);
@@ -566,7 +718,10 @@ function collectFindings(db, options = {}) {
      ORDER BY updated_at ASC
      LIMIT 25`,
     [staleQueuedCutoff],
-  );
+  ).filter((task) => keepActionableRecord(db, task, {
+    entityType: "task",
+    entityId: task.id,
+  }));
   for (const task of staleQueuedTasks) {
     addFinding(findings, {
       severity: "warn",
@@ -588,7 +743,10 @@ function collectFindings(db, options = {}) {
     db,
     "SELECT id, title, workflow_id, updated_at FROM tasks WHERE status = 'running' AND updated_at < ? ORDER BY updated_at ASC",
     [staleTaskCutoff],
-  );
+  ).filter((task) => keepActionableRecord(db, task, {
+    entityType: "task",
+    entityId: task.id,
+  }));
   for (const task of staleTasks) {
     addFinding(findings, {
       severity: "error",
@@ -635,7 +793,13 @@ function collectFindings(db, options = {}) {
          )
        )
      ORDER BY tasks.updated_at DESC LIMIT 10`,
-  ).filter((task) => !completedRetryPredecessors.has(task.id));
+  ).filter((task) => (
+    !completedRetryPredecessors.has(task.id)
+    && keepActionableRecord(db, task, {
+      entityType: "task",
+      entityId: task.id,
+    })
+  ));
   if (failedTasks.length > 0) {
     addFinding(findings, {
       severity: "error",
@@ -707,7 +871,10 @@ function collectFindings(db, options = {}) {
     db,
     "SELECT id, workflow_id, started_at FROM workflow_runs WHERE status = 'running' AND started_at < ? ORDER BY started_at ASC",
     [staleRunCutoff],
-  );
+  ).filter((workflowRun) => keepActionableRecord(db, workflowRun, {
+    entityType: "workflow_run",
+    entityId: workflowRun.id,
+  }));
   for (const workflowRun of staleWorkflowRuns) {
     addFinding(findings, {
       severity: "error",
@@ -722,13 +889,17 @@ function collectFindings(db, options = {}) {
 
   const staleAgentRuns = all(
     db,
-    `SELECT runs.id, runs.agent_id, runs.task_id, runs.started_at, tasks.title
+    `SELECT runs.id, runs.agent_id, runs.task_id, runs.workflow_id,
+            runs.started_at, tasks.title
      FROM agent_runs AS runs
      LEFT JOIN tasks ON tasks.id = runs.task_id
      WHERE runs.status = 'running' AND runs.started_at < ?
      ORDER BY runs.started_at ASC`,
     [staleRunCutoff],
-  );
+  ).filter((agentRun) => keepActionableRecord(db, agentRun, {
+    entityType: "agent_run",
+    entityId: agentRun.id,
+  }));
   for (const agentRun of staleAgentRuns) {
     addFinding(findings, {
       severity: "error",
@@ -903,7 +1074,9 @@ function collectFindings(db, options = {}) {
     });
   }
 
-  return findings.sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+  return findings
+    .filter((finding) => keepActionableFinding(db, finding))
+    .sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
 }
 
 function persistFindings(db, runId, findings) {

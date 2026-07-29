@@ -1,7 +1,25 @@
 # 0008 - Buyer Intent Before A Full Catalogue
 
 Date: 2026-07-28
-Status: accepted
+Status: completed by the terminal non-pass branch; the commercial attempt is
+closed
+
+## Outcome Update - 2026-07-29
+
+Pantheon prepared one functional sample and exercised the approved quality path.
+The only permitted evidence recheck returned `revise`, score 78. The terminal
+rule permanently stopped the build and created no retry, fallback, buyer-test
+pack, handoff, execution pack, or protected external-test decision.
+
+No buyer was contacted. No listing, publication, advertisement, account action,
+external spend, order, revenue, refund, or actual net cash contribution
+occurred. The previous Etsy, A$29.95, 100-qualified-visit, and 30-day terms are
+historical test design, not current defaults.
+
+The reusable mechanism may inform future work, but this specification and build
+must not be reopened or renamed. Decision 0009 starts a separate low-touch
+Social Media Manager Client Approval & Scope Guard Kit hypothesis with new
+buyer, offer, channel, evidence, quality, economics, and stop-rule diligence.
 
 ## Context
 
@@ -15,7 +33,7 @@ Building a complete catalogue would spend time before resolving that
 decision-critical gap. Doing nothing would preserve cash but leave the
 strongest current case untested.
 
-## Decision
+## Original Decision
 
 Build one genuine functional validation sample and prepare one
 measurement-ready buyer-intent test before authorising a full catalogue.
@@ -56,7 +74,7 @@ truthfully deliver.
 Accepted. It is the smallest action that can test buyer intent, delivery
 format, listing conversion, refunds, support, and real contribution together.
 
-## Consequences
+## Original Consequences
 
 - The sample is production-quality enough to fulfil initial orders but is not
   represented as the eventual full product range.
@@ -68,9 +86,13 @@ format, listing conversion, refunds, support, and real contribution together.
 - A passed cohort may justify a complete Venture Kit and catalogue. It does not
   prove repeatable product-market fit or authorise scale automatically.
 
-## Review Trigger
+## Historical Review Trigger - Not Reached
 
-Review this decision after:
+These triggers were defined for the proposed external cohort, but the build
+stopped at the quality boundary before publication or buyer testing. They were
+therefore not satisfied and cannot be treated as observed results. The
+historical test is terminal and these triggers are retained only as its original
+decision record:
 
 - the first 100 qualified visits or 30-day cohort;
 - three independent paid orders;

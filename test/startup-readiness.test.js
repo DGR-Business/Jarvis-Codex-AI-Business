@@ -10,6 +10,9 @@ const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { ensureSchedulerJobs } = require("../src/runtime/scheduler");
 const { createApp, startServer } = require("../src/server");
 const { get, openDatabase, run, seedDatabase, toJson } = require("../src/db");
+const {
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
 
 test("the Windows launcher refreshes Pantheon when runtime source changes", () => {
   const launcher = fs.readFileSync(
@@ -19,6 +22,19 @@ test("the Windows launcher refreshes Pantheon when runtime source changes", () =
   assert.match(launcher, /runtimeSourceFingerprint/);
   assert.match(launcher, /PANTHEON_RUNTIME_SOURCE=/);
   assert.match(launcher, /Refreshing Pantheon with the current approved connections and limits/);
+});
+
+test("the standby control shell does not claim that the working runtime is ready", () => {
+  const standby = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "pantheon-standby.js"),
+    "utf8",
+  );
+  assert.match(standby, /runtimeReady:\s*false/);
+  assert.match(standby, /readinessScope:\s*"standby_control_shell"/);
+  assert.match(standby, /operationsReady:\s*false/);
+  assert.match(standby, /operationsReadyAliasFor:\s*"runtimeReady"/);
+  assert.match(standby, /workingReady:\s*Boolean\(health\?\.runtimeReady\)/);
+  assert.doesNotMatch(standby, /workingReady:\s*Boolean\(health\?\.operationsReady\)/);
 });
 
 function makeRuntime(name) {
@@ -55,7 +71,12 @@ test("startup completes one monitor cycle before reporting operations ready", as
 
     assert.equal(health.alive, true);
     assert.equal(health.ok, true);
+    assert.equal(health.installationReady, null);
+    assert.equal(health.recoveryReady, null);
+    assert.equal(health.runtimeReady, true);
+    assert.equal(health.readinessScope, "runtime_monitoring");
     assert.equal(health.operationsReady, true);
+    assert.equal(health.operationsReadyAliasFor, "runtimeReady");
     assert.deepEqual(
       { enabled: health.scheduler.enabled, running: health.scheduler.running },
       { enabled: true, running: true },
@@ -78,7 +99,12 @@ test("startup completes one monitor cycle before reporting operations ready", as
     const overdue = await readHealth(started);
     assert.equal(overdue.alive, true);
     assert.equal(overdue.ok, false);
+    assert.equal(overdue.installationReady, null);
+    assert.equal(overdue.recoveryReady, null);
+    assert.equal(overdue.runtimeReady, false);
+    assert.equal(overdue.readinessScope, "runtime_monitoring");
     assert.equal(overdue.operationsReady, false);
+    assert.equal(overdue.operationsReadyAliasFor, "runtimeReady");
     assert.equal(overdue.monitoring.ready, false);
     assert.equal(overdue.monitoring.recent, false);
     assert.equal(overdue.monitoring.overdue, true);
@@ -98,6 +124,9 @@ test("health stays live but not ready when the scheduler or monitor job is disab
       const health = await readHealth(started);
       assert.equal(health.alive, true);
       assert.equal(health.ok, false);
+      assert.equal(health.runtimeReady, false);
+      assert.equal(health.readinessScope, "runtime_monitoring");
+      assert.equal(health.operationsReadyAliasFor, "runtimeReady");
       assert.equal(health.scheduler.enabled, false);
       assert.equal(health.scheduler.running, false);
       assert.equal(health.monitoring.ready, false);
@@ -119,6 +148,9 @@ test("health stays live but not ready when the scheduler or monitor job is disab
       const health = await readHealth(started);
       assert.equal(health.alive, true);
       assert.equal(health.ok, false);
+      assert.equal(health.runtimeReady, false);
+      assert.equal(health.readinessScope, "runtime_monitoring");
+      assert.equal(health.operationsReadyAliasFor, "runtimeReady");
       assert.equal(health.scheduler.enabled, true);
       assert.equal(health.scheduler.running, true);
       assert.equal(health.monitoring.job.enabled, false);
@@ -149,6 +181,10 @@ test("startup recovery only requeues exact approved setup-blocked work", async (
       source: "test",
       createFiles: false,
       mode: "plan_only",
+    });
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "startup-recovery",
+      workflowIds: [planned.workflow.id],
     });
     run(runtime.db, "UPDATE tasks SET status = 'cancelled' WHERE workflow_id = ?", [planned.workflow.id]);
     const requested = requestLiveAiWorker(runtime.db, planned.workflow.id, {
@@ -205,16 +241,39 @@ function insertUnsafeTask(db, options) {
     db,
     `INSERT INTO workflows
      (id, venture_id, type, title, status, current_step, priority, metadata, created_at, updated_at)
-     VALUES (?, 'venture-digital-products', 'safety_test', ?, 'planned', 'queued', 1, ?, ?, ?)`,
-    [options.workflowId, options.title, toJson({ agentRunner: { mode: "run_protected", liveModels: false, liveTools: false } }), ts, ts],
+     VALUES (?, 'venture-digital-products', ?, ?, 'planned', 'queued', 1, ?, ?, ?)`,
+    [
+      options.workflowId,
+      options.workflowType || "safety_test",
+      options.title,
+      toJson(options.workflowMetadata || {
+        agentRunner: {
+          mode: "run_protected",
+          liveModels: false,
+          liveTools: false,
+        },
+      }),
+      ts,
+      ts,
+    ],
   );
   run(
     db,
     `INSERT INTO tasks
      (id, workflow_id, venture_id, title, kind, agent, status, priority, approval_id,
       cost_budget_cents, payload, result, created_at, updated_at)
-     VALUES (?, ?, 'venture-digital-products', ?, ?, 'demand_validator', 'queued', 1, ?, 100, ?, '{}', ?, ?)`,
-    [options.taskId, options.workflowId, options.title, options.kind, options.approvalId || null, toJson(options.payload || {}), ts, ts],
+     VALUES (?, ?, 'venture-digital-products', ?, ?, ?, 'queued', 1, ?, 100, ?, '{}', ?, ?)`,
+    [
+      options.taskId,
+      options.workflowId,
+      options.title,
+      options.kind,
+      options.agent || "demand_validator",
+      options.approvalId || null,
+      toJson(options.payload || {}),
+      ts,
+      ts,
+    ],
   );
 }
 
@@ -248,11 +307,25 @@ test("generic runtime tick skips provider and approval-bound work", async () => 
       approvalId: "appr-runtime-tick",
       createdAt: ts,
     });
-    const safePlan = createCommandPlan(runtime.db, {
-      text: "Evaluate a protected internal checklist digital product",
-      source: "test",
-      createFiles: false,
-      mode: "run_protected",
+    const safePlan = {
+      workflow: { id: "wf-runtime-tick-integrity" },
+      tasks: [{ id: "task-runtime-tick-integrity" }],
+    };
+    insertUnsafeTask(runtime.db, {
+      workflowId: safePlan.workflow.id,
+      taskId: safePlan.tasks[0].id,
+      title: "Runtime database integrity assurance",
+      workflowType: "runtime_assurance",
+      workflowMetadata: {
+        systemProof: true,
+      },
+      kind: "goal_planning",
+      agent: "chief_of_staff",
+      payload: {
+        subject: "Runtime database integrity",
+        systemProof: true,
+      },
+      createdAt: ts,
     });
 
     app = createApp({ db: runtime.db, security: false, schedulerEnabled: false });

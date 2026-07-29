@@ -11,6 +11,9 @@ const {
   prepareRequiredQualityReview,
   recordCompletedQualityReview,
 } = require("../src/runtime/quality-review");
+const {
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
 
 function makeRuntime() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-quality-review-"));
@@ -147,6 +150,10 @@ test("Quality Reviewer approval freezes and supplies the exact deliverable input
   const runtime = makeRuntime();
   try {
     const source = insertSourceOutput(runtime.db, "prepare");
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "quality-prepare",
+      workflowIds: [source.workflowId],
+    });
     const result = prepareRequiredQualityReview(runtime.db, {
       ...source,
       output: { summary: "Product draft ready." },
@@ -186,6 +193,10 @@ test("A passing immutable Quality Reviewer record moves the exact output to oper
   const runtime = makeRuntime();
   try {
     const source = insertSourceOutput(runtime.db, "pass");
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "quality-pass",
+      workflowIds: [source.workflowId],
+    });
     const prepared = prepareRequiredQualityReview(runtime.db, {
       ...source,
       output: { summary: "Product draft ready." },
@@ -219,10 +230,52 @@ test("A passing immutable Quality Reviewer record moves the exact output to oper
   }
 });
 
+test("contradictory claim-safety language cannot move an output to operator review", () => {
+  for (const [suffix, claimSafety] of [
+    ["passive-revision", "Safe overall; one claim should be revised."],
+    ["passive-correction", "Safe, but a correction is required."],
+    ["unsupported-claim", "Safe overall; one customer-facing claim remains unsupported."],
+  ]) {
+    const runtime = makeRuntime();
+    try {
+      const source = insertSourceOutput(runtime.db, suffix);
+      installActivatedCommercialTestFixture(runtime.db, {
+        suffix: `quality-${suffix}`,
+        workflowIds: [source.workflowId],
+      });
+      const prepared = prepareRequiredQualityReview(runtime.db, {
+        ...source,
+        output: { summary: "Product draft ready." },
+        deliverableIds: [source.deliverableId],
+      });
+      const reviewRun = insertReviewRun(runtime.db, prepared.task, suffix);
+      const output = passingOutput();
+      output.roleOutput.claimSafety = claimSafety;
+      const result = recordCompletedQualityReview(runtime.db, {
+        task: prepared.task,
+        run: reviewRun,
+        output,
+      });
+      assert.equal(result.status, "changes_required");
+      assert.equal(result.results[0].verdict, "changes_required");
+      assert.equal(
+        get(runtime.db, "SELECT status FROM deliverables WHERE id = ?", [source.deliverableId]).status,
+        "needs_changes",
+      );
+    } finally {
+      closeRuntime(runtime);
+    }
+  }
+});
+
 test("Changed output is blocked before a provider call and cannot inherit an old quality approval", () => {
   const runtime = makeRuntime();
   try {
     const source = insertSourceOutput(runtime.db, "changed");
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "quality-changed",
+      workflowIds: [source.workflowId],
+    });
     const prepared = prepareRequiredQualityReview(runtime.db, {
       ...source,
       output: { summary: "Product draft ready." },

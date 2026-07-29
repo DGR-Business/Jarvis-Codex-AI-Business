@@ -27,6 +27,9 @@ const { collectFindings } = require("../src/runtime/monitor");
 const { createCommandPlan } = require("../src/runtime/planner");
 const { getSpendApprovalState } = require("../src/runtime/spend-gate");
 const { getCockpitState } = require("../src/runtime/cockpit-state");
+const {
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
 
 function runtimeDb(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `jarvis-finance-safety-${name}-`));
@@ -252,6 +255,10 @@ test("worker approval persists one descriptor and invalidates changed business i
       source: "finance-safety-test",
       createFiles: false,
     });
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "finance-worker-descriptor",
+      workflowIds: [planned.workflow.id],
+    });
     assert.throws(
       () => requestLiveAiWorker(runtime.db, planned.workflow.id, {
         estimatedCostCents: 100,
@@ -346,6 +353,10 @@ test("research approval binds the exact outbound request and rejects a cap below
       text: "Research demand for a faceless freelancer cashflow checklist",
       source: "finance-safety-test",
       createFiles: false,
+    });
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "finance-research-descriptor",
+      workflowIds: [planned.workflow.id],
     });
     assert.throws(
       () => requestLiveResearch(runtime.db, planned.workflow.id, { estimatedCostCents: 60, audPerUsd: 4 }),

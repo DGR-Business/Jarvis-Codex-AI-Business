@@ -3,7 +3,9 @@ import hashlib
 import json
 import math
 import re
+import shutil
 import sys
+import tempfile
 import textwrap
 import zipfile
 from datetime import date, datetime
@@ -90,6 +92,14 @@ def contained_output_leaf(root, filename, label):
     if candidate.parent != resolved_root:
         raise ValueError(f"{label} escapes the renderer output directory")
     return candidate
+
+
+def safe_contained_output_leaf(root, value, label, required_suffix):
+    return contained_output_leaf(
+        root,
+        safe_output_leaf(value, label, required_suffix),
+        label,
+    )
 
 
 def field_reference(value):
@@ -1693,12 +1703,23 @@ def build(payload, output_root):
         raise ValueError("Blueprint catalogue IDs do not match the approved build specification")
 
     customer_files = {}
+    customer_archive_paths = []
     validation = {}
     rendered_items = []
     for index, item in enumerate(blueprint["catalogueItems"], start=1):
         base = f"{index:02d}-{slug(item['title'])}"
-        workbook_path = customer_root / f"{base}.xlsx"
-        csv_path = customer_root / f"{base}-sample.csv"
+        workbook_path = safe_contained_output_leaf(
+            customer_root,
+            f"{base}.xlsx",
+            "workbookFilename",
+            ".xlsx",
+        )
+        csv_path = safe_contained_output_leaf(
+            customer_root,
+            f"{base}-sample.csv",
+            "sampleCsvFilename",
+            ".csv",
+        )
         instructions, instruction_adjustments = customer_instructions(
             item,
             workbook_path.name,
@@ -1732,17 +1753,43 @@ def build(payload, output_root):
             workbook_path.relative_to(output_root).as_posix(),
             csv_path.relative_to(output_root).as_posix(),
         ]
+        customer_archive_paths.extend([workbook_path, csv_path])
         rendered_items.append(rendered_item)
 
     rendered_blueprint = {**blueprint, "catalogueItems": rendered_items}
-    guide_path = customer_root / "00-customer-setup-guide.pdf"
+    guide_path = safe_contained_output_leaf(
+        customer_root,
+        "00-customer-setup-guide.pdf",
+        "setupGuideFilename",
+        ".pdf",
+    )
     guide_pdf(rendered_blueprint, customer_files, guide_path)
-    preview_one = preview_root / "catalogue-overview.png"
-    preview_two = preview_root / "workbook-preview.png"
+    preview_one = safe_contained_output_leaf(
+        preview_root,
+        "catalogue-overview.png",
+        "cataloguePreviewFilename",
+        ".png",
+    )
+    preview_two = safe_contained_output_leaf(
+        preview_root,
+        "workbook-preview.png",
+        "workbookPreviewFilename",
+        ".png",
+    )
     preview_image(rendered_blueprint, preview_one, "dashboard")
     preview_image(rendered_blueprint, preview_two, "workbook")
-    quality_workbook = quality_review_root / "actual-workbook.png"
-    quality_guide = quality_review_root / "actual-setup-guide.png"
+    quality_workbook = safe_contained_output_leaf(
+        quality_review_root,
+        "actual-workbook.png",
+        "workbookReviewFilename",
+        ".png",
+    )
+    quality_guide = safe_contained_output_leaf(
+        quality_review_root,
+        "actual-setup-guide.png",
+        "guideReviewFilename",
+        ".png",
+    )
     workbook_quality_preview(
         output_root / customer_files[rendered_items[0]["id"]][0],
         quality_workbook,
@@ -1750,7 +1797,12 @@ def build(payload, output_root):
     )
     guide_inspection = pdf_quality_preview(guide_path, quality_guide, output_root)
     write_json(
-        quality_review_root / "inspection-metadata.json",
+        safe_contained_output_leaf(
+            quality_review_root,
+            "inspection-metadata.json",
+            "inspectionMetadataFilename",
+            ".json",
+        ),
         {
             "schema": "pantheon.local-quality-inspection.v1",
             "images": {
@@ -1823,10 +1875,15 @@ def build(payload, output_root):
         "factoryAdjustments": package_adjustments,
     }
 
-    archive_paths = [
-        *sorted(customer_root.glob("*")),
-        *sorted(preview_root.glob("*")),
-    ]
+    archive_paths = sorted(
+        [
+            *customer_archive_paths,
+            guide_path,
+            preview_one,
+            preview_two,
+        ],
+        key=lambda candidate: candidate.relative_to(output_root).as_posix(),
+    )
     manifest["files"] = [
         {
             "path": file_path.relative_to(output_root).as_posix(),
@@ -1879,11 +1936,31 @@ def main():
         raise SystemExit("usage: render-digital-product-kit.py INPUT_JSON OUTPUT_DIRECTORY")
     input_path = Path(sys.argv[1]).resolve()
     output_root = Path(sys.argv[2]).resolve()
-    output_root.mkdir(parents=True, exist_ok=True)
     payload = json.loads(input_path.read_text(encoding="utf-8"))
     if payload.get("schema") != "pantheon.digital-product-factory-input.v1":
         raise ValueError("Unsupported digital-product factory input schema")
-    build(payload, output_root)
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    if (
+        output_root.is_symlink()
+        or (output_root.exists() and not output_root.is_dir())
+        or (output_root.exists() and any(output_root.iterdir()))
+    ):
+        raise ValueError(
+            "Renderer output directory must be absent or empty before atomic commit"
+        )
+    stage_root = Path(tempfile.mkdtemp(
+        prefix=".pantheon-render-",
+        suffix=".tmp",
+        dir=output_root.parent,
+    )).resolve()
+    try:
+        build(payload, stage_root)
+        if output_root.exists():
+            output_root.rmdir()
+        stage_root.replace(output_root)
+    finally:
+        if stage_root.exists():
+            shutil.rmtree(stage_root)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,10 @@ const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { recordAgentHandoff, recordProtectedWorkerOutcome } = require("./ai-team");
 const { generateApprovalPack } = require("./approval-pack");
-const { createCommercialExperiment } = require("./commercial-results");
+const {
+  claimSafetyIsConfirmed,
+  claimSafetyRequiresCorrection,
+} = require("./claim-safety");
 const { buildDeliverableReviewBindings } = require("./deliverable-review-bindings");
 const {
   canonicalListingIncludedFiles,
@@ -18,7 +21,6 @@ const {
 const { requestLiveAiWorker } = require("./live-ai-workers");
 const { journeyForRound, updateJourney } = require("./pantheon-journey");
 const { combinedProofExposureFromDatabase } = require("./proof-exposure-ledger");
-const { finalizeBuyerIntentValidationSample } = require("./buyer-intent-validation");
 
 const PRODUCT_BUILD_SPEC_SCHEMA = "pantheon.product-build-spec.v1";
 const PRODUCT_MANIFEST_SCHEMA = "pantheon.product-manifest.v1";
@@ -30,6 +32,22 @@ const PRODUCTION_STAGES = new Set([
   "distribution_plan",
   "chief_brief",
 ]);
+const LEGACY_COMMERCIAL_PATH_RETIRED_CODE = "legacy_commercial_path_retired";
+
+function legacyCommercialPathRetired(pathName) {
+  const error = new Error(
+    "This legacy commercial creation path is permanently retired. "
+      + "Use the accepted immutable v2 commercial-test contract and evidence ledger.",
+  );
+  error.name = "LegacyCommercialPathRetiredError";
+  error.statusCode = 410;
+  error.code = LEGACY_COMMERCIAL_PATH_RETIRED_CODE;
+  error.details = {
+    path: pathName,
+    replacement: "pantheon.commercial-test-contract.v2",
+  };
+  return error;
+}
 
 function safeId(value, max = 64) {
   return String(value || "pantheon")
@@ -209,9 +227,9 @@ function publicationPackOptions(db, plan, opportunityRecord, workflowId, current
       offer: actualProductOffer(plan, opportunityRecord),
       channel: opportunityRecord.channel,
       priceChannelHypothesis: publicationPriceChannelHypothesis(plan, opportunityRecord),
-      smallestTest: `After separate publication approval, run the accepted 14-day organic launch sequence or stop at 50 qualified product views. Use no more than three posts across two channels and record every qualified view, purchase, buyer segment, question, and objection.`,
+      smallestTest: "No market test is authorised by this historical publication pack. A separately accepted immutable v2 commercial-test contract must define the exact buyer cohort, channel/account, price, measurement period, permitted touchpoints, evidence, costs, and diagnose/revise/stop rules.",
       successMetric: validation.metric || "Three independent paid buyers with positive cash contribution.",
-      stopRule: validation.stopRule || "Revise or stop after 50 qualified views and zero sales without strong qualified interest.",
+      stopRule: validation.stopRule || "No stop rule is authorised here; use only the separately accepted immutable v2 commercial-test contract's exact diagnose, revise, and terminal-stop rules.",
     },
     actionsOverride: [
       {
@@ -903,16 +921,6 @@ function terminalizeInspectionEvidenceRecheckPersistence(db, plan) {
   const experimentId = String(contract.experimentId || "").trim();
   const candidateId = String(contract.candidateId || "").trim();
   const timestamp = now();
-
-  if (experimentId) {
-    run(
-      db,
-      `UPDATE commercial_experiments
-       SET status = 'cancelled', ended_at = COALESCE(ended_at, ?), updated_at = ?
-       WHERE id = ? AND status <> 'cancelled'`,
-      [timestamp, timestamp, experimentId],
-    );
-  }
 
   const candidateSelectors = [];
   const candidateValues = [];
@@ -2107,9 +2115,20 @@ function sourceReviewEvidence(qualityTask) {
     || request.toolArguments?.visual_asset_review?.approvedAssetBinding
     || {};
   const assets = Array.isArray(assetBinding.assets) ? assetBinding.assets : [];
+  const approvedAssetIds = Array.isArray(parameters.approvedAssetIds)
+    ? parameters.approvedAssetIds.map(String)
+    : [];
   const expectedVisuals = [...previews, ...inspections];
+  const expectedVisualIds = expectedVisuals.map((item) => item.id);
+  const approvedAssetIdsExact = (
+    approvedAssetIds.length === 4
+    && new Set(approvedAssetIds).size === 4
+    && expectedVisualIds.length === 4
+    && expectedVisualIds.every((id) => approvedAssetIds.includes(id))
+  );
   const visualBindingExact = (
-    assets.length === 4
+    approvedAssetIdsExact
+    && assets.length === 4
     && expectedVisuals.length === 4
     && new Set(assets.map((asset) => asset.id)).size === 4
     && expectedVisuals.every((item) => assets.some((asset) => (
@@ -2173,7 +2192,7 @@ function qualityFindingIsMaterial(value) {
     /\bno (?:(?:known|remaining|identified)\s+)?(?:material|major|high[- ]risk) (?:finding|findings|issue|issues|defect|defects)\b/gi,
     "",
   );
-  return /\b(?:unsafe|illegal|misleading|unsupported|incorrect|broken|unusable|illegible|not legible|not complete|incomplete|material defect|clipp\w*|overflow\w*|formula error|wrong result)\b/i.test(withoutExplicitAbsence);
+  return /\b(?:unsafe|illegal|misleading|unsupported|incorrect|broken|unusable|unreliable|untrustworthy|illegible|not legible|not complete|incomplete|material defect|clipp\w*|overflow\w*|formula error|wrong result|cannot be trusted|cannot be relied upon|does not reconcile|fail\w* to reconcile|overstat\w*|exaggerat\w*|deceptive|corrupt\w*)\b/i.test(withoutExplicitAbsence);
 }
 
 function inspectionEvidenceOnlyFailure(qualityTask) {
@@ -2205,6 +2224,7 @@ function inspectionEvidenceOnlyFailure(qualityTask) {
     || (
       /\b(?:complete|legible|consistent|verified|confirms?|accurately describe)\b/i.test(String(value))
       && !/\b(?:not|isn't|aren't|cannot|can't|incomplete|illegible|unusable)\b/i.test(String(value))
+      && !/\b(?:but|however|although|though|yet|except(?: that)?|nevertheless|nonetheless)\b/i.test(String(value))
       && !disqualifyingDefect(value)
     )
   );
@@ -2219,6 +2239,13 @@ function inspectionEvidenceOnlyFailure(qualityTask) {
     && !disqualifyingDefect(value)
   );
   const claimSafety = String(roleOutput.claimSafety || "");
+  const claimSafetyInspectionGap = inspectionGap(claimSafety)
+    || (
+      /\b(?:pages?|pdf|setup[- ]guide)\b/i.test(claimSafety)
+      && /\b(?:uninspect\w*|not (?:yet )?(?:inspect|review|check|verify)\w*|cannot (?:be )?(?:inspect|review|check|verify)\w*)\b/i.test(
+        claimSafety,
+      )
+    );
   return (
     !verdict.passed
     && verdict.score >= 80
@@ -2226,12 +2253,17 @@ function inspectionEvidenceOnlyFailure(qualityTask) {
     && Array.isArray(riskFindings)
     && Array.isArray(outputRisks)
     && missingEvidence.length > 0
+    && riskFindings.length > 0
     && missingEvidence.every(inspectionGap)
     && riskFindings.every(acceptableFinding)
     && outputRisks.every((risk) => (
       inspectionGap(risk) || acceptableBackgroundRisk(risk) || acceptableBoundedScopeRisk(risk)
     ))
     && /\b(?:safe|supported|accurately|consistent)\b/i.test(claimSafety)
+    && (
+      !claimSafetyRequiresCorrection(claimSafety)
+      || claimSafetyInspectionGap
+    )
     && !defectOutsideInspectionUncertainty(claimSafety)
     && inspectionGap(
       `${output.summary || ""} ${output.nextAction || ""} ${roleOutput.operatorRecommendation || ""}`,
@@ -3141,14 +3173,20 @@ function qualityPassed(output, options = {}) {
   const missingEvidence = Array.isArray(work.missingEvidence) ? work.missingEvidence : null;
   const outputRisks = Array.isArray(output.risks) ? output.risks : [];
   const claimSafety = String(work.claimSafety || "").trim();
-  const claimSafetyPassed = /^(?:safe|supported|acceptable)\b/i.test(claimSafety)
+  const claimSafetyPassed = claimSafetyIsConfirmed(claimSafety)
     && !qualityFindingIsMaterial(claimSafety);
   const highRisk = outputRisks.some((risk) => (
     /\b(high risk|unsafe|illegal|materially false)\b/i.test(String(risk))
     || qualityFindingIsMaterial(risk)
   ));
   const materialFinding = (riskFindings || []).some(qualityFindingIsMaterial);
-  const baselinePassed = score >= 80 && decision === "approve" && !highRisk;
+  const baselinePassed = (
+    score >= 80
+    && decision === "approve"
+    && !highRisk
+    && claimSafetyPassed
+    && !materialFinding
+  );
   const requireCompleteEvidence = options.requireCompleteEvidence === true;
   return {
     passed: baselinePassed && (
@@ -3157,8 +3195,6 @@ function qualityPassed(output, options = {}) {
         Array.isArray(riskFindings)
         && Array.isArray(missingEvidence)
         && missingEvidence.length === 0
-        && claimSafetyPassed
-        && !materialFinding
       )
     ),
     score,
@@ -3697,50 +3733,17 @@ function projectQualityReview(db, task, plan, opportunityRecord) {
     }
     return { next: null, verdict, correctionPrepared: false };
   }
+  if (plan.metadata.validationSample) {
+    throw legacyCommercialPathRetired(
+      "pantheon_production_buyer_intent_validation_projection",
+    );
+  }
   run(
     db,
     "UPDATE catalogue_items SET status = 'ready', quality_status = 'passed', updated_at = ? WHERE plan_id = ?",
     [now(), plan.id],
   );
   markCatalogueDeliverablesQualityPassed(db, plan, generated);
-  if (plan.metadata.validationSample) {
-    updatePlan(db, plan.id, {
-      status: "validation_sample_ready",
-      metadata: {
-        buildStatus: "validation_sample_quality_passed",
-        qualityTaskId: task.id,
-        qualityScore: verdict.score,
-        qualityFindings: verdict.findings,
-        qualityDecision: verdict.decision,
-        investmentCaseRemainsParked: true,
-      },
-    });
-    const finalized = finalizeBuyerIntentValidationSample(db, {
-      planId: plan.id,
-      buildTaskId: buildTask.id,
-      qualityTaskId: task.id,
-      generated,
-    });
-    insertEvent(db, {
-      actor: "pantheon",
-      type: "catalogue.validation_sample_quality_passed",
-      entityType: "catalogue_plan",
-      entityId: plan.id,
-      message: `The functional validation sample passed independent quality review at ${verdict.score}/100; its exact buyer test is ready for review.`,
-      metadata: {
-        taskId: task.id,
-        score: verdict.score,
-        executionPackId: finalized.pack.id,
-        noExternalAction: true,
-      },
-    });
-    return {
-      next: null,
-      verdict,
-      validationSampleReady: true,
-      executionPack: finalized.pack,
-    };
-  }
   const updated = updatePlan(db, plan.id, {
     status: "preparing_launch",
     metadata: {
@@ -4014,7 +4017,7 @@ function launchPackContent(plan, opportunityRecord, distributionTask, copyTask, 
     ...publicationPlanPriceList(work.channelSteps, plan).map((item) => `- ${item}`),
     "",
     `Success metric: ${publicationPlanPriceText(work.successMetric || "3 independent buyers and positive cash contribution", plan)}`,
-    `Stop rule: ${publicationPlanPriceText(work.stopRule || "Revise or stop after 14 days or 50 qualified views if there is no meaningful buyer signal.", plan)}`,
+    `Stop rule: ${publicationPlanPriceText(work.stopRule || "No market-test stop rule is authorised here; use only a separately accepted immutable v2 commercial-test contract.", plan)}`,
     `Operator workload: ${publicationPlanPriceText(work.operatorWorkload || "Create or sign in to the approved marketplace account, review the final listing, and press Publish.", plan)}`,
     "",
     "## Still Protected",
@@ -4149,210 +4152,11 @@ function queueChiefBrief(db, plan, opportunityRecord, distributionTask, copyTask
 }
 
 function projectDistribution(db, task, plan, opportunityRecord) {
-  const metadata = productMetadata(task);
-  const copyTask = get(db, "SELECT * FROM tasks WHERE id = ?", [metadata.copyTaskId]);
-  if (!copyTask || copyTask.status !== "completed") throw new Error("Launch preparation is missing its completed listing-copy task.");
-  const distributionOutput = taskOutput(task);
-  const outputIssues = [
-    ...publicationTextIssues(distributionOutput, "The accepted launch plan"),
-    ...currentPackageDefectIssues(distributionOutput, "The accepted launch plan"),
-  ];
-  if (outputIssues.length) {
-    throw new Error(`Pantheon refused to publish malformed launch material: ${outputIssues.join(" ")}`);
-  }
-  const productFiles = all(
-    db,
-    `SELECT DISTINCT deliverables.*
-     FROM deliverables
-     JOIN catalogue_items ON catalogue_items.deliverable_id = deliverables.id
-     WHERE catalogue_items.plan_id = ?
-     ORDER BY deliverables.created_at ASC`,
-    [plan.id],
-  );
-  const content = launchPackContent(plan, opportunityRecord, task, parseRow(copyTask, ["payload", "result"]), productFiles);
-  const launchDeliverable = writeTextDeliverable(
-    db,
-    task,
-    `${slug(opportunityRecord.title)}-launch-pack.md`,
-    `${opportunityRecord.title} Launch Pack`,
-    content,
-    { planId: plan.id, opportunityId: opportunityRecord.id, sourceTaskId: task.id },
-  );
-  let experiment = get(
-    db,
-    "SELECT * FROM commercial_experiments WHERE json_extract(metadata, '$.cataloguePlanId') = ? LIMIT 1",
-    [plan.id],
-  );
-  if (!experiment) {
-    experiment = createCommercialExperiment(db, {
-      workflowId: task.workflow_id,
-      ventureId: plan.venture_id,
-      name: `${opportunityRecord.title} first-revenue test`,
-      status: "ready",
-      hypothesis: firstRevenueHypothesis(plan, opportunityRecord),
-      buyer: opportunityRecord.buyer,
-      offer: actualProductOffer(plan, opportunityRecord),
-      channel: opportunityRecord.channel,
-      priceCents: Number(plan.price_floor_cents || 0),
-      expectedMetric: "independent paid buyers and positive cash contribution",
-      targetValue: 3,
-      targetUnit: "buyers",
-      costCapCents: 2500,
-      metadata: {
-        roundId: metadata.roundId,
-        opportunityId: opportunityRecord.id,
-        cataloguePlanId: plan.id,
-        launchPackDeliverableId: launchDeliverable.id,
-        durationDays: 14,
-        qualifiedViewLimit: 50,
-        realStartConfirmed: false,
-      },
-    });
-  } else {
-    const experimentMetadata = fromJson(experiment.metadata, {});
-    run(
-      db,
-      `UPDATE commercial_experiments
-       SET status = 'ready', hypothesis = ?, buyer = ?, offer = ?, channel = ?,
-         price_cents = ?, expected_metric = ?, target_value = 3, target_unit = 'buyers',
-         metadata = ?, updated_at = ?
-      WHERE id = ?`,
-      [
-        firstRevenueHypothesis(plan, opportunityRecord),
-        opportunityRecord.buyer,
-        actualProductOffer(plan, opportunityRecord),
-        opportunityRecord.channel,
-        Number(plan.price_floor_cents || 0),
-        "independent paid buyers and positive cash contribution",
-        toJson({
-          ...experimentMetadata,
-          launchPackDeliverableId: launchDeliverable.id,
-          contextRevision: contextRevision(task),
-          realStartConfirmed: false,
-        }),
-        now(),
-        experiment.id,
-      ],
-    );
-    experiment = get(db, "SELECT * FROM commercial_experiments WHERE id = ?", [experiment.id]);
-  }
-  const journey = journeyForPlan(db, plan);
-  if (journey) {
-    const updatedPlan = updatePlan(db, plan.id, {
-      status: "chief_brief",
-      metadata: {
-        distributionTaskId: task.id,
-        launchPackDeliverableId: launchDeliverable.id,
-        experimentId: experiment.id,
-        buildStatus: "preparing_final_operator_brief",
-        launchContextRevision: contextRevision(task),
-      },
-    });
-    const chief = queueChiefBrief(
-      db,
-      updatedPlan,
-      opportunityRecord,
-      task,
-      parseRow(copyTask, ["payload", "result"]),
-      launchDeliverable,
-      experiment,
-      productFiles,
-      { contextRevision: contextRevision(task) },
-    );
-    updateJourney(db, journey.id, {
-      stageEvent: {
-        stage: "distribution_plan",
-        status: "completed",
-        taskId: task.id,
-        workerId: "distribution_operator",
-        note: "The measured launch plan, tracking fields, stop rules, and initial channel work were retained.",
-      },
-    });
-    return { chief, launchDeliverable, experiment };
-  }
-  const chief = recordProtectedWorkerOutcome(
-    db,
-    {
-      kind: "launch_readiness_decision",
-      agent: "chief_of_staff",
-      workflow_id: task.workflow_id,
-      venture_id: plan.venture_id,
-      title: `Decide whether to launch ${opportunityRecord.title}`,
-      payload: {
-        buyer: opportunityRecord.buyer,
-        problem: opportunityRecord.problem,
-        offer: opportunityRecord.offer_direction,
-        channel: opportunityRecord.channel,
-      },
-    },
-    {
-      heading: "Product and launch pack ready",
-      summary: `${opportunityRecord.title} now has validated local product files, quality-passed catalogue coverage, listing copy, and a measurable first-revenue test. No public action has occurred.`,
-      moneyMove: "Review the launch pack, then decide whether to prepare the Gumroad listing and initial approved posts.",
-      evidence: [
-        `${plan.target_item_count} catalogue items passed the local quality gate.`,
-        `${productFiles.length} customer-facing bundle${productFiles.length === 1 ? "" : "s"} are stored locally.`,
-        `Independent quality score: ${plan.metadata.qualityScore || "not recorded"}/100.`,
-        "The test targets three independent buyers and positive cash contribution.",
-      ],
-      risks: [
-        "Demand evidence and a quality-passed product do not guarantee sales.",
-        "Marketplace setup, KYC, publishing, posts, and any advertising still require an exact external action.",
-      ],
-      nextAction: "Approve launch preparation, request changes, or stop this venture before anything becomes public.",
-      operatorDecision: "approve",
-      confidence: "medium",
-    },
-    {
-      approvalRequired: true,
-      handoffTo: "distribution_operator",
-      handoffReason: "The complete internal product and launch package is ready for Daniel's external-action decision.",
-      handoffDecisionNeeded: `Decide whether Pantheon should move ${opportunityRecord.title} to ready-to-publish.`,
-      handoffRiskLevel: "medium",
-      metadata: {
-        pantheonProduction: {
-          action: "authorize_launch_preparation",
-          roundId: metadata.roundId,
-          opportunityId: opportunityRecord.id,
-          planId: plan.id,
-          experimentId: experiment.id,
-          launchPackDeliverableId: launchDeliverable.id,
-        },
-      },
-    },
-  );
-  const approvalPack = generateApprovalPack(db, task.workflow_id, {
-    authoritativeExposureCents: combinedProofExposureFromDatabase(db).totalCents,
-  });
-  updatePlan(db, plan.id, {
-    status: "launch_decision",
-    metadata: {
-      distributionTaskId: task.id,
-      launchPackDeliverableId: launchDeliverable.id,
-      launchDecisionHandoffId: chief.handoff?.id || null,
-      approvalPackDeliverableId: approvalPack?.id || null,
-      experimentId: experiment.id,
-      buildStatus: "ready_for_launch_decision",
-    },
-  });
-  run(
-    db,
-    "UPDATE opportunities SET status = 'ready_to_launch', updated_at = ? WHERE id = ?",
-    [now(), opportunityRecord.id],
-  );
-  run(
-    db,
-    `UPDATE opportunity_rounds SET status = 'ready_to_launch', updated_at = ?
-     WHERE id = ?`,
-    [now(), metadata.roundId],
-  );
-  run(
-    db,
-    `UPDATE workflows SET status = 'ready_for_review', current_step = 'Launch decision ready',
-      approval_required = 1, updated_at = ? WHERE id = ?`,
-    [now(), task.workflow_id],
-  );
-  return { chief, launchDeliverable, approvalPack, experiment };
+  void db;
+  void task;
+  void plan;
+  void opportunityRecord;
+  throw legacyCommercialPathRetired("pantheon_production_distribution_projection");
 }
 
 function chiefBriefContent(db, plan, opportunityRecord, task, productFiles) {
@@ -4397,7 +4201,7 @@ function chiefBriefContent(db, plan, opportunityRecord, task, productFiles) {
     "",
     "## How Success Will Be Judged",
     `Success metric: ${publicationPlanPriceText(work.successMetric || "Three independent paid buyers and positive cash contribution.", plan)}`,
-    `Stop rule: ${publicationPlanPriceText(work.stopRule || "Revise or stop after 14 days or 50 qualified views without a meaningful buyer signal.", plan)}`,
+    `Stop rule: ${publicationPlanPriceText(work.stopRule || "No market-test stop rule is authorised here; use only a separately accepted immutable v2 commercial-test contract.", plan)}`,
     "",
     "## What Approval Does",
     "Approval marks this exact local package as ready to publish. It does not create a Gumroad account, complete KYC, upload files, publish posts, contact customers, activate advertising, or move money.",
@@ -4633,28 +4437,6 @@ function refreshPublicationArtifacts(db, planId) {
       authoritativeExposureCents: combinedProofExposureFromDatabase(db).totalCents,
       ...publicationPackOptions(db, plan, opportunityRecord, chiefTask.workflow_id),
     });
-    const experiment = get(
-      db,
-      "SELECT * FROM commercial_experiments WHERE json_extract(metadata, '$.cataloguePlanId') = ? LIMIT 1",
-      [plan.id],
-    );
-    if (experiment) {
-      run(
-        db,
-        `UPDATE commercial_experiments
-         SET hypothesis = ?, buyer = ?, offer = ?, channel = ?, price_cents = ?, updated_at = ?
-         WHERE id = ?`,
-        [
-          firstRevenueHypothesis(plan, opportunityRecord),
-          opportunityRecord.buyer,
-          actualProductOffer(plan, opportunityRecord),
-          opportunityRecord.channel,
-          Number(plan.price_floor_cents || 0),
-          now(),
-          experiment.id,
-        ],
-      );
-    }
     updatePlan(db, plan.id, {
       metadata: {
         listingCopyDeliverableId: listingDeliverable.id,

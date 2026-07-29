@@ -13,6 +13,9 @@ const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { requestLiveResearch } = require("../src/runtime/live-research");
 const { getLiveAiWorkerReadiness } = require("../src/runtime/live-ai-worker-readiness");
 const { getLiveResearchReadiness } = require("../src/runtime/live-research-readiness");
+const {
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
 
 function preserveEnvironment(names, operation) {
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
@@ -110,6 +113,18 @@ test("new worker and research approvals bind to Pantheon configuration names", (
       source: "pantheon-environment-test",
       createFiles: false,
     });
+    const researchPlan = createCommandPlan(runtime.db, {
+      text: "Research current pricing and competition for a freelancer cashflow template",
+      source: "pantheon-environment-test",
+      createFiles: false,
+    });
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "pantheon-environment-approval-flags",
+      workflowIds: [
+        workerPlan.workflow.id,
+        researchPlan.workflow.id,
+      ],
+    });
     const worker = requestLiveAiWorker(runtime.db, workerPlan.workflow.id, {
       estimatedCostCents: 500,
       worker: "demand_validator",
@@ -130,11 +145,6 @@ test("new worker and research approvals bind to Pantheon configuration names", (
       ["PANTHEON_ENABLE_LIVE_MODELS"],
     );
 
-    const researchPlan = createCommandPlan(runtime.db, {
-      text: "Research current pricing and competition for a freelancer cashflow template",
-      source: "pantheon-environment-test",
-      createFiles: false,
-    });
     const research = requestLiveResearch(runtime.db, researchPlan.workflow.id, {
       estimatedCostCents: 500,
     });

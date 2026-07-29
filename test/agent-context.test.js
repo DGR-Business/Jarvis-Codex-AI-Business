@@ -21,6 +21,10 @@ const { ensureAgentTools } = require("../src/runtime/agent-tools");
 const { createPilotFixture, prepareDemandValidatorPilot } = require("../src/runtime/agent-pilot");
 const { validateMaterializedExecution } = require("../src/runtime/approval-scope");
 const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
+const {
+  bindWorkflowToCommercialTest,
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
 
 function makeRuntime() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-agent-context-"));
@@ -48,6 +52,193 @@ function insertWorkflow(db, id) {
   );
 }
 
+function contaminateLegacyCommercialRows(db, workflowId) {
+  const timestamp = "2026-07-17T04:00:00.000Z";
+  const sentinel = "LEGACY_CONTEXT_FALSE_SUCCESS";
+  run(
+    db,
+    `UPDATE venture_cases
+     SET latest_learning = ?, next_money_move = ?, updated_at = ?
+     WHERE venture_id = 'venture-digital-products'`,
+    [sentinel, sentinel, timestamp],
+  );
+  run(
+    db,
+    `INSERT INTO commercial_experiments
+     (id, venture_id, name, status, hypothesis, buyer, offer, channel,
+      price_cents, expected_metric, target_value, target_unit, cost_cap_cents,
+      metadata, created_at, updated_at)
+     VALUES (
+       'legacy-context-experiment',
+       'venture-digital-products',
+       ?,
+       'running',
+       ?,
+       'Legacy buyer',
+       'Legacy offer',
+       'Legacy channel',
+       9900,
+       'Legacy metric',
+       99,
+       'buyers',
+       0,
+       '{}',
+       ?,
+       ?
+     )`,
+    [sentinel, sentinel, timestamp, timestamp],
+  );
+  run(
+    db,
+    `INSERT INTO commercial_results
+     (id, experiment_id, source, status, views, clicks, leads, sales, refunds,
+      revenue_cents, spend_cents, time_spent_minutes, notes, occurred_at,
+      metadata, created_at)
+     VALUES (
+       'legacy-context-result',
+       'legacy-context-experiment',
+       'manual',
+       'recorded',
+       1000,
+       900,
+       800,
+       99,
+       0,
+       990000,
+       0,
+       1,
+       ?,
+       ?,
+       '{}',
+       ?
+     )`,
+    [sentinel, timestamp, timestamp],
+  );
+  run(
+    db,
+    `INSERT INTO platform_sales
+     (id, venture_id, platform, platform_purchase_id, product_name, sold_at,
+      currency, gross_cents, platform_fee_cents, net_cents, refunded_cents,
+      referrer, buyer_hash, status, metadata, imported_at,
+      aud_gross_cents, aud_platform_fee_cents, aud_net_cents,
+      aud_refunded_cents, aud_conversion_rate, aud_conversion_evidence,
+      aud_conversion_at)
+     VALUES (
+       'legacy-context-sale',
+       'venture-digital-products',
+       'legacy',
+       'legacy-context-purchase',
+       ?,
+       ?,
+       'AUD',
+       990000,
+       0,
+       990000,
+       0,
+       'legacy',
+       'legacy-context-buyer',
+       'paid',
+       '{}',
+       ?,
+       990000,
+       0,
+       990000,
+       0,
+       1,
+       'Legacy native-AUD claim',
+       ?
+     )`,
+    [sentinel, timestamp, timestamp, timestamp],
+  );
+  run(
+    db,
+    `INSERT INTO commercial_feedback
+     (id, experiment_id, workflow_id, source, sentiment, rating, summary,
+      objection, request, occurred_at, metadata, created_at, venture_id,
+      verified, verified_at)
+     VALUES (
+       'legacy-context-feedback',
+       'legacy-context-experiment',
+       ?,
+       'manual',
+       'positive',
+       5,
+       ?,
+       '',
+       ?,
+       ?,
+       '{}',
+       ?,
+       'venture-digital-products',
+       1,
+       ?
+     )`,
+    [workflowId, sentinel, sentinel, timestamp, timestamp, timestamp],
+  );
+  run(
+    db,
+    `INSERT INTO commercial_learning_cycles
+     (id, experiment_id, workflow_id, status, verdict, hypothesis,
+      expected_metric, actual_result, learning, improvement, next_action,
+      confidence, metadata, created_at)
+     VALUES (
+       'legacy-context-learning',
+       'legacy-context-experiment',
+       ?,
+       'recorded',
+       'signal_observed',
+       ?,
+       '99 sales',
+       ?,
+       ?,
+       ?,
+       ?,
+       'high',
+       '{}',
+       ?
+     )`,
+    [
+      workflowId,
+      sentinel,
+      sentinel,
+      sentinel,
+      sentinel,
+      sentinel,
+      timestamp,
+    ],
+  );
+  run(
+    db,
+    `INSERT INTO executive_digests
+     (id, venture_id, period_start, period_end, status, title, summary,
+      metrics, decisions, learning, next_actions, generated_at)
+     VALUES (
+       'legacy-context-digest',
+       'venture-digital-products',
+       '2026-07-13T00:00:00.000Z',
+       '2026-07-20T00:00:00.000Z',
+       'on_track',
+       ?,
+       ?,
+       ?,
+       ?,
+       ?,
+       ?,
+       ?
+     )`,
+    [
+      sentinel,
+      sentinel,
+      toJson({ independentBuyers: 99, cashContributionCents: 990000 }),
+      toJson([{ recommendation: sentinel }]),
+      toJson([sentinel]),
+      toJson([sentinel]),
+      timestamp,
+    ],
+  );
+  return sentinel;
+}
+
 test("task-scoped context exposes focused records without credentials or direct customer identifiers", () => {
   const runtime = makeRuntime();
   try {
@@ -56,11 +247,25 @@ test("task-scoped context exposes focused records without credentials or direct 
       runtime.db,
       `INSERT INTO accounting_entries
        (id, venture_id, entry_type, category, source, description, status, amount_cents,
-        currency, occurred_at, metadata, created_at, updated_at, effect_sign)
-       VALUES ('acct-context', 'venture-digital-products', 'expense', 'OpenAI API',
-        'operator_receipt', 'Controlled model credit', 'reconciled', 1579, 'AUD',
+        currency, occurred_at, metadata, created_at, updated_at, effect_sign,
+        reverses_entry_id)
+       VALUES
+       ('acct-context', 'venture-digital-products', 'cash_outflow', 'OpenAI API',
+        'operator_receipt', 'Original controlled model credit', 'reconciled', 1579, 'AUD',
         '2026-07-17T00:00:00.000Z', '{}', '2026-07-17T00:00:00.000Z',
-        '2026-07-17T00:00:00.000Z', -1)`,
+        '2026-07-17T00:00:00.000Z', 1, NULL),
+       ('acct-context-reversal', 'venture-digital-products', 'cash_outflow', 'OpenAI API',
+        'operator_receipt', 'Reversal of controlled model credit', 'reconciled', 1579, 'AUD',
+        '2026-07-17T00:01:00.000Z', '{}', '2026-07-17T00:01:00.000Z',
+        '2026-07-17T00:01:00.000Z', -1, 'acct-context'),
+       ('acct-context-replacement', 'venture-digital-products', 'cash_outflow', 'OpenAI API',
+        'operator_receipt', 'Corrected controlled model credit', 'reconciled', 1200, 'AUD',
+        '2026-07-17T00:02:00.000Z', '{}', '2026-07-17T00:02:00.000Z',
+        '2026-07-17T00:02:00.000Z', 1, NULL),
+       ('acct-shared', NULL, 'cash_outflow', 'Shared infrastructure',
+        'operator_receipt', 'Shared operating cost', 'reconciled', 300, 'AUD',
+        '2026-07-17T00:03:00.000Z', '{}', '2026-07-17T00:03:00.000Z',
+        '2026-07-17T00:03:00.000Z', 1, NULL)`,
     );
     addVentureRecord(runtime.db, {
       id: "legal-summary",
@@ -102,7 +307,23 @@ test("task-scoped context exposes focused records without credentials or direct 
       purpose: "Review the venture position.",
     });
     assert.equal(verifyAgentContextSnapshot(snapshot).valid, true);
-    assert.equal(snapshot.sections.finance.records[0].facts.reconciledOutflowsAud, 15.79);
+    const financeFacts = snapshot.sections.finance.records[0].facts;
+    assert.equal(financeFacts.operatingCostContext.reconciledOutflowsAud, 15);
+    assert.equal(financeFacts.operatingCostContext.ventureCashOutflowsAud, 12);
+    assert.equal(financeFacts.operatingCostContext.sharedCashOutflowsAud, 3);
+    assert.equal(financeFacts.commercialProof.verifiedBuyerCount, null);
+    assert.equal(financeFacts.commercialProof.netCashContribution.status, "not_settled");
+    assert.equal(financeFacts.commercialProof.netCashContribution.label, "Not settled");
+    assert.equal(financeFacts.commercialProof.netCashContribution.amountCents, null);
+    const reversalRecord = snapshot.sections.finance.records.find(
+      (item) => item.ref.id === "acct-context-reversal",
+    );
+    assert.equal(reversalRecord.facts.cashDirection, "outflow_reversal");
+    assert.equal(reversalRecord.facts.correctionEffect, "reversal");
+    assert.equal(
+      snapshot.sections.finance.records.find((item) => item.ref.id === "acct-shared").facts.costScope,
+      "shared_operating_cost",
+    );
     assert.equal(snapshot.sections.legal.records.some((item) => item.ref.id === "legal-summary"), true);
     assert.equal(snapshot.sections.legal.records.some((item) => item.ref.id === "legal-local-only"), false);
     assert.equal(snapshot.sections.legal.withheldLocalOnly, 1);
@@ -138,6 +359,95 @@ test("task-scoped context exposes focused records without credentials or direct 
       () => run(runtime.db, "DELETE FROM venture_records WHERE id = 'legal-summary'"),
       /immutable/,
     );
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("live worker context excludes contaminated legacy commercial claims and recommendations", () => {
+  const runtime = makeRuntime();
+  try {
+    insertWorkflow(runtime.db, "wf-legacy-context-contamination");
+    const sentinel = contaminateLegacyCommercialRows(
+      runtime.db,
+      "wf-legacy-context-contamination",
+    );
+    addVentureRecord(runtime.db, {
+      id: "legacy-context-generic-customer",
+      ventureId: "venture-digital-products",
+      recordClass: "customer",
+      recordType: "historical_feedback",
+      title: sentinel,
+      summary: sentinel,
+      content: { recommendation: sentinel },
+      providerPolicy: "full",
+    });
+    addVentureRecord(runtime.db, {
+      id: "legacy-context-generic-learning",
+      ventureId: "venture-digital-products",
+      recordClass: "learning",
+      recordType: "historical_learning",
+      title: sentinel,
+      summary: sentinel,
+      content: { nextAction: sentinel },
+      providerPolicy: "full",
+    });
+
+    const snapshot = buildAgentContextSnapshot(runtime.db, {
+      ventureId: "venture-digital-products",
+      workflowId: "wf-legacy-context-contamination",
+      taskId: "task-legacy-context-contamination",
+      agentId: "chief_of_staff",
+      purpose: "Recommend the next move using current commercial truth only.",
+    });
+    const financeFacts = snapshot.sections.finance.records[0].facts;
+    const serialized = JSON.stringify(snapshot);
+
+    assert.equal(financeFacts.commercialProof.source, "canonical_commercial_test_ledger");
+    assert.equal(financeFacts.commercialProof.integrityStatus, "ok");
+    assert.equal(financeFacts.commercialProof.currentTest, null);
+    assert.equal(financeFacts.commercialProof.verifiedBuyerCount, null);
+    assert.equal(financeFacts.commercialProof.buyerTarget, null);
+    assert.deepEqual(financeFacts.commercialProof.netCashContribution, {
+      status: "not_settled",
+      label: "Not settled",
+      currency: "AUD",
+      amountCents: null,
+    });
+    assert.equal(financeFacts.commercialProof.commercialProofReached, null);
+    assert.equal(financeFacts.commercialProof.legacySalesAndResultsExcluded, true);
+    assert.equal(
+      financeFacts.operatingCostContext.doesNotProveSalesOrCommercialContribution,
+      true,
+    );
+    assert.equal(Object.hasOwn(financeFacts, "grossSalesAud"), false);
+    assert.equal(Object.hasOwn(financeFacts, "salesCount"), false);
+    assert.equal(
+      snapshot.sections.customer.records.some(
+        (item) => item.ref.table === "commercial_feedback",
+      ),
+      false,
+    );
+    assert.equal(
+      snapshot.sections.learning.records.some(
+        (item) => (
+          item.ref.table === "commercial_learning_cycles"
+          || item.ref.table === "executive_digests"
+        ),
+      ),
+      false,
+    );
+    assert.equal(serialized.includes(sentinel), false);
+    assert.equal(serialized.includes("legacy-context-buyer"), false);
+    assert.equal(snapshot.sections.customer.withheldNonCanonical, 1);
+    assert.equal(snapshot.sections.learning.withheldNonCanonical, 1);
+    assert.equal(snapshot.dataPolicy.commercialClaimsUseCanonicalOwnerProjection, true);
+    assert.equal(
+      snapshot.dataPolicy.legacyCommercialRowsExcludedFromCurrentRecommendations,
+      true,
+    );
+    assert.equal(snapshot.dataPolicy.nonCanonicalCustomerAndLearningRecordsWithheld, true);
+    assert.equal(verifyAgentContextSnapshot(snapshot).valid, true);
   } finally {
     closeRuntime(runtime);
   }
@@ -248,6 +558,13 @@ test("live worker approvals bind a persisted context snapshot while supplied-evi
   const runtime = makeRuntime();
   try {
     insertWorkflow(runtime.db, "wf-live-context");
+    const commercialAuthority = installActivatedCommercialTestFixture(
+      runtime.db,
+      {
+        suffix: "agent-context",
+        workflowIds: ["wf-live-context"],
+      },
+    );
     const requested = requestLiveAiWorker(runtime.db, "wf-live-context", {
       worker: "finance_analyst",
       requestedBy: "test",
@@ -268,6 +585,11 @@ test("live worker approvals bind a persisted context snapshot while supplied-evi
     );
 
     insertWorkflow(runtime.db, "wf-context-disable-rejected");
+    bindWorkflowToCommercialTest(
+      runtime.db,
+      "wf-context-disable-rejected",
+      commercialAuthority.binding,
+    );
     assert.throws(() => requestLiveAiWorker(runtime.db, "wf-context-disable-rejected", {
       worker: "finance_analyst",
       requestedBy: "test",
@@ -277,6 +599,11 @@ test("live worker approvals bind a persisted context snapshot while supplied-evi
     }), /cannot be disabled/i);
 
     insertWorkflow(runtime.db, "wf-context-too-large");
+    bindWorkflowToCommercialTest(
+      runtime.db,
+      "wf-context-too-large",
+      commercialAuthority.binding,
+    );
     assert.throws(() => requestLiveAiWorker(runtime.db, "wf-context-too-large", {
       worker: "finance_analyst",
       requestedBy: "test",
@@ -289,6 +616,11 @@ test("live worker approvals bind a persisted context snapshot while supplied-evi
     }), /concise complete context instead of clipping structured business records/i);
 
     insertWorkflow(runtime.db, "wf-context-complete");
+    bindWorkflowToCommercialTest(
+      runtime.db,
+      "wf-context-complete",
+      commercialAuthority.binding,
+    );
     const completeAssetPrompt = JSON.stringify({
       schema: "complete-record-v1",
       currentTruth: { status: "quality_passed", score: 93 },
@@ -323,6 +655,7 @@ test("live worker approvals bind a persisted context snapshot while supplied-evi
     const fixture = prepareDemandValidatorPilot(runtime.db, fixtureRecord.id, {
       requestedBy: "test",
       estimatedCostCents: 100,
+      commercialTestContract: commercialAuthority.binding,
     }).requested;
     assert.equal(fixture.task.payload.contextSnapshot, null);
     assert.equal(fixture.task.payload.liveSpendRequest.parameters.contextSnapshot, undefined);

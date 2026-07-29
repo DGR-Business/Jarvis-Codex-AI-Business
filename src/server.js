@@ -15,45 +15,41 @@ const { decideApproval } = require("./runtime/approvals");
 const { refreshIntegrationHealth } = require("./adapters/registry");
 const { getDashboardState } = require("./runtime/state");
 const { all, fromJson, get, insertEvent, now, openDatabase, run, seedDatabase, toJson } = require("./db");
-const { createCommandPlan } = require("./runtime/planner");
 const { runOnce, runUntilBlocked } = require("./runtime/orchestrator");
 const { generateApprovalPack } = require("./runtime/approval-pack");
 const { runMonitorCycle } = require("./runtime/monitor");
 const {
-  createLiveAiWorkerSmokeTest,
   prepareReviewedLiveAiWorkerRetry,
   refreshOutdatedLiveAiWorkerApproval,
   refreshOutdatedLiveAiWorkerApprovals,
   requestLiveAiWorker,
 } = require("./runtime/live-ai-workers");
 const { prepareProductBuilderAsset } = require("./runtime/product-builder-workspace");
-const { createLiveResearchSmokeTest, requestLiveResearch } = require("./runtime/live-research");
+const { requestLiveResearch } = require("./runtime/live-research");
 const { decideAgentHandoff, ensureAiTeam, getAgentHandoff } = require("./runtime/ai-team");
-const { ensureWorkflowScorecards, upsertWorkflowScorecard } = require("./runtime/scorecard");
-const { createCommercialExperiment, recordCommercialFeedback, recordCommercialResult } = require("./runtime/commercial-results");
-const { createResearchToExperimentPlan, createRevisionPlanFromLearning, promoteCandidateToExperiment } = require("./runtime/research-to-experiment");
-const { generateExecutionPack, recordExecutionPackOutcome } = require("./runtime/test-execution-pack");
+const { ensureWorkflowScorecards } = require("./runtime/scorecard");
 const { getLiveAiWorkerReadiness } = require("./runtime/live-ai-worker-readiness");
 const { getLiveResearchReadiness } = require("./runtime/live-research-readiness");
 const {
   ensureAgentWorkbench,
   getAgentWorkbenchState,
-  queueAgentWorkbenchProof,
-  queueAgentWorkbenchProofSuite,
   requestAgentWorkbenchLiveComparison,
 } = require("./runtime/agent-workbench");
 const { getAgentToolGateState } = require("./runtime/agent-tool-gate");
 const { ensureAgentTools, getAgentToolPolicyState } = require("./runtime/agent-tools");
 const { getAgentOperatingBriefsState } = require("./runtime/agent-operating-briefs");
-const { getAgentPlaybooksState, queueAgentPlaybookRehearsal, queueAgentPlaybookRehearsalSuite } = require("./runtime/agent-playbooks");
-const { getAgentModelReadinessState, queueAgentModelComparisonPacket, storedComparisonPackets } = require("./runtime/agent-model-readiness");
+const { getAgentPlaybooksState } = require("./runtime/agent-playbooks");
+const { getAgentModelReadinessState, storedComparisonPackets } = require("./runtime/agent-model-readiness");
 const { recordAiPilotReviewDecision } = require("./runtime/ai-pilot-review");
 const { createLocalSecurity } = require("./runtime/local-security");
 const { recoverSetupBlockedTasks } = require("./runtime/spend-gate");
-const { ensureWeeklyDigest, generateWeeklyDigest, getLatestDigest } = require("./runtime/executive-digest");
+const {
+  ensureWeeklyDigest,
+  generateWeeklyDigest,
+  getCanonicalOwnerDigest,
+} = require("./runtime/executive-digest");
 const { ensureActiveVentureCase } = require("./runtime/venture-case");
 const { ensureCapabilityAutonomy } = require("./runtime/capability-autonomy");
-const { getGumroadSalesState, importGumroadCsv } = require("./runtime/gumroad-import");
 const { reconcileProviderUsageBatch } = require("./runtime/cost-ledger");
 const {
   ensureRetentionPolicy,
@@ -75,27 +71,29 @@ const {
   getAgentRunDetail,
   getAgentRunsState,
   getAiTeamState,
-  getBusinessTestsState,
   getCockpitState,
   getDecisionsState,
   getSystemState,
-  getTestDetail,
 } = require("./runtime/cockpit-state");
+const {
+  getCommercialOwnerTestsState,
+} = require("./runtime/commercial-owner-state");
+const {
+  decideCommercialLifecycleApproval,
+  hasCommercialLifecycleApprovalPayload,
+} = require("./runtime/commercial-lifecycle-decision");
 const {
   ensureSchedulerJobs,
   inspectSafeWorkflow,
-  runDueSchedulerJobs,
   runSchedulerJob,
   setSchedulerJobStatus,
   startSchedulerLoop,
   unsafeTaskReason,
 } = require("./runtime/scheduler");
-const { getOpportunityState, startOpportunityRound } = require("./runtime/pantheon-opportunities");
+const { getOpportunityState } = require("./runtime/pantheon-opportunities");
 const {
   ensurePortfolioController,
   getPortfolioState,
-  startPortfolioDiscovery,
-  startTargetedInvestmentReview,
 } = require("./runtime/portfolio-controller");
 const {
   getCommercialConstitution,
@@ -106,12 +104,7 @@ const {
   listInvestmentCases,
 } = require("./runtime/commercial-investment-review");
 const {
-  approveServiceTrialWithinMandate,
-  completeServiceTrial,
-  decideServiceRetention,
   getServiceTrialsState,
-  proposeServiceTrial,
-  startServiceTrial,
 } = require("./runtime/service-trials");
 const { getCapabilityAssuranceState } = require("./runtime/capability-assurance");
 const { listVentureKits } = require("./runtime/venture-kit-registry");
@@ -120,19 +113,19 @@ const { getPantheonSupervisorState, runPantheonSupervisorCycle } = require("./ru
 const {
   applyPantheonHandoffDecision,
   getProductionState,
-  prepareCatalogueBuild,
 } = require("./runtime/pantheon-production");
-const { prepareBuyerIntentValidationRecords } = require("./runtime/buyer-intent-validation");
-const {
-  BUYER_INTENT_VALIDATION_SPECS,
-  getBuyerIntentValidationSpec,
-} = require("../config/buyer-intent-validation-specs");
 const {
   getJourneyState,
   isTerminalJourneyStatus,
   journeyById,
-  startPantheonJourney,
 } = require("./runtime/pantheon-journey");
+const {
+  classifyCommercialTaskSafety,
+  classifyCommercialWorkflowSafety,
+  commercialAuthorityErrorPayload,
+  commercialRouteGuard,
+  getCommercialAuthorityState,
+} = require("./runtime/commercial-authority");
 
 const PUBLIC_DIR = path.join(CONFIG.rootDir, "public");
 const MONITOR_JOB_ID = "job-monitor-cycle";
@@ -365,6 +358,14 @@ function ensureRuntimeFoundation(db) {
   const setupRecovery = recoverSetupBlockedTasks(db);
   ensureAgentWorkbench(db);
   ensureSchedulerJobs(db);
+  run(
+    db,
+    `UPDATE scheduler_jobs
+     SET status = 'disabled', next_run_at = NULL, updated_at = ?
+     WHERE kind = 'pantheon_supervisor'
+       AND status <> 'disabled'`,
+    [now()],
+  );
   ensureWorkflowScorecards(db);
   ensureActiveVentureCase(db);
   ensureCapabilityAutonomy(db);
@@ -512,6 +513,12 @@ function selectSafeRuntimeTickTask(db) {
       rejectedReasons[workflowSafety.reason] = (rejectedReasons[workflowSafety.reason] || 0) + 1;
       continue;
     }
+    const commercialSafety = classifyCommercialTaskSafety(db, task);
+    if (!commercialSafety.safe) {
+      const reason = commercialSafety.code || commercialSafety.classification || "commercial_authority_required";
+      rejectedReasons[reason] = (rejectedReasons[reason] || 0) + 1;
+      continue;
+    }
     return { task, rejectedReasons };
   }
   return { task: null, rejectedReasons };
@@ -548,6 +555,79 @@ function routeMatch(pathname, pattern) {
     }
   }
   return params;
+}
+
+function sendCommercialGuardFailure(res, assessment) {
+  jsonResponse(
+    res,
+    Number(assessment.statusCode || 409),
+    assessment.payload || commercialAuthorityErrorPayload(assessment),
+  );
+}
+
+function requireCommercialTarget(db, res, target) {
+  const assessment = commercialRouteGuard(db, target);
+  if (assessment.allowed) return assessment;
+  sendCommercialGuardFailure(res, assessment);
+  return null;
+}
+
+function requireCommercialWorkflowWhenNeeded(db, res, workflowId, options = {}) {
+  const safety = classifyCommercialWorkflowSafety(db, workflowId);
+  if (safety.safe && !safety.requiresCommercialAuthority && !options.required) {
+    return {
+      allowed: true,
+      code: safety.code,
+      workflowSafety: safety,
+    };
+  }
+  if (safety.safe && safety.requiresCommercialAuthority) {
+    return {
+      allowed: true,
+      code: safety.code,
+      workflowSafety: safety,
+      assessment: safety.assessment,
+    };
+  }
+  const assessment = safety.assessment || commercialRouteGuard(db, { workflowId });
+  sendCommercialGuardFailure(res, assessment);
+  return null;
+}
+
+function requireCommercialTaskWhenNeeded(db, res, task) {
+  const safety = classifyCommercialTaskSafety(db, task);
+  if (safety.safe) {
+    return {
+      allowed: true,
+      code: safety.code,
+      taskSafety: safety,
+    };
+  }
+  const assessment = safety.assessment || commercialRouteGuard(db, { taskId: task.id });
+  sendCommercialGuardFailure(res, assessment);
+  return null;
+}
+
+function retireCommercialRoute(db, res, message) {
+  const payload = commercialAuthorityErrorPayload({
+    code: "commercial_route_retired",
+    message,
+    authority: getCommercialAuthorityState(db),
+  });
+  payload.commercialAuthority.retiredRoute = true;
+  jsonResponse(res, 410, payload);
+}
+
+function rejectUnboundCommercialRoute(db, res, message) {
+  jsonResponse(
+    res,
+    409,
+    commercialAuthorityErrorPayload({
+      code: "commercial_binding_required",
+      message,
+      authority: getCommercialAuthorityState(db),
+    }),
+  );
 }
 
 function createApp(options = {}) {
@@ -670,10 +750,16 @@ function createApp(options = {}) {
                       THEN 1 ELSE 0 END) AS known_calls
            FROM model_calls`,
         ) || {};
+        const runtimeReady = monitoringReadiness.monitoring.ready;
         const payload = {
           alive: true,
-          ok: monitoringReadiness.monitoring.ready,
-          operationsReady: monitoringReadiness.monitoring.ready,
+          ok: runtimeReady,
+          installationReady: null,
+          recoveryReady: null,
+          runtimeReady,
+          readinessScope: "runtime_monitoring",
+          operationsReady: runtimeReady,
+          operationsReadyAliasFor: "runtimeReady",
           instanceId,
           workspaceId,
           time: now(),
@@ -741,6 +827,21 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/api/commercial/authority") {
+        jsonResponse(res, 200, {
+          schema: "pantheon.commercial-authority-status.v1",
+          generatedAt: now(),
+          readOnly: true,
+          access: {
+            mode: security.enabled ? "signed_operator_session" : "local_security_disabled",
+            authenticated: true,
+            sessionExpiresAt: session?.expiresAt || null,
+          },
+          authority: getCommercialAuthorityState(db),
+        });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/runtime/standby") {
         const result = await returnToStandby(db);
         jsonResponse(res, 202, result);
@@ -780,18 +881,20 @@ function createApp(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/api/portfolio/discovery") {
-        const body = await readBody(req);
-        const result = startPortfolioDiscovery(db, body || {});
-        broadcastState();
-        jsonResponse(res, result.started ? 202 : 409, result);
+        rejectUnboundCommercialRoute(
+          db,
+          res,
+          "Portfolio discovery cannot create unbound commercial work. Prepare and accept an exact v2 program first.",
+        );
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/portfolio/targeted-review") {
-        const body = await readBody(req);
-        const result = startTargetedInvestmentReview(db, body || {});
-        broadcastState();
-        jsonResponse(res, result.started ? 202 : 409, result);
+        rejectUnboundCommercialRoute(
+          db,
+          res,
+          "Targeted investment review cannot create unbound commercial work. Prepare and accept an exact v2 program first.",
+        );
         return;
       }
 
@@ -829,20 +932,10 @@ function createApp(options = {}) {
         const result = getInvestmentCase(db, investmentCaseDetail.id);
         if (!result) notFound(res);
         else {
-          const buyerIntentSpec = BUYER_INTENT_VALIDATION_SPECS.find(
-            (spec) => spec.status === "active" && spec.decisionHash === result.decision_hash,
-          );
           jsonResponse(res, 200, {
             ...result,
-            buyerIntentOption: buyerIntentSpec ? {
-              specId: buyerIntentSpec.id,
-              label: "Prepare one buyer test",
-              summary: `Build one functional validation workbook and check it before deciding whether to prepare ${buyerIntentSpec.channel.testActionLabel || buyerIntentSpec.channel.label}.`,
-              platformName: buyerIntentSpec.channel.platformName || null,
-              expectedDecisionHash: result.decision_hash,
-              internalAiCapCents: buyerIntentSpec.providerPolicy.combinedCapCents,
-              externalActionsAllowed: false,
-            } : null,
+            buyerIntentOption: null,
+            canonicalTestContract: "pantheon.commercial-test-contract.v2",
           });
         }
         return;
@@ -853,40 +946,11 @@ function createApp(options = {}) {
         "/api/commercial/investment-cases/:id/prepare-buyer-intent-test",
       );
       if (req.method === "POST" && prepareBuyerIntent) {
-        const body = await readBody(req);
-        const spec = getBuyerIntentValidationSpec(body?.specId);
-        if (!spec) {
-          jsonResponse(res, 400, { error: "This buyer-intent test specification is not available." });
-          return;
-        }
-        const savepoint = "prepare_buyer_intent_and_build";
-        db.exec(`SAVEPOINT ${savepoint}`);
-        let prepared;
-        let build;
-        try {
-          prepared = prepareBuyerIntentValidationRecords(db, prepareBuyerIntent.id, {
-            specId: spec.id,
-            expectedDecisionHash: body.expectedDecisionHash,
-          });
-          build = prepareCatalogueBuild(db, {
-            planId: prepared.plan.id,
-            opportunityId: prepared.opportunity.id,
-            operatorChoiceRequired: true,
-          });
-          db.exec(`RELEASE SAVEPOINT ${savepoint}`);
-        } catch (error) {
-          db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
-          db.exec(`RELEASE SAVEPOINT ${savepoint}`);
-          throw error;
-        }
-        broadcastState();
-        jsonResponse(res, build.existing ? 200 : 201, {
-          prepared,
-          build,
-          nextAction: build.approval?.id
-            ? "Review the one functional validation workbook build."
-            : "The validation workbook build is already in progress or complete.",
-        });
+        retireCommercialRoute(
+          db,
+          res,
+          "The v1 buyer-intent preparation path is retired. A validated v2 contract proposal and exact owner lifecycle decision are required.",
+        );
         return;
       }
 
@@ -896,45 +960,51 @@ function createApp(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/api/commercial/service-trials") {
-        const body = await readBody(req);
-        const trial = proposeServiceTrial(db, body || {});
-        broadcastState();
-        jsonResponse(res, 201, { trial });
+        rejectUnboundCommercialRoute(
+          db,
+          res,
+          "Service trials are not yet bound to the immutable commercial program ledger.",
+        );
         return;
       }
 
       const serviceTrialApprove = routeMatch(url.pathname, "/api/commercial/service-trials/:id/approve");
       if (req.method === "POST" && serviceTrialApprove) {
-        const body = await readBody(req);
-        const result = approveServiceTrialWithinMandate(db, serviceTrialApprove.id, body || {});
-        broadcastState();
-        jsonResponse(res, result.approved ? 200 : 409, result);
+        rejectUnboundCommercialRoute(
+          db,
+          res,
+          "Service-trial approval cannot rely on client-supplied readiness flags; this trial needs an exact ledger binding.",
+        );
         return;
       }
 
       const serviceTrialStart = routeMatch(url.pathname, "/api/commercial/service-trials/:id/start");
       if (req.method === "POST" && serviceTrialStart) {
-        const trial = startServiceTrial(db, serviceTrialStart.id);
-        broadcastState();
-        jsonResponse(res, 200, { trial });
+        rejectUnboundCommercialRoute(
+          db,
+          res,
+          "Service-trial start is blocked until the trial is bound to the accepted active commercial program.",
+        );
         return;
       }
 
       const serviceTrialComplete = routeMatch(url.pathname, "/api/commercial/service-trials/:id/complete");
       if (req.method === "POST" && serviceTrialComplete) {
-        const body = await readBody(req);
-        const trial = completeServiceTrial(db, serviceTrialComplete.id, body || {});
-        broadcastState();
-        jsonResponse(res, 200, { trial });
+        rejectUnboundCommercialRoute(
+          db,
+          res,
+          "Service-trial completion is blocked until the trial has an exact immutable commercial binding.",
+        );
         return;
       }
 
       const serviceTrialDecision = routeMatch(url.pathname, "/api/commercial/service-trials/:id/decision");
       if (req.method === "POST" && serviceTrialDecision) {
-        const body = await readBody(req);
-        const result = decideServiceRetention(db, serviceTrialDecision.id, body || {});
-        broadcastState();
-        jsonResponse(res, result.decided ? 200 : 409, result);
+        rejectUnboundCommercialRoute(
+          db,
+          res,
+          "Service-retention decisions are blocked until the trial has an exact immutable commercial binding.",
+        );
         return;
       }
 
@@ -977,7 +1047,7 @@ function createApp(options = {}) {
       }
 
       if (req.method === "GET" && url.pathname === "/api/executive-digest") {
-        jsonResponse(res, 200, { digest: getLatestDigest(db) });
+        jsonResponse(res, 200, { digest: getCanonicalOwnerDigest(db) });
         return;
       }
 
@@ -994,25 +1064,25 @@ function createApp(options = {}) {
       }
 
       if (req.method === "GET" && url.pathname === "/api/tests") {
-        jsonResponse(res, 200, getBusinessTestsState(db));
+        jsonResponse(res, 200, getCommercialOwnerTestsState(db));
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/api/gumroad/sales") {
-        const ventureId = url.searchParams.get("venture_id");
-        if (!ventureId) {
-          jsonResponse(res, 400, { error: "venture_id is required." });
-          return;
-        }
-        jsonResponse(res, 200, getGumroadSalesState(db, ventureId));
+        retireCommercialRoute(
+          db,
+          res,
+          "Legacy Gumroad sales rows are historical context only. Use a contract-bound verified v2 adapter receipt.",
+        );
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/gumroad/import") {
-        const body = await readBody(req);
-        const result = importGumroadCsv(db, body || {});
-        broadcastState();
-        jsonResponse(res, 200, { result, tests: getBusinessTestsState(db) });
+        retireCommercialRoute(
+          db,
+          res,
+          "The legacy Gumroad importer is not an authoritative v2 evidence route. Use contract-bound evidence import.",
+        );
         return;
       }
 
@@ -1074,9 +1144,9 @@ function createApp(options = {}) {
 
       const testDetail = routeMatch(url.pathname, "/api/tests/:id");
       if (req.method === "GET" && testDetail) {
-        const result = getTestDetail(db, testDetail.id);
-        if (!result) notFound(res);
-        else jsonResponse(res, 200, result);
+        jsonResponse(res, 410, {
+          error: "The legacy test detail endpoint is retired. Use the read-only Tests & Results view.",
+        });
         return;
       }
 
@@ -1120,21 +1190,15 @@ function createApp(options = {}) {
       }
 
       if (req.method === "GET" && url.pathname === "/api/decision-inbox") {
-        const state = getDashboardState(db);
-        jsonResponse(res, 200, {
-          generatedAt: state.generatedAt,
-          decisionInbox: state.decisionInbox,
-          metrics: state.metrics.decisionInbox,
+        jsonResponse(res, 410, {
+          error: "The legacy decision inbox is retired. Use the focused Decisions and Tests & Results views.",
         });
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/api/manual-market-cockpit") {
-        const state = getDashboardState(db);
-        jsonResponse(res, 200, {
-          generatedAt: state.generatedAt,
-          manualMarketCockpit: state.manualMarketCockpit,
-          metrics: state.metrics.manualMarketCockpit,
+        jsonResponse(res, 410, {
+          error: "The manual market cockpit is retired because its legacy rows are not authoritative buyer or cash evidence.",
         });
         return;
       }
@@ -1214,10 +1278,11 @@ function createApp(options = {}) {
 
       const modelComparisonPacket = routeMatch(url.pathname, "/api/agent-model-readiness/:id/comparison-packet");
       if (req.method === "POST" && modelComparisonPacket) {
-        const body = await readBody(req);
-        const result = queueAgentModelComparisonPacket(db, modelComparisonPacket.id, body || {});
-        broadcastState();
-        jsonResponse(res, 202, { result });
+        retireCommercialRoute(
+          db,
+          res,
+          "Caller-defined model-comparison creation is retired because it cannot carry one exact accepted commercial contract through every new record.",
+        );
         return;
       }
 
@@ -1236,37 +1301,36 @@ function createApp(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/api/agent-playbooks/rehearsal-suite") {
-        const body = await readBody(req);
-        const queued = queueAgentPlaybookRehearsalSuite(db, body || {});
-        const maxSteps = body.maxSteps || queued.tasks.length + 2;
-        const loop = body.autoRun === false ? null : await runUntilBlocked(db, { workflowId: queued.workflow.id, maxSteps });
-        broadcastState();
-        jsonResponse(res, 201, { result: { ...queued, loop } });
+        retireCommercialRoute(
+          db,
+          res,
+          "Caller-defined playbook suites are retired because they could create commercial workflows and tasks without an exact accepted contract.",
+        );
         return;
       }
 
       const agentPlaybookRehearsal = routeMatch(url.pathname, "/api/agent-playbooks/:id/rehearsal");
       if (req.method === "POST" && agentPlaybookRehearsal) {
-        const body = await readBody(req);
-        const queued = queueAgentPlaybookRehearsal(db, agentPlaybookRehearsal.id, body || {});
-        const runResult = body.autoRun === false ? null : await runOnce(db, { workflowId: queued.workflow.id });
-        broadcastState();
-        jsonResponse(res, 201, { result: { ...queued, run: runResult } });
+        retireCommercialRoute(
+          db,
+          res,
+          "Caller-defined playbook rehearsal creation is retired because it cannot preserve an exact commercial contract through every new record.",
+        );
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/agent-workbench/proof-suite") {
-        const body = await readBody(req);
-        const queued = queueAgentWorkbenchProofSuite(db, body || {});
-        const maxSteps = body.maxSteps || queued.tasks.length + 2;
-        const loop = body.autoRun === false ? null : await runUntilBlocked(db, { workflowId: queued.workflow.id, maxSteps });
-        broadcastState();
-        jsonResponse(res, 201, { result: { ...queued, loop } });
+        retireCommercialRoute(
+          db,
+          res,
+          "Caller-defined Workbench proof suites are retired because they could create unbound commercial work.",
+        );
         return;
       }
       const agentLiveComparison = routeMatch(url.pathname, "/api/agent-workbench/:id/live-comparison");
       if (req.method === "POST" && agentLiveComparison) {
         const body = await readBody(req);
+        if (!requireCommercialWorkflowWhenNeeded(db, res, agentLiveComparison.id, { required: true })) return;
         const result = requestAgentWorkbenchLiveComparison(db, agentLiveComparison.id, body || {});
         broadcastState();
         jsonResponse(res, 202, { result });
@@ -1274,11 +1338,11 @@ function createApp(options = {}) {
       }
       const agentProofRun = routeMatch(url.pathname, "/api/agent-workbench/:id/proof-run");
       if (req.method === "POST" && agentProofRun) {
-        const body = await readBody(req);
-        const queued = queueAgentWorkbenchProof(db, agentProofRun.id, body || {});
-        const runResult = body.autoRun === false ? null : await runOnce(db, { workflowId: queued.workflow.id });
-        broadcastState();
-        jsonResponse(res, 201, { result: { ...queued, run: runResult } });
+        retireCommercialRoute(
+          db,
+          res,
+          "Caller-defined Workbench proof creation is retired because it cannot bind every new record to one exact accepted commercial contract.",
+        );
         return;
       }
 
@@ -1323,7 +1387,61 @@ function createApp(options = {}) {
 
       if (req.method === "POST" && url.pathname === "/api/system/maintenance/run-due") {
         const body = await readBody(req);
-        const result = await runDueSchedulerJobs(db, { limit: body.limit });
+        const limit = Math.max(1, Math.min(Number(body.limit || 2), 10));
+        const dueJobs = all(
+          db,
+          `SELECT id, kind
+           FROM scheduler_jobs
+           WHERE status = 'enabled'
+             AND locked_at IS NULL
+             AND (next_run_at IS NULL OR next_run_at <= ?)
+           ORDER BY priority ASC, next_run_at ASC
+           LIMIT ?`,
+          [now(), limit],
+        );
+        const runs = [];
+        for (const job of dueJobs) {
+          if (job.kind === "pantheon_supervisor") {
+            runs.push({
+              id: null,
+              jobId: job.id,
+              status: "skipped",
+              result: {
+                status: "safety_blocked",
+                reason: "exact_commercial_workflow_not_selected",
+              },
+            });
+            continue;
+          }
+          if (job.kind === "safe_work_loop") {
+            const selection = selectSafeRuntimeTickTask(db);
+            if (!selection.task) {
+              runs.push({
+                id: null,
+                jobId: job.id,
+                status: "skipped",
+                result: {
+                  status: "idle",
+                  reason: "no_safe_internal_task",
+                  rejectedReasons: selection.rejectedReasons,
+                },
+              });
+              continue;
+            }
+            runs.push(await runSchedulerJob(db, job.id, {
+              workflowId: selection.task.workflow_id,
+              maxSteps: body.maxSteps,
+            }));
+            continue;
+          }
+          runs.push(await runSchedulerJob(db, job.id));
+        }
+        const result = {
+          status: "completed",
+          dueCount: dueJobs.length,
+          claimedCount: runs.filter((item) => item.status !== "skipped").length,
+          runs,
+        };
         broadcastState();
         jsonResponse(res, 200, { result });
         return;
@@ -1332,10 +1450,43 @@ function createApp(options = {}) {
       const schedulerJobRun = routeMatch(url.pathname, "/api/scheduler/jobs/:id/run");
       if (req.method === "POST" && schedulerJobRun) {
         const body = await readBody(req);
+        const job = get(db, "SELECT id, kind FROM scheduler_jobs WHERE id = ?", [schedulerJobRun.id]);
+        if (!job) {
+          jsonResponse(res, 404, { error: "Scheduler job not found." });
+          return;
+        }
+        if (job.kind === "pantheon_supervisor") {
+          rejectUnboundCommercialRoute(
+            db,
+            res,
+            "The unscoped commercial supervisor job is disabled. Use one exact contract-bound workflow.",
+          );
+          return;
+        }
+        let workflowId = body.workflowId || body.workflow_id || null;
+        if (job.kind === "safe_work_loop") {
+          if (workflowId) {
+            if (!requireCommercialWorkflowWhenNeeded(db, res, workflowId)) return;
+          } else {
+            const selection = selectSafeRuntimeTickTask(db);
+            if (!selection.task) {
+              jsonResponse(res, 200, {
+                result: {
+                  status: "idle",
+                  reason: "no_safe_internal_task",
+                  rejectedReasons: selection.rejectedReasons,
+                },
+              });
+              return;
+            }
+            workflowId = selection.task.workflow_id;
+          }
+        }
         const result = await runSchedulerJob(db, schedulerJobRun.id, {
           manual: true,
           force: body.force === true,
           maxSteps: body.maxSteps,
+          workflowId,
         });
         broadcastState();
         jsonResponse(res, 200, { result });
@@ -1350,89 +1501,49 @@ function createApp(options = {}) {
           jsonResponse(res, 400, { error: "Scheduler action must be enable or disable." });
           return;
         }
-        const job = setSchedulerJobStatus(db, schedulerJobAction.id, status);
+        const job = get(db, "SELECT id, kind FROM scheduler_jobs WHERE id = ?", [schedulerJobAction.id]);
+        if (!job) {
+          jsonResponse(res, 404, { error: "Scheduler job not found." });
+          return;
+        }
+        if (job.kind === "pantheon_supervisor" && status === "enabled") {
+          rejectUnboundCommercialRoute(
+            db,
+            res,
+            "The unscoped commercial supervisor cannot be enabled. Commercial runs must name one exact bound workflow.",
+          );
+          return;
+        }
+        const updatedJob = setSchedulerJobStatus(db, schedulerJobAction.id, status);
         broadcastState();
-        jsonResponse(res, 200, { job });
+        jsonResponse(res, 200, { job: updatedJob });
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/commands") {
-        const body = await readBody(req);
-        if (!body.text || !String(body.text).trim()) {
-          jsonResponse(res, 400, { error: "Command text is required." });
-          return;
-        }
-        const ventureId = body.venture_id || body.ventureId;
-        if (!ventureId) {
-          jsonResponse(res, 400, { error: "Select the active venture before creating work." });
-          return;
-        }
-        if (!["plan_only", "run_protected"].includes(body.mode)) {
-          jsonResponse(res, 400, { error: "Choose plan_only or run_protected for this command." });
-          return;
-        }
-        const result = createCommandPlan(db, {
-          text: body.text,
-          source: body.source || "dashboard",
-          createFiles: body.createFiles,
-          ventureId,
-          mode: body.mode,
-        });
-        let loop = null;
-        if (body.mode === "run_protected" && body.autoRun === true) {
-          loop = await runUntilBlocked(db, { workflowId: result.workflow.id, maxSteps: body.maxSteps });
-        }
-        broadcastState();
-        jsonResponse(res, 201, { result, loop });
+        retireCommercialRoute(
+          db,
+          res,
+          "The generic command-to-work route is permanently retired. Use an exact accepted commercial program or a protected system proof.",
+        );
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/pantheon/discovery") {
-        const body = await readBody(req);
-        const result = startOpportunityRound(db, {
-          prompt: body.prompt,
-          idea: body.idea,
-          geography: body.geography,
-          language: body.language,
-          maxCandidates: body.maxCandidates,
-          source: "dashboard",
-          createdBy: "Daniel",
-        });
-        const supervisor = body.runNow === true
-          ? await runPantheonSupervisorCycle(db, {
-            triggerType: "manual",
-            startedBy: "dashboard",
-            maxSteps: 1,
-          })
-          : null;
-        broadcastState();
-        jsonResponse(res, result.alreadyRunning ? 200 : 202, { result, supervisor });
+        retireCommercialRoute(
+          db,
+          res,
+          "The unbound discovery route is permanently retired. New commercial discovery must begin inside an exact accepted program.",
+        );
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/pantheon/journeys") {
-        const body = await readBody(req);
-        const journeyInput = {
-          mode: body.mode || CONFIG.journeyMode,
-          prompt: body.prompt,
-          idea: body.idea,
-          geography: body.geography,
-          language: body.language,
-          model: CONFIG.lunaModel,
-          budgetCapCents: Math.min(
-            CONFIG.journeyBudgetCapCents,
-            Number(body.budgetCapCents || CONFIG.journeyBudgetCapCents),
-          ),
-          source: "dashboard-full-journey",
-          createdBy: "Daniel",
-          force: body.force === true,
-        };
-        if (body.carriedExposureCents !== undefined) {
-          journeyInput.carriedExposureCents = Number(body.carriedExposureCents);
-        }
-        const result = startPantheonJourney(db, journeyInput);
-        broadcastState();
-        jsonResponse(res, result.alreadyRunning ? 200 : 202, result);
+        rejectUnboundCommercialRoute(
+          db,
+          res,
+          "Broad commercial journeys cannot be created outside the one exact accepted and activated program.",
+        );
         return;
       }
 
@@ -1443,8 +1554,15 @@ function createApp(options = {}) {
           jsonResponse(res, 404, { error: "This Pantheon journey was not found." });
           return;
         }
+        if (!requireCommercialWorkflowWhenNeeded(db, res, journey.workflow_id, { required: true })) return;
         if (isTerminalJourneyStatus(journey.status)) {
-          jsonResponse(res, 409, { error: "This journey is already finished.", state: getJourneyState(db, journey.id) });
+          const payload = commercialAuthorityErrorPayload({
+            code: "commercial_program_terminal",
+            message: "This commercial journey is permanently finished and cannot be continued.",
+            authority: getCommercialAuthorityState(db),
+          });
+          payload.state = getJourneyState(db, journey.id);
+          jsonResponse(res, 410, payload);
           return;
         }
         const result = await runPantheonSupervisorCycle(db, {
@@ -1462,12 +1580,33 @@ function createApp(options = {}) {
 
       if (req.method === "POST" && url.pathname === "/api/pantheon/run") {
         const body = await readBody(req);
+        if (body.startDiscovery === true) {
+          rejectUnboundCommercialRoute(
+            db,
+            res,
+            "Pantheon cannot start unbound discovery. Accept and activate an exact commercial program first.",
+          );
+          return;
+        }
+        const workflowId = body.workflowId || body.workflow_id || null;
+        if (!workflowId) {
+          jsonResponse(res, 200, {
+            result: {
+              status: "idle",
+              reason: "exact_commercial_workflow_not_selected",
+              message: "No exact accepted commercial workflow was selected, so Pantheon made no changes.",
+            },
+          });
+          return;
+        }
+        if (!requireCommercialWorkflowWhenNeeded(db, res, workflowId, { required: true })) return;
         const result = await runPantheonSupervisorCycle(db, {
           triggerType: "manual",
           startedBy: "dashboard",
           maxSteps: body.maxSteps || 4,
-          allowDiscoveryStart: body.startDiscovery === true,
+          allowDiscoveryStart: false,
           prompt: body.prompt,
+          workflowId,
         });
         broadcastState();
         jsonResponse(res, 200, { result });
@@ -1495,11 +1634,12 @@ function createApp(options = {}) {
 
       const taskRun = routeMatch(url.pathname, "/api/tasks/:id/run");
       if (req.method === "POST" && taskRun) {
-        const task = get(db, "SELECT id, workflow_id, payload FROM tasks WHERE id = ?", [taskRun.id]);
+        const task = get(db, "SELECT * FROM tasks WHERE id = ?", [taskRun.id]);
         if (!task) {
           jsonResponse(res, 404, { error: "Work item not found." });
           return;
         }
+        if (!requireCommercialTaskWhenNeeded(db, res, task)) return;
         const result = await runOnce(db, { taskId: taskRun.id, workflowId: task.workflow_id, claimant: "dashboard_exact_task" });
         const parameters = fromJson(task.payload, {}).liveSpendRequest?.parameters || {};
         const supervisorOwned = parameters.pantheonCommercial?.supervisorOwned === true
@@ -1520,6 +1660,12 @@ function createApp(options = {}) {
 
       const taskKnownRetry = routeMatch(url.pathname, "/api/tasks/:id/prepare-known-ai-retry");
       if (req.method === "POST" && taskKnownRetry) {
+        const task = get(db, "SELECT * FROM tasks WHERE id = ?", [taskKnownRetry.id]);
+        if (!task) {
+          jsonResponse(res, 404, { error: "Work item not found." });
+          return;
+        }
+        if (!requireCommercialTaskWhenNeeded(db, res, task)) return;
         const result = prepareReviewedLiveAiWorkerRetry(db, taskKnownRetry.id, {
           proofMode: CONFIG.systemProofMode === true,
         });
@@ -1533,15 +1679,17 @@ function createApp(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/api/runtime/run-until-blocked") {
-        const body = await readBody(req);
-        const result = await runUntilBlocked(db, { maxSteps: body.maxSteps });
-        broadcastState();
-        jsonResponse(res, 200, { result });
+        retireCommercialRoute(
+          db,
+          res,
+          "The global run-until-blocked route is permanently retired. Run one exact protected workflow instead.",
+        );
         return;
       }
 
       const workflowRun = routeMatch(url.pathname, "/api/workflows/:id/run");
       if (req.method === "POST" && workflowRun) {
+        if (!requireCommercialWorkflowWhenNeeded(db, res, workflowRun.id)) return;
         const result = await runOnce(db, { workflowId: workflowRun.id });
         broadcastState();
         jsonResponse(res, 200, { result });
@@ -1551,6 +1699,7 @@ function createApp(options = {}) {
       const workflowRunUntilBlocked = routeMatch(url.pathname, "/api/workflows/:id/run-until-blocked");
       if (req.method === "POST" && workflowRunUntilBlocked) {
         const body = await readBody(req);
+        if (!requireCommercialWorkflowWhenNeeded(db, res, workflowRunUntilBlocked.id)) return;
         const result = await runUntilBlocked(db, { workflowId: workflowRunUntilBlocked.id, maxSteps: body.maxSteps });
         broadcastState();
         jsonResponse(res, 200, { result });
@@ -1559,6 +1708,7 @@ function createApp(options = {}) {
 
       const approvalPack = routeMatch(url.pathname, "/api/workflows/:id/approval-pack");
       if (req.method === "POST" && approvalPack) {
+        if (!requireCommercialWorkflowWhenNeeded(db, res, approvalPack.id)) return;
         const result = generateApprovalPack(db, approvalPack.id);
         broadcastState();
         jsonResponse(res, 200, { result });
@@ -1568,6 +1718,7 @@ function createApp(options = {}) {
       const liveResearchRequest = routeMatch(url.pathname, "/api/workflows/:id/request-live-research");
       if (req.method === "POST" && liveResearchRequest) {
         const body = await readBody(req);
+        if (!requireCommercialWorkflowWhenNeeded(db, res, liveResearchRequest.id)) return;
         const result = requestLiveResearch(db, liveResearchRequest.id, body || {});
         broadcastState();
         jsonResponse(res, 202, { result });
@@ -1575,16 +1726,18 @@ function createApp(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/api/live-research/smoke-test") {
-        const body = await readBody(req);
-        const result = createLiveResearchSmokeTest(db, body || {});
-        broadcastState();
-        jsonResponse(res, 202, { result });
+        retireCommercialRoute(
+          db,
+          res,
+          "The caller-defined live-research smoke route is permanently retired because it could create unbound commercial work, approvals, and cost reservations.",
+        );
         return;
       }
 
       const liveAiWorkerRequest = routeMatch(url.pathname, "/api/workflows/:id/request-live-ai-worker");
       if (req.method === "POST" && liveAiWorkerRequest) {
         const body = await readBody(req);
+        if (!requireCommercialWorkflowWhenNeeded(db, res, liveAiWorkerRequest.id)) return;
         const result = requestLiveAiWorker(db, liveAiWorkerRequest.id, body || {});
         broadcastState();
         jsonResponse(res, 202, { result });
@@ -1594,6 +1747,7 @@ function createApp(options = {}) {
       const productBuilderAsset = routeMatch(url.pathname, "/api/workflows/:id/product-builder/prepare-asset");
       if (req.method === "POST" && productBuilderAsset) {
         const body = await readBody(req);
+        if (!requireCommercialWorkflowWhenNeeded(db, res, productBuilderAsset.id)) return;
         const result = prepareProductBuilderAsset(db, productBuilderAsset.id, body || {});
         broadcastState();
         jsonResponse(res, 202, { result });
@@ -1601,86 +1755,86 @@ function createApp(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/api/live-ai-workers/smoke-test") {
-        const body = await readBody(req);
-        const result = createLiveAiWorkerSmokeTest(db, body || {});
-        broadcastState();
-        jsonResponse(res, 202, { result });
+        retireCommercialRoute(
+          db,
+          res,
+          "The caller-defined live-AI smoke route is permanently retired because it could create unbound commercial work, approvals, and cost reservations.",
+        );
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/commercial/experiments") {
-        const body = await readBody(req);
-        const result = createCommercialExperiment(db, body || {});
-        if (result.workflow_id) upsertWorkflowScorecard(db, result.workflow_id, { commercialExperimentId: result.id });
-        broadcastState();
-        jsonResponse(res, 201, { result });
+        retireCommercialRoute(
+          db,
+          res,
+          "Legacy commercial experiments cannot represent the immutable v2 offer, cohort, channel, attribution, cash, and evidence contract.",
+        );
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/research-to-experiment/plans") {
-        const body = await readBody(req);
-        const result = createResearchToExperimentPlan(db, body || {});
-        broadcastState();
-        jsonResponse(res, 201, { result });
+        retireCommercialRoute(
+          db,
+          res,
+          "Legacy research-to-experiment plans are retired. Research now produces a non-executable v2 contract proposal that requires a separate owner decision.",
+        );
         return;
       }
 
       const promoteTestCandidate = routeMatch(url.pathname, "/api/research-to-experiment/candidates/:id/promote");
       if (req.method === "POST" && promoteTestCandidate) {
-        const body = await readBody(req);
-        const result = promoteCandidateToExperiment(db, promoteTestCandidate.id, body || {});
-        if (result.experiment?.workflow_id) upsertWorkflowScorecard(db, result.experiment.workflow_id, { commercialExperimentId: result.experiment.id });
-        broadcastState();
-        jsonResponse(res, 201, { result });
+        retireCommercialRoute(
+          db,
+          res,
+          "Legacy test-candidate promotion is retired. A validated immutable v2 contract and exact approval lifecycle are required.",
+        );
         return;
       }
 
       const learningRevisionPlan = routeMatch(url.pathname, "/api/commercial/learning/:id/revision-plan");
       if (req.method === "POST" && learningRevisionPlan) {
-        const body = await readBody(req);
-        const result = createRevisionPlanFromLearning(db, learningRevisionPlan.id, body || {});
-        broadcastState();
-        jsonResponse(res, 201, { result });
+        retireCommercialRoute(
+          db,
+          res,
+          "Legacy learning revisions cannot mutate or replace an immutable v2 commercial test decision.",
+        );
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/execution-packs") {
-        const body = await readBody(req);
-        const result = generateExecutionPack(db, body || {});
-        broadcastState();
-        jsonResponse(res, 201, { result });
+        retireCommercialRoute(
+          db,
+          res,
+          "Legacy execution packs are retired because they do not preserve the immutable v2 offer, channel, attribution, and evidence binding.",
+        );
         return;
       }
 
       const executionPackOutcome = routeMatch(url.pathname, "/api/execution-packs/:id/outcomes");
       if (req.method === "POST" && executionPackOutcome) {
-        const body = await readBody(req);
-        const result = recordExecutionPackOutcome(db, executionPackOutcome.id, body || {});
-        const workflowId = result.recorded?.experiment?.workflow_id || result.pack?.workflow_id;
-        let scorecard = null;
-        if (workflowId) scorecard = upsertWorkflowScorecard(db, workflowId, { commercialExecutionPackId: result.pack.id });
-        broadcastState();
-        jsonResponse(res, 201, { result: { ...result, scorecard } });
+        retireCommercialRoute(
+          db,
+          res,
+          "Legacy execution-pack outcomes are not authoritative buyer or cash evidence and are permanently read-only.",
+        );
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/commercial/results") {
-        const body = await readBody(req);
-        const result = recordCommercialResult(db, body || {});
-        let scorecard = null;
-        if (result.experiment.workflow_id) scorecard = upsertWorkflowScorecard(db, result.experiment.workflow_id, { commercialResultId: result.result.id });
-        broadcastState();
-        jsonResponse(res, 201, { result: { ...result, scorecard } });
+        retireCommercialRoute(
+          db,
+          res,
+          "Legacy commercial results are not authoritative v2 buyer, settlement, cost, attribution, or cash evidence.",
+        );
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/api/commercial/feedback") {
-        const body = await readBody(req);
-        const result = recordCommercialFeedback(db, body || {});
-        let scorecard = null;
-        if (result.experiment.workflow_id) scorecard = upsertWorkflowScorecard(db, result.experiment.workflow_id, { commercialFeedbackId: result.feedback.id });
-        broadcastState();
-        jsonResponse(res, 201, { result: { ...result, scorecard } });
+        retireCommercialRoute(
+          db,
+          res,
+          "Legacy commercial feedback writes are retired. Learning must be derived from the complete canonical v2 ledger.",
+        );
         return;
       }
 
@@ -1688,6 +1842,30 @@ function createApp(options = {}) {
       if (approvalAction && ["GET", "POST"].includes(req.method)) {
         jsonResponse(res, 410, {
           error: "Email action links are disabled until a signed provider webhook is connected. Use Decisions in Pantheon.",
+        });
+        return;
+      }
+
+      const commercialLifecycleDecision = routeMatch(
+        url.pathname,
+        "/api/commercial/lifecycle-decisions/:id/:decision",
+      );
+      if (req.method === "POST" && commercialLifecycleDecision) {
+        const body = await readBody(req);
+        const result = decideCommercialLifecycleApproval(
+          db,
+          commercialLifecycleDecision.id,
+          commercialLifecycleDecision.decision,
+          body.note || "",
+          {
+            expectedScopeHash: body.scopeHash,
+            actor: "operator",
+          },
+        );
+        broadcastState();
+        jsonResponse(res, 200, {
+          result,
+          tests: getCommercialOwnerTestsState(db),
         });
         return;
       }
@@ -1709,6 +1887,28 @@ function createApp(options = {}) {
           jsonResponse(res, 409, { error: "Refresh this decision before acting; its approval scope is missing." });
           return;
         }
+        const approvalRecord = get(
+          db,
+          "SELECT payload FROM approvals WHERE id = ?",
+          [approvalDecision.id],
+        );
+        if (approvalRecord && hasCommercialLifecycleApprovalPayload(approvalRecord)) {
+          jsonResponse(res, 409, {
+            code: "commercial_lifecycle_decision_required",
+            error: "Use the exact commercial lifecycle decision control for this test.",
+          });
+          return;
+        }
+        const approvalTask = get(
+          db,
+          `SELECT tasks.*
+           FROM tasks
+           WHERE tasks.approval_id = ?
+           ORDER BY tasks.created_at DESC
+           LIMIT 1`,
+          [approvalDecision.id],
+        );
+        if (approvalTask && !requireCommercialTaskWhenNeeded(db, res, approvalTask)) return;
         let result;
         try {
           result = decideApproval(db, approvalDecision.id, decision, body.note || "", { expectedScopeHash: body.scopeHash });
@@ -1772,6 +1972,57 @@ function createApp(options = {}) {
           return;
         }
         const existingHandoff = getAgentHandoff(db, handoffDecision.id);
+        if (!existingHandoff) {
+          jsonResponse(res, 404, { error: "Worker handoff not found." });
+          return;
+        }
+        const handoffWorkflowSafety = existingHandoff.workflow_id
+          ? classifyCommercialWorkflowSafety(db, existingHandoff.workflow_id)
+          : null;
+        if (decision === "approve" && handoffWorkflowSafety) {
+          const authorizedCommercial = Boolean(
+            handoffWorkflowSafety.safe
+            && handoffWorkflowSafety.requiresCommercialAuthority
+            && handoffWorkflowSafety.classification === "authorized_commercial",
+          );
+          const allowedNonCommercial = Boolean(
+            handoffWorkflowSafety.safe
+            && !handoffWorkflowSafety.requiresCommercialAuthority
+            && ["non_commercial", "diagnostic"].includes(
+              handoffWorkflowSafety.classification,
+            ),
+          );
+          if (!authorizedCommercial && !allowedNonCommercial) {
+            const assessment = handoffWorkflowSafety.assessment
+              || handoffWorkflowSafety;
+            sendCommercialGuardFailure(res, assessment);
+            return;
+          }
+        }
+        if (decision === "approve" && existingHandoff.task_id) {
+          const handoffTaskSafety = classifyCommercialTaskSafety(
+            db,
+            existingHandoff.task_id,
+          );
+          const authorizedCommercialTask = Boolean(
+            handoffTaskSafety.safe
+            && handoffTaskSafety.requiresCommercialAuthority
+            && handoffTaskSafety.classification === "authorized_commercial",
+          );
+          const allowedNonCommercialTask = Boolean(
+            handoffTaskSafety.safe
+            && !handoffTaskSafety.requiresCommercialAuthority
+            && ["non_commercial", "diagnostic"].includes(
+              handoffTaskSafety.classification,
+            ),
+          );
+          if (!authorizedCommercialTask && !allowedNonCommercialTask) {
+            const assessment = handoffTaskSafety.assessment
+              || handoffTaskSafety;
+            sendCommercialGuardFailure(res, assessment);
+            return;
+          }
+        }
         const pantheonAction = existingHandoff?.metadata?.pantheonProduction?.action || null;
         const result = decideAgentHandoff(db, handoffDecision.id, decision, body.note || "", {
           decidedBy: body.decidedBy || "operator",
@@ -1839,6 +2090,14 @@ function createApp(options = {}) {
       notFound(res);
     } catch (error) {
       if (Number(error.statusCode) >= 400 && Number(error.statusCode) < 500) {
+        if (error.assessment) {
+          jsonResponse(
+            res,
+            Number(error.statusCode),
+            commercialAuthorityErrorPayload(error),
+          );
+          return;
+        }
         jsonResponse(res, Number(error.statusCode), {
           error: error.message,
           ...(error.code ? { code: error.code } : {}),

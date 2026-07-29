@@ -481,9 +481,16 @@ function assertBlueprintMatchesSpec(spec, blueprint) {
 }
 
 function factoryReadiness(options = {}) {
-  if (cachedReadiness && options.refresh !== true) return cachedReadiness;
   const python = resolvePython();
   const renderer = path.join(CONFIG.rootDir, "scripts", "render-digital-product-kit.py");
+  if (
+    cachedReadiness
+    && options.refresh !== true
+    && cachedReadiness.python === python
+    && cachedReadiness.renderer === renderer
+  ) {
+    return cachedReadiness;
+  }
   if (!fs.existsSync(renderer)) {
     cachedReadiness = { ready: false, python, renderer, reason: "The local digital-product renderer is missing." };
     return cachedReadiness;
@@ -623,7 +630,7 @@ function renderDigitalProductKit(task, blueprint, options = {}) {
   const committedStageRoot = path.join(taskStageRoot, renderIdentity);
   const inputPath = path.join(stageRoot, "factory-input.json");
   const outputRoot = path.join(stageRoot, "rendered");
-  fs.mkdirSync(outputRoot, { recursive: true });
+  fs.mkdirSync(stageRoot);
   try {
     fs.writeFileSync(
       inputPath,
@@ -664,20 +671,28 @@ function renderDigitalProductKit(task, blueprint, options = {}) {
     }
     const qualityReviewRoot = path.join(outputRoot, "quality-review");
     const qualityReviewPaths = [
-      path.join(qualityReviewRoot, "actual-workbook.png"),
-      path.join(qualityReviewRoot, "actual-setup-guide.png"),
+      containedOutputLeaf(qualityReviewRoot, "actual-workbook.png", "workbookReviewFilename"),
+      containedOutputLeaf(qualityReviewRoot, "actual-setup-guide.png", "guideReviewFilename"),
     ];
     for (const requiredPath of qualityReviewPaths) {
       if (!fs.existsSync(requiredPath) || !fs.statSync(requiredPath).isFile()) {
         throw new Error(`Local digital-product rendering did not create ${path.basename(requiredPath)}.`);
       }
     }
-    const qualityInspectionPath = path.join(qualityReviewRoot, "inspection-metadata.json");
+    const qualityInspectionPath = containedOutputLeaf(
+      qualityReviewRoot,
+      "inspection-metadata.json",
+      "inspectionMetadataFilename",
+    );
     if (!fs.existsSync(qualityInspectionPath) || !fs.statSync(qualityInspectionPath).isFile()) {
       throw new Error("Local digital-product rendering did not create inspection-metadata.json.");
     }
     const qualityInspection = JSON.parse(fs.readFileSync(qualityInspectionPath, "utf8"));
-    const sourceGuidePath = path.join(outputRoot, "customer-files", "00-customer-setup-guide.pdf");
+    const sourceGuidePath = containedOutputLeaf(
+      path.join(outputRoot, "customer-files"),
+      "00-customer-setup-guide.pdf",
+      "setupGuideFilename",
+    );
     if (!fs.existsSync(sourceGuidePath) || !fs.statSync(sourceGuidePath).isFile()) {
       throw new Error("Local digital-product rendering did not retain the exact setup-guide PDF.");
     }

@@ -2,7 +2,7 @@ const CONFIG = require("../config");
 const { runMonitorCycle } = require("./monitor");
 const { runOnce } = require("./orchestrator");
 const { generateWeeklyDigest } = require("./executive-digest");
-const { runPantheonSupervisorCycle } = require("./pantheon-supervisor");
+const { classifyCommercialWorkflowSafety } = require("./commercial-authority");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 
 const DEFAULT_LEASE_SECONDS = 30 * 60;
@@ -35,13 +35,13 @@ const DEFAULT_JOBS = [
     id: "job-pantheon-supervisor",
     name: "Pantheon commercial supervisor",
     kind: "pantheon_supervisor",
-    status: "enabled",
+    status: "disabled",
     intervalSeconds: 5 * 60,
     priority: 2,
     metadata: {
-      purpose: "Continue exact internal commercial work, incorporate worker results and stop at genuine operator or setup boundaries.",
-      maxSteps: 4,
-      autoStartDiscovery: false,
+      purpose: "Historical unscoped commercial supervisor retained as a permanently disabled compatibility record.",
+      retired: true,
+      retiredReason: "Commercial execution now requires one exact accepted and activated v2 program binding.",
       leaseSeconds: 30 * 60,
     },
   },
@@ -127,6 +127,17 @@ function ensureSchedulerJobs(db) {
       ],
     );
   }
+  run(
+    db,
+    `UPDATE scheduler_jobs
+     SET status = 'disabled', next_run_at = NULL, updated_at = ?
+     WHERE kind = 'pantheon_supervisor'
+       AND (
+         status <> 'disabled'
+         OR next_run_at IS NOT NULL
+       )`,
+    [ts],
+  );
 }
 
 function listSchedulerJobs(db) {
@@ -143,6 +154,14 @@ function setSchedulerJobStatus(db, jobId, status) {
   ensureSchedulerJobs(db);
   const job = parseJob(get(db, "SELECT * FROM scheduler_jobs WHERE id = ?", [jobId]));
   if (!job) throw new Error(`Scheduler job not found: ${jobId}`);
+  if (job.kind === "pantheon_supervisor" && status === "enabled") {
+    const error = new Error(
+      "The legacy unscoped commercial supervisor is permanently retired. Run one exact contract-bound workflow instead.",
+    );
+    error.code = "scheduler_job_retired";
+    error.statusCode = 410;
+    throw error;
+  }
   const ts = now();
   run(
     db,
@@ -247,9 +266,30 @@ function inspectSafeWorkflow(db, workflowId) {
   const workflowRow = get(db, "SELECT * FROM workflows WHERE id = ?", [workflowId]);
   if (!workflowRow) return { safe: false, reason: "workflow_missing", workflow: null, tasks: [] };
   const workflow = { ...workflowRow, metadata: fromJson(workflowRow.metadata) };
+  const commercialSafety = classifyCommercialWorkflowSafety(db, workflow);
+  if (!commercialSafety.safe) {
+    return {
+      safe: false,
+      reason: commercialSafety.code || "commercial_authority_required",
+      workflow,
+      tasks: [],
+      commercialSafety,
+    };
+  }
   const runner = workflow.metadata.agentRunner || {};
   const mode = String(runner.mode || "").toLowerCase();
-  if (!SAFE_WORKFLOW_MODES.has(mode) || runner.liveModels !== false || runner.liveTools !== false) {
+  const exactRuntimeAssurance = (
+    workflow.type === "runtime_assurance"
+    && commercialSafety.classification === "diagnostic"
+  );
+  if (
+    !exactRuntimeAssurance
+    && (
+      !SAFE_WORKFLOW_MODES.has(mode)
+      || runner.liveModels !== false
+      || runner.liveTools !== false
+    )
+  ) {
     return { safe: false, reason: "workflow_not_explicitly_protected", workflow, tasks: [] };
   }
   const tasks = all(
@@ -443,25 +483,6 @@ async function executeSchedulerJob(db, job, options = {}) {
     };
   }
 
-  if (job.kind === "pantheon_supervisor") {
-    const result = await runPantheonSupervisorCycle(db, {
-      triggerType: options.manual ? "manual" : "scheduled",
-      triggerId: options.schedulerRunId || job.id,
-      startedBy: "scheduler",
-      maxSteps: options.maxSteps || job.metadata.maxSteps || 4,
-      allowDiscoveryStart: options.allowDiscoveryStart === true || job.metadata.autoStartDiscovery === true,
-      prompt: options.prompt,
-    });
-    return {
-      kind: job.kind,
-      status: result.status,
-      supervisorCycleId: result.cycle?.id || null,
-      actionCount: result.actions?.length || 0,
-      nextActionType: result.cycle?.next_action_type || null,
-      summary: result.cycle?.summary || "",
-    };
-  }
-
   if (job.kind === "weekly_executive_digest") {
     const digest = generateWeeklyDigest(db, options);
     return {
@@ -605,6 +626,34 @@ function finishSchedulerJob(db, claim, status, result, errorMessage = null) {
 }
 
 async function runSchedulerJob(db, jobId, options = {}) {
+  ensureSchedulerJobs(db);
+  const selectedJob = parseJob(get(db, "SELECT * FROM scheduler_jobs WHERE id = ?", [jobId]));
+  if (selectedJob?.kind === "pantheon_supervisor") {
+    insertEvent(db, {
+      level: "warn",
+      actor: "scheduler",
+      type: "scheduler.job.retired_run_blocked",
+      entityType: "scheduler_job",
+      entityId: selectedJob.id,
+      message: "The legacy unscoped commercial supervisor was blocked at the scheduler boundary.",
+      metadata: {
+        reason: "unscoped_commercial_supervisor_retired",
+        forceRequested: options.force === true,
+        manual: options.manual === true,
+      },
+    });
+    return {
+      id: null,
+      jobId: selectedJob.id,
+      status: "skipped",
+      result: {
+        kind: selectedJob.kind,
+        status: "retired",
+        reason: "unscoped_commercial_supervisor_retired",
+        message: "Commercial scheduling requires one exact accepted and activated v2 program binding.",
+      },
+    };
+  }
   const claim = claimSchedulerJob(db, jobId, options);
   if (!claim.claimed) {
     return {

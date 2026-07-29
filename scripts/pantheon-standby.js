@@ -471,7 +471,12 @@ const server = http.createServer(async (req, res) => {
     json(res, 200, {
       alive: true,
       ok: true,
-      operationsReady: true,
+      installationReady: null,
+      recoveryReady: null,
+      runtimeReady: false,
+      readinessScope: "standby_control_shell",
+      operationsReady: false,
+      operationsReadyAliasFor: "runtimeReady",
       mode: "standby",
       instanceId,
       working: Boolean(health?.alive),
@@ -553,7 +558,7 @@ const server = http.createServer(async (req, res) => {
     json(res, 200, {
       mode: health?.alive ? "working" : "standby",
       working: Boolean(health?.alive),
-      workingReady: Boolean(health?.operationsReady),
+      workingReady: Boolean(health?.runtimeReady),
       workingUrl: `http://127.0.0.1:${workingPort}/`,
       memoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
       transition: Boolean(transition),

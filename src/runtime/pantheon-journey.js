@@ -1,6 +1,10 @@
 const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { journeyBudgetExposure } = require("./cost-ledger");
+const {
+  classifyCommercialTaskSafety,
+  classifyCommercialWorkflowSafety,
+} = require("./commercial-authority");
 const { canPrepareReviewedRetry } = require("./live-ai-retry-policy");
 const { preDispatchRecoveryStatus } = require("./live-ai-workers");
 const { supersededRetryTaskIds } = require("./monitor");
@@ -221,7 +225,21 @@ function closeTerminalJourneyExecution(db, journey) {
   }
 }
 
+function assertLegacyJourneyStartRetired() {
+  const error = new Error(
+    "Legacy pre-venture commercial discovery is retired until Pantheon has a narrow, auditable pre-venture research authority.",
+  );
+  error.statusCode = 410;
+  error.code = "legacy_commercial_path_retired";
+  error.details = {
+    path: "pantheon_opportunity_round_start",
+    replacement: "bounded_preventure_research_authority_pending",
+  };
+  throw error;
+}
+
 function startPantheonJourney(db, input = {}) {
+  assertLegacyJourneyStartRetired();
   const existing = activeJourney(db);
   if (existing && input.force !== true) {
     return { journey: existing, alreadyRunning: true, state: getJourneyState(db, existing.id) };
@@ -408,8 +426,58 @@ function getJourneyState(db, journeyId = null) {
       outputs: [],
       prerequisites,
       correction: null,
+      commercialControl: {
+        allowed: false,
+        status: "not_authorised",
+        message: "No exact accepted and activated commercial workflow is selected.",
+      },
     };
   }
+  const workflowSafety = journey.workflow_id
+    ? classifyCommercialWorkflowSafety(db, journey.workflow_id)
+    : null;
+  const workflowAllowed = (
+    workflowSafety?.safe === true
+    && workflowSafety?.requiresCommercialAuthority === true
+    && workflowSafety?.classification === "authorized_commercial"
+  );
+  const recordedControlTaskId = journey.metadata.currentTaskId || null;
+  const recordedControlTask = recordedControlTaskId
+    ? get(db, "SELECT * FROM tasks WHERE id = ?", [recordedControlTaskId])
+    : null;
+  const recordedTaskSafety = recordedControlTask
+    ? classifyCommercialTaskSafety(db, recordedControlTask)
+    : null;
+  const workflowDecisionHash =
+    workflowSafety?.assessment?.binding?.decisionHash || null;
+  const taskDecisionHash =
+    recordedTaskSafety?.assessment?.binding?.decisionHash || null;
+  const currentTaskAllowed = !recordedControlTaskId || Boolean(
+    recordedControlTask
+      && recordedControlTask.workflow_id === journey.workflow_id
+      && recordedTaskSafety?.safe === true
+      && recordedTaskSafety?.requiresCommercialAuthority === true
+      && recordedTaskSafety?.classification === "authorized_commercial"
+      && workflowDecisionHash
+      && workflowDecisionHash === taskDecisionHash
+  );
+  const commercialControl = {
+    allowed: workflowAllowed && currentTaskAllowed,
+    workflowAllowed,
+    currentTaskAllowed,
+    status: !workflowAllowed
+      ? workflowSafety?.classification || "not_authorised"
+      : !currentTaskAllowed
+        ? recordedTaskSafety?.classification || "current_task_authority_blocked"
+        : "authorized_commercial",
+    message: !workflowAllowed
+      ? workflowSafety?.message
+        || "This recorded journey has no exact accepted and activated commercial authority."
+      : !currentTaskAllowed
+        ? recordedTaskSafety?.message
+          || "The recorded current task does not match this journey's exact commercial authority."
+        : workflowSafety.message,
+  };
   const journeyExposure = journeyBudgetExposure(db, journey.id, journey.carried_exposure_cents);
   const combinedExposure = combinedProofExposureFromDatabase(db);
   const exposure = {
@@ -557,6 +625,7 @@ function getJourneyState(db, journeyId = null) {
     outputs,
     prerequisites,
     correction,
+    commercialControl,
     recent: all(
       db,
       "SELECT * FROM pantheon_journeys ORDER BY created_at DESC LIMIT 12",

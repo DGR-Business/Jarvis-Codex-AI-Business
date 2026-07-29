@@ -30,11 +30,10 @@ const {
   buildWorkerModelPacket,
   productBuilderFileOutputJsonSchema,
 } = require("../src/runtime/agent-model-contracts");
-const { findAgentDefinition, getAgentHandoff } = require("../src/runtime/ai-team");
+const { findAgentDefinition } = require("../src/runtime/ai-team");
 const { getCockpitState, getDecisionsState } = require("../src/runtime/cockpit-state");
 const { runOnce } = require("../src/runtime/orchestrator");
 const {
-  applyPantheonHandoffDecision,
   assertQualityReviewRecheckAvailable,
   getProductionState,
   prepareCatalogueBuild,
@@ -63,6 +62,9 @@ const {
   offerClaimAlignmentIssues,
   productBlueprintClaimAlignmentIssues,
 } = require("../src/runtime/product-claim-alignment");
+const {
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
 
 test("publication briefs use the current venture's buyer and differentiation", () => {
   const plan = {
@@ -204,6 +206,10 @@ function seedCatalogue(db) {
       ],
     );
   }
+  installActivatedCommercialTestFixture(db, {
+    suffix: "pantheon-production",
+    workflowIds: ["wf-pantheon-production"],
+  });
 }
 
 function prepareBuild(db) {
@@ -502,7 +508,10 @@ test("the one-item buyer test renders buyer-ready naming and singular setup guid
       packageTitle: "Internal validation draft",
       customerPromise: "Draft promise",
       setupSteps: ["Open the file.", "Review the sample.", "Replace the sample."],
-      disclaimers: [],
+      disclaimers: [
+        ...buyerIntentSpec.sample.disclaimers,
+        "Keep a separate archival copy and review every page before use. ".repeat(10),
+      ],
       catalogueItems: [exactItem],
     };
     const rendered = renderDigitalProductKit(
@@ -532,10 +541,17 @@ test("the one-item buyer test renders buyer-ready naming and singular setup guid
     );
     assert.ok(guideInspection);
     assert.equal(guideInspection.bytes.readUInt32BE(16), 1600);
-    assert.ok(
-      guideInspection.bytes.readUInt32BE(20) > 1000,
-      "The three-page guide inspection must use multiple rows rather than omit its final page.",
-    );
+    const coverage = guideInspection.metadata.inspectionCoverage;
+    assert.equal(coverage.sourcePageCount, 3);
+    assert.equal(coverage.renderedPageCount, 3);
+    assert.equal(coverage.completeCoverage, true);
+    assert.deepEqual(coverage.pages.map((page) => page.pageNumber), [1, 2, 3]);
+    assert.equal(coverage.inspectionSha256, sha256Bytes(guideInspection.bytes));
+    const bundle = rendered.files.find((file) => file.filename === spec.bundleFilename);
+    const archive = new AdmZip(bundle.bytes);
+    const setupGuideBytes = archive.readFile("customer-files/00-customer-setup-guide.pdf");
+    assert.ok(setupGuideBytes);
+    assert.equal(coverage.sourceSha256, sha256Bytes(setupGuideBytes));
   } finally {
     fs.rmSync(artifactRoot, { recursive: true, force: true });
   }
@@ -772,6 +788,99 @@ function fixturePng(label) {
   return Buffer.concat([png, Buffer.from(String(label), "utf8")]);
 }
 
+let cachedGenuineThreePageEvidence = null;
+
+function genuineThreePageEvidence() {
+  if (!cachedGenuineThreePageEvidence) {
+    const artifactRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pantheon-production-three-page-evidence-"),
+    );
+    try {
+      const exactItem = {
+        ...buyerIntentSpec.sample.item,
+        id: "catalogue_item_production_three_page_evidence",
+      };
+      const spec = {
+        schema: "pantheon.product-build-spec.v1",
+        planId: "catalogue_validation_production_three_page_evidence",
+        opportunityId: "opp-production-three-page-evidence",
+        ventureId: "venture-digital-products",
+        catalogueItems: [{
+          id: exactItem.id,
+          title: exactItem.title,
+          audience: buyerIntentSpec.buyer,
+          offer: buyerIntentSpec.offer,
+          priceCents: buyerIntentSpec.priceCents,
+        }],
+        manifestFilename: "pantheon-product-manifest.json",
+        bundleFilename: "client-control-and-profitability-workbook.zip",
+        storefrontPreviewCount: 2,
+        validationSample: {
+          packageTitle: exactItem.title,
+          customerPromise: buyerIntentSpec.sample.customerPromise,
+          setupSteps: buyerIntentSpec.sample.setupSteps,
+          disclaimers: buyerIntentSpec.sample.disclaimers,
+          exactItemBlueprint: exactItem,
+          noFullCatalogueAuthorised: true,
+        },
+      };
+      const rendered = renderDigitalProductKit(
+        {
+          id: "task-production-three-page-evidence",
+          payload: {
+            liveSpendRequest: {
+              parameters: { productBuildSpec: spec },
+            },
+          },
+        },
+        {
+          schema: "pantheon.product-blueprint.v3",
+          packageTitle: exactItem.title,
+          customerPromise: buyerIntentSpec.sample.customerPromise,
+          setupSteps: buyerIntentSpec.sample.setupSteps,
+          disclaimers: [
+            ...buyerIntentSpec.sample.disclaimers,
+            "Keep a separate archival copy and review every page before use. ".repeat(10),
+          ],
+          catalogueItems: [exactItem],
+        },
+        { artifactRoot },
+      );
+      const bundle = rendered.files.find((file) => file.filename === spec.bundleFilename);
+      const archive = new AdmZip(bundle.bytes);
+      const sourceGuideBytes = archive.readFile("customer-files/00-customer-setup-guide.pdf");
+      const workbookInspection = rendered.qualityReviewImages.find(
+        (image) => image.filename === "actual-workbook.png",
+      );
+      const guideInspection = rendered.qualityReviewImages.find(
+        (image) => image.filename === "actual-setup-guide.png",
+      );
+      assert.ok(sourceGuideBytes);
+      assert.ok(workbookInspection);
+      assert.ok(guideInspection);
+      assert.equal(guideInspection.metadata.inspectionCoverage.sourcePageCount, 3);
+      assert.equal(guideInspection.metadata.inspectionCoverage.renderedPageCount, 3);
+      assert.equal(guideInspection.metadata.inspectionCoverage.completeCoverage, true);
+      cachedGenuineThreePageEvidence = {
+        sourceGuideBytes: Buffer.from(sourceGuideBytes),
+        workbookInspectionBytes: Buffer.from(workbookInspection.bytes),
+        guideInspectionBytes: Buffer.from(guideInspection.bytes),
+        coverage: structuredClone(guideInspection.metadata.inspectionCoverage),
+      };
+    } finally {
+      fs.rmSync(artifactRoot, { recursive: true, force: true });
+    }
+  }
+  return {
+    sourceGuideBytes: Buffer.from(cachedGenuineThreePageEvidence.sourceGuideBytes),
+    workbookInspectionBytes: Buffer.from(
+      cachedGenuineThreePageEvidence.workbookInspectionBytes,
+    ),
+    guideInspectionBytes: Buffer.from(cachedGenuineThreePageEvidence.guideInspectionBytes),
+    coverage: structuredClone(cachedGenuineThreePageEvidence.coverage),
+  };
+}
+
 function insertManagedFixtureDeliverable(runtime, task, input) {
   const absolutePath = path.join(CONFIG.artifactRoot, input.relativePath);
   fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
@@ -816,30 +925,6 @@ function insertManagedFixtureDeliverable(runtime, task, input) {
     sha256,
     ...(input.evidenceRole ? { evidenceRole: input.evidenceRole } : {}),
     ...(input.inspectionCoverage ? { inspectionCoverage: input.inspectionCoverage } : {}),
-  };
-}
-
-function exactThreePageCoverage(guideFile, guideInspectionHash) {
-  const pages = Array.from({ length: 3 }, (_, index) => ({
-    height: 1200 + index,
-    pageNumber: index + 1,
-    rasterSha256: sha256Bytes(Buffer.from(`setup-guide-page-${index + 1}`, "utf8")),
-    width: 900 + index,
-  }));
-  return {
-    sourceFile: "00-customer-setup-guide.pdf",
-    sourceRelativePath: "customer-files/00-customer-setup-guide.pdf",
-    sourceSha256: guideFile.sha256,
-    inspectionFile: "actual-setup-guide.png",
-    inspectionRelativePath: "quality-review/actual-setup-guide.png",
-    inspectionSha256: guideInspectionHash,
-    sourcePageCount: 3,
-    renderedPageCount: 3,
-    completeCoverage: true,
-    columns: 2,
-    rows: 2,
-    pages,
-    orderedPageIdentitySha256: sha256Bytes(Buffer.from(JSON.stringify(pages), "utf8")),
   };
 }
 
@@ -973,8 +1058,12 @@ function terminalValidationPersistenceState(db) {
 
 function assertTerminalValidationPersistence(db, beforeArtifacts) {
   const state = terminalValidationPersistenceState(db);
-  assert.equal(state.experiment.status, "cancelled");
-  assert.ok(state.experiment.ended_at);
+  assert.equal(
+    state.experiment.status,
+    "ready",
+    "legacy commercial experiments remain read-only audit history",
+  );
+  assert.equal(state.experiment.ended_at, null);
   assert.equal(state.candidate.status, "cancelled");
   assert.equal(
     state.candidate.promoted_experiment_id,
@@ -1005,6 +1094,7 @@ function assertTerminalValidationPersistence(db, beforeArtifacts) {
 }
 
 function prepareInspectionRecoveryFixture(runtime) {
+  const genuineEvidence = genuineThreePageEvidence();
   seedInspectionCommercialRecords(runtime.db);
   const planRow = get(
     runtime.db,
@@ -1063,7 +1153,7 @@ function prepareInspectionRecoveryFixture(runtime) {
     relativePath: "customer-files/001-setup-guide-source.pdf",
     format: "application/pdf",
     audience: "operator",
-    bytes: Buffer.from("%PDF-1.4\n% exact three-page setup-guide fixture\n", "utf8"),
+    bytes: genuineEvidence.sourceGuideBytes,
   });
   generated.files.push(guideFile);
   generated.manifest.setupGuide = {
@@ -1102,7 +1192,7 @@ function prepareInspectionRecoveryFixture(runtime) {
       format: "image/png",
       evidenceRole: "workbook_inspection",
       metadata: { evidenceRole: "workbook_inspection" },
-      bytes: fixturePng("workbook-source"),
+      bytes: genuineEvidence.workbookInspectionBytes,
     }),
     insertManagedFixtureDeliverable(runtime, build.task, {
       id: "deliv-validation-guide-inspection-source",
@@ -1185,10 +1275,10 @@ function prepareInspectionRecoveryFixture(runtime) {
       evidenceRole: "workbook_inspection",
       rendererRevision: "all-pdf-pages-v1-test",
     },
-    bytes: fixturePng("workbook-source"),
+    bytes: genuineEvidence.workbookInspectionBytes,
   });
-  const currentGuideBytes = fixturePng("guide-complete-three-pages");
-  const coverage = exactThreePageCoverage(guideFile, sha256Bytes(currentGuideBytes));
+  const currentGuideBytes = genuineEvidence.guideInspectionBytes;
+  const coverage = genuineEvidence.coverage;
   const currentGuide = insertManagedFixtureDeliverable(runtime, build.task, {
     id: "deliv-validation-guide-inspection-all-pages-v1",
     humanName: "Actual Setup Guide Review",
@@ -1404,10 +1494,19 @@ test("inspection-evidence recovery is strict, source-bound, atomic, and idempote
     const state = prepareInspectionRecoveryFixture(runtime);
     const sourceStored = get(runtime.db, "SELECT result FROM tasks WHERE id = ?", [state.qualityTask.id]);
     const sourceResult = fromJson(sourceStored.result, {});
+    const sourcePayload = fromJson(
+      get(runtime.db, "SELECT payload FROM tasks WHERE id = ?", [state.qualityTask.id]).payload,
+      {},
+    );
     const storeSourceResult = (result) => run(
       runtime.db,
       "UPDATE tasks SET result = ?, updated_at = ? WHERE id = ?",
       [toJson(result), now(), state.qualityTask.id],
+    );
+    const storeSourcePayload = (payload) => run(
+      runtime.db,
+      "UPDATE tasks SET payload = ?, updated_at = ? WHERE id = ?",
+      [toJson(payload), now(), state.qualityTask.id],
     );
     const storeEvidence = (generated, refresh) => {
       const storedGenerated = structuredClone(generated);
@@ -1447,7 +1546,68 @@ test("inspection-evidence recovery is strict, source-bound, atomic, and idempote
       ),
       /solely because PDF inspection evidence/i,
     );
+
+    const mixedDefect = structuredClone(sourceResult);
+    mixedDefect.output.roleOutput.riskFindings.push(
+      "File coverage is complete, but the workbook totals are unreliable and cannot be trusted.",
+    );
+    storeSourceResult(mixedDefect);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /solely because PDF inspection evidence/i,
+    );
+
+    const passiveRevisionClaimSafety = structuredClone(sourceResult);
+    passiveRevisionClaimSafety.output.roleOutput.claimSafety =
+      "Safe overall; one claim should be revised.";
+    storeSourceResult(passiveRevisionClaimSafety);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /solely because PDF inspection evidence/i,
+    );
+
+    const inverseCorrectionClaimSafety = structuredClone(sourceResult);
+    inverseCorrectionClaimSafety.output.roleOutput.claimSafety =
+      "Safe, but a correction is required.";
+    storeSourceResult(inverseCorrectionClaimSafety);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /solely because PDF inspection evidence/i,
+    );
+
+    const unsafeClaimSafety = structuredClone(sourceResult);
+    unsafeClaimSafety.output.roleOutput.claimSafety =
+      "Unsafe: visible claims overstate the workbook result and require correction.";
+    storeSourceResult(unsafeClaimSafety);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /solely because PDF inspection evidence/i,
+    );
     storeSourceResult(sourceResult);
+
+    const incompleteApprovedAssets = structuredClone(sourcePayload);
+    incompleteApprovedAssets.liveSpendRequest.parameters.approvedAssetIds.pop();
+    storeSourcePayload(incompleteApprovedAssets);
+    assert.throws(
+      () => recoverValidationQualityReviewAfterInspectionRepair(
+        runtime.db,
+        state.qualityTask.id,
+      ),
+      /unchanged customer files/i,
+    );
+    storeSourcePayload(sourcePayload);
 
     const changedFiles = structuredClone(state.validRefresh);
     changedFiles.currentFiles[0].sha256 = "a".repeat(64);
@@ -1459,6 +1619,28 @@ test("inspection-evidence recovery is strict, source-bound, atomic, and idempote
       ),
       /unchanged customer files/i,
     );
+
+    const byteTamperTarget = state.validRefresh.currentPreviews[0];
+    const byteTamperRow = get(
+      runtime.db,
+      "SELECT file_path FROM deliverables WHERE id = ?",
+      [byteTamperTarget.id],
+    );
+    const byteTamperPath = path.resolve(CONFIG.rootDir, byteTamperRow.file_path);
+    const originalBytes = fs.readFileSync(byteTamperPath);
+    fs.writeFileSync(byteTamperPath, Buffer.concat([originalBytes, Buffer.from("tampered")]));
+    try {
+      storeEvidence(state.generated, state.validRefresh);
+      assert.throws(
+        () => recoverValidationQualityReviewAfterInspectionRepair(
+          runtime.db,
+          state.qualityTask.id,
+        ),
+        /unchanged customer files/i,
+      );
+    } finally {
+      fs.writeFileSync(byteTamperPath, originalBytes);
+    }
 
     const incompleteCoverageGenerated = structuredClone(state.generated);
     const incompleteCoverageRefresh = structuredClone(state.validRefresh);
@@ -1510,6 +1692,10 @@ test("inspection-evidence recovery is strict, source-bound, atomic, and idempote
       runtime.db,
       "SELECT COUNT(*) AS count FROM approvals",
     ).count;
+    const reservationCountBefore = get(
+      runtime.db,
+      "SELECT COUNT(*) AS count FROM budget_reservations",
+    ).count;
     runtime.db.exec(
       "CREATE TRIGGER fail_inspection_recheck_event BEFORE INSERT ON events WHEN NEW.type = 'quality_review.pdf_inspection_recheck_ready' BEGIN SELECT RAISE(ABORT, 'forced recovery event failure'); END",
     );
@@ -1531,6 +1717,10 @@ test("inspection-evidence recovery is strict, source-bound, atomic, and idempote
     assert.equal(
       get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
       approvalCountBefore,
+    );
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM budget_reservations").count,
+      reservationCountBefore,
     );
     assert.equal(
       get(
@@ -1783,6 +1973,28 @@ test("a failed or contradictory inspection recheck is terminal with no retry", (
         decision: "approve",
       },
     },
+    {
+      name: "passive-revision-approval",
+      output: {
+        qualityScore: 92,
+        riskFindings: ["The reviewed files are otherwise legible and consistent."],
+        missingEvidence: [],
+        claimSafety: "Safe overall; one claim should be revised.",
+        operatorRecommendation: "Correct the claim before any buyer test.",
+        decision: "approve",
+      },
+    },
+    {
+      name: "inverse-correction-approval",
+      output: {
+        qualityScore: 92,
+        riskFindings: ["The reviewed files are otherwise legible and consistent."],
+        missingEvidence: [],
+        claimSafety: "Safe, but a correction is required.",
+        operatorRecommendation: "Correct the claim before any buyer test.",
+        decision: "approve",
+      },
+    },
   ]) {
     const runtime = makeRuntime("buyer-intent-inspection-" + fixture.name);
     try {
@@ -1797,6 +2009,11 @@ test("a failed or contradictory inspection recheck is terminal with no retry", (
         runtime.db,
         "SELECT COUNT(*) AS count FROM approvals",
       ).count;
+      const reservationCountBefore = get(
+        runtime.db,
+        "SELECT COUNT(*) AS count FROM budget_reservations",
+      ).count;
+      const costCountBefore = get(runtime.db, "SELECT COUNT(*) AS count FROM costs").count;
       if (fixture.name === "contradictory-approval") {
         const planRow = get(
           runtime.db,
@@ -1865,6 +2082,14 @@ test("a failed or contradictory inspection recheck is terminal with no retry", (
           get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
           approvalCountBefore,
         );
+        assert.equal(
+          get(runtime.db, "SELECT COUNT(*) AS count FROM budget_reservations").count,
+          reservationCountBefore,
+        );
+        assert.equal(
+          get(runtime.db, "SELECT COUNT(*) AS count FROM costs").count,
+          costCountBefore,
+        );
       }
       const projected = projectCompletedProductionTask(
         runtime.db,
@@ -1882,6 +2107,14 @@ test("a failed or contradictory inspection recheck is terminal with no retry", (
         get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
         approvalCountBefore,
       );
+      assert.equal(
+        get(runtime.db, "SELECT COUNT(*) AS count FROM budget_reservations").count,
+        reservationCountBefore,
+      );
+      assert.equal(
+        get(runtime.db, "SELECT COUNT(*) AS count FROM costs").count,
+        costCountBefore,
+      );
       const terminalPlan = get(
         runtime.db,
         "SELECT status, metadata FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
@@ -1894,6 +2127,7 @@ test("a failed or contradictory inspection recheck is terminal with no retry", (
       );
       assert.equal(terminalMetadata.inspectionEvidenceRecheckExhausted, true);
       assert.equal(terminalMetadata.correctionPrepared, false);
+      assert.equal(terminalMetadata.correctionRequiresNewBudget, false);
       assert.equal(terminalMetadata.validationExecutionPackId, undefined);
       const terminalPersistence = assertTerminalValidationPersistence(
         runtime.db,
@@ -1935,6 +2169,14 @@ test("a failed or contradictory inspection recheck is terminal with no retry", (
       assert.equal(
         get(runtime.db, "SELECT COUNT(*) AS count FROM approvals").count,
         approvalCountBefore,
+      );
+      assert.equal(
+        get(runtime.db, "SELECT COUNT(*) AS count FROM budget_reservations").count,
+        reservationCountBefore,
+      );
+      assert.equal(
+        get(runtime.db, "SELECT COUNT(*) AS count FROM costs").count,
+        costCountBefore,
       );
       assert.equal(
         get(
@@ -2781,7 +3023,59 @@ test("Jarvis recovers an exact retained Product Builder result after a tested lo
   }
 });
 
-test("finished files flow through quality, copy and launch planning to one real operator boundary", () => {
+test("passive claim corrections cannot approve ordinary production", () => {
+  for (const [name, claimSafety] of [
+    ["passive-revision", "Safe overall; one claim should be revised."],
+    ["inverse-correction", "Safe, but a correction is required."],
+  ]) {
+    const runtime = makeRuntime(`claim-safety-${name}`);
+    try {
+      const build = prepareBuild(runtime.db);
+      const generated = insertGeneratedDeliverables(runtime, build.task);
+      completeTask(runtime.db, build.task.id, {
+        ...workerOutput("Product Builder", {
+          productFormat: "ZIP catalogue",
+          producedFiles: generated.files.map((file) => file.humanName),
+          catalogueCoverage: ["catalogue-item-1", "catalogue-item-2", "catalogue-item-3"],
+        }),
+        generatedFiles: generated,
+      });
+      const buildProjection = projectCompletedProductionTask(runtime.db, build.task.id);
+      const qualityTask = buildProjection.result.next.task;
+      completeTask(runtime.db, qualityTask.id, workerOutput("Quality Reviewer", {
+        qualityScore: 92,
+        riskFindings: [],
+        missingEvidence: [],
+        claimSafety,
+        operatorRecommendation: "Correct the claim before launch preparation.",
+      }));
+
+      const qualityProjection = projectCompletedProductionTask(runtime.db, qualityTask.id);
+      assert.equal(qualityProjection.result.verdict.passed, false);
+      assert.equal(qualityProjection.result.verdict.claimSafetyPassed, false);
+      assert.equal(qualityProjection.result.correctionPrepared, true);
+      assert.notEqual(qualityProjection.result.next.task.agent, "copy_conversion_agent");
+      assert.equal(
+        get(
+          runtime.db,
+          "SELECT COUNT(*) AS count FROM tasks WHERE agent = 'copy_conversion_agent'",
+        ).count,
+        0,
+      );
+      assert.equal(
+        get(
+          runtime.db,
+          "SELECT status FROM catalogue_plans WHERE id = 'plan-pantheon-production'",
+        ).status,
+        "rebuilding",
+      );
+    } finally {
+      closeRuntime(runtime);
+    }
+  }
+});
+
+test("finished files reach the retired legacy distribution boundary without creating commercial records", () => {
   const runtime = makeRuntime("launch-boundary");
   try {
     const build = prepareBuild(runtime.db);
@@ -2828,7 +3122,7 @@ test("finished files flow through quality, copy and launch planning to one real 
       qualityScore: 92,
       riskFindings: [],
       missingEvidence: [],
-      claimSafety: "safe",
+      claimSafety: "Safe: the revised wording matches the retained file; no correction is required.",
       operatorRecommendation: "Continue to launch preparation.",
     }));
     const qualityProjection = projectCompletedProductionTask(runtime.db, qualityTask.id);
@@ -2878,31 +3172,65 @@ test("finished files flow through quality, copy and launch planning to one real 
       stopRule: "Diagnose reach, offer, price and checkout after 14 days or 50 qualified views.",
       operatorWorkload: "Review the listing, complete private Gumroad setup, and press Publish.",
     }));
-    const distributionProjection = projectCompletedProductionTask(runtime.db, distributionTask.id);
-    const plan = distributionProjection.plan;
-    assert.equal(plan.status, "launch_decision");
-    assert.ok(plan.metadata.launchDecisionHandoffId);
-    assert.ok(plan.metadata.approvalPackDeliverableId);
-    const experiment = get(runtime.db, "SELECT status, hypothesis, offer FROM commercial_experiments");
-    assert.equal(experiment.status, "ready");
-    assert.doesNotMatch(experiment.hypothesis, /Show the finished Use\b/i);
-    assert.doesNotMatch(experiment.hypothesis, /\.\s+through\b|\.\./);
-    assert.match(experiment.hypothesis, /Customer promise:/i);
-    assert.match(experiment.offer, /:/);
-    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM deliverables WHERE format = 'pdf'").count, 1);
-    const decisions = getDecisionsState(runtime.db);
-    const launchChoice = decisions.approvals.find((item) => item.decisionActionKind === "launch_readiness");
-    assert.equal(launchChoice.title, "Decide whether this product should move to publish-ready");
-    assert.equal(launchChoice.approveLabel, "Move to publish-ready");
+    const trackedTables = [
+      "commercial_experiments",
+      "commercial_briefs",
+      "commercial_test_candidates",
+      "deliverables",
+      "events",
+      "approvals",
+      "agent_handoffs",
+    ];
+    const countsBefore = Object.fromEntries(
+      trackedTables.map((table) => [
+        table,
+        get(runtime.db, `SELECT COUNT(*) AS count FROM ${table}`).count,
+      ]),
+    );
+    const planBefore = get(
+      runtime.db,
+      "SELECT status, metadata, updated_at FROM catalogue_plans WHERE id = ?",
+      [copyProjection.plan.id],
+    );
 
-    const handoff = getAgentHandoff(runtime.db, plan.metadata.launchDecisionHandoffId);
-    const decision = applyPantheonHandoffDecision(runtime.db, handoff, "approve", "Proceed to the separate real publishing action.");
-    assert.equal(decision.externalActionCompleted, false);
-    assert.equal(decision.plan.status, "ready_to_publish");
-    assert.equal(getProductionState(runtime.db).readyToPublish.length, 1);
-    const operatorMessage = get(runtime.db, "SELECT * FROM messages WHERE subject = 'Publish the approved product test'");
-    assert.ok(operatorMessage);
-    assert.match(operatorMessage.body, /press Publish/);
+    assert.throws(
+      () => projectCompletedProductionTask(runtime.db, distributionTask.id),
+      (error) => {
+        assert.equal(error.statusCode, 410);
+        assert.equal(error.code, "legacy_commercial_path_retired");
+        assert.equal(
+          error.details.path,
+          "pantheon_production_distribution_projection",
+        );
+        return true;
+      },
+    );
+
+    const countsAfter = Object.fromEntries(
+      trackedTables.map((table) => [
+        table,
+        get(runtime.db, `SELECT COUNT(*) AS count FROM ${table}`).count,
+      ]),
+    );
+    assert.deepEqual(countsAfter, countsBefore);
+    assert.deepEqual(
+      get(
+        runtime.db,
+        "SELECT status, metadata, updated_at FROM catalogue_plans WHERE id = ?",
+        [copyProjection.plan.id],
+      ),
+      planBefore,
+    );
+    assert.equal(
+      get(
+        runtime.db,
+        `SELECT COUNT(*) AS count
+         FROM commercial_experiments
+         WHERE json_extract(metadata, '$.cataloguePlanId') = ?`,
+        [copyProjection.plan.id],
+      ).count,
+      0,
+    );
   } finally {
     closeRuntime(runtime);
   }

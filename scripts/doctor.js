@@ -1,15 +1,20 @@
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const net = require("node:net");
 const crypto = require("node:crypto");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("../src/config");
+const { verifyDatabase } = require("../src/db");
+const { factoryReadiness } = require("../src/runtime/digital-product-file-factory");
 const {
   preferredEnvironment,
   readEncryptedHeader,
   requiredPassphrase,
-  verifyBackup,
+  restoreBackup,
+  sha256File,
+  validateRecoverySourceBundle,
 } = require("../src/runtime/backup");
 const {
   IMAGE_GENERATION_PRICING,
@@ -18,6 +23,23 @@ const {
 } = require("../src/runtime/model-pricing");
 
 const root = path.resolve(__dirname, "..");
+const RESTORED_BOOT_OS_ENVIRONMENT_ALLOWLIST = new Set([
+  "COMSPEC",
+  "LANG",
+  "LC_ALL",
+  "NUMBER_OF_PROCESSORS",
+  "OS",
+  "PATH",
+  "PATHEXT",
+  "PROCESSOR_ARCHITECTURE",
+  "SYSTEMDRIVE",
+  "SYSTEMROOT",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "TZ",
+  "WINDIR",
+]);
 
 function result(name, status, message, details = undefined) {
   return { name, status, message, ...(details === undefined ? {} : { details }) };
@@ -35,22 +57,69 @@ function checkNodeVersion() {
   return result("Node.js", "pass", `Node ${process.versions.node} satisfies ${required}.`);
 }
 
-function checkLockfile() {
-  const packagePath = path.join(root, "package.json");
-  const lockPath = path.join(root, "package-lock.json");
+function checkLockfile(options = {}) {
+  const rootDir = path.resolve(options.rootDir || root);
+  const packagePath = path.join(rootDir, "package.json");
+  const lockPath = path.join(rootDir, "package-lock.json");
   if (!fs.existsSync(lockPath)) return result("Dependency lock", "fail", "package-lock.json is missing.");
   try {
     const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
     const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
     const lockedRoot = lock.packages?.[""] || {};
-    const declared = packageJson.dependencies || {};
-    const locked = lockedRoot.dependencies || {};
-    if (packageJson.name !== lock.name || packageJson.version !== lock.version || JSON.stringify(declared) !== JSON.stringify(locked)) {
+    const declaredGroups = {
+      dependencies: packageJson.dependencies || {},
+      devDependencies: packageJson.devDependencies || {},
+    };
+    const lockedGroups = {
+      dependencies: lockedRoot.dependencies || {},
+      devDependencies: lockedRoot.devDependencies || {},
+    };
+    const sameEntries = (left, right) => {
+      const leftEntries = Object.entries(left).sort(([a], [b]) => a.localeCompare(b));
+      const rightEntries = Object.entries(right).sort(([a], [b]) => a.localeCompare(b));
+      return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
+    };
+    if (
+      packageJson.name !== lock.name
+      || packageJson.version !== lock.version
+      || !sameEntries(declaredGroups.dependencies, lockedGroups.dependencies)
+      || !sameEntries(declaredGroups.devDependencies, lockedGroups.devDependencies)
+    ) {
       return result("Dependency lock", "fail", "package.json and package-lock.json root metadata do not match.");
     }
-    const missing = Object.keys(declared).filter((name) => !fs.existsSync(path.join(root, "node_modules", ...name.split("/"), "package.json")));
+    const declared = { ...declaredGroups.dependencies, ...declaredGroups.devDependencies };
+    const missing = [];
+    const mismatched = [];
+    const versions = {};
+    for (const name of Object.keys(declared)) {
+      const installedPath = path.join(rootDir, "node_modules", ...name.split("/"), "package.json");
+      const lockedPackage = lock.packages?.[`node_modules/${name}`];
+      if (!fs.existsSync(installedPath) || !lockedPackage?.version) {
+        missing.push(name);
+        continue;
+      }
+      const installed = JSON.parse(fs.readFileSync(installedPath, "utf8"));
+      versions[name] = {
+        installed: String(installed.version || ""),
+        locked: String(lockedPackage.version),
+      };
+      if (versions[name].installed !== versions[name].locked) mismatched.push(name);
+    }
     if (missing.length) return result("Dependency lock", "fail", `Installed dependencies are incomplete (${missing.length} missing).`);
-    return result("Dependency lock", "pass", `${Object.keys(declared).length} declared dependencies match the lockfile and are installed.`);
+    if (mismatched.length) {
+      return result(
+        "Dependency lock",
+        "fail",
+        `Installed dependency versions do not match the lockfile (${mismatched.length} mismatch(es)).`,
+        { mismatched, versions },
+      );
+    }
+    return result(
+      "Dependency lock",
+      "pass",
+      `${Object.keys(declared).length} declared dependencies match the lockfile and exact installed versions.`,
+      { versions },
+    );
   } catch (error) {
     return result("Dependency lock", "fail", `Dependency metadata could not be validated: ${error.message}`);
   }
@@ -109,60 +178,117 @@ function checkTar() {
   return result("Archive tool", "pass", firstLine);
 }
 
-function pythonCandidates() {
-  const candidates = [];
-  const configuredPython = preferredEnvironment("PYTHON");
-  if (configuredPython) candidates.push({ command: configuredPython, prefix: [] });
-  const dependencyRoot = path.resolve(path.dirname(process.execPath), "..", "..");
-  candidates.push({ command: path.join(dependencyRoot, "python", "python.exe"), prefix: [] });
-  for (const home of [process.env.USERPROFILE, process.env.HOME].filter(Boolean)) {
-    candidates.push({
-      command: path.join(home, ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "python.exe"),
-      prefix: [],
-    });
+function parsePinnedRuntimeRequirements(requirementsPath) {
+  const pins = {};
+  for (const rawLine of fs.readFileSync(requirementsPath, "utf8").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = line.match(/^([A-Za-z0-9_.-]+)==([^\s]+)$/);
+    if (!match) throw new Error(`Runtime requirement is not exactly pinned: ${line}`);
+    pins[match[1]] = match[2];
   }
-  if (process.platform === "win32") candidates.push({ command: "py", prefix: ["-3"] }, { command: "python", prefix: [] });
-  else candidates.push({ command: "python3", prefix: [] }, { command: "python", prefix: [] });
-  return candidates.filter((candidate, index, items) => items.findIndex((item) => item.command === candidate.command) === index);
+  return pins;
 }
 
-function checkRenderer() {
-  const renderer = path.join(root, "scripts", "render-approval-pack.py");
-  if (!fs.existsSync(renderer)) return result("PDF renderer", "fail", "The approval-pack renderer script is missing.");
-  for (const candidate of pythonCandidates()) {
-    if (path.isAbsolute(candidate.command) && !fs.existsSync(candidate.command)) continue;
-    const probe = spawnSync(
-      candidate.command,
-      [
-        ...candidate.prefix,
-        "-c",
-        [
-          "import openpyxl,PIL,reportlab,sys",
-          "print(sys.version_info[0])",
-          "print(reportlab.Version)",
-          "print(openpyxl.__version__)",
-          "print(PIL.__version__)",
-        ].join(";"),
-      ],
-      { encoding: "utf8", windowsHide: true, timeout: 20_000 },
+function checkRenderer(options = {}) {
+  const rootDir = path.resolve(options.rootDir || root);
+  const requirementsPath = path.resolve(
+    options.requirementsPath || path.join(rootDir, "requirements-runtime.txt"),
+  );
+  const scripts = [
+    path.join(rootDir, "scripts", "render-approval-pack.py"),
+    path.join(rootDir, "scripts", "render-digital-product-kit.py"),
+    path.join(rootDir, "scripts", "compose-storefront-cover.py"),
+  ];
+  const missingScripts = scripts.filter((scriptPath) => !fs.existsSync(scriptPath));
+  if (missingScripts.length) {
+    return result(
+      "PDF renderer",
+      "fail",
+      `Pantheon's product renderer is incomplete (${missingScripts.length} script(s) missing).`,
+      { missingScripts },
     );
-    if (probe.status === 0) {
-      const lines = String(probe.stdout || "").trim().split(/\r?\n/);
+  }
+  if (!fs.existsSync(requirementsPath)) {
+    return result("PDF renderer", "fail", "requirements-runtime.txt is missing.");
+  }
+
+  const readiness = factoryReadiness({ refresh: true });
+  if (!readiness.ready) {
+    return result(
+      "PDF renderer",
+      "fail",
+      `Pantheon's exact production Python is not renderer-ready: ${readiness.reason}`,
+      { python: readiness.python, renderer: readiness.renderer },
+    );
+  }
+
+  try {
+    const pins = parsePinnedRuntimeRequirements(requirementsPath);
+    const requiredPackages = ["openpyxl", "Pillow", "pypdfium2", "reportlab"];
+    const missingPins = requiredPackages.filter((name) => !pins[name]);
+    if (missingPins.length) {
       return result(
         "PDF renderer",
-        "pass",
-        `Python ${lines[0] || "3"}, ReportLab ${lines[1] || "available"}, `
-          + `openpyxl ${lines[2] || "available"}, and Pillow ${lines[3] || "available"} are available.`,
+        "fail",
+        `Pantheon's renderer requirements are missing ${missingPins.length} exact pin(s).`,
+        { missingPins },
       );
     }
+    const pythonProbe = [
+      "import importlib.metadata,json,sys",
+      "from pathlib import Path",
+      "scripts=sys.argv[1:]",
+      "[compile(Path(item).read_text(encoding='utf-8'),item,'exec') for item in scripts]",
+      `names=${JSON.stringify(requiredPackages)}`,
+      "print(json.dumps({'python':sys.version.split()[0],'packages':{name:importlib.metadata.version(name) for name in names}}))",
+    ].join(";");
+    const probe = spawnSync(
+      readiness.python,
+      ["-c", pythonProbe, ...scripts],
+      {
+        cwd: rootDir,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 20_000,
+        maxBuffer: 1024 * 1024,
+      },
+    );
+    if (probe.error?.code === "ETIMEDOUT") {
+      return result("PDF renderer", "fail", "Pantheon's exact renderer check exceeded its 20-second deadline.");
+    }
+    if (probe.error || probe.status !== 0) {
+      return result(
+        "PDF renderer",
+        "fail",
+        `Pantheon's exact renderer check failed: ${String(probe.error?.message || probe.stderr || probe.stdout || "unknown error").trim()}`,
+        { python: readiness.python },
+      );
+    }
+    const metadata = JSON.parse(String(probe.stdout || "").trim());
+    const mismatched = requiredPackages.filter((name) => String(metadata.packages?.[name] || "") !== pins[name]);
+    if (mismatched.length) {
+      return result(
+        "PDF renderer",
+        "fail",
+        `Installed renderer package versions do not match requirements-runtime.txt (${mismatched.length} mismatch(es)).`,
+        { mismatched, installed: metadata.packages, pinned: pins, python: readiness.python },
+      );
+    }
+    return result(
+      "PDF renderer",
+      "pass",
+      `Pantheon's exact Python ${metadata.python} product renderer and four pinned packages are ready.`,
+      {
+        python: readiness.python,
+        scripts: scripts.map((scriptPath) => path.basename(scriptPath)),
+        packages: metadata.packages,
+        pinned: Object.fromEntries(requiredPackages.map((name) => [name, pins[name]])),
+      },
+    );
+  } catch (error) {
+    return result("PDF renderer", "fail", `Pantheon's renderer contract could not be validated: ${error.message}`);
   }
-  return result(
-    "PDF renderer",
-    "fail",
-    "No usable Python 3 runtime with Pantheon's pinned ReportLab, openpyxl, and Pillow dependencies was found. "
-      + "Install requirements-runtime.txt and set PANTHEON_PYTHON "
-      + "(or the legacy JARVIS_PYTHON alias) to the approved runtime.",
-  );
 }
 
 function checkWritableDirectory(name, directory) {
@@ -185,11 +311,13 @@ function checkRuntimeDatabase(options = {}) {
   let db;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
-    const quick = db.prepare("PRAGMA quick_check").all();
-    const foreignKeys = db.prepare("PRAGMA foreign_key_check").all();
-    const quickOk = quick.length === 1 && Object.values(quick[0])[0] === "ok";
-    if (!quickOk || foreignKeys.length) throw new Error(`quick_check=${quickOk ? "ok" : "failed"}, foreign_key_violations=${foreignKeys.length}`);
-    return result("Runtime database", "pass", "SQLite quick_check passed with no foreign-key violations.", { path: dbPath });
+    const proof = verifyDatabase(db);
+    return result(
+      "Runtime database",
+      "pass",
+      `Pantheon schema ${proof.schemaVersion} passed structural, SQLite, and ownership checks.`,
+      { path: dbPath, ...proof },
+    );
   } catch (error) {
     return result("Runtime database", "fail", `Runtime database validation failed: ${error.message}`, { path: dbPath });
   } finally {
@@ -220,6 +348,252 @@ function checkBackupConfiguration(options = {}) {
 
 function backupAgeHours(createdAt, now = new Date()) {
   return (now.getTime() - new Date(createdAt).getTime()) / 3600000;
+}
+
+function freeLoopbackPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve(address.port);
+      });
+    });
+  });
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
+  return new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Restored Pantheon did not exit within ${timeoutMs} milliseconds.`));
+    }, timeoutMs);
+    const onExit = (code, signal) => {
+      cleanup();
+      resolve({ code, signal });
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      clearTimeout(deadline);
+      child.off("exit", onExit);
+      child.off("error", onError);
+    };
+    child.once("exit", onExit);
+    child.once("error", onError);
+  });
+}
+
+function loopbackPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+function restoredHealthReady(body) {
+  return body?.runtimeReady === true || body?.operationsReady === true;
+}
+
+function restoredBootEnvironment({
+  controlToken,
+  dataRoot,
+  dbPath,
+  drillRoot,
+  instanceId,
+  port,
+  sourceEnvironment = process.env,
+} = {}) {
+  const environment = {};
+  for (const [name, value] of Object.entries(sourceEnvironment || {})) {
+    if (RESTORED_BOOT_OS_ENVIRONMENT_ALLOWLIST.has(name.toUpperCase())) {
+      environment[name] = value;
+    }
+  }
+  return {
+    ...environment,
+    NODE_ENV: "production",
+    NODE_PATH: path.join(root, "node_modules"),
+    PORT: String(port),
+    PANTHEON_DATA_DIR: dataRoot,
+    PANTHEON_DB_PATH: dbPath,
+    PANTHEON_ARTIFACT_ROOT: path.join(dataRoot, "artifacts"),
+    PANTHEON_PROOF_LEDGER_PATH: path.join(dataRoot, "proof-ledger.jsonl"),
+    PANTHEON_APPROVAL_PACK_DIR: path.join(drillRoot, "approval-packs"),
+    PANTHEON_BACKUP_DESTINATION: path.join(drillRoot, "backups"),
+    PANTHEON_PRIVATE_OPERATOR_DIR: path.join(drillRoot, "private"),
+    PANTHEON_PRIVACY_HASH_KEY: "doctor-only-privacy-hash-key-32-bytes",
+    PANTHEON_OPERATOR_BOOTSTRAP: crypto.randomBytes(32).toString("base64url"),
+    PANTHEON_CONTROL_TOKEN: controlToken,
+    PANTHEON_RUNTIME_INSTANCE_ID: instanceId,
+    PANTHEON_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
+    PANTHEON_SCHEDULER_ENABLED: "1",
+    PANTHEON_SCHEDULER_POLL_SECONDS: "60",
+    PANTHEON_SYSTEM_PROOF_MODE: "0",
+    PANTHEON_LIVE_MODE: "0",
+    PANTHEON_ENABLE_LIVE_MODELS: "0",
+    PANTHEON_ENABLE_LIVE_RESEARCH: "0",
+    PANTHEON_ENABLE_IMAGE_GENERATION: "0",
+    PANTHEON_DISABLE_OPENAI_AGENTS_SDK: "1",
+    PANTHEON_DISABLE_LIVE_AI_WORKER_ADAPTER: "1",
+    PANTHEON_DISABLE_LIVE_RESEARCH_ADAPTER: "1",
+    JARVIS_LIVE_MODE: "0",
+    JARVIS_ENABLE_LIVE_MODELS: "0",
+    JARVIS_ENABLE_LIVE_RESEARCH: "0",
+    JARVIS_ENABLE_IMAGE_GENERATION: "0",
+  };
+}
+
+async function waitForRestoredHealth(child, origin, diagnostics, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastFailure = "health endpoint did not answer";
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(
+        `Restored Pantheon exited before health proof (${diagnostics() || "no process output"}).`,
+      );
+    }
+    try {
+      const response = await fetch(`${origin}/api/health`, {
+        signal: AbortSignal.timeout(1_500),
+      });
+      const body = await response.json();
+      const ready = restoredHealthReady(body);
+      if (
+        response.status === 200
+        && body?.alive === true
+        && ready
+        && body?.externalActionsMode === "locked"
+      ) {
+        return {
+          status: response.status,
+          alive: true,
+          ready: true,
+          readinessField: body.runtimeReady === true
+            ? "runtimeReady"
+            : "operationsReady",
+          externalActionsMode: body.externalActionsMode,
+          instanceId: String(body.instanceId || ""),
+        };
+      }
+      lastFailure = `status=${response.status}, alive=${body?.alive}, ready=${ready}, externalActionsMode=${body?.externalActionsMode}`;
+    } catch (error) {
+      lastFailure = error.message;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `Restored Pantheon did not produce a ready locked /api/health response: ${lastFailure}.`,
+  );
+}
+
+async function runRestoredPantheonDrill(restoredRoot, options = {}) {
+  const workspaceRoot = path.resolve(restoredRoot);
+  const source = validateRecoverySourceBundle(workspaceRoot);
+  const sourceDbPath = path.join(workspaceRoot, "data", "runtime.sqlite");
+  if (!fs.existsSync(sourceDbPath) || !fs.statSync(sourceDbPath).isFile()) {
+    throw new Error("Restored Pantheon is missing data/runtime.sqlite for its boot drill.");
+  }
+  const sourceDbSha256 = sha256File(sourceDbPath);
+  const drillRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-restored-boot-"));
+  const dataRoot = path.join(drillRoot, "data");
+  const dbPath = path.join(dataRoot, "runtime.sqlite");
+  const port = await freeLoopbackPort();
+  const controlToken = crypto.randomBytes(32).toString("base64url");
+  const instanceId = `doctor-${crypto.randomUUID()}`;
+  const entrypoint = path.resolve(workspaceRoot, ...source.startPath.split("/"));
+  fs.mkdirSync(dataRoot, { recursive: true });
+  fs.copyFileSync(sourceDbPath, dbPath, fs.constants.COPYFILE_EXCL);
+  let stdout = "";
+  let stderr = "";
+  let child = null;
+  const appendBounded = (current, chunk) => (
+    `${current}${chunk}`.slice(-64 * 1024)
+  );
+  const diagnostics = () => [stdout.trim(), stderr.trim()].filter(Boolean).join("\n");
+  try {
+    child = spawn(process.execPath, [entrypoint], {
+      cwd: workspaceRoot,
+      env: restoredBootEnvironment({
+        controlToken,
+        dataRoot,
+        dbPath,
+        drillRoot,
+        instanceId,
+        port,
+      }),
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
+    const origin = `http://127.0.0.1:${port}`;
+    const health = await waitForRestoredHealth(
+      child,
+      origin,
+      diagnostics,
+      Number(options.healthTimeoutMs || 30_000),
+    );
+    const shutdownResponse = await fetch(`${origin}/api/runtime/shutdown`, {
+      method: "POST",
+      headers: { "x-pantheon-control": controlToken },
+      signal: AbortSignal.timeout(5_000),
+    });
+    const shutdownBody = await shutdownResponse.json();
+    if (shutdownResponse.status !== 202 || shutdownBody?.ok !== true) {
+      throw new Error(
+        `Restored Pantheon rejected controlled shutdown (status ${shutdownResponse.status}).`,
+      );
+    }
+    const exit = await waitForChildExit(child, Number(options.shutdownTimeoutMs || 10_000));
+    if (exit.code !== 0 || exit.signal !== null) {
+      throw new Error(
+        `Restored Pantheon did not stop cleanly (exit=${exit.code}, signal=${exit.signal || "none"}).`,
+      );
+    }
+    const portReleased = await loopbackPortAvailable(port);
+    if (!portReleased) throw new Error("Restored Pantheon left its disposable port occupied.");
+    if (sha256File(sourceDbPath) !== sourceDbSha256) {
+      throw new Error("Restored source database changed during the disposable boot drill.");
+    }
+    return {
+      completed: true,
+      source,
+      dependencyProof: {
+        mode: "current_workspace_node_modules",
+        cleanInstallProved: false,
+        statement: "Boot compatibility was checked with the currently installed dependency tree; clean installation from the recovered lockfile is a separate release proof.",
+      },
+      databaseCopy: {
+        sourceUnchanged: true,
+        sourceSha256: sourceDbSha256,
+      },
+      health,
+      shutdown: {
+        accepted: true,
+        exited: true,
+        exitCode: exit.code,
+        signal: exit.signal,
+        portReleased,
+      },
+    };
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await waitForChildExit(child, 5_000).catch(() => {});
+    }
+    fs.rmSync(drillRoot, { recursive: true, force: true });
+  }
 }
 
 async function checkRecoverySet(options = {}) {
@@ -272,19 +646,33 @@ async function checkRecoverySet(options = {}) {
   let verified = null;
   const invalidSets = [...unreadable];
   for (const candidate of sets) {
+    const drillRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-doctor-restore-"));
     try {
-      const proof = await verifyBackup(candidate.filePath, { passphrase: options.passphrase });
-      verified = { ...candidate, proof };
+      const proof = await restoreBackup(
+        candidate.filePath,
+        path.join(drillRoot, "restored-workspace"),
+        { passphrase: options.passphrase },
+      );
+      const boot = await runRestoredPantheonDrill(
+        path.join(drillRoot, "restored-workspace"),
+        {
+          healthTimeoutMs: options.healthTimeoutMs,
+          shutdownTimeoutMs: options.shutdownTimeoutMs,
+        },
+      );
+      verified = { ...candidate, proof, boot };
       break;
     } catch (error) {
       invalidSets.push({ filePath: candidate.filePath, error: error.message });
+    } finally {
+      fs.rmSync(drillRoot, { recursive: true, force: true });
     }
   }
   if (!verified) {
     return result(
       "Recovery set",
       "fail",
-      "Pantheon found recovery-set files, but none passed decryption, manifest, inventory, and database verification.",
+      "Pantheon found recovery-set files, but none completed a disposable authenticated restore drill.",
       { path: destinationRoot, invalidCount: invalidSets.length, maxAgeHours },
     );
   }
@@ -317,6 +705,16 @@ async function checkRecoverySet(options = {}) {
       ]),
     ),
     sqlite: verified.proof.recoverySet.sqlite,
+    source: verified.proof.recoverySet.source,
+    restoreDrill: {
+      completed: true,
+      verifiedAt: verified.proof.verificationRecord?.verifiedAt || null,
+      destinationRetained: false,
+      sourceDatabaseUnchanged: verified.boot.databaseCopy.sourceUnchanged,
+      dependencyProof: verified.boot.dependencyProof,
+      health: verified.boot.health,
+      shutdown: verified.boot.shutdown,
+    },
     invalidCount: invalidSets.length,
   };
   if (futureDated) {
@@ -336,7 +734,7 @@ async function checkRecoverySet(options = {}) {
   return result(
     "Recovery set",
     "pass",
-    "A recent encrypted Pantheon recovery set passed manifest, file-inventory, and SQLite verification.",
+    "A recent encrypted Pantheon recovery set completed a disposable authenticated restore drill.",
     details,
   );
 }
@@ -364,7 +762,7 @@ function checkPort(port = CONFIG.port) {
 
 function assessOperationsReady(results) {
   const byName = new Map(results.map((item) => [item.name, item]));
-  const requiredPasses = [
+  const requiredInstallationPasses = [
     "Node.js",
     "Dependency lock",
     "Node SQLite",
@@ -375,19 +773,35 @@ function assessOperationsReady(results) {
     "Backup destination",
     "Runtime database",
     "Backup encryption",
-    "Recovery set",
   ];
-  const blockers = [];
-  for (const name of requiredPasses) {
+  const installationBlockers = [];
+  for (const name of requiredInstallationPasses) {
     const item = byName.get(name);
     if (!item || item.status !== "pass") {
-      blockers.push(item?.message || `${name} was not checked.`);
+      installationBlockers.push(item?.message || `${name} was not checked.`);
     }
   }
-  for (const item of results.filter((entry) => entry.status === "fail")) {
-    if (!blockers.includes(item.message)) blockers.push(item.message);
+  for (const item of results.filter((entry) => entry.status === "fail" && entry.name !== "Recovery set")) {
+    if (!installationBlockers.includes(item.message)) installationBlockers.push(item.message);
   }
-  return { operationsReady: blockers.length === 0, readinessBlockers: blockers };
+  const recovery = byName.get("Recovery set");
+  const recoveryBlockers = recovery?.status === "pass"
+    ? []
+    : [recovery?.message || "Recovery set was not checked."];
+  const installationReady = installationBlockers.length === 0;
+  const recoveryReady = recoveryBlockers.length === 0;
+  const readinessBlockers = [...new Set([...installationBlockers, ...recoveryBlockers])];
+  return {
+    installationReady,
+    recoveryReady,
+    runtimeReady: null,
+    readinessScope: "installation_and_recovery",
+    operationsReady: installationReady && recoveryReady,
+    operationsReadyAliasFor: "installationReady && recoveryReady",
+    installationBlockers,
+    recoveryBlockers,
+    readinessBlockers,
+  };
 }
 
 async function runDoctor(options = {}) {
@@ -410,7 +824,7 @@ async function runDoctor(options = {}) {
       maxAgeHours: options.maxAgeHours,
       now: options.now,
     }),
-    await checkPort(options.port || CONFIG.port),
+    await checkPort(options.port ?? CONFIG.port),
   ];
   const readiness = assessOperationsReady(results);
   return {
@@ -431,8 +845,8 @@ function printHuman(report) {
     ? `Pantheon doctor passed${report.warningCount ? ` with ${report.warningCount} warning(s)` : ""}.`
     : `Pantheon doctor found ${report.failureCount} blocking problem(s).`);
   console.log(report.operationsReady
-    ? "Pantheon is operations-ready, including a recent validated recovery set."
-    : `Pantheon is not yet operations-ready (${report.readinessBlockers.length} readiness blocker(s)).`);
+    ? "Pantheon's installation and recovery set are ready."
+    : `Pantheon's installation or recovery set is not ready (${report.readinessBlockers.length} blocker(s)).`);
 }
 
 async function main() {
@@ -464,5 +878,8 @@ module.exports = {
   checkRuntimeDatabase,
   checkTar,
   checkWritableDirectory,
+  restoredHealthReady,
+  restoredBootEnvironment,
+  runRestoredPantheonDrill,
   runDoctor,
 };

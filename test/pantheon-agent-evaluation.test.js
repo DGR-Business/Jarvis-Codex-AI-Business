@@ -6,7 +6,6 @@ const test = require("node:test");
 
 const {
   all,
-  fromJson,
   get,
   openDatabase,
   seedDatabase,
@@ -72,7 +71,7 @@ function restoreEnvironment(snapshot) {
   }
 }
 
-test("failed live commercial evaluation cannot complete its task", async () => {
+test("unbound pre-venture discovery cannot call a provider or create commercial truth", async () => {
   const environmentNames = [
     "OPENAI_API_KEY",
     "PANTHEON_ENABLE_LIVE_MODELS",
@@ -102,7 +101,10 @@ test("failed live commercial evaluation cannot complete its task", async () => {
   process.env.PANTHEON_APPROVAL_PACK_DIR = packDir;
   process.env.JARVIS_APPROVAL_PACK_DIR = packDir;
 
-  __setAgentRuntimeSdkRunnerForTests(async () => ({
+  let providerCalled = false;
+  __setAgentRuntimeSdkRunnerForTests(async () => {
+    providerCalled = true;
+    return ({
     finalOutput: {
       summary: "Three candidate directions were ranked, but the provider returned no attributable source URL.",
       recommendation: "Do not accept this as grounded commercial research.",
@@ -208,75 +210,43 @@ test("failed live commercial evaluation cannot complete its task", async () => {
     },
     lastAgent: { name: "Opportunity Scout" },
     interruptions: [],
-  }));
+    });
+  });
 
   try {
     await activateRetentionPolicy(runtime.db);
-    const started = startOpportunityRound(runtime.db, {
-      prompt: "Find evidence-backed online business opportunities.",
-      source: "pantheon-agent-evaluation-test",
-    });
-    assert.equal(started.queued.mandate.approved, true);
-    const taskId = started.queued.task.id;
-
-    const execution = await runOnce(runtime.db, {
-      taskId,
-      claimant: "pantheon-agent-evaluation-test",
-    });
-    assert.equal(execution.status, "needs_attention", JSON.stringify(execution));
-    assert.match(execution.error, /local quality check scored it 45\/100 \(failed\)/i);
-
-    const task = get(runtime.db, "SELECT * FROM tasks WHERE id = ?", [taskId]);
-    const agentRun = get(runtime.db, "SELECT * FROM agent_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1", [taskId]);
-    const evaluation = get(
-      runtime.db,
-      "SELECT * FROM agent_eval_results WHERE run_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
-      [agentRun.id],
+    const counts = () => Object.fromEntries(
+      [
+        "opportunity_rounds",
+        "opportunities",
+        "workflows",
+        "tasks",
+        "approvals",
+        "costs",
+        "events",
+        "agent_runs",
+        "agent_eval_results",
+        "model_calls",
+      ].map((table) => [
+        table,
+        get(
+          runtime.db,
+          `SELECT COUNT(*) AS count FROM ${table}`,
+        ).count,
+      ]),
     );
-    const attempt = get(
-      runtime.db,
-      "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
-      [taskId],
+    const before = counts();
+    assert.throws(
+      () => startOpportunityRound(runtime.db, {
+        prompt: "Find evidence-backed online business opportunities.",
+        source: "pantheon-agent-evaluation-test",
+      }),
+      (error) => error.statusCode === 410
+        && error.code === "legacy_commercial_path_retired"
+        && error.details.path === "pantheon_opportunity_round_start",
     );
-    const modelCall = get(
-      runtime.db,
-      "SELECT * FROM model_calls WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
-      [taskId],
-    );
-
-    assert.equal(task.status, "needs_attention");
-    assert.ok(task.completed_at, "The terminal attempt timestamp should be retained for review.");
-    assert.equal(task.outcome_status, "known_provider_result_needs_review");
-    assert.match(task.error, /local quality check/i);
-    assert.equal(agentRun.status, "failed");
-    assert.equal(agentRun.model_call_id, modelCall.id);
-    assert.equal(agentRun.estimated_cost_cents, modelCall.estimated_cost_cents);
-    assert.equal(
-      fromJson(agentRun.metadata, {}).localReviewOutput.summary,
-      "Three candidate directions were ranked, but the provider returned no attributable source URL.",
-      "A completed provider result must remain locally reviewable when a later deterministic gate rejects it.",
-    );
-    assert.equal(evaluation.status, "failed");
-    assert.equal(evaluation.score, 45);
-    assert.ok(fromJson(evaluation.findings, []).some((finding) => /no provider-grounded source URLs/i.test(finding)));
-    assert.ok(fromJson(evaluation.findings, []).some((finding) => /did not complete with grounded evidence/i.test(finding)));
-    assert.equal(attempt.status, "needs_attention");
-    assert.equal(attempt.error_kind, "worker_evaluation_failed");
-    assert.equal(modelCall.outcome_status, "known");
-    assert.equal(
-      get(runtime.db, "SELECT COUNT(*) AS count FROM opportunities WHERE round_id = ?", [started.round.id]).count,
-      0,
-      "A failed worker evaluation must not be projected into commercial truth.",
-    );
-    assert.equal(
-      get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'commercial_discovery.step_projected' AND entity_id = ?", [taskId]).count,
-      0,
-    );
-    assert.equal(
-      get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'task.completed' AND entity_id = ?", [taskId]).count,
-      0,
-      "A failed evaluation must not emit a task-completed event.",
-    );
+    assert.equal(providerCalled, false);
+    assert.deepEqual(counts(), before);
   } finally {
     __setAgentRuntimeSdkRunnerForTests(null);
     restoreEnvironment(previousEnvironment);

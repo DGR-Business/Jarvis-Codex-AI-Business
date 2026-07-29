@@ -6,12 +6,13 @@ Owner: Daniel
 Technical steward: Jarvis (Codex)
 Branch: `codex/first-buyer-intent-proof`
 
-## Start Here
+## Closed Handover Context
 
-This document exists because the original Codex task became large enough to
-compact frequently. It is the durable bridge into a fresh task. Do not restart
-the project review from scratch and do not infer current state from old pilot
-files.
+This document was created because the original Codex task became large enough
+to compact frequently. It served as the durable bridge into the terminal
+buyer-intent closeout. It is now a closed historical execution record. Do not
+restart the project review from scratch and do not infer current state from old
+pilot files.
 
 The immediate instruction at handover was:
 
@@ -61,6 +62,20 @@ browser checks passed. Implementation commit
 `c5c243608907071b16dc6e954c49a03cadd3d2cc` was pushed, and private GitHub
 `Pantheon checks #23` passed all seven jobs in 12 minutes 10 seconds. Pantheon
 was then confirmed in Standby with the business runtime stopped.
+
+### Supersession Notice
+
+This handover's goal and action list are complete. They must not be treated as
+the next task or used to reopen the stopped build.
+
+Current work is governed by:
+
+- `docs/decisions/0009-owner-absent-low-touch-digital-kit-reentry.md`; and
+- `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
+
+Those records preserve the terminal result, establish the new owner-absent and
+truthful brand-operated policy, and begin a separate A$0 preparation path for a
+new low-touch kit hypothesis.
 
 ## Pantheon's Purpose And Final Form
 
@@ -125,7 +140,13 @@ is documented in
 - Jarvis should repair tested, reversible, low-risk technical faults and report
   them. Material business, policy, security, or authority changes remain visible.
 
-## Current Released Foundation
+The eight-hour target and the phrase `faceless and voiceless` above are retained
+as the preferences recorded at handover. Decision 0009 supersedes them as the
+current operating policy: Daniel supplies guidance and protected approvals
+rather than routine labour, and the public venture is truthful and
+brand-operated rather than anonymous or identity-evasive.
+
+## Released Foundation At Handover (historical snapshot)
 
 The release baseline before the current uncommitted work is commit `6127af8`.
 The last code release is `172238c`.
@@ -166,7 +187,7 @@ At 2026-07-29:
 If the new task is not immediately continuing browser work, return Pantheon to
 Standby to conserve resources. Stop or transition only Pantheon-owned processes.
 
-## Current Commercial Case
+## Commercial Case At Handover (terminal historical case)
 
 The retained opportunity is an Excel-based Client Control and Profitability
 Workbook for freelance social media managers with two or more retained clients.
@@ -286,9 +307,10 @@ added A$0.20 of that amount.
 Do not show these estimates as settled cash spend. ChatGPT subscription and API
 credit purchases remain separate cash-accounting records.
 
-## Uncommitted Work In Progress
+## Uncommitted Work At Handover (historical snapshot)
 
-Eight files are modified and no current change is committed or pushed:
+At handover, eight files were modified and none of those changes had yet been
+committed or pushed:
 
 - `config/buyer-intent-validation-specs.js`
 - `scripts/render-digital-product-kit.py`
@@ -355,7 +377,11 @@ Not yet verified for the current uncommitted changes:
 - current browser proof at all supported desktop sizes;
 - commit, push, and private CI.
 
-## Known Issues Still To Reconcile
+## Issues Recorded At Handover (closed disposition)
+
+This list preserves the exact backlog at handover. The terminal release record
+documents its completed disposition; it is not the current implementation
+backlog.
 
 1. `projectProductBuild` updates generated file IDs but, on the direct
    pre-venture validation path, does not update current storefront-preview and
@@ -377,7 +403,7 @@ Not yet verified for the current uncommitted changes:
    conservative reservations. Continue showing estimated incurred cost
    separately from the approved ceiling.
 
-## Exact Continuation Goal
+## Historical Continuation Goal (completed)
 
 Finish and prove Pantheon's first evidence-bound buyer-intent workflow:
 
@@ -390,7 +416,7 @@ Finish and prove Pantheon's first evidence-bound buyer-intent workflow:
 - prove the complete operator path in Chrome; and
 - commit, push, pass private CI, and record the factual result.
 
-## Ordered Next Actions
+## Historical Ordered Actions (closed)
 
 This list is closed as an execution handover. Steps 1 through 11 and 13 through
 16 completed; the terminal non-pass branch at step 11 correctly skipped the
@@ -474,7 +500,7 @@ implementation commit `c5c2436`, and Pantheon is in Standby.
 - Report reality: passing tests do not replace browser or artifact inspection,
   and a model response does not prove a commercial result.
 
-## Later, Not Now
+## Later Roadmap Recorded At Handover
 
 After the buyer-intent proof and a real measured market result:
 
@@ -489,4 +515,8 @@ After the buyer-intent proof and a real measured market result:
   completes and measures commercial work; and
 - build the mobile companion after the desktop operating model is stable.
 
-The next task should continue the exact goal above, not start those later items.
+The historical continuation goal above is complete and must not be continued.
+The current goal is recorded verbatim in
+`docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
+Venture Factory, a second kit, concurrent lanes, and live external-action
+capabilities remain gated by that plan and the Master Plan.

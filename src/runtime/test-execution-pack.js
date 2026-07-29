@@ -1305,6 +1305,7 @@ function recordExecutionPackOutcome(db, packId, input = {}) {
       request: input.request || "",
       verified: input.verified === true,
       verificationNote: input.verificationNote || input.verification_note || "",
+      verificationEvidenceId: input.verificationEvidenceId || input.verification_evidence_id || null,
       metadata,
     });
     nextStatus = recorded.learning ? "feedback_recorded" : "awaiting_verification";
@@ -1332,6 +1333,7 @@ function recordExecutionPackOutcome(db, packId, input = {}) {
       timeSpentMinutes: asInt(input.timeSpentMinutes ?? input.time_spent_minutes),
       verified: input.verified === true,
       verificationNote: input.verificationNote || input.verification_note || "",
+      verificationEvidenceId: input.verificationEvidenceId || input.verification_evidence_id || null,
       notes: asText(
         input.notes,
         noResponse

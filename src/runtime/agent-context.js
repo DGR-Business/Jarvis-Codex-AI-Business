@@ -1,9 +1,12 @@
 const crypto = require("node:crypto");
 const { all, fromJson, get, now, randomId, run, toJson } = require("../db");
 const { commercialContextForTask } = require("./commercial-knowledge");
+const {
+  getCommercialOwnerTestsState,
+} = require("./commercial-owner-state");
 
 const AGENT_CONTEXT_SCHEMA = "jarvis.agent-context-snapshot.v1";
-const AGENT_CONTEXT_POLICY_VERSION = "task-scoped-context-v2";
+const AGENT_CONTEXT_POLICY_VERSION = "task-scoped-context-v4";
 const CONTEXT_CLASSES = Object.freeze([
   "venture",
   "evidence",
@@ -16,6 +19,7 @@ const CONTEXT_CLASSES = Object.freeze([
 ]);
 const CONTEXT_CLASS_SET = new Set(CONTEXT_CLASSES);
 const MAX_RECORDS_PER_CLASS = 8;
+const ACCOUNTING_CASH_OUTFLOW_TYPES = new Set(["cash_outflow", "prepaid_credit_purchase"]);
 
 const WORKER_CONTEXT_PROFILES = Object.freeze({
   chief_of_staff: CONTEXT_CLASSES,
@@ -49,6 +53,18 @@ function canonicalValue(value) {
 
 function hash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(canonicalValue(value))).digest("hex");
+}
+
+function commercialTestAuditRef(testId, testVersion) {
+  const digest = crypto
+    .createHash("sha256")
+    .update(
+      `pantheon.owner-commercial-test.v1\0${String(testId)}\0${String(testVersion)}`,
+      "utf8",
+    )
+    .digest("hex")
+    .slice(0, 20);
+  return `test-${digest}`;
 }
 
 function text(value, max = 600) {
@@ -118,10 +134,31 @@ function ventureRecords(db, ventureId) {
   }));
 }
 
-function ventureSection(db, ventureId) {
+function ventureSection(db, ventureId, options = {}) {
   const venture = get(db, "SELECT * FROM ventures WHERE id = ?", [ventureId]);
   const ventureCase = get(db, "SELECT * FROM venture_cases WHERE venture_id = ?", [ventureId]);
   const records = [];
+  const commercialProof = options.commercialProof;
+  if (commercialProof) {
+    records.push(record(
+      "commercial_owner_tests_state",
+      { id: `commercial_authority_${ventureId}` },
+      {
+        title: "Canonical commercial authority",
+        summary: commercialProof.currentRecommendation?.detail
+          || "No current commercial recommendation is established for this venture.",
+        facts: {
+          source: commercialProof.source,
+          sourceSchema: commercialProof.sourceSchema,
+          integrityStatus: commercialProof.integrityStatus,
+          authorityStatus: commercialProof.authorityStatus,
+          currentTest: commercialProof.currentTest,
+          currentRecommendation: commercialProof.currentRecommendation,
+          legacyRecommendationsExcluded: true,
+        },
+      },
+    ));
+  }
   if (venture) {
     records.push(record("ventures", venture, {
       title: venture.name,
@@ -136,8 +173,8 @@ function ventureSection(db, ventureId) {
   }
   if (ventureCase) {
     records.push(record("venture_cases", ventureCase, {
-      title: "Current venture case",
-      summary: ventureCase.latest_learning,
+      title: "Recorded venture case assumptions",
+      summary: "Buyer, problem, offer, and test assumptions retained as planning context. This record is not current buyer, cash, or recommendation proof.",
       facts: {
         buyer: ventureCase.buyer,
         problem: ventureCase.problem,
@@ -147,8 +184,8 @@ function ventureSection(db, ventureId) {
         evidenceStandard: ventureCase.evidence_standard,
         expectedMetric: ventureCase.expected_metric,
         killRule: ventureCase.kill_rule,
-        nextMoneyMove: ventureCase.next_money_move,
-        operatorDecision: ventureCase.operator_decision,
+        recordedOperatorDecision: ventureCase.operator_decision,
+        commercialAuthority: "context_only",
       },
     }));
   }
@@ -243,59 +280,189 @@ function evidenceSection(db, ventureId, options = {}) {
   return [...evidence, ...sources].slice(0, MAX_RECORDS_PER_CLASS);
 }
 
-function financeSection(db, ventureId) {
+function currentTestVentureId(db, auditRef) {
+  if (typeof auditRef !== "string" || auditRef.trim() === "") return null;
+  const matches = all(
+    db,
+    `SELECT test_id, test_version, venture_id
+     FROM commercial_test_contracts`,
+  ).filter((row) => (
+    commercialTestAuditRef(row.test_id, row.test_version) === auditRef
+  ));
+  return matches.length === 1 ? matches[0].venture_id : null;
+}
+
+function canonicalCommercialProof(db, ventureId) {
+  const ownerTests = getCommercialOwnerTestsState(db);
+  const rawCurrent = ownerTests?.integrity?.status === "ok"
+    ? ownerTests?.current
+    : null;
+  let scopedVentureId = null;
+  if (rawCurrent) {
+    try {
+      scopedVentureId = currentTestVentureId(db, rawCurrent.auditRef);
+    } catch {
+      scopedVentureId = null;
+    }
+  }
+  const scopeMatches = !rawCurrent || scopedVentureId === ventureId;
+  const integrityOk = (
+    ownerTests?.integrity?.status === "ok"
+    && scopeMatches
+  );
+  const current = integrityOk ? rawCurrent : null;
+  const verifiedBuyerCount = (
+    Number.isSafeInteger(current?.proof?.buyers?.verifiedPositive)
+    && current.proof.buyers.verifiedPositive >= 0
+  )
+    ? current.proof.buyers.verifiedPositive
+    : null;
+  const buyerTarget = (
+    Number.isSafeInteger(current?.proof?.buyers?.target)
+    && current.proof.buyers.target > 0
+  )
+    ? current.proof.buyers.target
+    : null;
+  const netCash = current?.proof?.netCashContribution;
+  const cashSettled = (
+    integrityOk
+    && netCash?.status === "settled"
+    && netCash.currency === "AUD"
+    && Number.isSafeInteger(netCash.amountCents)
+  );
+  const recommendation = (
+    typeof current?.moneyMove?.title === "string"
+    && current.moneyMove.title.trim() !== ""
+    && typeof current?.moneyMove?.detail === "string"
+    && current.moneyMove.detail.trim() !== ""
+  ) ? {
+      title: text(current.moneyMove.title, 240),
+      detail: text(current.moneyMove.detail, 900),
+    } : null;
+
+  return {
+    sourceSchema: ownerTests?.schema || null,
+    source: "canonical_commercial_test_ledger",
+    integrityStatus: integrityOk
+      ? "ok"
+      : ownerTests?.integrity?.status === "ok"
+        ? "attention"
+        : ownerTests?.integrity?.status || "attention",
+    integrityMessage: scopeMatches
+      ? ownerTests?.integrity?.message || null
+      : "The current canonical commercial test belongs to a different venture. Buyer, cash, and recommendation claims are withheld.",
+    authorityStatus: scopeMatches
+      ? ownerTests?.integrity?.authorityStatus || "unavailable"
+      : "scope_mismatch",
+    currentTest: current ? {
+      ventureId,
+      auditRef: current.auditRef,
+      title: current.title,
+      lifecycleStatus: current.lifecycle?.status || null,
+      lifecycleLabel: current.lifecycle?.label || null,
+    } : null,
+    currentRecommendation: recommendation,
+    verifiedBuyerCount,
+    buyerTarget,
+    netCashContribution: {
+      status: cashSettled ? "settled" : "not_settled",
+      label: cashSettled ? "Settled" : "Not settled",
+      currency: "AUD",
+      amountCents: cashSettled ? netCash.amountCents : null,
+    },
+    commercialProofReached: current
+      ? (
+        current.proof?.commercialProofReached === true
+        && cashSettled
+        && verifiedBuyerCount !== null
+        && buyerTarget !== null
+        && verifiedBuyerCount >= buyerTarget
+      )
+      : null,
+    legacySalesAndResultsExcluded: true,
+  };
+}
+
+function financeSection(db, ventureId, options = {}) {
   const accounting = get(
     db,
     `SELECT
-       COALESCE(SUM(CASE WHEN effect_sign > 0 THEN amount_cents ELSE 0 END), 0) AS inflow_cents,
-       COALESCE(SUM(CASE WHEN effect_sign < 0 THEN amount_cents ELSE 0 END), 0) AS outflow_cents,
+       COALESCE(SUM(CASE
+         WHEN venture_id = ? AND status = 'reconciled'
+          AND entry_type IN ('cash_outflow', 'prepaid_credit_purchase')
+         THEN amount_cents * effect_sign ELSE 0 END), 0) AS venture_cash_outflow_cents,
+       COALESCE(SUM(CASE
+         WHEN venture_id IS NULL AND status = 'reconciled'
+          AND entry_type IN ('cash_outflow', 'prepaid_credit_purchase')
+         THEN amount_cents * effect_sign ELSE 0 END), 0) AS shared_cash_outflow_cents,
+       COALESCE(SUM(CASE
+         WHEN venture_id = ? AND status = 'active' AND entry_type = 'recurring_commitment'
+         THEN amount_cents * effect_sign ELSE 0 END), 0) AS venture_recurring_cents,
+       COALESCE(SUM(CASE
+         WHEN venture_id IS NULL AND status = 'active' AND entry_type = 'recurring_commitment'
+         THEN amount_cents * effect_sign ELSE 0 END), 0) AS shared_recurring_cents,
        COUNT(*) AS entry_count
      FROM accounting_entries
-     WHERE venture_id = ? AND currency = 'AUD' AND status = 'reconciled'`,
-    [ventureId],
-  );
-  const sales = get(
-    db,
-    `SELECT
-       COALESCE(SUM(aud_gross_cents), 0) AS gross_cents,
-       COALESCE(SUM(aud_platform_fee_cents), 0) AS fee_cents,
-       COALESCE(SUM(aud_refunded_cents), 0) AS refunded_cents,
-       COALESCE(SUM(aud_net_cents), 0) AS net_cents,
-       COUNT(*) AS sale_count
-     FROM platform_sales
-     WHERE venture_id = ?`,
-    [ventureId],
+     WHERE (venture_id = ? OR venture_id IS NULL) AND currency = 'AUD'`,
+    [ventureId, ventureId, ventureId],
   );
   const costs = get(
     db,
     `SELECT
-       COALESCE(SUM(CASE WHEN status = 'reconciled' THEN amount_cents ELSE 0 END), 0) AS reconciled_cents,
-       COALESCE(SUM(CASE WHEN status <> 'reconciled' THEN amount_cents ELSE 0 END), 0) AS pending_cents,
+       COALESCE(SUM(CASE WHEN venture_id = ? AND status = 'reconciled'
+         THEN amount_cents ELSE 0 END), 0) AS venture_reconciled_cents,
+       COALESCE(SUM(CASE WHEN venture_id IS NULL AND status = 'reconciled'
+         THEN amount_cents ELSE 0 END), 0) AS shared_reconciled_cents,
+       COALESCE(SUM(CASE WHEN venture_id = ? AND status <> 'reconciled'
+         THEN amount_cents ELSE 0 END), 0) AS venture_pending_cents,
+       COALESCE(SUM(CASE WHEN venture_id IS NULL AND status <> 'reconciled'
+         THEN amount_cents ELSE 0 END), 0) AS shared_pending_cents,
        COUNT(*) AS cost_count
      FROM costs
-     WHERE venture_id = ? AND currency = 'AUD'`,
-    [ventureId],
+     WHERE (venture_id = ? OR venture_id IS NULL) AND currency = 'AUD'`,
+    [ventureId, ventureId, ventureId],
   );
+  const commercialProof = options.commercialProof
+    || canonicalCommercialProof(db, ventureId);
   const records = [record("finance_summary", { id: `finance_${ventureId}` }, {
-    title: "Venture financial position",
-    summary: "AUD-only totals from the local accounting, cost, and sales ledgers. Estimates and unreconciled amounts remain separate.",
+    title: "Canonical commercial proof and operating cost context",
+    summary: commercialProof.netCashContribution.status === "settled"
+      ? "Buyer count and settled AUD net cash contribution come only from Pantheon's verified commercial-test ledger. Operational costs remain separate context."
+      : "Commercial net cash contribution is not settled, so no cash amount is supplied. Operational costs remain separate context and do not prove sales.",
     facts: {
-      reconciledInflowsAud: Number(accounting?.inflow_cents || 0) / 100,
-      reconciledOutflowsAud: Number(accounting?.outflow_cents || 0) / 100,
-      accountingEntries: Number(accounting?.entry_count || 0),
-      grossSalesAud: Number(sales?.gross_cents || 0) / 100,
-      platformFeesAud: Number(sales?.fee_cents || 0) / 100,
-      refundsAud: Number(sales?.refunded_cents || 0) / 100,
-      netSalesAud: Number(sales?.net_cents || 0) / 100,
-      salesCount: Number(sales?.sale_count || 0),
-      reconciledProviderAndToolCostsAud: Number(costs?.reconciled_cents || 0) / 100,
-      pendingOrEstimatedCostsAud: Number(costs?.pending_cents || 0) / 100,
+      commercialProof,
+      operatingCostContext: {
+        purpose: "operational_cost_context_only",
+        doesNotProveSalesOrCommercialContribution: true,
+        currency: "AUD",
+        reconciledOutflowsAud: (
+          Number(accounting?.venture_cash_outflow_cents || 0)
+          + Number(accounting?.shared_cash_outflow_cents || 0)
+        ) / 100,
+        ventureCashOutflowsAud: Number(accounting?.venture_cash_outflow_cents || 0) / 100,
+        sharedCashOutflowsAud: Number(accounting?.shared_cash_outflow_cents || 0) / 100,
+        ventureRecurringCommitmentsAud: Number(accounting?.venture_recurring_cents || 0) / 100,
+        sharedRecurringCommitmentsAud: Number(accounting?.shared_recurring_cents || 0) / 100,
+        accountingEntries: Number(accounting?.entry_count || 0),
+        reconciledProviderAndToolCostsAud: (
+          Number(costs?.venture_reconciled_cents || 0)
+          + Number(costs?.shared_reconciled_cents || 0)
+        ) / 100,
+        ventureReconciledProviderAndToolCostsAud: Number(costs?.venture_reconciled_cents || 0) / 100,
+        sharedReconciledProviderAndToolCostsAud: Number(costs?.shared_reconciled_cents || 0) / 100,
+        pendingOrEstimatedCostsAud: (
+          Number(costs?.venture_pending_cents || 0)
+          + Number(costs?.shared_pending_cents || 0)
+        ) / 100,
+        venturePendingOrEstimatedCostsAud: Number(costs?.venture_pending_cents || 0) / 100,
+        sharedPendingOrEstimatedCostsAud: Number(costs?.shared_pending_cents || 0) / 100,
+      },
     },
   })];
   const recent = all(
     db,
     `SELECT * FROM accounting_entries
-     WHERE venture_id = ? AND currency = 'AUD'
+     WHERE (venture_id = ? OR venture_id IS NULL) AND currency = 'AUD'
      ORDER BY occurred_at DESC, created_at DESC LIMIT ?`,
     [ventureId, MAX_RECORDS_PER_CLASS - 1],
   ).map((row) => record("accounting_entries", row, {
@@ -305,7 +472,11 @@ function financeSection(db, ventureId) {
       entryType: row.entry_type,
       status: row.status,
       amountAud: Number(row.amount_cents || 0) / 100,
-      effect: Number(row.effect_sign || 0) > 0 ? "inflow" : "outflow",
+      cashDirection: ACCOUNTING_CASH_OUTFLOW_TYPES.has(row.entry_type)
+        ? (Number(row.effect_sign || 1) < 0 ? "outflow_reversal" : "outflow")
+        : "non_cash_commitment",
+      correctionEffect: Number(row.effect_sign || 1) < 0 ? "reversal" : "original_or_replacement",
+      costScope: row.venture_id ? "venture" : "shared_operating_cost",
       source: row.source,
       nextDueAt: row.next_due_at || null,
     },
@@ -379,26 +550,30 @@ function productionSection(db, ventureId, options = {}) {
   return [...packages, ...deliverables].slice(0, MAX_RECORDS_PER_CLASS);
 }
 
-function customerSection(db, ventureId) {
-  return all(
-    db,
-    `SELECT * FROM commercial_feedback
-     WHERE venture_id = ?
-     ORDER BY occurred_at DESC, created_at DESC LIMIT ?`,
-    [ventureId, MAX_RECORDS_PER_CLASS],
-  ).map((row) => record("commercial_feedback", row, {
-    title: "Buyer feedback",
-    summary: row.summary,
-    facts: {
-      sentiment: row.sentiment,
-      rating: row.rating,
-      objection: row.objection,
-      request: row.request,
-      verified: Boolean(row.verified),
-      source: row.source,
+function customerSection(db, ventureId, options = {}) {
+  const commercialProof = options.commercialProof
+    || canonicalCommercialProof(db, ventureId);
+  return [record(
+    "commercial_owner_tests_state",
+    { id: `commercial_buyers_${ventureId}` },
+    {
+      title: "Canonical buyer evidence",
+      summary: commercialProof.verifiedBuyerCount === null
+        ? "No verified buyer count is established for this venture."
+        : `${commercialProof.verifiedBuyerCount} verified positive buyer${
+          commercialProof.verifiedBuyerCount === 1 ? "" : "s"
+        } are recorded in the canonical commercial-test ledger.`,
+      facts: {
+        source: commercialProof.source,
+        sourceSchema: commercialProof.sourceSchema,
+        integrityStatus: commercialProof.integrityStatus,
+        currentTest: commercialProof.currentTest,
+        verifiedBuyerCount: commercialProof.verifiedBuyerCount,
+        buyerTarget: commercialProof.buyerTarget,
+        legacyFeedbackExcluded: true,
+      },
     },
-    sensitivity: "personal",
-  }));
+  )];
 }
 
 function operationsSection(db, ventureId, options = {}) {
@@ -444,45 +619,27 @@ function operationsSection(db, ventureId, options = {}) {
   return [...tasks, ...findings].slice(0, MAX_RECORDS_PER_CLASS);
 }
 
-function learningSection(db, ventureId) {
-  const cycles = all(
-    db,
-    `SELECT cycles.*
-     FROM commercial_learning_cycles AS cycles
-     LEFT JOIN workflows ON workflows.id = cycles.workflow_id
-     WHERE workflows.venture_id = ?
-     ORDER BY cycles.created_at DESC LIMIT ?`,
-    [ventureId, 5],
-  ).map((row) => record("commercial_learning_cycles", row, {
-    title: row.verdict || "Commercial learning",
-    summary: row.learning,
-    facts: {
-      status: row.status,
-      hypothesis: row.hypothesis,
-      expectedMetric: row.expected_metric,
-      actualResult: row.actual_result,
-      improvement: row.improvement,
-      nextAction: row.next_action,
-      confidence: row.confidence,
+function learningSection(db, ventureId, options = {}) {
+  const commercialProof = options.commercialProof
+    || canonicalCommercialProof(db, ventureId);
+  return [record(
+    "commercial_owner_tests_state",
+    { id: `commercial_recommendation_${ventureId}` },
+    {
+      title: "Canonical commercial recommendation",
+      summary: commercialProof.currentRecommendation?.detail
+        || "No current commercial recommendation is established for this venture.",
+      facts: {
+        source: commercialProof.source,
+        sourceSchema: commercialProof.sourceSchema,
+        integrityStatus: commercialProof.integrityStatus,
+        currentTest: commercialProof.currentTest,
+        currentRecommendation: commercialProof.currentRecommendation,
+        commercialProofReached: commercialProof.commercialProofReached,
+        legacyLearningAndDigestsExcluded: true,
+      },
     },
-  }));
-  const digests = all(
-    db,
-    `SELECT * FROM executive_digests
-     WHERE venture_id = ?
-     ORDER BY period_end DESC LIMIT ?`,
-    [ventureId, MAX_RECORDS_PER_CLASS - Math.min(cycles.length, 5)],
-  ).map((row) => record("executive_digests", row, {
-    title: "Executive digest",
-    summary: row.summary,
-    facts: {
-      status: row.status,
-      decisions: fromJson(row.decisions, []),
-      learning: fromJson(row.learning, []),
-      nextActions: fromJson(row.next_actions, []),
-    },
-  }));
-  return [...cycles, ...digests].slice(0, MAX_RECORDS_PER_CLASS);
+  )];
 }
 
 function genericRecordForModel(row, options = {}) {
@@ -503,21 +660,28 @@ function genericRecordForModel(row, options = {}) {
 
 function classRecords(db, ventureId, className, generic, options = {}) {
   let built = [];
-  if (className === "venture") built = ventureSection(db, ventureId);
+  if (className === "venture") built = ventureSection(db, ventureId, options);
   if (className === "evidence") built = evidenceSection(db, ventureId, options);
-  if (className === "finance") built = financeSection(db, ventureId);
+  if (className === "finance") built = financeSection(db, ventureId, options);
   if (className === "production") built = productionSection(db, ventureId, options);
-  if (className === "customer") built = customerSection(db, ventureId);
+  if (className === "customer") built = customerSection(db, ventureId, options);
   if (className === "operations") built = operationsSection(db, ventureId, options);
-  if (className === "learning") built = learningSection(db, ventureId);
+  if (className === "learning") built = learningSection(db, ventureId, options);
 
   const matching = generic.filter((row) => row.record_class === className);
   const visible = matching.filter((row) => row.provider_policy !== "local_only");
   const localOnly = matching.length - visible.length;
-  built.push(...visible.map((row) => genericRecordForModel(row, options)));
+  const nonCanonicalCommercialContext = (
+    className === "customer"
+    || className === "learning"
+  );
+  if (!nonCanonicalCommercialContext) {
+    built.push(...visible.map((row) => genericRecordForModel(row, options)));
+  }
   return {
     records: built.slice(0, MAX_RECORDS_PER_CLASS),
     withheldLocalOnly: localOnly,
+    withheldNonCanonical: nonCanonicalCommercialContext ? visible.length : 0,
     truncated: built.length > MAX_RECORDS_PER_CLASS,
   };
 }
@@ -535,6 +699,7 @@ function buildAgentContextSnapshot(db, input = {}) {
   const profile = contextProfile(agentId, input.recordClasses);
   const includePersonalData = input.includePersonalData === true;
   const generic = ventureRecords(db, ventureId);
+  const commercialProof = canonicalCommercialProof(db, ventureId);
   const contextScope = {
     workflowId: String(input.workflowId || "").trim() || null,
     journeyId: String(input.journeyId || "").trim() || null,
@@ -546,6 +711,7 @@ function buildAgentContextSnapshot(db, input = {}) {
   for (const className of profile.selected) {
     sections[className] = classRecords(db, ventureId, className, generic, {
       includePersonalData,
+      commercialProof,
       ...contextScope,
     });
   }
@@ -584,6 +750,9 @@ function buildAgentContextSnapshot(db, input = {}) {
       localOnlyRecordsExcluded: true,
       providerStorageDefault: false,
       commercialDoctrineIsNotMarketEvidence: true,
+      commercialClaimsUseCanonicalOwnerProjection: true,
+      legacyCommercialRowsExcludedFromCurrentRecommendations: true,
+      nonCanonicalCustomerAndLearningRecordsWithheld: true,
     },
     sections,
     commercialKnowledge,

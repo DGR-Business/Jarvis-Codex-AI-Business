@@ -1,9 +1,32 @@
 # 0005 - One Venture To First Revenue
 
 Date: 2026-07-14
-Status: accepted
+Status: partially superseded; one-venture and commercial-proof gates remain
+accepted
 
-## Decision
+## Status Update - 2026-07-29
+
+The durable parts of this decision remain active:
+
+- one operating venture at a time;
+- proof requires three independent paying buyers and positive actual net cash
+  contribution in AUD;
+- external actions and capability promotion remain gated; and
+- private identity or KYC requirements may still require Daniel.
+
+Decision 0009 supersedes Gumroad as the required first channel, Daniel as the
+routine publisher, the eight-hour and sixteen-hour owner-work targets, the
+14-day or 50-view review rule, and the phrase `faceless and voiceless` as the
+complete public-operating policy.
+
+The current policy is owner-absent and brand-operated: Daniel provides guidance
+and exact protected approvals, while Pantheon is intended to perform routine
+work through implemented and proved capabilities. The brand must be truthful,
+lawful, and non-deceptive; it does not need Daniel's face or personal voice.
+Channel, reach, duration, and stop rules must follow evidence for the exact
+offer.
+
+## Original Decision
 
 Pantheon will prove one digital-product venture through Gumroad Direct before
 adding another venture, broader channel automation, or paid media capability.
@@ -16,7 +39,7 @@ Autonomy is promoted per exact capability only after five consecutive reviewed
 successes. Publishing, customer contact, spend, account action, legal matters,
 disputes, and money movement remain explicit operator decisions or hard stops.
 
-## Consequences
+## Original Consequences
 
 - One venture and one real-world test are active at a time.
 - The Demand Validator Agents SDK proof precedes broader worker execution.
@@ -29,7 +52,7 @@ disputes, and money movement remain explicit operator decisions or hard stops.
 - Normal operator involvement targets eight hours weekly. Any approved
   intensive week may use up to 16 hours.
 
-## Review Trigger
+## Historical Review Trigger
 
 Review after the first test reaches 14 days or 50 qualified product views, or
 earlier if it reaches three independent paid buyers and positive cash

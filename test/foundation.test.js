@@ -52,6 +52,7 @@ const { createApp } = require("../src/server");
 const { getCockpitState, getDecisionsState, getSystemState } = require("../src/runtime/cockpit-state");
 const { commercialFoundationState, recordEvidence, setExperimentState } = require("../src/runtime/venture-case");
 const {
+  LATEST_SCHEMA_VERSION,
   all,
   applyModelCallCompletionTruthMigration,
   get,
@@ -60,6 +61,9 @@ const {
   seedDatabase,
   toJson,
 } = require("../src/db");
+const {
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
 
 const PASSPHRASE = "test-only-passphrase-keep-out-of-production";
 
@@ -315,7 +319,8 @@ test("SQLite runtime backup restores a readable consistent database", async () =
     const dbPath = path.join(root, "runtime.sqlite");
     const destinationRoot = path.join(root, "backups");
     const restoredPath = path.join(root, "restored", "runtime.sqlite");
-    const db = new DatabaseSync(dbPath);
+    const db = openDatabase(dbPath);
+    seedDatabase(db);
     db.exec("CREATE TABLE proof (value TEXT NOT NULL); INSERT INTO proof VALUES ('restorable');");
     db.close();
     const result = await createBackup({
@@ -337,7 +342,10 @@ test("versioned migrations preserve state and assign every operational record to
   const runtime = runtimeDb("migrations");
   const ts = new Date().toISOString();
   try {
-    assert.deepEqual(all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]);
+    assert.deepEqual(
+      all(runtime.db, "SELECT version FROM schema_migrations ORDER BY version").map((row) => row.version),
+      Array.from({ length: LATEST_SCHEMA_VERSION }, (_, index) => index + 1),
+    );
     run(
       runtime.db,
       `INSERT INTO workflows
@@ -374,7 +382,7 @@ test("versioned migrations preserve state and assign every operational record to
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(get(runtime.db, "SELECT title FROM workflows WHERE id = 'wf-ownership-proof'").title, "Ownership proof");
-    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, 24);
+    assert.equal(all(runtime.db, "SELECT * FROM schema_migrations").length, LATEST_SCHEMA_VERSION);
   } finally {
     closeRuntime(runtime);
   }
@@ -844,8 +852,14 @@ test("deliverables render idempotently to one canonical isolated artifact", () =
 test("approvals expire, invalidate on scope changes, and can be consumed only once", () => {
   const runtime = runtimeDb("approval-scope");
   try {
+    const authority = installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "foundation-approval-scope",
+    });
     const fixture = ensureDemandValidatorPilotFixture(runtime.db);
-    const prepared = prepareDemandValidatorPilot(runtime.db, fixture.id, { estimatedCostCents: 100 });
+    const prepared = prepareDemandValidatorPilot(runtime.db, fixture.id, {
+      estimatedCostCents: 100,
+      commercialTestContract: authority.binding,
+    });
     const approvalId = prepared.requested.approval.id;
     const taskId = prepared.requested.task.id;
     const scoped = ensureApprovalScope(runtime.db, approvalId);
@@ -1281,6 +1295,10 @@ test("approved setup-blocked work becomes resumable when its credential requirem
       source: "test",
       createFiles: false,
     });
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "foundation-setup-recovery",
+      workflowIds: [planned.workflow.id],
+    });
     run(runtime.db, "UPDATE tasks SET status = 'cancelled' WHERE workflow_id = ?", [planned.workflow.id]);
     const requested = requestLiveAiWorker(runtime.db, planned.workflow.id, {
       worker: "demand_validator",
@@ -1320,9 +1338,14 @@ test("approved setup-blocked work becomes resumable when its credential requirem
 test("Demand Validator pilot preparation excludes the protected baseline and never repeats a fixture", () => {
   const runtime = runtimeDb("pilot-isolation");
   try {
+    const authority = installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "foundation-pilot-isolation",
+    });
     const fixture = ensureDemandValidatorPilotFixture(runtime.db);
     const stored = get(runtime.db, "SELECT * FROM agent_pilot_fixtures WHERE id = ?", [fixture.id]);
-    const prepared = prepareDemandValidatorPilot(runtime.db, fixture.id);
+    const prepared = prepareDemandValidatorPilot(runtime.db, fixture.id, {
+      commercialTestContract: authority.binding,
+    });
     const taskPayload = JSON.parse(get(runtime.db, "SELECT payload FROM tasks WHERE id = ?", [prepared.requested.task.id]).payload);
     const serialized = JSON.stringify(taskPayload);
 
@@ -1368,8 +1391,13 @@ test("Demand Validator pilot preparation excludes the protected baseline and nev
 test("Demand Validator technical retry preserves the unknown attempt and creates a fresh scoped approval", () => {
   const runtime = runtimeDb("pilot-technical-retry");
   try {
+    const authority = installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "foundation-pilot-retry",
+    });
     const fixture = ensureDemandValidatorPilotFixture(runtime.db);
-    const first = prepareDemandValidatorPilot(runtime.db, fixture.id);
+    const first = prepareDemandValidatorPilot(runtime.db, fixture.id, {
+      commercialTestContract: authority.binding,
+    });
     const firstTask = get(runtime.db, "SELECT * FROM tasks WHERE id = ?", [first.requested.task.id]);
     const firstScope = ensureApprovalScope(runtime.db, first.requested.approval.id);
     decideApproval(runtime.db, first.requested.approval.id, "approved", "approve first controlled proof", {
@@ -1521,8 +1549,13 @@ test("weekly executive digest is concise, idempotent, and does not create an int
     const second = generateWeeklyDigest(runtime.db, { at: "2026-07-16T12:00:00.000Z" });
     assert.equal(second.id, first.id);
     assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM executive_digests").count, 1);
-    assert.match(second.summary, /paying buyer/i);
-    assert.ok(second.nextActions.includes("Run broad market discovery, compare three qualified candidates, and invest only if one passes every commercial gate."));
+    assert.match(second.summary, /No current commercial test buyer result/i);
+    assert.match(second.summary, /No commercial test is authorised/);
+    assert.equal(second.metrics.schema, "pantheon.executive-digest.metrics.v2");
+    assert.equal(second.metrics.verifiedBuyerCount, null);
+    assert.equal(second.metrics.buyerTarget, null);
+    assert.equal(second.metrics.cashStatus, "not_current");
+    assert.equal(second.metrics.cashContributionCents, null);
     assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM messages WHERE status = 'open' AND severity = 'urgent'").count, urgentBefore);
   } finally {
     closeRuntime(runtime);
@@ -1635,7 +1668,7 @@ test("operator AI review rolls back when its exact evidence receipt cannot be ap
   }
 });
 
-test("operator run controls distinguish protected internal work from approved provider work", () => {
+test("operator run controls distinguish authorised internal work from approved provider work", () => {
   const runtime = runtimeDb("operator-run-safety");
   try {
     const protectedPlan = createCommandPlan(runtime.db, {
@@ -1648,35 +1681,50 @@ test("operator run controls distinguish protected internal work from approved pr
       mode: "plan_only",
       ventureId: "venture-digital-products",
     });
-    const providerTask = providerPlan.tasks[0];
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "foundation-operator-run-safety",
+      workflowIds: [
+        protectedPlan.workflow.id,
+        providerPlan.workflow.id,
+      ],
+      taskIds: [
+        protectedPlan.tasks[0].id,
+      ],
+    });
     run(
       runtime.db,
-      `UPDATE tasks
-       SET kind = 'live_ai_worker_execution', agent = 'demand_validator',
-           approval_id = 'approval-provider-proof', cost_budget_cents = 100,
-           payload = ?, status = 'queued'
-       WHERE id = ?`,
-      [
-        toJson({
-          liveSpendRequest: {
-            requested: true,
-            provider: "openai-agents-sdk",
-            tools: [],
-            maxTurns: 1,
-            maxCostCents: 100,
-          },
-        }),
-        providerTask.id,
-      ],
+      "UPDATE tasks SET status = 'cancelled' WHERE workflow_id = ?",
+      [providerPlan.workflow.id],
     );
+    const requested = requestLiveAiWorker(
+      runtime.db,
+      providerPlan.workflow.id,
+      {
+        worker: "demand_validator",
+        model: "gpt-5.6-terra",
+        estimatedCostCents: 100,
+        maxOutputTokens: 600,
+      },
+    );
+    decideApproval(
+      runtime.db,
+      requested.approval.id,
+      "approved",
+      "Approve the exact provider-bound internal analysis fixture.",
+      { expectedScopeHash: requested.approval.scope_hash },
+    );
+    const providerTask = requested.task;
 
     const queue = getSystemState(runtime.db).queue;
     const protectedTask = queue.find((task) => task.id === protectedPlan.tasks[0].id);
     const paidTask = queue.find((task) => task.id === providerTask.id);
+    assert.equal(protectedTask.can_run, true);
     assert.equal(protectedTask.safe_to_run, true);
     assert.equal(protectedTask.run_label, "Run internal step");
+    assert.equal(paidTask.can_run, true);
     assert.equal(paidTask.safe_to_run, false);
     assert.equal(paidTask.execution_kind, "approved_ai_or_external");
+    assert.equal(paidTask.safety_reason, "approval_bound_task");
     assert.equal(paidTask.max_cost_cents, 100);
     assert.equal(paidTask.run_label, "Start approved AI work");
 
@@ -1882,7 +1930,7 @@ test("local HTTP mutations and WebSocket updates require the same signed operato
       "/api/ventures": "ventures",
       "/api/cockpit": "activeVenture",
       "/api/decisions": "approvals",
-      "/api/tests": "tests",
+      "/api/tests": "schema",
       "/api/ai-team": "agents",
       "/api/system": "health",
     };
