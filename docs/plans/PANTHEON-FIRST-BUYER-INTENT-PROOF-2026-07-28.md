@@ -1,7 +1,8 @@
 # Pantheon First Buyer-Intent Proof
 
 Date: 2026-07-28
-Status: paused at needs_attention after developer audit
+Status: terminally stopped on 2026-07-29 after the one permitted evidence
+recheck returned `revise`
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 
@@ -27,6 +28,10 @@ The goal ends when:
 This phase does not create a full catalogue, activate an Etsy account, publish
 a listing, contact a buyer, run ads, or claim commercial validation.
 
+The pass branch was not reached. The exact continuation rule required Pantheon
+to stop permanently if the single approved evidence recheck did not pass. That
+terminal branch is the factual outcome of this plan.
+
 ## Audit Hold
 
 The 2026-07-28 developer audit found that one Quality Reviewer call ran under
@@ -39,6 +44,57 @@ Five incurred worker estimates total A$0.63. The latest reviewer returned
 `needs_attention`. The plan may resume only after the audit branch and private
 CI pass and Daniel explicitly authorizes the one remaining bounded correction.
 No fourth-review override, silent paid retry, or model fallback is permitted.
+
+## 2026-07-29 Live Continuation
+
+The Windows supervisor release and private `Pantheon checks #22` completed, so
+Daniel authorised the one bounded correction.
+
+Luna Product Builder revision 1 completed as a known Agents SDK result for an
+estimated A$0.04. Pantheon rendered a real buyer-facing `Client Control and
+Profitability Workbook`, setup guide, CSV, manifest, bundle, and two storefront
+previews. Terra Quality Reviewer then completed for an estimated A$0.16 and
+scored the package 86. Its only blocker was incomplete inspection evidence:
+the saved PDF has three pages, while the supplied QA contact sheet showed only
+pages 1 and 2.
+
+The worktree now renders every PDF page, records exact page coverage, preserves
+customer files under immutable hashes, and allows one separately approved
+evidence recheck only when the product and storefront previews are byte-for-byte
+unchanged. Focused production and buyer-intent tests pass 27 of 27. The repair
+has not yet been applied to the production database and no new review has run.
+
+Exact continuation state, task IDs, response and trace IDs, hashes, remaining
+defects, and ordered next work are retained in
+`docs/plans/PANTHEON-CONTINUATION-HANDOVER-2026-07-29.md`.
+
+### Terminal continuation result
+
+The historical preparation state above was superseded later on 2026-07-29.
+Jarvis applied the deterministic QA refresh and proved that the manifest,
+bundle, setup guide, CSV, workbook, and two storefront previews retained their
+exact seven hashes. The replacement guide contact sheet covered all three PDF
+pages, and Jarvis visually inspected the complete image.
+
+Daniel manually approved the one exact `gpt-5.6-terra` recheck. It used the
+workbook QA image, complete guide QA image, and both unchanged storefront
+previews; 28,665 input and 830 output tokens; and an A$0.17 incurred estimate
+under the A$1.50 cap. The independent Quality Reviewer returned `revise`, score
+78, and `changes_required`. It identified small guide type and large unused
+space, a duplicated page-three disclaimer, and no direct proof of the intended
+customer Excel interaction from the supplied visual evidence.
+
+Pantheon therefore permanently stopped this build. It created no further
+review, buyer-test pack, handoff, execution pack, or external-test decision.
+No account action, KYC, publication, buyer contact, advertising, money movement,
+or external spend occurred. The exact record is
+`docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`.
+
+Terminal persistence reconciliation at `2026-07-29T01:43:28.622Z` created no
+task, approval, model call, deliverable, handoff, provider action, or external
+action. The linked experiment and candidate are cancelled. All nine current
+plan artifacts are `needs_changes`, and all nine hashes and byte counts remain
+unchanged.
 
 ## Commercial Case
 
@@ -155,16 +211,28 @@ or start advertising.
   sample-file, formula, preview, quality-failure, correction-limit, external
   action, and result-classification tests pass.
 - Existing commercial and production tests remain green.
-- The complete isolated Node suite, lint, dependency audit, Doctor, encrypted
-  recovery, and private GitHub CI pass.
+- The complete isolated Node suite, lint, dependency audit, Doctor, and
+  encrypted recovery pass locally; private GitHub CI remains the final release
+  gate.
 - A real browser at 1440x900, 1280x720, and 1024x768 can open Business Tests,
   inspect every sample output, understand the measurement rules, and reach the
   one decision without console errors or horizontal overflow.
 - The bounded live Product Builder and Quality Reviewer calls return known
   outcomes under A$3, or Pantheon stops truthfully with no external action.
 
-## Next Gate
+## Terminal Disposition
 
-After Daniel separately completes any required Etsy account and KYC action,
-Pantheon may prepare the exact listing publication action. The investment case
-reopens only after the recorded cohort meets the pass rule.
+There is no next gate inside this build. The one permitted recheck was consumed
+and did not pass. Pantheon must not revise, retry, fall back to another model,
+prepare an Etsy action, or create a buyer-test pack for this workflow.
+
+Any future buyer-intent attempt requires a separate commercial decision and new
+evidence plan. The investment case remains parked because this work produced no
+buyer, order, conversion, refund, revenue, or actual net cash contribution
+evidence.
+
+The current worktree passed its clean-install, Doctor, dependency,
+encrypted-recovery, health, test, and browser release gates. Commit, push, and
+private CI remain pending. Passing those remaining gates would release the
+truthful terminal state; it would not convert this outcome into an independent
+quality pass or commercial success.

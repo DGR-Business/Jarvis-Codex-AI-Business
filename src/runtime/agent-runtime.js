@@ -666,6 +666,90 @@ function archiveEntryBytes(downloads, entryName) {
   return null;
 }
 
+function customerPackageEntryNames(manifest) {
+  return [...new Set([
+    ...(manifest.catalogueItems || []).flatMap((item) => item.files || []),
+    ...(manifest.sharedFiles || []),
+  ].map(normalizedArchiveName).filter(Boolean))].sort();
+}
+
+function exactHashSnapshotMatches(expected, candidate) {
+  if (
+    !Array.isArray(expected)
+    || !Array.isArray(candidate)
+    || expected.length !== candidate.length
+  ) {
+    return false;
+  }
+  const expectedIds = expected.map((item) => String(item?.id || ""));
+  const candidateIds = candidate.map((item) => String(item?.id || ""));
+  if (
+    expectedIds.some((id) => !id)
+    || candidateIds.some((id) => !id)
+    || new Set(expectedIds).size !== expectedIds.length
+    || new Set(candidateIds).size !== candidateIds.length
+  ) {
+    return false;
+  }
+  const candidateById = new Map(candidate.map((item) => [String(item.id), item]));
+  return expected.every((item) => {
+    const other = candidateById.get(String(item.id));
+    return Boolean(
+      other
+      && /^[a-f0-9]{64}$/.test(String(item.sha256 || ""))
+      && item.sha256 === other.sha256,
+    );
+  });
+}
+
+function assertManagedSnapshotBytes(items, artifactRoot, label) {
+  if (!Array.isArray(items)) {
+    throw new Error(`Pantheon cannot verify the retained ${label} snapshot.`);
+  }
+  const resolvedArtifactRoot = fs.realpathSync(path.resolve(artifactRoot));
+  const seenIds = new Set();
+  for (const item of items) {
+    const id = String(item?.id || "");
+    const expectedHash = String(item?.sha256 || "");
+    if (!id || seenIds.has(id) || !/^[a-f0-9]{64}$/.test(expectedHash) || !item.filePath) {
+      throw new Error(`Pantheon cannot verify the retained ${label} snapshot.`);
+    }
+    seenIds.add(id);
+    const candidate = path.resolve(
+      path.isAbsolute(item.filePath)
+        ? item.filePath
+        : path.join(CONFIG.rootDir, item.filePath),
+    );
+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
+      throw new Error(`Pantheon's retained ${label} file is missing.`);
+    }
+    const realCandidate = fs.realpathSync(candidate);
+    const relative = path.relative(resolvedArtifactRoot, realCandidate);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error(`Pantheon's retained ${label} file is outside the managed artifact root.`);
+    }
+    const actualHash = crypto.createHash("sha256").update(fs.readFileSync(realCandidate)).digest("hex");
+    if (actualHash !== expectedHash) {
+      throw new Error(`Pantheon's retained ${label} bytes changed before renderer refresh.`);
+    }
+  }
+}
+
+function qualityEvidenceRole(item, index = -1) {
+  if (["workbook_inspection", "setup_guide_inspection"].includes(item?.evidenceRole)) {
+    return item.evidenceRole;
+  }
+  if (/workbook/i.test(String(item?.humanName || item?.filename || ""))) {
+    return "workbook_inspection";
+  }
+  if (/setup[- ]guide/i.test(String(item?.humanName || item?.filename || ""))) {
+    return "setup_guide_inspection";
+  }
+  if (index === 0) return "workbook_inspection";
+  if (index === 1) return "setup_guide_inspection";
+  return null;
+}
+
 function persistStorefrontPreviews(db, task, downloads, previewNames, options = {}) {
   if (!previewNames.length) return [];
   const packageFingerprint = crypto
@@ -759,10 +843,7 @@ function persistCustomerPackageFiles(
   packageFingerprint,
   options = {},
 ) {
-  const entryNames = [...new Set([
-    ...(manifest.catalogueItems || []).flatMap((item) => item.files || []),
-    ...(manifest.sharedFiles || []),
-  ].map(normalizedArchiveName).filter(Boolean))].sort();
+  const entryNames = customerPackageEntryNames(manifest);
   if (!entryNames.length) {
     throw new Error("The product manifest does not identify any customer files.");
   }
@@ -856,6 +937,10 @@ function persistCustomerPackageFiles(
 
 function persistLocalQualityReviewImages(db, task, images, packageFingerprint, options = {}) {
   if (!Array.isArray(images) || !images.length) return [];
+  const evidenceRevision = String(options.rendererRevision || "").trim();
+  const evidenceRevisionSegment = evidenceRevision
+    ? `${safeId(evidenceRevision).slice(0, 48)}_${crypto.createHash("sha256").update(evidenceRevision).digest("hex").slice(0, 12)}`
+    : "";
   const outputDir = path.join(
     options.artifactRoot || CONFIG.artifactRoot,
     "workflows",
@@ -863,6 +948,7 @@ function persistLocalQualityReviewImages(db, task, images, packageFingerprint, o
     "quality-review",
     safeId(task.id),
     packageFingerprint,
+    ...(evidenceRevisionSegment ? [evidenceRevisionSegment] : []),
   );
   fs.mkdirSync(outputDir, { recursive: true });
   const ts = now();
@@ -874,7 +960,23 @@ function persistLocalQualityReviewImages(db, task, images, packageFingerprint, o
       throw new Error("Product quality-review images must be valid PNG files.");
     }
     const hash = crypto.createHash("sha256").update(bytes).digest("hex");
-    const deliverableId = taskScopedDeliverableId("deliv_quality_preview", task.id, index + 1);
+    const evidenceRole = ["workbook_inspection", "setup_guide_inspection"].includes(
+      image.metadata?.evidenceRole,
+    )
+      ? image.metadata.evidenceRole
+      : index === 0
+        ? "workbook_inspection"
+        : index === 1
+          ? "setup_guide_inspection"
+          : `product_file_inspection_${index + 1}`;
+    const deliverableScope = evidenceRevision
+      ? `${task.id}:${evidenceRevision}:${evidenceRole}`
+      : task.id;
+    const deliverableId = taskScopedDeliverableId(
+      "deliv_quality_preview",
+      deliverableScope,
+      index + 1,
+    );
     const outputName = `${String(index + 1).padStart(2, "0")}-${filename}`;
     const outputPath = path.join(outputDir, outputName);
     if (fs.existsSync(outputPath)) {
@@ -888,9 +990,9 @@ function persistLocalQualityReviewImages(db, task, images, packageFingerprint, o
       fs.renameSync(temporaryPath, outputPath);
     }
     const relativePath = path.relative(CONFIG.rootDir, outputPath).replace(/\\/g, "/");
-    const humanName = index === 0
+    const humanName = evidenceRole === "workbook_inspection"
       ? "Actual Workbook Review"
-      : index === 1
+      : evidenceRole === "setup_guide_inspection"
         ? "Actual Setup Guide Review"
         : `Product File Review ${index + 1}`;
     run(
@@ -921,6 +1023,8 @@ function persistLocalQualityReviewImages(db, task, images, packageFingerprint, o
           ...(image.metadata || {}),
           qualityReviewOnly: true,
           derivedFromActualSavedFile: image.metadata?.derivedFromActualSavedFile === true,
+          evidenceRole,
+          rendererRevision: evidenceRevision || null,
           sha256: hash,
           bytes: bytes.length,
           approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
@@ -941,6 +1045,9 @@ function persistLocalQualityReviewImages(db, task, images, packageFingerprint, o
       sha256: hash,
       qualityReviewOnly: true,
       derivedFromActualSavedFile: image.metadata?.derivedFromActualSavedFile === true,
+      evidenceRole,
+      rendererRevision: evidenceRevision || null,
+      inspectionCoverage: image.metadata?.inspectionCoverage || null,
     };
   });
 }
@@ -1015,11 +1122,104 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
     embeddedManifestMatches,
     archiveInventoryVerified,
   } = validateProductManifest(downloads, task);
+  if (options.expectedQualityEvidenceSnapshot) {
+    const expectedEvidence = options.expectedQualityEvidenceSnapshot;
+    const candidateEvidence = (localRender?.qualityReviewImages || []).map((image, index) => {
+      const bytes = Buffer.isBuffer(image.bytes) ? image.bytes : Buffer.from(image.bytes || []);
+      const validation = validateProductFile(
+        bytes,
+        safeProductFilename(image.filename, `quality-review-${index + 1}.png`),
+      );
+      if (validation.extension !== ".png") {
+        throw new Error("Product quality-review images must be valid PNG files.");
+      }
+      return {
+        evidenceRole: qualityEvidenceRole({
+          evidenceRole: image.metadata?.evidenceRole,
+          filename: image.filename,
+        }, index),
+        sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      };
+    });
+    const expectedByRole = new Map(expectedEvidence.map((item, index) => [
+      qualityEvidenceRole(item, index),
+      item,
+    ]));
+    const candidateByRole = new Map(candidateEvidence.map((item) => [
+      item.evidenceRole,
+      item,
+    ]));
+    const expectedRoles = [...expectedByRole.keys()].filter(Boolean);
+    const candidateRoles = [...candidateByRole.keys()].filter(Boolean);
+    const requiredRoles = ["workbook_inspection", "setup_guide_inspection"];
+    if (
+      expectedEvidence.length !== 2
+      || candidateEvidence.length !== 2
+      || expectedByRole.size !== 2
+      || candidateByRole.size !== 2
+      || requiredRoles.some((role) => (
+        !expectedRoles.includes(role) || !candidateRoles.includes(role)
+      ))
+      || expectedByRole.get("workbook_inspection")?.sha256
+        !== candidateByRole.get("workbook_inspection")?.sha256
+    ) {
+      throw new Error(
+        "Pantheon refused the local renderer refresh before persistence because the exact workbook/setup-guide evidence contract changed.",
+      );
+    }
+  }
   const packageFingerprint = crypto
     .createHash("sha256")
     .update(downloads.map((file) => `${file.filename}:${file.sha256}`).sort().join("|"))
     .digest("hex")
     .slice(0, 16);
+  if (options.unchangedProductSnapshot) {
+    const candidateFiles = downloads.map((file, index) => ({
+      id: taskScopedDeliverableId("deliv_product", task.id, index + 1),
+      sha256: file.sha256,
+    }));
+    const customerEntryNames = customerPackageEntryNames(manifest);
+    for (let index = 0; index < customerEntryNames.length; index += 1) {
+      const entryName = customerEntryNames[index];
+      const bytes = archiveEntryBytes(downloads, entryName);
+      if (!bytes) {
+        throw new Error(`Pantheon could not preflight customer file ${entryName}.`);
+      }
+      const validation = validateProductFile(bytes, path.basename(entryName));
+      if (!new Set([".xlsx", ".csv", ".pdf"]).has(validation.extension)) {
+        throw new Error(`Customer file ${entryName} has an unsupported extracted format.`);
+      }
+      candidateFiles.push({
+        id: taskScopedDeliverableId("deliv_customer_file", task.id, index + 1),
+        sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      });
+    }
+    const candidatePreviews = storefrontPreviews.map((entryName, index) => {
+      const bytes = archiveEntryBytes(downloads, entryName);
+      if (!bytes) {
+        throw new Error(`Pantheon could not preflight storefront preview ${entryName}.`);
+      }
+      const validation = validateProductFile(bytes, path.basename(entryName));
+      if (validation.extension !== ".png") {
+        throw new Error("Storefront previews must be valid PNG images.");
+      }
+      return {
+        id: taskScopedDeliverableId("deliv_preview", task.id, index + 1),
+        sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      };
+    });
+    if (
+      !exactHashSnapshotMatches(options.unchangedProductSnapshot.files, candidateFiles)
+      || !exactHashSnapshotMatches(
+        options.unchangedProductSnapshot.previews,
+        candidatePreviews,
+      )
+    ) {
+      throw new Error(
+        "Pantheon refused the local renderer refresh before persistence because the customer package or storefront previews changed.",
+      );
+    }
+  }
   const outputDir = path.join(
     options.artifactRoot || CONFIG.artifactRoot,
     "workflows",
@@ -1165,6 +1365,7 @@ function recoverStoredProductBlueprint(task, options = {}) {
     : fromJson(task.result, {});
   const retained = result.output?.generatedFiles?.blueprint;
   if (retained) return retained;
+  const expectedBlueprintHash = String(options.expectedBlueprintHash || "").trim();
   const production = task.payload?.liveSpendRequest?.parameters?.pantheonProduction || {};
   const spec = task.payload?.liveSpendRequest?.parameters?.productBuildSpec || {};
   const stageRoot = path.join(
@@ -1177,23 +1378,40 @@ function recoverStoredProductBlueprint(task, options = {}) {
     throw new Error("Pantheon cannot re-render this package because its approved Product Builder blueprint is unavailable.");
   }
   const candidates = fs.readdirSync(stageRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => (
+      entry.isDirectory()
+      && !entry.name.startsWith(".")
+      && !entry.name.endsWith(".tmp")
+    ))
     .map((entry) => path.join(stageRoot, entry.name, "factory-input.json"))
     .filter((candidate) => fs.existsSync(candidate))
     .map((candidate) => {
       const input = JSON.parse(fs.readFileSync(candidate, "utf8"));
-      return { candidate, input, modified: fs.statSync(candidate).mtimeMs };
+      const blueprint = input.sourceBlueprint || input.blueprint || null;
+      const blueprintHash = blueprint
+        ? crypto.createHash("sha256").update(JSON.stringify(blueprint)).digest("hex")
+        : null;
+      return {
+        candidate,
+        input,
+        blueprint,
+        blueprintHash,
+        modified: fs.statSync(candidate).mtimeMs,
+      };
     })
-    .filter(({ input }) => (
+    .filter(({ input, blueprint, blueprintHash }) => (
       input.schema === "pantheon.digital-product-factory-input.v1"
       && String(input.spec?.planId || "") === String(spec.planId || production.planId || "")
       && Number(input.spec?.revisionNumber || 0) === Number(production.revisionNumber || 0)
+      && blueprint
+      && blueprintHash === input.sourceBlueprintHash
+      && (!expectedBlueprintHash || blueprintHash === expectedBlueprintHash)
     ))
     .sort((left, right) => right.modified - left.modified);
-  if (!candidates.length || !candidates[0].input.blueprint) {
+  if (!candidates.length) {
     throw new Error("Pantheon cannot re-render this package because no matching frozen Product Builder blueprint was found.");
   }
-  return candidates[0].input.blueprint;
+  return candidates[0].blueprint;
 }
 
 async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
@@ -1211,10 +1429,51 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
   ) {
     throw new Error("Only a completed, locally rendered Product Builder package can use deterministic re-render recovery.");
   }
-  const blueprint = recoverStoredProductBlueprint(task, options);
   const previousGeneratedFiles = task.result?.output?.generatedFiles || {};
-  const previousBlueprintHash = previousGeneratedFiles.blueprintHash
-    || crypto.createHash("sha256").update(JSON.stringify(blueprint)).digest("hex");
+  const storedBlueprintHash = String(previousGeneratedFiles.blueprintHash || "").trim();
+  const blueprint = recoverStoredProductBlueprint(task, {
+    ...options,
+    expectedBlueprintHash: storedBlueprintHash || undefined,
+  });
+  const recoveredBlueprintHash = crypto
+    .createHash("sha256")
+    .update(JSON.stringify(blueprint))
+    .digest("hex");
+  const previousBlueprintHash = storedBlueprintHash || recoveredBlueprintHash;
+  if (recoveredBlueprintHash !== previousBlueprintHash) {
+    throw new Error(
+      "Pantheon refused the local renderer refresh before persistence because the frozen Product Builder blueprint changed.",
+    );
+  }
+  const rendererRevision = String(
+    options.rendererRevision || "unspecified-local-renderer-revision",
+  ).trim() || "unspecified-local-renderer-revision";
+  const managedArtifactRoot = options.artifactRoot || CONFIG.artifactRoot;
+  assertManagedSnapshotBytes(
+    previousGeneratedFiles.files || [],
+    managedArtifactRoot,
+    "customer package",
+  );
+  assertManagedSnapshotBytes(
+    previousGeneratedFiles.previews || [],
+    managedArtifactRoot,
+    "storefront preview",
+  );
+  assertManagedSnapshotBytes(
+    previousGeneratedFiles.qualityReviewImages || [],
+    managedArtifactRoot,
+    "quality-review evidence",
+  );
+  const unchangedProductSnapshot = {
+    files: (previousGeneratedFiles.files || []).map((file) => ({
+      id: file.id,
+      sha256: file.sha256,
+    })),
+    previews: (previousGeneratedFiles.previews || []).map((file) => ({
+      id: file.id,
+      sha256: file.sha256,
+    })),
+  };
   const generatedFiles = await persistGeneratedProductFiles(
     db,
     task,
@@ -1225,13 +1484,18 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
       }],
     },
     { finalOutput: { work: { productBlueprint: blueprint } } },
-    options,
+    {
+      ...options,
+      rendererRevision,
+      unchangedProductSnapshot,
+      expectedQualityEvidenceSnapshot:
+        previousGeneratedFiles.qualityReviewImages || [],
+    },
   );
   if (generatedFiles.blueprintHash !== previousBlueprintHash) {
     throw new Error("Pantheon refused the local renderer refresh because the approved Product Builder blueprint changed.");
   }
   const refreshedAt = now();
-  const rendererRevision = String(options.rendererRevision || "unspecified-local-renderer-revision");
   const localRendererRefresh = {
     schema: "pantheon.local-renderer-refresh.v1",
     refreshedAt,
@@ -1242,13 +1506,53 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
     externalAction: false,
     previousFiles: (previousGeneratedFiles.files || []).map((file) => ({
       id: file.id,
+      humanName: file.humanName,
       sha256: file.sha256,
       filePath: file.filePath,
+      archiveEntry: file.archiveEntry || null,
+      customerFile: file.customerFile === true,
+      manifest: file.manifest === true,
     })),
     currentFiles: (generatedFiles.files || []).map((file) => ({
       id: file.id,
+      humanName: file.humanName,
       sha256: file.sha256,
       filePath: file.filePath,
+      archiveEntry: file.archiveEntry || null,
+      customerFile: file.customerFile === true,
+      manifest: file.manifest === true,
+    })),
+    previousPreviews: (previousGeneratedFiles.previews || []).map((file) => ({
+      id: file.id,
+      humanName: file.humanName,
+      sha256: file.sha256,
+      filePath: file.filePath,
+      sourceArchiveEntry: file.sourceArchiveEntry || null,
+    })),
+    currentPreviews: (generatedFiles.previews || []).map((file) => ({
+      id: file.id,
+      humanName: file.humanName,
+      sha256: file.sha256,
+      filePath: file.filePath,
+      sourceArchiveEntry: file.sourceArchiveEntry || null,
+    })),
+    previousQualityReviewImages: (previousGeneratedFiles.qualityReviewImages || []).map((file) => ({
+      id: file.id,
+      humanName: file.humanName,
+      sha256: file.sha256,
+      filePath: file.filePath,
+      evidenceRole: file.evidenceRole || null,
+      rendererRevision: file.rendererRevision || null,
+      inspectionCoverage: file.inspectionCoverage || null,
+    })),
+    currentQualityReviewImages: (generatedFiles.qualityReviewImages || []).map((file) => ({
+      id: file.id,
+      humanName: file.humanName,
+      sha256: file.sha256,
+      filePath: file.filePath,
+      evidenceRole: file.evidenceRole || null,
+      rendererRevision: file.rendererRevision || null,
+      inspectionCoverage: file.inspectionCoverage || null,
     })),
   };
   const result = task.result;

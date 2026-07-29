@@ -419,15 +419,52 @@ function completedProductionTask(db, taskId, expected = {}) {
   return { task, production };
 }
 
+function materialQualityFinding(value) {
+  const finding = String(value || "").trim();
+  if (!finding) return false;
+  const materialPattern = /\b(?:high[- ]risk|major|material(?:ly)?|critical|severe|unsafe|illegal|misleading|unsupported|inaccurate|incorrect|broken|unusable|illegible|not legible|not complete|incomplete|clipp\w*|overflow\w*|formula error|wrong result|data loss|does not work|cannot be used)\b/gi;
+  let match = materialPattern.exec(finding);
+  while (match) {
+    const phrase = match[0].toLowerCase();
+    if (/^(?:not legible|not complete|does not work|cannot be used)$/.test(phrase)) return true;
+    const prefix = finding.slice(Math.max(0, match.index - 48), match.index);
+    const explicitlyAbsent = /\b(?:no|without|not)\s+(?:(?:known|remaining|material|major|credible|identified)\s+){0,3}$/i.test(
+      prefix,
+    );
+    if (!explicitlyAbsent) return true;
+    match = materialPattern.exec(finding);
+  }
+  return false;
+}
+
 function qualityVerdictPassed(task) {
   const output = task.result?.output || {};
   const roleOutput = output.roleOutput || {};
   const score = Number(roleOutput.qualityScore || 0);
   const decision = String(output.operatorDecision || "");
-  const highRisk = (output.risks || []).some((risk) => (
-    /\b(high risk|unsafe|illegal|materially false)\b/i.test(String(risk))
-  ));
-  return score >= 80 && decision === "approve" && !highRisk;
+  const riskFindings = Array.isArray(roleOutput.riskFindings)
+    ? roleOutput.riskFindings.map(String).filter((finding) => finding.trim())
+    : null;
+  const missingEvidence = Array.isArray(roleOutput.missingEvidence)
+    ? roleOutput.missingEvidence
+    : null;
+  const claimSafety = String(roleOutput.claimSafety || "").trim();
+  const claimSafetyPassed = /^(?:safe|supported|acceptable)\b/i.test(claimSafety)
+    && !/\b(?:revise|revision required|needs? changes?|unsafe)\b/i.test(claimSafety)
+    && !materialQualityFinding(claimSafety);
+  const outputRisks = Array.isArray(output.risks) ? output.risks : [];
+  const highRisk = outputRisks.some((risk) => materialQualityFinding(risk));
+  const materialRiskFinding = (riskFindings || []).some((risk) => materialQualityFinding(risk));
+  return (
+    score >= 80
+    && decision === "approve"
+    && Array.isArray(riskFindings)
+    && Array.isArray(missingEvidence)
+    && missingEvidence.length === 0
+    && claimSafetyPassed
+    && !materialRiskFinding
+    && !highRisk
+  );
 }
 
 function resolveVerifiedArtifact(filePath) {

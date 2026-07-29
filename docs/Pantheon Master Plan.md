@@ -1,6 +1,6 @@
 # Pantheon Master Plan
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 Status: active source of truth
 Owner: Daniel
 Technical steward: Jarvis (Codex)
@@ -62,12 +62,22 @@ reviewer remains advisory and correctly changed no business state. This work
 does not change the no-investment result, authorise a product build, or widen
 external-action authority.
 
-The active commercial directive is
-`docs/plans/PANTHEON-FIRST-BUYER-INTENT-PROOF-2026-07-28.md`. It prepares one
-functional validation workbook and one measurement-ready Etsy listing test for
-the parked Social Media Manager case. The investment case remains parked, a
-full catalogue remains blocked, and every account, KYC, publication, contact,
-and external-spend action remains separate.
+The most recent commercial directive is
+`docs/plans/PANTHEON-FIRST-BUYER-INTENT-PROOF-2026-07-28.md`. It produced one
+functional validation workbook for the parked Social Media Manager case, then
+ended at its fail-closed quality boundary. One manually approved Terra evidence
+recheck reviewed complete three-page QA evidence and returned `revise`, score
+78. Pantheon permanently stopped the build. It created no buyer-test pack or
+external-test decision, and the investment case remains parked.
+
+The closed continuation handover is
+`docs/plans/PANTHEON-CONTINUATION-HANDOVER-2026-07-29.md`. It preserves the
+exact starting blocker and ordered execution path but is superseded as an
+active instruction by
+`docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`. The proof
+records unchanged customer hashes, complete QA coverage, the one approved
+recheck, the terminal non-pass result, browser evidence, and remaining release
+gates.
 
 `digital_product_v1` is one registered, non-universal kit. Generic commercial
 logic has no Gumroad-first or digital-product-first channel assumption. The
@@ -280,15 +290,24 @@ Pantheon default.
 
 ### Now
 
-- Pause the Social Media Manager buyer-intent proof at `needs_attention`. Five
-  worker calls recorded A$0.63 of billing-pending estimates, and the latest
-  Quality Reviewer required two copy corrections. No market test or external
-  action is authorised.
-- Complete the 2026-07-28 developer audit and prove the ordinary isolated suite
-  without running Windows launcher integration on Daniel's machine.
+- Keep the Social Media Manager Client Control and Profitability Workbook build
+  permanently stopped. The zero-spend QA refresh preserved all seven customer
+  and storefront hashes and proved three of three setup-guide pages. The one
+  manually approved Terra evidence recheck then returned `revise`, score 78,
+  and `changes_required`.
+- Do not retry, fall back to another model, revise this build, or create a
+  buyer-test pack, handoff, execution pack, or external-test decision. The
+  terminal rule was part of the approved scope and has been consumed.
+- Retain the reconciled terminal state: the linked experiment and candidate are
+  cancelled, all nine current plan artifacts are `needs_changes`, every hash
+  and byte count remains unchanged, and reconciliation created no work or
+  external effect.
+- Keep every Etsy account, KYC, seller term, setup fee, publication, customer
+  contact, advertising, and external-spend action locked.
 - Treat explicit human-approval markers as stronger than internal mandates.
-  No further paid buyer-intent correction may run without Daniel's exact
-  action-time instruction.
+  The one permitted recheck used its own exact, single-use dashboard approval.
+- Use the operations-ready native Windows supervisor and leave Pantheon in
+  Standby after the remaining release work unless Daniel is actively testing.
 - Keep the Portfolio result at `No investment selected`. Two bounded rounds
   compared ten hypotheses and six finalists, and one targeted diligence round
   re-tested the strongest named gap. No case cleared every mandatory demand,
@@ -301,42 +320,40 @@ Pantheon default.
 - Keep all 11 workers visible and on standby. No production, publication,
   customer contact, advertising, account action, or money movement is
   authorised.
-- Retain Stopped, Standby, and Working as the operator contract, but do not
-  declare the current nested launcher process tree production-ready. Local
-  lifecycle integration is quarantined to disposable Windows CI pending a
-  Job Object-backed supervisor.
-- Hold July runtime exposure at A$9.17: A$3.10 is reconciled provider usage and
-  A$6.07 remains ordinary incurred estimates. The two post-dispatch timeouts
+- Retain Stopped, Standby, and Working as the operator contract. Private
+  `Pantheon checks #22` and real command-file/Chrome proof established the
+  native Job Object supervisor as operations-ready. Lifecycle integration
+  remains quarantined to disposable Windows CI rather than ordinary local
+  tests.
+- Hold July runtime exposure at the database-recorded A$9.44: A$3.10 is
+  reconciled provider usage and A$6.34 remains incurred estimates. The two
+  post-dispatch timeouts
   and one invalid-output call were matched to signed Platform exports and
   exact trace records; none produced accepted commercial evidence. The
   assurance release added A$0.10 of clearly labelled estimates across three
   Luna calls, one truncated Terra response, and one corrected Terra review.
-  The paused buyer-intent workflow added A$0.63 of estimates.
+  The complete retained buyer-intent workflow now accounts for A$1.00 of
+  incurred estimates, including A$0.17 for the terminal evidence recheck.
 - Use the verified A$1.57675 cash-paid-per-US-dollar-credit conversion for
   future estimates. Keep estimates visibly separate from reconciled usage and
   subscription cash outflow.
 
 ### Next
 
-- Complete the private CI release gate for the new Windows supervisor. Local
-  proof passed ten standby, working, standby, and stop cycles, including forced
-  supervisor termination, without leaked owned processes, records, or ports.
-  The ordinary 296-test suite also passed under its external deadline.
-- Keep lifecycle integration quarantined from ordinary local tests. It belongs
-  in the separately bounded Windows CI job even after the supervisor release.
-- After the audit branch, ordinary suite, and CI pass, Daniel may authorize one
-  bounded correction of the current Social Media Manager validation sample.
-  Do not build a full catalogue before a real buyer test.
-- Select the actual test channel from buyer access, fees, traffic quality,
-  ownership, and measurement reliability. Etsy is a hypothesis, not a default.
-  Account action, publication, customer contact, and spend remain separate
-  protected actions.
-- Require at least 3 completed paid orders from 100 qualified product-page
-  visits, no format- or clarity-driven refunds, and positive actual all-in cash
-  contribution. Otherwise revise or park under the recorded stop rule.
-- Reopen the investment case only when that attributable evidence changes the
-  failed economics criterion. If the validation asset is not authorised, retain
-  the cash and keep the no-investment decision.
+- Finish the release work for the terminal stopped state: commit, push, and
+  private CI. The clean installation, Doctor, dependency, encrypted-recovery,
+  health, test, and browser gates have passed. Keep Windows lifecycle
+  integration in its dedicated private CI jobs.
+- Preserve the completed Chrome evidence: all seven downloads, three-page PDF
+  preview, exact 100-visit/30-day rules, no stale 50-view fallback, no
+  horizontal overflow at the three supported desktop sizes, and no Pantheon
+  console error.
+- Treat any future buyer-intent attempt as a separate commercial decision with
+  a new evidence plan. Reassess buyer access, channel, price, product format,
+  quality evidence, costs, and stop rules rather than reopening this build.
+- Reopen the investment case only when attributable buyer and all-in
+  contribution evidence changes the failed economics criterion. This stopped
+  build produced no such evidence.
 - After a case clears every gate, implement only the Venture Kit required by
   that opportunity. Venture Factory creates an inactive venture; production and
   every external action remain separate gates.
@@ -431,8 +448,13 @@ listener from the control page, and started cleanly into Standby again. No
 queued work, provider call, paid action, or unrelated process was interrupted.
 The launcher is operations-ready for normal Stopped, Standby, and Working use.
 
-The buyer-intent workflow remains paused: its A$0.63 estimated exposure and
-latest `revise` verdict are retained as evidence, not accepted as proof.
+The buyer-intent workflow is terminally stopped. Its A$1.00 incurred estimate,
+unchanged customer package, complete three-page QA evidence, and final score-78
+`revise` verdict are retained as evidence. The 316-test ordinary suite, browser,
+disposable clean-install, Doctor, dependency, encrypted-recovery, and health
+gates passed; commit, push, and private CI remain pending. Nothing in this
+result is accepted as an independent quality pass, buyer proof, commercial
+validation, or publication authority.
 
 Foundation is releasable only when:
 
@@ -450,6 +472,11 @@ Foundation is releasable only when:
 ## Durable Records
 
 - `docs/Pantheon Build Log.md`: current decisions, proof, and next work.
+- `docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`: exact
+  customer hashes, complete QA evidence, one approved recheck, terminal
+  non-pass result, browser proof, passed pre-push gates, and pending private CI.
+- `docs/plans/PANTHEON-CONTINUATION-HANDOVER-2026-07-29.md`: closed execution
+  handover preserving the exact starting blocker and continuation order.
 - `docs/reviews/PANTHEON-DEV-AUDIT-2026-07-28.md`: command-hang,
   authorization, proof-truth, artifact, shutdown, and release-readiness audit.
 - `docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`: exact

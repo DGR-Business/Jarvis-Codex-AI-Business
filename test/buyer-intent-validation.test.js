@@ -216,7 +216,7 @@ test("buyer-intent preparation is hash-bound, idempotent, one-product, and exter
     assert.equal(build.spec.validationSample.specId, spec.id);
     assert.equal(request.model, require("../src/config").lunaModel);
     assert.equal(request.estimatedCostCents, spec.providerPolicy.productBuilderCapCents);
-    assert.equal(request.maxInputTokens, 32000);
+    assert.equal(request.maxInputTokens, 40000);
     assert.deepEqual(request.effects, []);
     assert.deepEqual(build.task.payload.contextSnapshot.recordClasses, [
       "venture",
@@ -279,6 +279,17 @@ test("a quality-passed validation sample creates one exact buyer-test pack witho
     });
     const timestamp = now();
     const qualityTaskId = "task_validation_quality_fixture";
+    const cleanQualityOutput = {
+      summary: "Passed.",
+      operatorDecision: "approve",
+      roleOutput: {
+        qualityScore: 91,
+        riskFindings: ["Buyer demand remains unproven until the bounded test runs."],
+        missingEvidence: [],
+        claimSafety: "Safe: the reviewed product claims match the exact customer files.",
+      },
+      risks: [],
+    };
     const generated = {
       manifest: {
         schema: "pantheon.product-manifest.v1",
@@ -365,18 +376,110 @@ test("a quality-passed validation sample creates one exact buyer-test pack witho
           },
         }),
         toJson({
-          output: {
-            summary: "Passed.",
-            operatorDecision: "approve",
-            roleOutput: { qualityScore: 91 },
-            risks: [],
-          },
+          output: cleanQualityOutput,
         }),
         timestamp,
         timestamp,
         timestamp,
         timestamp,
       ],
+    );
+    const finalizationInput = {
+      planId: prepared.plan.id,
+      buildTaskId: build.task.id,
+      qualityTaskId,
+      generated,
+    };
+    const qualityOutputWith = (overrides = {}) => ({
+      ...cleanQualityOutput,
+      ...overrides,
+      roleOutput: {
+        ...cleanQualityOutput.roleOutput,
+        ...(overrides.roleOutput || {}),
+      },
+    });
+    const contradictoryApprovals = [
+      {
+        label: "missing evidence",
+        output: qualityOutputWith({
+          roleOutput: {
+            missingEvidence: ["Page 3 of the setup guide has not been inspected."],
+          },
+        }),
+      },
+      {
+        label: "material risk finding",
+        output: qualityOutputWith({
+          roleOutput: {
+            riskFindings: ["The workbook formula is incorrect and returns the wrong result."],
+          },
+        }),
+      },
+      {
+        label: "revise claim-safety verdict",
+        output: qualityOutputWith({
+          roleOutput: {
+            claimSafety: "Revise: one benefit claim remains unsupported.",
+          },
+        }),
+      },
+      {
+        label: "unsafe claim-safety verdict",
+        output: qualityOutputWith({
+          roleOutput: {
+            claimSafety: "Unsafe: one customer-facing claim is misleading.",
+          },
+        }),
+      },
+      {
+        label: "missing structured evidence fields",
+        output: {
+          summary: "Passed.",
+          operatorDecision: "approve",
+          roleOutput: {
+            qualityScore: 91,
+            claimSafety: "Safe: the claims are supported.",
+          },
+          risks: [],
+        },
+      },
+    ];
+    const unfinalizedPlan = get(
+      runtime.db,
+      "SELECT status, metadata FROM catalogue_plans WHERE id = ?",
+      [prepared.plan.id],
+    );
+    for (const contradictory of contradictoryApprovals) {
+      run(
+        runtime.db,
+        "UPDATE tasks SET result = ?, updated_at = ? WHERE id = ?",
+        [toJson({ output: contradictory.output }), timestamp, qualityTaskId],
+      );
+      assert.throws(
+        () => finalizeBuyerIntentValidationSample(runtime.db, finalizationInput),
+        /Quality Reviewer did not pass the exact Product Builder output/i,
+        contradictory.label,
+      );
+      assert.deepEqual(
+        get(runtime.db, "SELECT status, metadata FROM catalogue_plans WHERE id = ?", [prepared.plan.id]),
+        unfinalizedPlan,
+        `${contradictory.label} must not advance the catalogue plan`,
+      );
+      assert.equal(
+        get(runtime.db, "SELECT COUNT(*) AS count FROM commercial_execution_packs").count,
+        0,
+        `${contradictory.label} must not create an execution pack`,
+      );
+      assert.equal(
+        get(runtime.db, "SELECT status FROM commercial_experiments WHERE id = ?", [prepared.experiment.id]).status,
+        "candidate",
+        `${contradictory.label} must not promote the experiment`,
+      );
+    }
+    run(
+      runtime.db,
+      "UPDATE tasks SET result = ?, updated_at = ? WHERE id = ?",
+      [toJson({ output: cleanQualityOutput }), timestamp, qualityTaskId],
     );
     insertCompletedAgentRun(runtime.db, {
       id: "run_validation_product_builder",
@@ -393,12 +496,7 @@ test("a quality-passed validation sample creates one exact buyer-test pack witho
       score: 91,
     });
 
-    const finalized = finalizeBuyerIntentValidationSample(runtime.db, {
-      planId: prepared.plan.id,
-      buildTaskId: build.task.id,
-      qualityTaskId,
-      generated,
-    });
+    const finalized = finalizeBuyerIntentValidationSample(runtime.db, finalizationInput);
     assert.equal(finalized.pack.status, "ready_to_test");
     assert.equal(finalized.pack.metadata.sampleDeliverables.length, 5);
     assert.match(finalized.pack.channel_plan, /does not create an account on Etsy/i);
@@ -434,12 +532,7 @@ test("a quality-passed validation sample creates one exact buyer-test pack witho
     assert.equal(cockpit.buyerIntentValidation.status, "buyer_test_ready");
     assert.equal(cockpit.buyerIntentValidation.files.length, 5);
 
-    const repeated = finalizeBuyerIntentValidationSample(runtime.db, {
-      planId: prepared.plan.id,
-      buildTaskId: build.task.id,
-      qualityTaskId,
-      generated,
-    });
+    const repeated = finalizeBuyerIntentValidationSample(runtime.db, finalizationInput);
     assert.equal(repeated.alreadyFinalized, true);
     assert.equal(repeated.pack.id, finalized.pack.id);
   } finally {

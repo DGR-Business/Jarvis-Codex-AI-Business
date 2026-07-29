@@ -21,12 +21,136 @@ function safeId(value, fallback = "product-kit") {
     .slice(0, 80) || fallback;
 }
 
+const WINDOWS_RESERVED_LEAF_NAMES = new Set([
+  "CON",
+  "PRN",
+  "AUX",
+  "NUL",
+  ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
+]);
+
+function safeOutputLeaf(value, label, requiredExtension) {
+  const filename = String(value || "").trim();
+  const reservedStem = filename.split(".", 1)[0].replace(/[ .]+$/g, "").toUpperCase();
+  const containsControlCharacter = [...filename].some(
+    (character) => character.charCodeAt(0) <= 0x1f,
+  );
+  if (
+    !filename
+    || filename === "."
+    || filename === ".."
+    || filename !== path.basename(filename)
+    || filename !== path.posix.basename(filename)
+    || filename !== path.win32.basename(filename)
+    || path.isAbsolute(filename)
+    || path.posix.isAbsolute(filename)
+    || path.win32.isAbsolute(filename)
+    || containsControlCharacter
+    || /[\\/<>:"|?*]/.test(filename)
+    || /[ .]$/.test(filename)
+    || WINDOWS_RESERVED_LEAF_NAMES.has(reservedStem)
+    || path.extname(filename).toLowerCase() !== requiredExtension
+  ) {
+    throw new Error(`${label} must be a safe leaf filename ending in ${requiredExtension}.`);
+  }
+  return filename;
+}
+
+function containedOutputLeaf(root, filename, label) {
+  const resolvedRoot = path.resolve(root);
+  const candidate = path.resolve(resolvedRoot, filename);
+  if (path.dirname(candidate) !== resolvedRoot) {
+    throw new Error(`${label} escapes the renderer output directory.`);
+  }
+  return candidate;
+}
+
+function sha256Bytes(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function validateGuideInspectionReceipt(
+  qualityInspection,
+  sourceGuideBytes,
+  guideInspectionBytes,
+) {
+  const guideInspection = qualityInspection?.images?.["actual-setup-guide.png"];
+  const pages = Array.isArray(guideInspection?.pages) ? guideInspection.pages : [];
+  const sourcePageCount = Number(guideInspection?.sourcePageCount || 0);
+  const renderedPageCount = Number(guideInspection?.renderedPageCount || 0);
+  const pageIdentitiesValid = (
+    pages.length === sourcePageCount
+    && pages.every((page, index) => (
+      Number.isInteger(page?.pageNumber)
+      && page.pageNumber === index + 1
+      && Number.isInteger(page?.width)
+      && page.width > 0
+      && Number.isInteger(page?.height)
+      && page.height > 0
+      && /^[a-f0-9]{64}$/.test(String(page?.rasterSha256 || ""))
+    ))
+  );
+  const orderedPageIdentitySha256 = sha256Bytes(
+    Buffer.from(canonicalJson(pages), "utf8"),
+  );
+  if (
+    qualityInspection?.schema !== "pantheon.local-quality-inspection.v1"
+    || !guideInspection
+    || guideInspection.sourceFile !== "00-customer-setup-guide.pdf"
+    || guideInspection.sourceRelativePath !== "customer-files/00-customer-setup-guide.pdf"
+    || guideInspection.sourceSha256 !== sha256Bytes(sourceGuideBytes)
+    || guideInspection.inspectionFile !== "actual-setup-guide.png"
+    || guideInspection.inspectionRelativePath !== "quality-review/actual-setup-guide.png"
+    || guideInspection.inspectionSha256 !== sha256Bytes(guideInspectionBytes)
+    || guideInspection.orderedPageIdentitySha256 !== orderedPageIdentitySha256
+    || guideInspection.completeCoverage !== true
+    || !Number.isInteger(sourcePageCount)
+    || sourcePageCount < 1
+    || !Number.isInteger(renderedPageCount)
+    || renderedPageCount !== sourcePageCount
+    || !pageIdentitiesValid
+  ) {
+    throw new Error("Local setup-guide inspection does not prove byte-bound complete PDF page coverage.");
+  }
+  return guideInspection;
+}
+
+function removeFreshStage(stageRoot, taskStageRoot) {
+  const resolvedStage = path.resolve(stageRoot);
+  const resolvedParent = path.resolve(taskStageRoot);
+  if (
+    path.dirname(resolvedStage) !== resolvedParent
+    || !path.basename(resolvedStage).endsWith(".tmp")
+  ) {
+    throw new Error("Pantheon refused to clean an unexpected renderer staging path.");
+  }
+  fs.rmSync(resolvedStage, { recursive: true, force: true });
+}
+
 function fieldReference(value) {
   return String(value || "")
     .replace(/%/g, " percent ")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function buyerFacingValidationText(value) {
+  return String(value || "")
+    .replace(/\bvalidation sample\b/gi, "product")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function mergeRequiredList(required, supplied, limit) {
@@ -59,7 +183,12 @@ function normalizeProductBlueprintForFactory(blueprint, spec = {}) {
       disclaimers: normalized.disclaimers,
       item,
     });
-    normalized.packageTitle = String(validationSample.packageTitle || normalized.packageTitle || "").trim();
+    normalized.packageTitle = String(
+      exactItem.title
+      || validationSample.packageTitle
+      || normalized.packageTitle
+      || "",
+    ).trim();
     normalized.customerPromise = String(
       validationSample.customerPromise || normalized.customerPromise || "",
     ).trim();
@@ -69,8 +198,10 @@ function normalizeProductBlueprintForFactory(blueprint, spec = {}) {
       6,
     );
     normalized.disclaimers = mergeRequiredList(
-      validationSample.disclaimers,
-      normalized.disclaimers,
+      (Array.isArray(validationSample.disclaimers) ? validationSample.disclaimers : [])
+        .map(buyerFacingValidationText),
+      (Array.isArray(normalized.disclaimers) ? normalized.disclaimers : [])
+        .map(buyerFacingValidationText),
       3,
     );
     item.id = String(exactItem.id || item.id || "").trim();
@@ -457,97 +588,119 @@ function composeStorefrontCover(task, sourceBytes, options = {}) {
 }
 
 function renderDigitalProductKit(task, blueprint, options = {}) {
-  const spec = task?.payload?.liveSpendRequest?.parameters?.productBuildSpec || {};
-  const sourceBlueprintHash = crypto
-    .createHash("sha256")
-    .update(JSON.stringify(blueprint))
-    .digest("hex");
+  const suppliedSpec = task?.payload?.liveSpendRequest?.parameters?.productBuildSpec || {};
+  const manifestFilename = safeOutputLeaf(
+    suppliedSpec.manifestFilename,
+    "manifestFilename",
+    ".json",
+  );
+  const bundleFilename = safeOutputLeaf(
+    suppliedSpec.bundleFilename,
+    "bundleFilename",
+    ".zip",
+  );
+  const spec = {
+    ...suppliedSpec,
+    manifestFilename,
+    bundleFilename,
+  };
+  const sourceBlueprintHash = sha256Bytes(Buffer.from(JSON.stringify(blueprint)));
   const normalized = normalizeProductBlueprintForFactory(blueprint, spec);
   assertBlueprintMatchesSpec(spec, normalized.blueprint);
   const readiness = assertDigitalProductFactoryReady();
-  const fingerprint = crypto
-    .createHash("sha256")
-    .update(JSON.stringify({ spec, blueprint: normalized.blueprint, normalizations: normalized.normalizations }))
-    .digest("hex");
-  const stageRoot = path.join(
+  const fingerprint = sha256Bytes(Buffer.from(
+    JSON.stringify({ spec, blueprint: normalized.blueprint, normalizations: normalized.normalizations }),
+  ));
+  const taskStageRoot = path.join(
     options.artifactRoot || CONFIG.artifactRoot,
     ".staging",
     "digital-product-kits",
     safeId(task.id),
-    fingerprint.slice(0, 16),
   );
+  fs.mkdirSync(taskStageRoot, { recursive: true });
+  const renderIdentity = `${fingerprint.slice(0, 16)}-${Date.now()}-${process.pid}-${crypto.randomBytes(6).toString("hex")}`;
+  const stageRoot = path.join(taskStageRoot, `.${renderIdentity}.tmp`);
+  const committedStageRoot = path.join(taskStageRoot, renderIdentity);
   const inputPath = path.join(stageRoot, "factory-input.json");
   const outputRoot = path.join(stageRoot, "rendered");
   fs.mkdirSync(outputRoot, { recursive: true });
-  fs.writeFileSync(
-    inputPath,
-    JSON.stringify({
-      schema: "pantheon.digital-product-factory-input.v1",
-      fingerprint,
-      spec,
-      blueprint: normalized.blueprint,
-      sourceBlueprintHash,
-      runtimeNormalizations: normalized.normalizations,
-    }, null, 2),
-    "utf8",
-  );
-  const rendered = spawnSync(
-    readiness.python,
-    [readiness.renderer, inputPath, outputRoot],
-    {
-      cwd: CONFIG.rootDir,
-      encoding: "utf8",
-      timeout: 120_000,
-      maxBuffer: 2 * 1024 * 1024,
-    },
-  );
-  if (rendered.error?.code === "ETIMEDOUT") {
-    throw new Error("Local digital-product rendering exceeded its two-minute deadline.");
-  }
-  if (rendered.error) throw rendered.error;
-  if (rendered.status !== 0) {
-    throw new Error(`Local digital-product rendering failed: ${String(rendered.stderr || rendered.stdout || "unknown error").trim()}`);
-  }
-  const manifestPath = path.join(outputRoot, spec.manifestFilename);
-  const bundlePath = path.join(outputRoot, spec.bundleFilename);
-  for (const requiredPath of [manifestPath, bundlePath]) {
-    if (!fs.existsSync(requiredPath) || !fs.statSync(requiredPath).isFile()) {
-      throw new Error(`Local digital-product rendering did not create ${path.basename(requiredPath)}.`);
+  try {
+    fs.writeFileSync(
+      inputPath,
+      JSON.stringify({
+        schema: "pantheon.digital-product-factory-input.v1",
+        fingerprint,
+        spec,
+        blueprint: normalized.blueprint,
+        sourceBlueprint: blueprint,
+        sourceBlueprintHash,
+        runtimeNormalizations: normalized.normalizations,
+      }, null, 2),
+      { encoding: "utf8", flag: "wx" },
+    );
+    const rendered = spawnSync(
+      readiness.python,
+      [readiness.renderer, inputPath, outputRoot],
+      {
+        cwd: CONFIG.rootDir,
+        encoding: "utf8",
+        timeout: 120_000,
+        maxBuffer: 2 * 1024 * 1024,
+      },
+    );
+    if (rendered.error?.code === "ETIMEDOUT") {
+      throw new Error("Local digital-product rendering exceeded its two-minute deadline.");
     }
-  }
-  const qualityReviewRoot = path.join(outputRoot, "quality-review");
-  const qualityReviewPaths = [
-    path.join(qualityReviewRoot, "actual-workbook.png"),
-    path.join(qualityReviewRoot, "actual-setup-guide.png"),
-  ];
-  for (const requiredPath of qualityReviewPaths) {
-    if (!fs.existsSync(requiredPath) || !fs.statSync(requiredPath).isFile()) {
-      throw new Error(`Local digital-product rendering did not create ${path.basename(requiredPath)}.`);
+    if (rendered.error) throw rendered.error;
+    if (rendered.status !== 0) {
+      throw new Error(`Local digital-product rendering failed: ${String(rendered.stderr || rendered.stdout || "unknown error").trim()}`);
     }
-  }
-  return {
-    fingerprint,
-    renderer: "pantheon-local-digital-product-factory-v1",
-    constructionMode: spec.validationSample?.exactItemBlueprint
-      ? "contract_defined_model_assisted"
-      : "model_blueprint_deterministic_render",
-    sourceBlueprintHash,
-    renderedBlueprintHash: crypto
-      .createHash("sha256")
-      .update(JSON.stringify(normalized.blueprint))
-      .digest("hex"),
-    runtimeNormalizations: normalized.normalizations,
-    qualityReviewImages: qualityReviewPaths.map((filePath) => ({
+    const manifestPath = containedOutputLeaf(outputRoot, manifestFilename, "manifestFilename");
+    const bundlePath = containedOutputLeaf(outputRoot, bundleFilename, "bundleFilename");
+    for (const requiredPath of [manifestPath, bundlePath]) {
+      if (!fs.existsSync(requiredPath) || !fs.statSync(requiredPath).isFile()) {
+        throw new Error(`Local digital-product rendering did not create ${path.basename(requiredPath)}.`);
+      }
+    }
+    const qualityReviewRoot = path.join(outputRoot, "quality-review");
+    const qualityReviewPaths = [
+      path.join(qualityReviewRoot, "actual-workbook.png"),
+      path.join(qualityReviewRoot, "actual-setup-guide.png"),
+    ];
+    for (const requiredPath of qualityReviewPaths) {
+      if (!fs.existsSync(requiredPath) || !fs.statSync(requiredPath).isFile()) {
+        throw new Error(`Local digital-product rendering did not create ${path.basename(requiredPath)}.`);
+      }
+    }
+    const qualityInspectionPath = path.join(qualityReviewRoot, "inspection-metadata.json");
+    if (!fs.existsSync(qualityInspectionPath) || !fs.statSync(qualityInspectionPath).isFile()) {
+      throw new Error("Local digital-product rendering did not create inspection-metadata.json.");
+    }
+    const qualityInspection = JSON.parse(fs.readFileSync(qualityInspectionPath, "utf8"));
+    const sourceGuidePath = path.join(outputRoot, "customer-files", "00-customer-setup-guide.pdf");
+    if (!fs.existsSync(sourceGuidePath) || !fs.statSync(sourceGuidePath).isFile()) {
+      throw new Error("Local digital-product rendering did not retain the exact setup-guide PDF.");
+    }
+    const sourceGuideBytes = fs.readFileSync(sourceGuidePath);
+    const guideInspectionBytes = fs.readFileSync(qualityReviewPaths[1]);
+    validateGuideInspectionReceipt(
+      qualityInspection,
+      sourceGuideBytes,
+      guideInspectionBytes,
+    );
+    const qualityReviewImages = qualityReviewPaths.map((filePath, index) => ({
       filename: path.basename(filePath),
       bytes: fs.readFileSync(filePath),
       metadata: {
         source: "local_deterministic_renderer",
         purpose: "quality_review_only",
+        evidenceRole: index === 0 ? "workbook_inspection" : "setup_guide_inspection",
         derivedFromActualSavedFile: true,
         fingerprint,
+        inspectionCoverage: qualityInspection.images?.[path.basename(filePath)] || null,
       },
-    })),
-    files: [manifestPath, bundlePath].map((filePath) => ({
+    }));
+    const files = [manifestPath, bundlePath].map((filePath) => ({
       filename: path.basename(filePath),
       bytes: fs.readFileSync(filePath),
       metadata: {
@@ -556,12 +709,35 @@ function renderDigitalProductKit(task, blueprint, options = {}) {
         sourceBlueprintHash,
         runtimeNormalizations: normalized.normalizations,
       },
-    })),
-  };
+    }));
+    fs.renameSync(stageRoot, committedStageRoot);
+    return {
+      fingerprint,
+      renderer: "pantheon-local-digital-product-factory-v1",
+      constructionMode: spec.validationSample?.exactItemBlueprint
+        ? "contract_defined_model_assisted"
+        : "model_blueprint_deterministic_render",
+      sourceBlueprintHash,
+      renderedBlueprintHash: sha256Bytes(Buffer.from(JSON.stringify(normalized.blueprint))),
+      runtimeNormalizations: normalized.normalizations,
+      qualityReviewImages,
+      files,
+    };
+  } catch (error) {
+    if (fs.existsSync(stageRoot)) {
+      try {
+        removeFreshStage(stageRoot, taskStageRoot);
+      } catch (cleanupError) {
+        error.cleanupError = cleanupError.message;
+      }
+    }
+    throw error;
+  }
 }
 
 module.exports = {
   PRODUCT_BLUEPRINT_SCHEMA,
+  __validateGuideInspectionReceiptForTests: validateGuideInspectionReceipt,
   assertBlueprintMatchesSpec,
   assertDigitalProductFactoryReady,
   composeStorefrontCover,

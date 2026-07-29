@@ -1,13 +1,14 @@
 import csv
 import hashlib
 import json
+import math
 import re
 import sys
 import textwrap
 import zipfile
 from datetime import date, datetime
 from html import escape
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
@@ -45,6 +46,51 @@ def slug(value, fallback="product", maximum=64):
 
 def safe_text(value, maximum=500):
     return re.sub(r"\s+", " ", str(value or "")).strip()[:maximum]
+
+
+WINDOWS_RESERVED_LEAF_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def safe_output_leaf(value, label, required_suffix):
+    text = str(value or "").strip()
+    windows_path = PureWindowsPath(text)
+    posix_path = PurePosixPath(text)
+    reserved_stem = text.split(".", 1)[0].rstrip(" .").upper()
+    if (
+        not text
+        or text in {".", ".."}
+        or "/" in text
+        or "\\" in text
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or posix_path.is_absolute()
+        or windows_path.name != text
+        or posix_path.name != text
+        or text.endswith((" ", "."))
+        or re.search(r'[\x00-\x1f<>:"|?*]', text)
+        or reserved_stem in WINDOWS_RESERVED_LEAF_NAMES
+        or Path(text).suffix.lower() != required_suffix
+    ):
+        raise ValueError(
+            f"{label} must be a safe leaf filename ending in {required_suffix}"
+        )
+    return text
+
+
+def contained_output_leaf(root, filename, label):
+    resolved_root = root.resolve()
+    candidate = (resolved_root / filename).resolve()
+    if candidate.parent != resolved_root:
+        raise ValueError(f"{label} escapes the renderer output directory")
+    return candidate
+
 
 def field_reference(value):
     return re.sub(r"\s+", " ", safe_text(value, 80).replace("%", " percent ")).strip().lower()
@@ -271,10 +317,19 @@ UNVERIFIED_NAMED_STRUCTURE = re.compile(
 )
 
 
-def canonical_package_setup_steps():
+def canonical_package_setup_steps(catalogue_items):
+    if len(catalogue_items) == 1:
+        workbook_name = f"01-{slug(catalogue_items[0].get('title'))}.xlsx"
+        open_instruction = (
+            f"Open the setup guide, then open the single included workbook: {workbook_name}."
+        )
+    else:
+        open_instruction = (
+            "Open the setup guide, then choose the workbook that matches the job you are doing."
+        )
     return [
         "Download and unzip the customer bundle into a working folder.",
-        "Open the setup guide, then choose the workbook that matches the job you are doing.",
+        open_instruction,
         "Read the workbook's Read Me sheet before replacing its example records.",
         "Use reviewed information and keep the original bundle as a clean backup.",
         "Review the Dashboard before using or sharing the updated records.",
@@ -1474,24 +1529,42 @@ def workbook_quality_preview(workbook_path, output_path, validation):
         reopened.verify()
 
 
-def pdf_quality_preview(pdf_path, output_path):
+def pdf_quality_preview(pdf_path, output_path, output_root=None):
     document = pdfium.PdfDocument(str(pdf_path))
     page_count = len(document)
     if page_count < 1:
         raise ValueError("The setup guide PDF has no pages")
+    columns = 2 if page_count <= 2 else 3
+    gap = 34
+    side_margin = 70
+    page_max_width = (
+        1600 - (side_margin * 2) - (gap * (columns - 1))
+    ) // columns - 16
+    page_max_height = 790 if columns == 2 else 650
     page_images = []
-    for page_index in range(min(2, page_count)):
+    page_identities = []
+    for page_index in range(page_count):
         page = document[page_index]
         bitmap = page.render(scale=1.45)
         rendered = bitmap.to_pil().convert("RGB")
-        rendered.thumbnail((690, 820), Image.Resampling.LANCZOS)
-        page_images.append(rendered.copy())
+        rendered.thumbnail((page_max_width, page_max_height), Image.Resampling.LANCZOS)
+        page_image = rendered.copy()
+        page_images.append(page_image)
+        page_identities.append({
+            "pageNumber": page_index + 1,
+            "width": page_image.width,
+            "height": page_image.height,
+            "rasterSha256": hashlib.sha256(page_image.tobytes()).hexdigest(),
+        })
         rendered.close()
         bitmap.close()
         page.close()
     document.close()
 
-    image = Image.new("RGB", (1600, 1000), f"#{INK}")
+    rows = math.ceil(page_count / columns)
+    row_height = page_max_height + 58
+    image_height = 140 + (rows * row_height) + 40
+    image = Image.new("RGB", (1600, image_height), f"#{INK}")
     draw = ImageDraw.Draw(image)
     draw.text((70, 42), "Actual setup guide inspection", fill=f"#{WHITE}", font=font(32, True))
     draw.text(
@@ -1500,23 +1573,57 @@ def pdf_quality_preview(pdf_path, output_path):
         fill="#B9C5D3",
         font=font(17),
     )
-    gap = 40
-    total_width = sum(page.width for page in page_images) + gap * max(0, len(page_images) - 1)
-    x = (1600 - total_width) // 2
-    for index, page_image in enumerate(page_images, start=1):
-        y = 145 + max(0, (820 - page_image.height) // 2)
+    for index, page_image in enumerate(page_images):
+        row = index // columns
+        column = index % columns
+        row_images = page_images[row * columns:(row + 1) * columns]
+        row_width = sum(item.width for item in row_images) + gap * max(0, len(row_images) - 1)
+        row_x = (1600 - row_width) // 2
+        x = row_x + sum(item.width for item in row_images[:column]) + gap * column
+        row_top = 140 + row * row_height
+        y = row_top + max(0, (page_max_height - page_image.height) // 2)
         draw.rounded_rectangle(
             (x - 8, y - 8, x + page_image.width + 8, y + page_image.height + 8),
             radius=5,
             fill="#DDE3EA",
         )
         image.paste(page_image, (x, y))
-        draw.text((x, 944), f"Page {index}", fill="#B9C5D3", font=font(14, True))
-        x += page_image.width + gap
+        draw.text(
+            (x, row_top + page_max_height + 16),
+            f"Page {index + 1}",
+            fill="#B9C5D3",
+            font=font(14, True),
+        )
         page_image.close()
     image.save(output_path, format="PNG", optimize=True)
     with Image.open(output_path) as reopened:
         reopened.verify()
+    evidence_root = Path(output_root or pdf_path.parent.parent).resolve()
+    source_relative_path = pdf_path.resolve().relative_to(evidence_root).as_posix()
+    inspection_relative_path = output_path.resolve().relative_to(evidence_root).as_posix()
+    ordered_identity = json.dumps(
+        page_identities,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return {
+        "sourceFile": pdf_path.name,
+        "sourceRelativePath": source_relative_path,
+        "sourceSha256": hashlib.sha256(pdf_path.read_bytes()).hexdigest(),
+        "inspectionFile": output_path.name,
+        "inspectionRelativePath": inspection_relative_path,
+        "inspectionSha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+        "sourcePageCount": page_count,
+        "renderedPageCount": len(page_images),
+        "completeCoverage": len(page_images) == page_count,
+        "columns": columns,
+        "rows": rows,
+        "pages": page_identities,
+        "orderedPageIdentitySha256": hashlib.sha256(
+            ordered_identity.encode("ascii")
+        ).hexdigest(),
+    }
 
 
 def sha256(path):
@@ -1525,6 +1632,16 @@ def sha256(path):
 
 def build(payload, output_root):
     spec = payload["spec"]
+    manifest_filename = safe_output_leaf(
+        spec.get("manifestFilename"),
+        "manifestFilename",
+        ".json",
+    )
+    bundle_filename = safe_output_leaf(
+        spec.get("bundleFilename"),
+        "bundleFilename",
+        ".zip",
+    )
     source_blueprint = payload["blueprint"]
     runtime_normalizations = payload.get("runtimeNormalizations", [])
     normalizations_by_item = {}
@@ -1551,7 +1668,7 @@ def build(payload, output_root):
         for step in source_blueprint.get("setupSteps", [])
         if safe_text(step, 700)
     ]
-    setup_steps = canonical_package_setup_steps()
+    setup_steps = canonical_package_setup_steps(safe_items)
     package_adjustments = []
     if source_setup_steps != setup_steps:
         package_adjustments.append({
@@ -1631,7 +1748,16 @@ def build(payload, output_root):
         quality_workbook,
         validation[rendered_items[0]["id"]],
     )
-    pdf_quality_preview(guide_path, quality_guide)
+    guide_inspection = pdf_quality_preview(guide_path, quality_guide, output_root)
+    write_json(
+        quality_review_root / "inspection-metadata.json",
+        {
+            "schema": "pantheon.local-quality-inspection.v1",
+            "images": {
+                quality_guide.name: guide_inspection,
+            },
+        },
+    )
 
     manifest = {
         "schema": "pantheon.product-manifest.v1",
@@ -1709,12 +1835,20 @@ def build(payload, output_root):
         }
         for file_path in archive_paths
     ]
-    bundle_path = output_root / spec["bundleFilename"]
+    bundle_path = contained_output_leaf(
+        output_root,
+        bundle_filename,
+        "bundleFilename",
+    )
     manifest["bundle"] = {
         "filename": bundle_path.name,
         "canonicalManifestInsideBundle": True,
     }
-    manifest_inside = output_root / spec["manifestFilename"]
+    manifest_inside = contained_output_leaf(
+        output_root,
+        manifest_filename,
+        "manifestFilename",
+    )
     write_json(manifest_inside, manifest)
     archive_paths.append(manifest_inside)
     with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:

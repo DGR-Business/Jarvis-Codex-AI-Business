@@ -1,6 +1,6 @@
 # Pantheon Build Log
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 
 Pantheon is the active product name from 2026-07-18. Earlier entries retain
 Jarvis-Codex or Jarvis where that was the product name at the time. Jarvis now
@@ -25,14 +25,18 @@ commercial move.
   Controller, and a registered non-universal `digital_product_v1` Venture Kit.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
-- Active engineering: the First Buyer-Intent Proof is paused at
-  `needs_attention` while the 2026-07-28 developer audit closes an
-  authorization defect and removes unbounded local lifecycle testing.
+- Active engineering: the First Buyer-Intent Proof reached its terminal quality
+  branch. A zero-spend refresh preserved all seven customer and storefront
+  hashes and proved all three setup-guide pages. The one manually approved
+  Terra evidence recheck returned `revise`, score 78, so Pantheon permanently
+  stopped the build. Pre-push release gates passed; commit, push, and private CI
+  remain.
 - Current commercial result: two bounded rounds retained ten hypotheses,
   performed comparable live demand and finance review on six finalists, and
   completed two Sol investment reviews. Pantheon selected no investment.
-- Current operator state: no worker is running and there is no unknown provider
-  outcome. The buyer-intent sample is not quality-passed and no market test,
+- Current operator state: no worker or provider call is running and there is no
+  unknown provider outcome. The buyer-intent workbook is not quality-passed,
+  the build exposes no retry or buyer-test decision, and no market test,
   publication, account action, customer contact, or external spend is
   authorised.
 - Historical product: the Job Search Evidence Tracker package remains
@@ -40,15 +44,16 @@ commercial move.
   It is not an active venture or publication recommendation.
 - External actions: locked by default.
 - Operator budget: eight hours per week in the build and first-proof phase.
-- Pre-revenue AI and tool cap: A$100 per month. July runtime exposure is
-  A$9.17, comprising A$3.10 reconciled provider usage and A$6.07 ordinary
-  incurred estimates. The buyer-intent workflow added A$0.63 of billing-pending
-  estimates. There are no unknown provider outcomes.
+- Pre-revenue AI and tool cap: A$100 per month. The production database records
+  July runtime exposure of A$9.44, comprising A$3.10 reconciled provider usage
+  and A$6.34 incurred estimates. The complete retained buyer-intent workflow
+  accounts for A$1.00 of billing-pending estimates. There are no unknown
+  provider outcomes.
 - Operations: Stopped, Standby, and Working remain the intended interface.
-  Local lifecycle proof is not currently release-approved: the launcher test
-  is quarantined to a disposable, externally bounded Windows CI job until a
-  single supervisor with operating-system-enforced descendant ownership
-  replaces the nested PowerShell/Node process tree.
+  The native Windows supervisor and Job Object release passed local, Chrome,
+  command-file, and private CI proof. Lifecycle integration remains quarantined
+  to disposable, externally bounded Windows CI rather than ordinary local
+  tests.
 
 ## Durable Decisions
 
@@ -91,6 +96,9 @@ commercial move.
 | 2026-07-28 | Record malformed semantic-review responses as known failed attempts and permit only one separately visible correction. | Provider work and cost must remain truthful even when strict structured output fails; a larger token ceiling must never become an invisible retry. |
 | 2026-07-28 | Quarantine Windows lifecycle integration from local and ordinary test runs. | A nested npm, Node, PowerShell, fake-server, and child-Node process tree outlived the test deadline and left Codex waiting. Lifecycle proof now belongs only in a disposable CI job with an external ceiling until a Windows Job Object-backed supervisor exists. |
 | 2026-07-28 | Treat an explicit human-decision marker as stronger than an internal mandate. | A Quality Reviewer call ran under the monthly mandate even though its exact packet said Daniel's approval was required. Both current and legacy manual-approval flags now fail closed. |
+| 2026-07-28 | Release the native Windows supervisor while retaining lifecycle tests in disposable CI. | Ten hosted lifecycle cycles, forced supervisor failure, real command files, and Chrome proved exact Job Object ownership without harming unrelated Node processes. |
+| 2026-07-29 | Permit one approved QA-evidence recheck only when customer files are unchanged. | The independent reviewer saw only two pages of a three-page PDF. Jarvis may repair the internal contact sheet at zero provider cost, but a new model verdict requires exact approval, immutable customer hashes, complete page coverage, idempotency, and no further recheck. |
+| 2026-07-29 | Enforce the single recheck's non-pass as a permanent build stop. | The manually approved Terra recheck returned `revise`, score 78. The recorded rule forbids another paid retry, fallback, revision of this build, buyer-test pack, or external-test decision. |
 
 ## 2026-07-22 Full Journey Rehearsal: Genuine Quality Stop
 
@@ -1273,6 +1281,10 @@ acceptance, paid research service, advertising, or money movement occurred.
   estimates.
 - July runtime exposure after signed reconciliation: A$8.44, comprising A$3.10
   reconciled usage and A$5.34 ordinary incurred estimates.
+- Current July runtime exposure after the retained buyer-intent workflow:
+  A$9.44, comprising A$3.10 reconciled usage and A$6.34 incurred estimates.
+  The buyer-intent workflow accounts for A$1.00 of estimates; the final A$0.17
+  recheck remains billing-pending rather than settled spend.
 
 These records remain in the active accounting and cost ledgers after pilot work
 is removed. Historical workflows, approvals, packs, model calls, and runs remain
@@ -1408,7 +1420,7 @@ the full isolated suite and dependency audit successfully.
 Exact evidence is retained at
 `docs/proofs/2026-07-28-agent-assurance-openai-hardening-proof.md`.
 
-## Next Best Work
+## Superseded Next Best Work (recorded 2026-07-28)
 
 Finish the bounded 2026-07-28 developer audit, run the ordinary isolated suite
 without the Windows launcher test, and prove the branch in private CI. Do not
@@ -1647,3 +1659,149 @@ command-file start completed in 7.2 seconds and left Pantheon in Standby on
 No OpenAI call, paid tool, external business action, or commercial-state change
 occurred. Windows lifecycle stabilization is complete. Buyer-intent work
 remains paused for the next explicitly selected commercial step.
+
+## 2026-07-29 Buyer-Intent Revision 1 And Task Handover
+
+Daniel authorised Jarvis to continue the bounded buyer-intent proof after the
+Windows release.
+
+Jarvis used Chrome to approve the exact Product Builder action. Luna completed
+revision 1 as a known Agents SDK result:
+
+- task
+  `task_live_worker_wf_buyer_intent_social_media_manager_client_control_v1_catalogue_build_catalogue_validation_social_media_manager_c_4430e83c4b9d`;
+- response
+  `resp_0f11b4291b04ef35016a69328e8c70819abc854fd0de47f43e`;
+- trace `trace_bbf533af38b740c5845855057e73ac76`;
+- 10,282 input and 1,504 output tokens; and
+- A$0.04 estimated cost with billing pending.
+
+Pantheon rendered a real `Client Control and Profitability Workbook` package.
+The workbook, CSV, three-page setup guide, canonical manifest, ZIP bundle, and
+two previews are locally retained under exact hashes. No external action
+occurred.
+
+The supervisor then prepared and completed one Terra Quality Reviewer run:
+
+- task
+  `task_live_worker_wf_buyer_intent_social_media_manager_client_control_v1_catalogue_quality_catalogue_validation_social_media_manager_5a14c573a91d`;
+- response
+  `resp_0016ee6bf60e2162016a6933d963a4819bb9c3e1b966f71665`;
+- trace `trace_4f2fcedbdff24428a07dbc6a8c19dd35`;
+- 28,433 input and 806 output tokens; and
+- A$0.16 estimated cost with billing pending.
+
+The result was a real score-86 `revise`, not a model or system failure. The
+reviewer confirmed complete package coverage and legible, offer-consistent
+visible files, but the internal PDF contact sheet showed only pages 1 and 2 of
+the three-page guide. Page 3 therefore remained uninspected.
+
+Jarvis implemented a narrow repair in the uncommitted worktree:
+
+- all PDF pages render into a dynamic QA contact sheet;
+- internal metadata records source and rendered page counts;
+- QA images use renderer-revision paths so old evidence stays immutable;
+- refresh receipts compare customer files, previews, and QA images before and
+  after;
+- exactly one manual evidence recheck may be prepared only when every customer
+  file and preview is unchanged and complete page coverage is proven; and
+- repeated recovery is idempotent while product changes and a second recheck
+  fail closed.
+
+Lint and `git diff --check` passed. The affected production and buyer-intent
+suites passed 27 of 27 in 13.3 seconds. The current uncommitted changes have not
+yet run the full release suite, touched production state, or made another
+provider call.
+
+The production database currently reports A$3.10 reconciled July usage and
+A$6.17 incurred estimates, for A$9.27 runtime exposure and no unknown outcomes.
+The complete retained buyer-intent workflow accounts for A$0.83 of estimates.
+
+The task became large enough to compact frequently. Exact current state,
+customer hashes, uncommitted files, known dashboard defects, continuation
+order, and completion gates are retained in
+`docs/plans/PANTHEON-CONTINUATION-HANDOVER-2026-07-29.md`.
+
+## 2026-07-29 Buyer-Intent Terminal Quality Stop
+
+Jarvis resumed from the exact page-inspection blocker without restarting
+discovery or changing the customer package.
+
+The deterministic renderer refresh used
+`pdf-all-pages-contact-sheet-v1`. It preserved the manifest, ZIP bundle,
+three-page setup guide, sample CSV, Excel workbook, and both storefront
+previews under their seven existing SHA-256 hashes. The workbook QA image also
+remained unchanged. Only the setup-guide QA image changed, and its metadata
+proved three source pages, three rendered pages, complete coverage, and ordered
+page identity. Jarvis visually inspected all three pages.
+
+Daniel then manually approved the one permitted Terra recheck:
+
+- task
+  `task_live_worker_wf_buyer_intent_social_media_manager_client_control_v1_catalogue_quality_catalogue_validation_social_media_manager_2407e68b10d4`;
+- approval
+  `appr_live_worker_wf_buyer_intent_social_media_manager_client_control_v1_2026-07-29T00_52_25_983Z_355e970750aa`;
+- response
+  `resp_00ed5e7d05ab6cb5016a694f9498ac819ba01973299dee76b6`;
+- trace `trace_27439dff4c3e4119a61d061fd650f2f7`;
+- model call `model_10269a9e-ff7d-4702-9416-bedaf11613b6`;
+- agent run `agent_run_9d974c54-a02c-4401-9730-9fb751bb9be4`;
+- attempt `attempt_f6c23688-972f-4381-9964-0ff8c8eb0030`;
+- evaluation `agent_eval_e207867b-85f0-4cbb-b599-fded8337e3b3`;
+- 28,665 input and 830 output tokens; and
+- A$0.17 incurred estimate under the A$1.50 cap, with provider billing
+  unreconciled.
+
+The `local-assurance-v3` evaluation passed 100, which confirms the response met
+the structured and safety contract. It does not mean the product passed
+quality. The independent Quality Reviewer returned `revise`, score 78, and
+`changes_required` because the guide uses small type while leaving substantial
+unused space, page 3 repeats the disclaimer, and the supplied visual evidence
+does not prove the intended customer Excel interaction.
+
+Pantheon applied the recorded terminal rule. It permanently stopped the build,
+created no retry or model fallback, and created no buyer-test pack, handoff,
+execution pack, or protected external-test decision. No Etsy account, KYC,
+seller-term acceptance, listing, publication, customer contact, advertising,
+money movement, or external spend occurred. There is no buyer, order, revenue,
+refund, conversion, or actual contribution evidence.
+
+Jarvis applied the terminal persistence reconciliation at
+`2026-07-29T01:43:28.622Z`. It created no task, approval, model call,
+deliverable, or handoff and made no provider or external action. Workflow counts
+remained 18 tasks, 9 approvals, 8 model calls, 57 deliverables, and 0 handoffs.
+The linked experiment and candidate are cancelled. All nine current plan
+artifacts are `needs_changes`, with all nine hashes and byte counts reverified
+unchanged.
+
+Chrome proved all seven downloads, the complete three-page PDF preview, the
+exact 100-qualified-visit and 30-day rules, no stale 50-view fallback, and no
+horizontal overflow at 1440x900, 1280x720, or 1024x768. Pantheon produced no
+application console error. Unrelated browser extensions emitted authentication
+warnings and one injected-script `TypeError`; those extension-only records were
+excluded.
+The full ordinary suite passed 316 of 316 tests, with lint, syntax, and
+`git diff --check` also passing. A disposable clean installation added and
+validated 166 exact locked packages, the dependency audit reported zero
+vulnerabilities, operations-ready Doctor validated the current encrypted
+recovery set, and the live health endpoint reported `operationsReady: true`.
+
+This terminal result is not a quality pass or commercial success. Commit, push,
+and private CI remain pending and are not claimed as passed. Exact evidence is
+retained in
+`docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`.
+
+## Current Next Best Work
+
+Close the release record for the terminal stopped state without reopening the
+build:
+
+1. commit and push the preserved worktree;
+2. wait for private CI and record its factual result; and
+3. leave Pantheon in Standby unless Daniel is actively testing.
+
+Any future buyer-intent attempt requires a separate commercial decision and new
+evidence plan. Do not create another review, buyer pack, or external-test
+decision for this build. Do not begin Venture Factory, a second Venture Kit,
+concurrent ventures, or new OpenAI capability adoption merely to route around
+the terminal quality result.
