@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { selectTestShard } = require("./test-shards");
 
 const workspaceRoot = path.resolve(__dirname, "..");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-test-runtime-"));
@@ -68,7 +69,12 @@ function requestedTestFiles(args) {
   ) {
     throw new Error("Pantheon received an invalid CI test-shard configuration.");
   }
-  return runnable.filter((value, index) => index % shardCount === shardIndex);
+  return selectTestShard(
+    runnable,
+    shardCount,
+    shardIndex,
+    (value) => fs.statSync(path.join(workspaceRoot, value)).size,
+  );
 }
 
 // Legacy JARVIS_* names are scrubbed only so an older developer shell cannot
