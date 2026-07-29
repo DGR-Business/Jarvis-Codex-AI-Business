@@ -35,7 +35,7 @@ const {
 } = require("../src/runtime/first-use-reset");
 const { importGumroadCsv } = require("../src/runtime/gumroad-import");
 const { ensureRetentionPolicy } = require("../src/runtime/retention-policy");
-const { commercialFoundationState } = require("../src/runtime/venture-case");
+const { commercialFoundationState, recordEvidence } = require("../src/runtime/venture-case");
 
 function testRuntime(name, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `jarvis-clean-slate-${name}-`));
@@ -54,6 +54,21 @@ const GUMROAD_CSV = [
   "Purchase ID,Item Name,Purchase Date,Sale Price ($),Fees ($),Net Total ($),Email,Referrer,Fully Refunded?",
   "sale-001,Cash Control Checklist,2026-07-14,12.00,1.70,10.30,buyer@example.com,direct,false",
 ].join("\n");
+
+test("first-use reset removes proof evaluations before their immutable parent contracts", () => {
+  const evaluationIndex = EMPTY_OPERATIONAL_TABLES.indexOf(
+    "commercial_test_proof_evaluations",
+  );
+  const evidenceIndex = EMPTY_OPERATIONAL_TABLES.indexOf(
+    "commercial_test_evidence_records",
+  );
+  const contractIndex = EMPTY_OPERATIONAL_TABLES.indexOf(
+    "commercial_test_contracts",
+  );
+  assert.ok(evaluationIndex >= 0);
+  assert.ok(evidenceIndex > evaluationIndex);
+  assert.ok(contractIndex > evidenceIndex);
+});
 
 test("database startup enforces the current schema and one active venture", () => {
   const runtime = testRuntime("schema");
@@ -162,7 +177,7 @@ test("Gumroad foreign currency requires evidence and stores separate source and 
   }
 });
 
-test("only verified commercial records affect finance, learning and worker analysis", () => {
+test("legacy commercial evidence never verifies sales or cash truth", () => {
   const runtime = testRuntime("verified-results");
   try {
     const experiment = createCommercialExperiment(runtime.db, {
@@ -189,37 +204,82 @@ test("only verified commercial records affect finance, learning and worker analy
     assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM commercial_learning_cycles").count, 0);
     assert.equal(summarizeCommercialEvidence(runtime.db, { experimentId: experiment.id }).sales, 0);
 
+    const researchEvidence = recordEvidence(runtime.db, {
+      ventureId: "venture-digital-products",
+      experimentId: experiment.id,
+      sourceType: "source_link",
+      sourceUrl: "https://example.invalid/public-market-research",
+      title: "Public market research",
+      summary: "Public research can inform a test but cannot prove a transaction.",
+      claim: "A public source discussed the broad buyer problem.",
+      verified: true,
+    });
     const feedback = recordCommercialFeedback(runtime.db, {
       experimentId: experiment.id,
       source: "operator_observation",
+      verified: true,
+      verificationEvidenceId: researchEvidence.id,
       sentiment: "positive",
       summary: "Unverified comment",
     });
     assert.equal(feedback.verified, false);
     assert.equal(feedback.learning, null);
 
-    const verified = recordCommercialResult(runtime.db, {
+    assert.throws(
+      () => recordCommercialResult(runtime.db, {
+        experimentId: experiment.id,
+        source: "operator",
+        verified: true,
+        verificationEvidenceId: researchEvidence.id,
+        sales: 3,
+        revenueCents: 3000,
+      }),
+      /immutable, experiment-bound commercial evidence ledger/i,
+    );
+
+    const legacyReceipt = recordEvidence(runtime.db, {
+      ventureId: "venture-digital-products",
       experimentId: experiment.id,
-      source: "operator",
+      sourceType: "receipt",
+      title: "Verified transaction export",
+      summary: "A retained transaction export supports the exact manual result fixture.",
+      claim: "Three paid sales and their attributable cash values were checked before entry.",
       verified: true,
-      verificationNote: "Checked against the Gumroad transaction export.",
-      views: 50,
-      sales: 3,
-      revenueCents: 3000,
-      spendCents: 400,
-      productCostCents: 100,
-      toolCostCents: 50,
-      currency: "AUD",
+      metadata: {
+        sourceHash: "sha256:".concat("a".repeat(64)),
+        receiptHash: "sha256:".concat("b".repeat(64)),
+        receiptLocation: "test-fixture:legacy-receipt",
+        transactionIds: ["transaction-1", "transaction-2", "transaction-3"],
+        revenueCents: 3000,
+      },
     });
-    assert.equal(verified.verified, true);
-    assert.ok(verified.learning);
-    assert.ok(verified.aiTeamRun);
-    assert.equal(get(runtime.db, "SELECT SUM(amount_cents) AS amount FROM revenue").amount, 3000);
-    assert.equal(get(runtime.db, "SELECT SUM(amount_cents) AS amount FROM costs WHERE source = 'commercial_result'").amount, 550);
+    assert.throws(
+      () => recordCommercialResult(runtime.db, {
+        experimentId: experiment.id,
+        source: "operator",
+        verified: true,
+        verificationNote: "Checked against the retained transaction export.",
+        verificationEvidenceId: legacyReceipt.id,
+        views: 50,
+        sales: 3,
+        revenueCents: 3000,
+        spendCents: 400,
+        productCostCents: 100,
+        toolCostCents: 50,
+        currency: "AUD",
+      }),
+      /legacy venture, research, operator, and platform records cannot verify financial truth/i,
+    );
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM revenue").count, 0);
+    assert.equal(
+      get(runtime.db, "SELECT COUNT(*) AS count FROM costs WHERE source = 'commercial_result'").count,
+      0,
+    );
+    assert.equal(get(runtime.db, "SELECT COUNT(*) AS count FROM commercial_learning_cycles").count, 0);
     const summary = summarizeCommercialEvidence(runtime.db, { experimentId: experiment.id });
-    assert.equal(summary.sales, 3);
-    assert.equal(summary.revenueCents, 3000);
-    assert.equal(summary.resultCount, 1);
+    assert.equal(summary.sales, 0);
+    assert.equal(summary.revenueCents, 0);
+    assert.equal(summary.resultCount, 0);
   } finally {
     closeRuntime(runtime);
   }

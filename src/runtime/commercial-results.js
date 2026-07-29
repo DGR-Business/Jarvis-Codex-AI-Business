@@ -1,6 +1,8 @@
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { recordProtectedWorkerOutcome } = require("./ai-team");
 
+const TEST_FIXTURE_CAPABILITIES = new WeakMap();
+
 function asText(value, fallback = "") {
   const text = String(value ?? "").trim();
   return text || fallback;
@@ -31,6 +33,19 @@ function moneyLabel(cents) {
   const value = Number(cents) || 0;
   const sign = value < 0 ? "-" : "";
   return `${sign}A$${(Math.abs(value) / 100).toFixed(2)}`;
+}
+
+function badRequest(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+function runningUnderNodeTest() {
+  return Boolean(process.env.NODE_TEST_CONTEXT)
+    || process.execArgv.some((argument) => (
+      argument === "--test" || argument.startsWith("--test-")
+    ));
 }
 
 function parseExperiment(row) {
@@ -162,37 +177,66 @@ function resultPayload(input = {}) {
   };
 }
 
-function verificationState(db, input = {}) {
+function verificationState(db, input = {}, context = {}) {
   const source = asText(input.source, "operator").toLowerCase();
-  if (source === "test") {
+  if (
+    source === "test"
+    && context.testFixtureCapability
+    && TEST_FIXTURE_CAPABILITIES.get(context.testFixtureCapability) === db
+  ) {
     return { verified: true, at: now(), evidenceId: null, method: "test_fixture" };
   }
-  if (source === "execution_pack" && input.metadata?.executionPackId) {
-    const pack = get(
-      db,
-      "SELECT id FROM commercial_execution_packs WHERE id = ?",
-      [input.metadata.executionPackId],
-    );
-    if (!pack) throw new Error("The operator result refers to an execution pack that does not exist.");
-  }
-  if (input.verified !== true && input.status !== "verified") {
+
+  const verificationRequested = input.verified === true || input.status === "verified";
+  if (!verificationRequested) {
     return { verified: false, at: null, evidenceId: null, method: "pending" };
   }
-  const evidenceId = input.verificationEvidenceId || input.verification_evidence_id || null;
-  if (evidenceId) {
-    const evidence = get(
-      db,
-      "SELECT id FROM commercial_evidence WHERE id = ? AND verified_at IS NOT NULL AND is_demo = 0",
-      [evidenceId],
+
+  if (context.hasFinancialClaim === true) {
+    throw badRequest(
+      "Sales and cash claims require exact receipt or platform evidence from Pantheon's immutable, experiment-bound commercial evidence ledger. Legacy venture, research, operator, and platform records cannot verify financial truth.",
     );
-    if (!evidence) throw new Error("Verification evidence must exist, be verified and contain real business evidence.");
-    return { verified: true, at: now(), evidenceId, method: "verified_evidence" };
   }
-  const note = asText(input.verificationNote || input.verification_note);
-  if (note.length < 8) {
-    throw new Error("Verified operator results need a verification note or verified evidence record.");
+
+  if (source === "execution_pack") {
+    const executionPackId = input.metadata?.executionPackId;
+    if (!executionPackId) {
+      throw badRequest("Verified execution-pack evidence needs the exact execution-pack identity.");
+    }
+    const pack = get(
+      db,
+      `SELECT id, experiment_id, workflow_id, venture_id
+       FROM commercial_execution_packs
+       WHERE id = ?`,
+      [executionPackId],
+    );
+    if (!pack) throw badRequest("The operator result refers to an execution pack that does not exist.");
+    if (
+      pack.experiment_id !== context.experiment?.id
+      || (pack.venture_id && pack.venture_id !== context.experiment?.venture_id)
+      || (pack.workflow_id && pack.workflow_id !== context.experiment?.workflow_id)
+    ) {
+      throw badRequest("The execution pack belongs to a different commercial test.");
+    }
+    const note = asText(input.verificationNote || input.verification_note);
+    if (note.length < 8) {
+      throw badRequest("Verified execution-pack evidence needs a specific operator attestation.");
+    }
+    return {
+      verified: true,
+      at: now(),
+      evidenceId: null,
+      method: "execution_pack_attestation",
+      note,
+    };
   }
-  return { verified: true, at: now(), evidenceId: null, method: "operator_attestation", note };
+
+  return {
+    verified: false,
+    at: null,
+    evidenceId: null,
+    method: "legacy_observation_pending",
+  };
 }
 
 function insertFinanceRows(db, experiment, result, values) {
@@ -351,13 +395,44 @@ function recordFeedbackAnalysisWorker(db, experiment, feedback, learning) {
   );
 }
 
-function recordCommercialResult(db, input = {}) {
+function recordCommercialResultOperation(db, input = {}, testFixtureCapability = null) {
   db.exec("BEGIN IMMEDIATE");
   try {
     const experiment = findOrCreateExperiment(db, input);
     const ts = input.occurredAt || input.occurred_at || now();
     const values = resultPayload(input);
-    const verification = verificationState(db, input);
+    const hasFinancialClaim = values.sales > 0
+      || values.refunds > 0
+      || values.revenueCents > 0
+      || values.refundAmountCents > 0
+      || values.spendCents > 0
+      || values.platformFeeCents > 0
+      || values.fulfilmentCostCents > 0
+      || values.productCostCents > 0
+      || values.toolCostCents > 0
+      || values.attributedAiCostCents > 0
+      || values.otherCostCents > 0;
+    const verification = verificationState(db, input, {
+      experiment,
+      testFixtureCapability,
+      hasFinancialClaim,
+    });
+    const storedValues = !verification.verified && hasFinancialClaim
+      ? {
+        ...values,
+        sales: 0,
+        refunds: 0,
+        revenueCents: 0,
+        refundAmountCents: 0,
+        spendCents: 0,
+        platformFeeCents: 0,
+        fulfilmentCostCents: 0,
+        productCostCents: 0,
+        toolCostCents: 0,
+        attributedAiCostCents: 0,
+        otherCostCents: 0,
+      }
+      : values;
     const id = input.id || `result_${safeSlug(experiment.name)}_${randomId().slice(0, 8)}`;
     run(
       db,
@@ -374,30 +449,50 @@ function recordCommercialResult(db, input = {}) {
         experiment.workflow_id || null,
         asText(input.source, "operator"),
         verification.verified ? "verified" : "pending_verification",
-        values.views,
-        values.clicks,
-        values.leads,
-        values.sales,
-        values.refunds,
-        values.revenueCents,
-        values.spendCents,
-        values.timeSpentMinutes,
-        values.notes,
+        storedValues.views,
+        storedValues.clicks,
+        storedValues.leads,
+        storedValues.sales,
+        storedValues.refunds,
+        storedValues.revenueCents,
+        storedValues.spendCents,
+        storedValues.timeSpentMinutes,
+        storedValues.notes,
         ts,
-        toJson({ ...(input.metadata || {}), verificationMethod: verification.method, verificationNote: verification.note || null }),
+        toJson({
+          ...(input.metadata || {}),
+          verificationMethod: verification.method,
+          verificationNote: verification.note || null,
+          unverifiedFinancialProjection: !verification.verified && hasFinancialClaim
+            ? {
+              sales: values.sales,
+              refunds: values.refunds,
+              revenueCents: values.revenueCents,
+              refundAmountCents: values.refundAmountCents,
+              spendCents: values.spendCents,
+              platformFeeCents: values.platformFeeCents,
+              fulfilmentCostCents: values.fulfilmentCostCents,
+              productCostCents: values.productCostCents,
+              toolCostCents: values.toolCostCents,
+              attributedAiCostCents: values.attributedAiCostCents,
+              otherCostCents: values.otherCostCents,
+              currency: values.currency,
+            }
+            : null,
+        }),
         now(),
         experiment.venture_id,
-        values.platformFeeCents,
-        values.productCostCents,
-        values.toolCostCents,
+        storedValues.platformFeeCents,
+        storedValues.productCostCents,
+        storedValues.toolCostCents,
         verification.verified ? 1 : 0,
-        values.currency,
+        storedValues.currency,
         verification.at,
         verification.evidenceId,
-        values.refundAmountCents,
-        values.fulfilmentCostCents,
-        values.attributedAiCostCents,
-        values.otherCostCents,
+        storedValues.refundAmountCents,
+        storedValues.fulfilmentCostCents,
+        storedValues.attributedAiCostCents,
+        storedValues.otherCostCents,
       ],
     );
     const result = parseRows(all(db, "SELECT * FROM commercial_results WHERE id = ?", [id]))[0];
@@ -431,11 +526,36 @@ function recordCommercialResult(db, input = {}) {
   }
 }
 
-function recordCommercialFeedback(db, input = {}) {
+function recordCommercialResult(db, input = {}) {
+  return recordCommercialResultOperation(db, input);
+}
+
+function recordCommercialResultForTest(db, input = {}) {
+  if (!runningUnderNodeTest()) {
+    throw new Error("Synthetic commercial-result fixtures are available only inside Node's isolated test runner.");
+  }
+  const capability = Object.freeze({});
+  TEST_FIXTURE_CAPABILITIES.set(capability, db);
+  try {
+    return recordCommercialResultOperation(
+      db,
+      { ...input, source: "test" },
+      capability,
+    );
+  } finally {
+    TEST_FIXTURE_CAPABILITIES.delete(capability);
+  }
+}
+
+function recordCommercialFeedbackOperation(db, input = {}, testFixtureCapability = null) {
   db.exec("BEGIN IMMEDIATE");
   try {
     const experiment = findOrCreateExperiment(db, input);
-    const verification = verificationState(db, input);
+    const verification = verificationState(db, input, {
+      experiment,
+      testFixtureCapability,
+      hasFinancialClaim: false,
+    });
     const id = input.id || `feedback_${safeSlug(experiment.name)}_${randomId().slice(0, 8)}`;
     run(
       db,
@@ -489,6 +609,27 @@ function recordCommercialFeedback(db, input = {}) {
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
+  }
+}
+
+function recordCommercialFeedback(db, input = {}) {
+  return recordCommercialFeedbackOperation(db, input);
+}
+
+function recordCommercialFeedbackForTest(db, input = {}) {
+  if (!runningUnderNodeTest()) {
+    throw new Error("Synthetic commercial-feedback fixtures are available only inside Node's isolated test runner.");
+  }
+  const capability = Object.freeze({});
+  TEST_FIXTURE_CAPABILITIES.set(capability, db);
+  try {
+    return recordCommercialFeedbackOperation(
+      db,
+      { ...input, source: "test" },
+      capability,
+    );
+  } finally {
+    TEST_FIXTURE_CAPABILITIES.delete(capability);
   }
 }
 
@@ -612,11 +753,11 @@ function judgeEvidence(summary, experiment) {
 
   if (summary.sales > 0 && summary.cashContributionCents > 0 && summary.refundRate <= 15 && summary.sentiment.negative <= summary.sentiment.positive) {
     return {
-      verdict: "continue",
+      verdict: "signal_observed",
       confidence: summary.sales >= 3 || reachedTarget ? "medium" : "low",
-      learning: "The offer produced paid demand without obvious loss or refund pressure.",
-      improvement: "Prepare the next measured test with a slightly larger channel sample and the same spend controls.",
-      nextAction: "Scale the test carefully or repeat it with a tighter buyer/channel segment.",
+      learning: "The offer produced a positive paid signal, but aggregated results do not prove three independent buyers or fully reconciled cash contribution.",
+      improvement: "Retain attributable buyer and transaction evidence, reconcile every cash cost in AUD, and continue the bounded test without calling the venture proven.",
+      nextAction: "Continue the same controlled test until the independent-buyer and actual net-cash proof rules can be evaluated.",
     };
   }
   if (summary.sales > 0 && summary.cashContributionCents <= 0) {
@@ -666,7 +807,7 @@ function judgeEvidence(summary, experiment) {
 
 function statusForVerdict(verdict) {
   return {
-    continue: "validated",
+    signal_observed: "continue_testing",
     revise: "needs_revision",
     diagnose: "diagnosing",
     kill_or_rework: "stopped",
@@ -803,7 +944,9 @@ module.exports = {
   createCommercialExperiment,
   getCommercialExperiment,
   recordCommercialFeedback,
+  recordCommercialFeedbackForTest,
   recordCommercialResult,
+  recordCommercialResultForTest,
   recordCommercialDiagnosis,
   recordLearningCycle,
   summarizeCommercialEvidence,

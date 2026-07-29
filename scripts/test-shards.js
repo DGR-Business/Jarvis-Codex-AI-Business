@@ -1,3 +1,5 @@
+const LOCAL_ORDINARY_SHARD_COUNT = 5;
+
 function lexicalCompare(left, right) {
   if (left < right) return -1;
   if (left > right) return 1;
@@ -50,7 +52,34 @@ function selectTestShard(files, shardCount, shardIndex, weightForFile) {
   return partitionTestFiles(files, shardCount, weightForFile)[shardIndex];
 }
 
+function planTestInvocations(files, options, weightForFile) {
+  if (!Array.isArray(files)) {
+    throw new TypeError("Pantheon requires a test-file list.");
+  }
+  if (!options || typeof options !== "object") {
+    throw new TypeError("Pantheon requires test invocation options.");
+  }
+  if (options.explicit === true || options.lifecycleCi === true) {
+    return [files];
+  }
+  if (options.ci === true) {
+    return [[...selectTestShard(
+      files,
+      options.shardCount,
+      options.shardIndex,
+      weightForFile,
+    )]];
+  }
+  return partitionTestFiles(
+    files,
+    options.localShardCount ?? LOCAL_ORDINARY_SHARD_COUNT,
+    weightForFile,
+  ).filter((shard) => shard.length > 0);
+}
+
 module.exports = {
+  LOCAL_ORDINARY_SHARD_COUNT,
   partitionTestFiles,
+  planTestInvocations,
   selectTestShard,
 };

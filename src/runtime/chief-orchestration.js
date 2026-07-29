@@ -1,6 +1,7 @@
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const { contextProfile } = require("./agent-context");
 const { AI_TEAM_DEFINITIONS, recordAgentHandoff } = require("./ai-team");
+const { assertCommercialAuthority } = require("./commercial-authority");
 const { requestLiveAiWorker } = require("./live-ai-workers");
 
 const CHIEF_ASSIGNMENT_SCHEMA = "jarvis.chief-specialist-assignment.v1";
@@ -167,10 +168,47 @@ function updateReviewedChiefAssignment(db, reviewTask, qualityGate) {
   });
 }
 
-function protectedTask(db, sourceTask, sourceRun, definition, request, assignment) {
+function persistedChiefSource(db, inputTask, inputRun) {
+  if (!inputTask?.id || !inputRun?.id) {
+    throw new Error("Chief assignment needs persisted source task and run identifiers.");
+  }
+  const taskRow = get(db, "SELECT * FROM tasks WHERE id = ?", [inputTask.id]);
+  const runRow = get(db, "SELECT * FROM agent_runs WHERE id = ?", [inputRun.id]);
+  if (!taskRow || !runRow) {
+    throw new Error("Chief assignment source task or run is no longer present.");
+  }
+  if (
+    taskRow.agent !== "chief_of_staff"
+    || runRow.agent_id !== "chief_of_staff"
+    || runRow.task_id !== taskRow.id
+    || runRow.workflow_id !== taskRow.workflow_id
+  ) {
+    throw new Error("Only the exact persisted Chief of Staff task and run may prepare an assignment.");
+  }
+  return {
+    task: {
+      ...taskRow,
+      payload: fromJson(taskRow.payload, {}),
+    },
+    run: runRow,
+  };
+}
+
+function protectedTask(
+  db,
+  sourceTask,
+  sourceRun,
+  definition,
+  request,
+  assignment,
+  commercialTestContract,
+) {
   const taskId = `task_chief_assignment_${safeId(sourceRun.id)}`;
   const existing = get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]);
-  if (existing) return existing;
+  if (existing) {
+    assertCommercialAuthority(db, { taskId: existing.id });
+    return existing;
+  }
   const ts = now();
   run(
     db,
@@ -188,6 +226,7 @@ function protectedTask(db, sourceTask, sourceRun, definition, request, assignmen
       definition.id,
       sourceTask.workflow_id,
       toJson({
+        commercialTestContract,
         subject: sourceTask.payload?.subject || sourceTask.title,
         workerName: definition.name,
         proofGoal: request.objective,
@@ -227,17 +266,21 @@ function liveTask(db, sourceTask, sourceRun, definition, request, assignment, po
 }
 
 function prepareChiefSpecialistAssignment(db, input = {}) {
-  const sourceTask = input.task;
-  const sourceRun = input.run;
-  if (!sourceTask || !sourceRun) throw new Error("Chief assignment needs the exact source task and run.");
-  if (sourceTask.agent !== "chief_of_staff" || sourceRun.agent_id !== "chief_of_staff") {
-    throw new Error("Only the registered Chief of Staff may prepare a specialist assignment.");
+  if (!input.task || !input.run) {
+    throw new Error("Chief assignment needs the exact source task and run.");
   }
+  const persisted = persistedChiefSource(db, input.task, input.run);
+  const sourceTask = persisted.task;
+  const sourceRun = persisted.run;
   if (sourceTask.payload?.chiefOrchestration?.enabled !== true) {
     return { status: "not_enabled", assignment: null };
   }
   const request = normalizedChiefRequest(input.output);
   if (!request.needed) return { status: "no_specialist_needed", assignment: null };
+  const commercialAuthority = assertCommercialAuthority(db, {
+    taskId: sourceTask.id,
+  });
+  const commercialTestContract = commercialAuthority.binding;
 
   const policy = normalizedPolicy(sourceTask);
   const definition = specialistDefinition(request.workerId);
@@ -261,6 +304,9 @@ function prepareChiefSpecialistAssignment(db, input = {}) {
     const existingTask = metadata.childTaskId
       ? get(db, "SELECT * FROM tasks WHERE id = ?", [metadata.childTaskId])
       : null;
+    if (existingTask) {
+      assertCommercialAuthority(db, { taskId: existingTask.id });
+    }
     const existingApproval = metadata.approvalId
       ? get(db, "SELECT * FROM approvals WHERE id = ?", [metadata.approvalId])
       : null;
@@ -293,12 +339,25 @@ function prepareChiefSpecialistAssignment(db, input = {}) {
     requiredReviewer: requiredReviewer(definition.id, request.mode),
     maxCostCents: request.mode === "supervised_live" ? policy.maxSpecialistCostCents : 0,
     externalEffects: [],
+    commercialTestContract,
     preparedAt: now(),
   };
 
   const prepared = request.mode === "supervised_live"
     ? liveTask(db, sourceTask, sourceRun, definition, request, assignment, policy)
-    : { task: protectedTask(db, sourceTask, sourceRun, definition, request, assignment), approval: null, status: "queued" };
+    : {
+      task: protectedTask(
+        db,
+        sourceTask,
+        sourceRun,
+        definition,
+        request,
+        assignment,
+        commercialTestContract,
+      ),
+      approval: null,
+      status: "queued",
+    };
   const childTask = prepared.task;
   const handoff = recordAgentHandoff(db, sourceRun, {
     handoffTo: definition.id,

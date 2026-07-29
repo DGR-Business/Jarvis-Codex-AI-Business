@@ -4,6 +4,7 @@ const {
   buildDeliverableReviewBindings,
   deliverableReviewInput,
 } = require("./deliverable-review-bindings");
+const { claimSafetyIsConfirmed } = require("./claim-safety");
 const { requestLiveAiWorker } = require("./live-ai-workers");
 
 const QUALITY_REVIEW_SCHEMA = "jarvis.deliverable-quality-review.v1";
@@ -114,7 +115,7 @@ function reviewVerdict(output) {
   const missingEvidence = Array.isArray(work.missingEvidence) ? work.missingEvidence.filter(Boolean).map(String) : [];
   const riskFindings = Array.isArray(work.riskFindings) ? work.riskFindings.filter(Boolean).map(String) : [];
   const claimSafety = text(work.claimSafety, 240);
-  const claimsSafe = /^(safe|supported|acceptable)\b/i.test(claimSafety);
+  const claimsSafe = claimSafetyIsConfirmed(claimSafety);
   const findings = [
     ...new Set([
       ...missingEvidence,

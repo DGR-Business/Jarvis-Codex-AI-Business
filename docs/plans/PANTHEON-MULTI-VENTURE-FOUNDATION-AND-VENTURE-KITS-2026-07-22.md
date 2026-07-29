@@ -53,6 +53,25 @@ Pantheon is intended to be an agentic business builder and runner:
 8. Allocate limited money, model usage, tool capacity, and operator attention to
    the work with the strongest evidence-adjusted expected return.
 
+## Owner-Absent Boundary
+
+Pantheon's destination is owner-absent, brand-operated execution. Daniel supplies
+strategy, guidance, and exact approvals for protected actions rather than
+routine calling, emailing, publishing, advertising, fulfilment, or monitoring.
+The public brand need not depend on Daniel's face or personal voice, but it must
+be truthful and may not use anonymity, deception, or identity evasion.
+
+Platform identity, KYC, OAuth, MFA, legal acceptance, and other owner-only
+controls may still require Daniel when the service or law requires it. Future
+voice, email, marketplace, publishing, advertising, customer, and fulfilment
+adapters must expose dry-run and health/status paths and record exact approvals,
+credentials, costs, receipts, attribution, timeouts, and unknown outcomes before
+live use.
+
+This operating destination does not widen current authority. Decision 0009 and
+the active commercial-truth plan keep the current session preparation-only with
+A$0 external spend.
+
 ## Honest Starting Position
 
 Pantheon's deterministic kernel is substantially reusable. Operational records
@@ -64,10 +83,12 @@ The current execution layer is deliberately narrow and is not yet a
 multi-venture platform:
 
 - the database permits one active venture;
-- one Full Journey is active at a time;
+- the execution design permits at most one active Full Journey, while terminal
+  history must remain non-actionable;
 - journey stages are a fixed digital-product sequence;
 - `digital_product_v1` is the only implemented Venture Kit;
-- production assumes locally rendered digital files and a Gumroad-ready store;
+- the first kit's historical production path assumes locally rendered digital
+  files and a Gumroad-ready store, while the generic kernel must not;
 - the Phase 1 team and handoffs are fixed;
 - Portfolio Controller now compares opportunities in a separate pre-venture
   workspace, but Venture Factory cannot yet create a supported venture from an
@@ -297,11 +318,32 @@ Pantheon has now:
   rounds; and
 - selected no investment because no case cleared every commercial gate.
 
-The next step is not a second kit or concurrent lane. It is stronger evidence
-for one parked case or a new submitted opportunity, followed by Venture Factory
-only when an investment case genuinely passes.
+At the 2026-07-27 checkpoint, the next step was not a second kit or concurrent
+lane. It was stronger evidence for one parked case or a new submitted
+opportunity, followed by Venture Factory only when an investment case genuinely
+passed. The current 2026-07-29 gate below supersedes that checkpoint.
 
-### Phase 0 - Complete The Vertical Proof (engineering complete; commercial proof open)
+### 2026-07-29 Commercial Truth And Re-entry Gate
+
+The first buyer-intent attempt reached its terminal non-pass branch. It proved a
+bounded Product Builder, Quality Reviewer, protected approval, and release path,
+but created no buyer-test pack, publication, buyer contact, order, revenue, or
+actual net cash contribution.
+
+The current work is
+`docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
+It must establish a canonical compatibility-verified release, reconcile runtime
+and owner truth, implement attributable buyer-and-cash evidence, prove recovery
+and the owner journey, and prepare a separate low-touch kit hypothesis. Etsy,
+Gumroad, A$29, and the exact offer and test rules remain unproven.
+
+Venture Factory, Kit 2, and concurrent lanes must not begin during this work.
+No customer contact, publication, advertising, account action, legal
+acceptance, or external spend is authorised.
+
+### Phase 0 - Historical Vertical Proof (engineering complete; first buyer attempt closed without commercial proof)
+
+The original planned actions were:
 
 - Finish the isolated Luna-only Full Journey rehearsal.
 - Inspect every output and reach `Ready to publish` without external action.
@@ -310,7 +352,10 @@ only when an investment case genuinely passes.
 - Start the real buyer test and collect outcomes.
 
 **Gate:** one coherent production path works end to end. That engineering gate
-passed; real buyer, revenue, and positive-contribution proof remains open.
+passed. The first buyer-intent attempt then closed at its terminal quality
+non-pass before publication or buyer measurement. Real buyer, revenue, and
+positive actual-contribution proof remains unmet. Any new attempt requires a
+separate decision, offer, evidence plan, and protected test.
 
 ### Phase 1 - Extract Digital Product Kit V1 (registry boundary implemented)
 
@@ -416,7 +461,10 @@ Do not:
 
 ## Future Goal Statement
 
-When Phase 0 reaches its gate, the next major implementation goal should be:
+Only after one operating venture reaches three independent paying buyers and
+positive actual net cash contribution in AUD, the current release remains
+compatibility-proved, and Daniel explicitly approves portfolio expansion should
+the next major implementation goal be:
 
 > Build and prove Pantheon's Multi-Venture Foundation by extracting the current
 > digital-product journey into a validated `digital_product_v1` Venture Kit,
@@ -429,9 +477,22 @@ The goal is complete only when Pantheon can add and run a second business type
 without mass file duplication or business-specific changes to the commercial
 kernel.
 
-## Scheduling Decision
+## Superseded Scheduling Decision - 2026-07-22
 
 Finish the current vertical proof first. Begin Phases 1 and 2 while the first
 published offer is completing its 14-day or 50-qualified-view market test. This
 uses waiting time productively without postponing real commercial evidence or
 allowing the first venture to define the permanent architecture by accident.
+
+## Current Scheduling Gate - 2026-07-29
+
+Do not use the historical 14-day or 50-view instruction. The first attempt never
+reached a published market test, and its A$29.95, Etsy, 100-visit, and 30-day
+terms do not transfer to another offer.
+
+Complete the active commercial-truth and owner-absent kit-readiness plan first.
+If the new hypothesis clears its commercial and system-readiness gates, prepare
+one separate protected external-test proposal using current channel evidence,
+exact attribution, an approved cohort and deadline, actual AUD economics, and
+diagnose/revise/stop rules. Do not schedule Venture Factory, Kit 2, or concurrent
+lanes merely to fill a measurement window.

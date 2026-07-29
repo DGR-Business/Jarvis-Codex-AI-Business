@@ -1,9 +1,29 @@
 # 0006 - Autonomous Agent Operations Foundation
 
 Date: 2026-07-17
-Status: accepted operating direction; implementation remains gated
+Status: Phase 1 foundation completed; wider autonomy and external capabilities
+remain gated
 
-## Current Status Update - 2026-07-22
+## Current Status Update - 2026-07-29
+
+The fixed-team Phase 1 assignment, routing, receipt, monitoring, retention,
+Product Builder, Quality Reviewer, and protected operator foundations have been
+implemented and release-proved. The Full Journey was a completed vertical
+engineering proof and is no longer the current execution contract.
+
+The active implementation contract is
+`docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
+It first revalidates compatibility, recovery, accounting, runtime truth, and the
+protected owner journey. It does not claim that current implementation work is
+already fixed or released.
+
+Decision 0009 defines the owner-absent destination. It does not grant present
+authority to call, email, message, publish, advertise, create accounts, accept
+terms, or spend. Each future external adapter requires a dry-run path,
+health/status, venture-scoped credentials, exact approval, costs, receipts,
+monitoring, and release proof before live use.
+
+## Historical Status Update - 2026-07-22
 
 The implementation boundary later in this decision records the state on
 2026-07-17 and is historical. It is superseded where it says that model routing,
@@ -13,7 +33,7 @@ is active, and the fixed specialists are connected through the bounded Full
 Journey. Dynamic workers, remote/mobile operation, publishing, account actions,
 customer contact, and money movement remain gated.
 
-The current execution contract is
+The execution contract at that historical checkpoint was
 `docs/plans/PANTHEON-FULL-JOURNEY-PROOF-AND-FIRST-PRODUCT-2026-07-22.md`.
 
 ## Decision
@@ -94,7 +114,7 @@ prompts, worker names, or a successful pilot as authority.
 - The additional records and reviews cost time and tokens. That overhead is
   accepted because it keeps spend, evidence, and authority understandable.
 
-## Current Implementation Boundary
+## Implementation Boundary On 2026-07-17
 
 Already present in the repository on the decision date:
 

@@ -59,6 +59,9 @@ meaningful foundation changes so future sessions do not depend on chat history.
 - Tests: always use `npm.cmd test` on Windows PowerShell. For a focused run,
   use `npm.cmd test -- test/<name>.test.js`; the wrapper isolates credentials,
   database state, artifacts, approval packs, backups, and temporary files.
+  A no-argument local run executes five weighted ordinary shards sequentially,
+  each under the same four-minute child-process deadline. Windows lifecycle
+  integration remains quarantined to its dedicated disposable CI job.
 
 ## Operating Rules
 

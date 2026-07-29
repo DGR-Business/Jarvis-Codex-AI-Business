@@ -18,7 +18,6 @@ const {
 const { bindAgentRunToAttempt, bindModelCallToAttempt } = require("./agent-execution-evidence");
 const { isAgentToolApprovalRequiredError, requireAgentToolUse } = require("./agent-tool-gate");
 const { getAgentToolPolicyForAgent } = require("./agent-tools");
-const { createResearchToExperimentPlanFromResearch } = require("./research-to-experiment");
 const { upsertDeliverableSection } = require("./deliverables");
 const { recordPilotRunReview } = require("./agent-pilot");
 const {
@@ -783,7 +782,17 @@ function summarizeToolCheck(check) {
 }
 
 function summarizeResearchBridge(bridge) {
-  if (!bridge || bridge.skipped) return bridge ? { skipped: true, reason: bridge.reason } : null;
+  if (!bridge) return null;
+  if (bridge.skipped) {
+    return {
+      skipped: true,
+      status: bridge.status || "not_ready",
+      reason: bridge.reason,
+      contractSchema: bridge.contractSchema || null,
+      sourceResearchRunId: bridge.sourceResearchRunId || null,
+      legacyCreationRetired: Boolean(bridge.legacyCreationRetired),
+    };
+  }
   return {
     skipped: false,
     alreadyCreated: Boolean(bridge.alreadyCreated),
@@ -1330,23 +1339,32 @@ async function runAgentTask(db, task, options = {}) {
         output.verdict = research.verdict;
         output.evidence.push(`Live research verdict: ${research.verdict || "research_inconclusive"}.`);
         researchBridge = providerGrounded
-          ? createResearchToExperimentPlanFromResearch(db, research.id, { createdBy: agentDefinition.id })
-          : { skipped: true, reason: "Provider-grounded source evidence is insufficient for commercial test candidates." };
-        if (researchBridge && !researchBridge.skipped) {
-          const bridgeSummary = summarizeResearchBridge(researchBridge);
-          output.nextAction = bridgeSummary.recommendedTitle
-            ? `Review the top next-test option: ${bridgeSummary.recommendedTitle}.`
-            : output.nextAction;
-          output.evidence.push(`${bridgeSummary.candidateCount} ranked commercial test option${bridgeSummary.candidateCount === 1 ? "" : "s"} prepared from live research.`);
-          output.commercialTestBridge = bridgeSummary;
+          ? {
+            skipped: true,
+            status: "v2_contract_proposal_required",
+            reason: "Grounded research is retained as evidence, but a separately reviewed and accepted immutable v2 commercial-test contract is required before any test can be created.",
+            contractSchema: "pantheon.commercial-test-contract.v2",
+            sourceResearchRunId: research.id,
+            legacyCreationRetired: true,
+          }
+          : {
+            skipped: true,
+            status: "insufficient_grounded_evidence",
+            reason: "Provider-grounded source evidence is insufficient for a commercial-test contract proposal.",
+            sourceResearchRunId: research.id,
+            legacyCreationRetired: true,
+          };
+        const bridgeSummary = summarizeResearchBridge(researchBridge);
+        output.commercialTestReadiness = bridgeSummary;
+        if (providerGrounded) {
+          output.nextAction = "Review the grounded research, then prepare and separately accept an immutable v2 commercial-test contract before any market test.";
+          output.evidence.push("No legacy commercial candidate or experiment was created from this research.");
           addAgentTrace(
             db,
             agentRun.id,
-            "research_test_candidates_created",
-            "Next commercial tests prepared",
-            bridgeSummary.recommendedTitle
-              ? `Live research now has a recommended next test: ${bridgeSummary.recommendedTitle}.`
-              : "Live research was converted into ranked commercial test options.",
+            "commercial_test_contract_required",
+            "Commercial test contract required",
+            "Grounded research was retained without creating a legacy candidate or experiment. A separately accepted immutable v2 contract is required.",
             bridgeSummary,
           );
         }

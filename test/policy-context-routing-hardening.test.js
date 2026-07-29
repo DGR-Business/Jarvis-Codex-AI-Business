@@ -36,6 +36,11 @@ const {
   refreshOutdatedLiveAiWorkerApproval,
   requestLiveAiWorker,
 } = require("../src/runtime/live-ai-workers");
+const {
+  bindTaskToCommercialTest,
+  bindWorkflowToCommercialTest,
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
 
 function makeRuntime(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `jarvis-policy-hardening-${name}-`));
@@ -188,6 +193,10 @@ test("live approval binds the canonical persisted worker approval policy", () =>
   const runtime = makeRuntime("approval-policy");
   try {
     insertWorkflow(runtime.db, "wf-policy-binding");
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "policy-binding",
+      workflowIds: ["wf-policy-binding"],
+    });
     const requested = requestLiveAiWorker(runtime.db, "wf-policy-binding", {
       worker: "finance_analyst",
       requestedBy: "test",
@@ -241,9 +250,13 @@ test("outdated pending worker decisions are replaced before any execution or spe
   const runtime = makeRuntime("approval-policy-refresh");
   try {
     const fixture = ensureDemandValidatorPilotFixture(runtime.db);
+    const commercialAuthority = installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "policy-refresh",
+    });
     const prepared = prepareDemandValidatorPilot(runtime.db, fixture.id, {
       requestedBy: "test",
       estimatedCostCents: 100,
+      commercialTestContract: commercialAuthority.binding,
     });
     const oldApprovalId = prepared.requested.approval.id;
     const oldScopeHash = prepared.requested.approval.scope_hash;
@@ -341,6 +354,10 @@ test("normal callers cannot manufacture a context-free fixture request", () => {
   const runtime = makeRuntime("context-bypass");
   try {
     insertWorkflow(runtime.db, "wf-context-bypass");
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "context-bypass",
+      workflowIds: ["wf-context-bypass"],
+    });
     assert.throws(
       () => requestLiveAiWorker(runtime.db, "wf-context-bypass", {
         worker: "demand_validator",
@@ -435,6 +452,10 @@ test("Chief intersects requested workers with the fixed production specialist al
     assert.deepEqual(DEFAULT_ALLOWED_WORKERS, SUPPORTED_CHIEF_SPECIALISTS);
 
     insertWorkflow(runtime.db, "wf-chief-policy-request", "chief_orchestration");
+    const commercialAuthority = installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "chief-boundary",
+      workflowIds: ["wf-chief-policy-request"],
+    });
     const requested = requestChiefOrchestration(runtime.db, "wf-chief-policy-request", {
       estimatedCostCents: 100,
       allowedWorkers: [
@@ -455,6 +476,12 @@ test("Chief intersects requested workers with the fixed production specialist al
       "finance_analyst",
       "arbitrary_fixed_team_role",
     ]);
+    bindWorkflowToCommercialTest(
+      runtime.db,
+      source.task.workflow_id,
+      commercialAuthority.binding,
+    );
+    bindTaskToCommercialTest(runtime.db, source.task.id, commercialAuthority.binding);
     for (const workerId of ["chief_of_staff", "quality_reviewer", "arbitrary_fixed_team_role"]) {
       assert.throws(
         () => prepareChiefSpecialistAssignment(runtime.db, {
@@ -479,6 +506,10 @@ test("model routing escalates only exact failed history and clears after a later
   const runtime = makeRuntime("route-history");
   try {
     insertWorkflow(runtime.db, "wf-route-history");
+    const commercialAuthority = installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "route-history",
+      workflowIds: ["wf-route-history"],
+    });
     const baseOptions = {
       worker: "offer_architect",
       requestedBy: "test",
@@ -557,6 +588,11 @@ test("model routing escalates only exact failed history and clears after a later
     assert.equal(recovered.modelRoute.routeHistory.decision, "normal");
 
     insertWorkflow(runtime.db, "wf-demand-validator-sol");
+    bindWorkflowToCommercialTest(
+      runtime.db,
+      "wf-demand-validator-sol",
+      commercialAuthority.binding,
+    );
     const demandValidator = requestLiveAiWorker(runtime.db, "wf-demand-validator-sol", {
       worker: "demand_validator",
       requestedBy: "test",

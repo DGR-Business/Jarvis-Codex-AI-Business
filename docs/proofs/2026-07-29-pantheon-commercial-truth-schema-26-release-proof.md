@@ -1,0 +1,285 @@
+# Pantheon Commercial Truth And Schema 26 Release Proof
+
+Date: 2026-07-29
+Status: local release candidate proved; push, pull request, hosted CI, and merge pending
+Owner: Daniel
+Technical steward: Jarvis (Codex)
+
+## Owner Summary
+
+Pantheon now has a locally proved baseline that reports commercial progress
+only when it can tie the exact offer, channel, buyer evidence, and settled cash
+evidence back to one approved test. The owner dashboard, decisions, monitoring,
+and retained history agree on the same current position. Historical work can no
+longer appear to be a live commercial program.
+
+The production database moved safely from schema 24 to schema 26, its retained
+commercial history was reconciled once, and the running system was checked
+through the real dashboard. Both a current schema-26 recovery set and a
+reconstructed schema-24 rollback set were restored and started successfully in
+locked mode. The full local test, lint, dependency, Doctor, browser, and
+recovery checks passed.
+
+This is technical and operating-system progress, not commercial validation.
+There is no active commercial test, verified buyer, attributable sale, settled
+cash contribution, customer contact, publication, advertising, external
+action, or external spend. No safe queued work step existed during the browser
+proof, so none was invented or run.
+
+Four older encrypted recovery sets could not be decrypted with the current
+passphrase. They were retained rather than deleted. The two newly verified
+sets below are the usable recovery baseline, while the older sets remain an
+explicit recovery-history limitation.
+
+The next release steps are to commit this proof and the final documentation,
+push the branch, open its pull request, pass hosted GitHub CI, and merge it.
+Those steps are still pending and are not claimed here. A separate owner
+decision and approval will be required before Pantheon may activate, publish,
+contact anyone, create an account, complete identity checks, or spend money for
+the next low-touch digital-kit test.
+
+## Release Candidate Identity
+
+- Branch: `codex/commercial-truth-hardening`
+- Implementation candidate:
+  `d039d8bcbe53710a90df8cfa2adbfa8818ada578`
+- Released parent:
+  `f61d7ebe77b36a49372b39d8541adf16f68834a4`
+- Candidate purpose: make the current release the canonical,
+  compatibility-verified baseline; align reported state with provable state;
+  establish one channel-consistent offer-to-buyer-and-cash evidence path; and
+  prove the owner journey without enabling an external commercial action.
+- GitHub publication status: branch push, pull request, hosted CI, and merge
+  are pending.
+
+The implementation candidate does not include this later proof record. The
+final documentation commit and its resulting release commit must therefore be
+recorded after publication rather than inferred in advance.
+
+## Production Migration And Reconciliation
+
+Pantheon opened the real production database at
+`2026-07-29T11:25:51Z` and completed the supported schema 24 to schema 26
+migration:
+
+- schema 25, `commercial-test-contract-evidence-ledger`, applied at
+  `2026-07-29T11:25:51.204Z`; and
+- schema 26, `canonical-commercial-truth-reconciliation`, applied at
+  `2026-07-29T11:25:51.224Z`.
+
+The one-time reconciliation receipt was written at
+`2026-07-29T11:25:51.209Z`:
+
+- event row: `1526`;
+- event type: `commercial_truth.canonical_history_reconciled`;
+- reconciliation:
+  `canonical-commercial-history-2026-07-29-v1`;
+- schema: `pantheon.commercial-truth-reconciliation.v1`;
+- audited state corrections: 40;
+- operating authority after reconciliation: none;
+- selected workspace:
+  `venture-digital-products`;
+- immutable evidence preserved: true;
+- provider call: none;
+- external action: none; and
+- accounting preserved except release of one superseded zero-value approval:
+  true.
+
+The receipt closes or parks only the audited historical records. It does not
+erase prior evidence, create a new commercial program, or turn a historical
+build into current buyer proof.
+
+The post-migration production truth was checked directly:
+
+- active commercial test contracts: 0;
+- active lifecycle: 0;
+- current commercial evidence: 0;
+- verified current buyers: 0; and
+- attributable settled cash evidence: 0.
+
+The system therefore withholds buyer and cash conclusions rather than
+displaying a misleading zero as though a real test had run.
+
+## Commercial And Authority Proof
+
+Schema 26 provides immutable versioned records for:
+
+- the exact test contract and its offer, Venture Kit, channel, adapter,
+  reporting period, buyer-identity basis, price, and zero external-spend cap;
+- hash-linked lifecycle events;
+- imported-platform and operator-attested manual source receipts;
+- attributable transaction, refund, cost, buyer, and terminal evidence; and
+- proof evaluation of buyer count and net cash contribution in AUD.
+
+The authority layer fails closed when any required contract binding is missing
+or changed. A worker cannot substitute a different adapter after claiming a
+task. Historical commercial-creation routes are retired and cannot write new
+work. Protected lifecycle decisions use their exact route, approval scope, and
+freshness rules; the generic approval route cannot stand in for them. A pause
+requires a fresh acceptance and a fresh activation, each with its own
+single-use approval.
+
+These controls prepare a trustworthy path for a future test. They do not grant
+authority to build, publish, contact buyers, advertise, create accounts, accept
+legal terms, complete KYC or MFA, or spend.
+
+## Test And Dependency Proof
+
+The complete ordinary local suite passed in approximately 284.7 seconds using
+the five weighted, isolated Windows shards. Focused proof suites also passed:
+
+- owner reporting and owner-journey proof: 170 of 170;
+- commercial authority, store, and schema security proof: 45 of 45;
+- recovery-set proof: 11 of 11;
+- Doctor proof: 15 of 15;
+- foundation proof: 38 of 38; and
+- ledger, operations recovery, and clean-slate proof: 21 of 21.
+
+Additional checks:
+
+- zero-warning lint: passed;
+- `git diff --check`: passed;
+- final scoped release, recovery, security, and owner-truth audits: no remaining
+  P0, P1, or P2 finding;
+- candidate diff secret inspection: no secret found; and
+- disposable clean installation from the exact lockfile: `npm ci`,
+  dependency-tree validation, and audit all passed with zero known
+  vulnerabilities.
+
+The clean-install workspace was
+`C:\tmp\pantheon-clean-install-20260729-proof`. The candidate did not change
+the package manifest or lockfile after that proof.
+
+Windows lifecycle integration remains intentionally isolated to its disposable
+hosted CI jobs. Those hosted jobs have not yet run for this candidate; a local
+pass is not being used to claim the pending GitHub result.
+
+## Real Owner-Journey Proof
+
+The production runtime reached ready health in locked external-action mode.
+The signed real-browser walkthrough covered:
+
+- Command Center;
+- Full Journey;
+- Decisions;
+- Portfolio;
+- Tests & Results;
+- AI Team; and
+- System.
+
+The operator ran the safe internal monitor. Pantheon recorded monitor run
+`monitor_29047359-46ff-431c-8bf8-7592d7c0a4cf`; the Checks view advanced the
+finding's observed count and the event store appended `monitor.completed`.
+The owner Activity view separately displayed the new canonical-history
+reconciliation receipt. The queue contained no eligible safe dry-run step, so
+no step was run and no business-work event was invented. No protected approval
+was issued.
+
+Desktop and mobile layouts completed without horizontal overflow. The final
+authenticated Pantheon browser console contained zero errors or warnings
+before Standby. At the requested 390 by 844 mobile viewport, the document
+client width was 375 pixels because of the vertical scrollbar. The top bar
+ended exactly at 375 pixels; Standby occupied pixels 236-274, Stop 280-318,
+and Refresh 324-362. All three controls were fully visible with 13 pixels of
+right clearance and no horizontal overflow. The apparent clipping in the
+captured preview was viewer scaling rather than application layout.
+
+The walkthrough then ended in Standby and the dashboard port and database were
+released. Because this proof server was started directly instead of through
+the normal launcher supervisor, its otherwise idle Node host did not exit after
+releasing those resources; Jarvis stopped that exact proof PID explicitly.
+The separate restored-runtime drills below did prove controlled clean exit with
+code 0 and port release. Expected browser connection failures after Standby are
+lifecycle effects and are not represented as authenticated
+application-console errors.
+
+## Encrypted Recovery Proof
+
+### Current Schema-26 Recovery Set
+
+- Set:
+  `b5beeedc-b68b-41f6-a982-1302233eb471`
+- Archive:
+  `C:\Users\radul\OneDrive\Pantheon-Backups\pantheon-recovery-set-2026-07-29T11-52-34-126Z.jbackup`
+- Encrypted archive SHA-256:
+  `2a9bb78838d2b7e6613c7252130cb33485bd65f520fd5eb975bcb04035d62222`
+- Decrypted payload SHA-256:
+  `1315fd05fcf33c977590765cd9b065f9bc7bdd8ce12ec93a5aa3e269b708bed7`
+- Inventory: 708 files
+- Archived database schema: 26
+- SQLite quick check: ok
+- SQLite integrity check: ok
+- Foreign-key violations: 0
+- Compatibility: current and ready; no migration required
+- Locked restored-runtime instance:
+  `doctor-c522d6da-db9c-4f05-894d-e1e40af26f24`
+
+The set decrypted, matched its manifest and inventory, restored fully, started
+with external actions locked, returned healthy, stopped cleanly, and released
+its port.
+
+### Reconstructed Schema-24 Rollback Set
+
+- Set:
+  `f2733fe4-0c13-4f0b-b5d3-b1ae4e2c4e25`
+- Archive:
+  `C:\Users\radul\OneDrive\Pantheon-Backups\retained\schema-24-pre-migration\pantheon-recovery-set-2026-07-29T11-50-50-531Z.jbackup`
+- Encrypted archive SHA-256:
+  `814ffb4d8553972f78d0d0f1fe74c2ea25310fe163f0d272924d66403bed6411`
+- Decrypted payload SHA-256:
+  `34d77f21305aa96074a274d168b69828dbc25ce994da5de6ea31ff63b93b67ab`
+- Inventory: 708 files
+- Archived database schema: 24
+- Compatibility: supported last release
+- Disposable migration proof: schema 24 to schema 26 completed
+- Source archive database unchanged by the proof: true
+- Locked restored-runtime instance:
+  `doctor-39e8f9cf-ef83-44ca-8322-9e399592bfb7`
+
+This set is explicitly a reconstruction, not the original pre-migration
+archive. The original encrypted pre-migration archive had already passed
+decryption, manifest, SQLite, disposable migration, source-unchanged, and
+locked-boot checks. A later retention run automatically rotated that archive.
+The verified restored source was preserved, so Pantheon safely created and
+independently verified the replacement rollback set above.
+
+Pantheon Doctor completed its full operational and recovery checks. Four older
+encrypted sets failed decryption with the current passphrase and remain
+retained. They are not counted as valid current recovery points and were not
+deleted.
+
+## Honest Commercial Position
+
+At the end of this proof:
+
+- current commercial program: none;
+- current contract or lifecycle authority: none;
+- verified buyers: none;
+- verified revenue: none;
+- attributable settled net cash contribution: none;
+- customer or prospect contact: none;
+- publication or marketplace listing: none;
+- advertising: none;
+- account creation, KYC, OAuth, MFA, or legal acceptance: none;
+- external action: none; and
+- external commercial spend: A$0.
+
+Historical builds, model work, and retained commercial records remain visible
+as history. Their technical completion does not make them a current offer,
+active test, sale, or positive business result.
+
+## Remaining Release Gates
+
+This record proves the local candidate only. The following remain pending and
+must be recorded from their real results:
+
+1. commit the completed proof and release documentation;
+2. push `codex/commercial-truth-hardening`;
+3. open the pull request;
+4. run and pass every hosted GitHub CI job, including the quarantined Windows
+   lifecycle jobs;
+5. merge only after the hosted checks pass; and
+6. record the final merged commit and CI evidence in the Master Plan, Build
+   Log, and release handover.
+
+No push, pull request, hosted CI result, or merge is claimed by this document.

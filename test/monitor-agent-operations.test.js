@@ -9,6 +9,9 @@ const { ensureAgentTools } = require("../src/runtime/agent-tools");
 const { generateWeeklyDigest } = require("../src/runtime/executive-digest");
 const { requestLiveAiWorker } = require("../src/runtime/live-ai-workers");
 const { collectFindings, runMonitorCycle } = require("../src/runtime/monitor");
+const {
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
 
 function makeRuntime() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-monitor-agent-operations-"));
@@ -126,6 +129,10 @@ test("monitor accepts a correctly stored task-scoped worker context", () => {
   try {
     const workflowId = "wf-monitor-valid-context";
     insertWorkflow(runtime.db, workflowId);
+    installActivatedCommercialTestFixture(runtime.db, {
+      suffix: "monitor-valid-context",
+      workflowIds: [workflowId],
+    });
     const requested = requestLiveAiWorker(runtime.db, workflowId, {
       requestKey: "valid_context",
       worker: "demand_validator",

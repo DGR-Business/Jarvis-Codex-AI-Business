@@ -1,4 +1,5 @@
 const { all, fromJson, get, now, run, toJson } = require("../db");
+const { ventureKitContentHash } = require("./venture-kit-definition");
 
 const DIGITAL_PRODUCT_V1 = Object.freeze({
   id: "digital_product_v1",
@@ -71,6 +72,7 @@ function parseKit(row) {
     channelPolicy: fromJson(row.channel_policy, {}),
     acceptanceCriteria: fromJson(row.acceptance_criteria, {}),
     metadata: fromJson(row.metadata, {}),
+    contentHash: row.content_hash || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -80,25 +82,31 @@ function registerVentureKit(db, definition) {
   if (!definition?.id || !definition?.version || !definition?.name) {
     throw new Error("A venture kit requires an id, version, and name.");
   }
+  const contentHash = ventureKitContentHash(definition);
+  const existing = get(
+    db,
+    "SELECT * FROM venture_kits WHERE id = ? AND version = ?",
+    [definition.id, definition.version],
+  );
+  if (existing) {
+    if (existing.content_hash !== contentHash) {
+      const error = new Error(
+        "A Venture Kit version is immutable; register a new version for changed content.",
+      );
+      error.code = "venture_kit_version_conflict";
+      error.statusCode = 409;
+      throw error;
+    }
+    return parseKit(existing);
+  }
   const timestamp = now();
   run(
     db,
     `INSERT INTO venture_kits
      (id, version, status, name, business_models, eligibility_rules,
       evidence_requirements, capability_requirements, channel_policy,
-      acceptance_criteria, metadata, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id, version) DO UPDATE SET
-       status = excluded.status,
-       name = excluded.name,
-       business_models = excluded.business_models,
-       eligibility_rules = excluded.eligibility_rules,
-       evidence_requirements = excluded.evidence_requirements,
-       capability_requirements = excluded.capability_requirements,
-       channel_policy = excluded.channel_policy,
-       acceptance_criteria = excluded.acceptance_criteria,
-       metadata = excluded.metadata,
-       updated_at = excluded.updated_at`,
+      acceptance_criteria, metadata, content_hash, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       definition.id,
       definition.version,
@@ -111,6 +119,7 @@ function registerVentureKit(db, definition) {
       toJson(definition.channelPolicy || {}),
       toJson(definition.acceptanceCriteria || {}),
       toJson(definition.metadata || {}),
+      contentHash,
       timestamp,
       timestamp,
     ],

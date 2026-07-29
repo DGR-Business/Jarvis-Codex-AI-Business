@@ -1,5 +1,6 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
@@ -735,6 +736,31 @@ function assertManagedSnapshotBytes(items, artifactRoot, label) {
   }
 }
 
+function assertRetainedQualityReviewDeliverables(db, items) {
+  if (!Array.isArray(items) || !items.length) {
+    throw new Error("Pantheon cannot verify the retained quality-review deliverables.");
+  }
+  for (const item of items) {
+    const row = get(
+      db,
+      "SELECT file_path, content_hash, metadata FROM deliverables WHERE id = ?",
+      [item.id],
+    );
+    const metadata = fromJson(row?.metadata, {});
+    if (
+      !row
+      || String(row.file_path || "") !== String(item.filePath || "")
+      || String(row.content_hash || "") !== String(item.sha256 || "")
+      || String(metadata.rendererRevision || "") !== String(item.rendererRevision || "")
+      || String(metadata.evidenceRole || "") !== String(item.evidenceRole || "")
+    ) {
+      throw new Error(
+        "Pantheon refused the local renderer refresh because retained quality-review evidence no longer resolves its immutable database record.",
+      );
+    }
+  }
+}
+
 function qualityEvidenceRole(item, index = -1) {
   if (["workbook_inspection", "setup_guide_inspection"].includes(item?.evidenceRole)) {
     return item.evidenceRole;
@@ -935,8 +961,10 @@ function persistCustomerPackageFiles(
   });
 }
 
-function persistLocalQualityReviewImages(db, task, images, packageFingerprint, options = {}) {
-  if (!Array.isArray(images) || !images.length) return [];
+function prepareLocalQualityReviewImages(task, images, packageFingerprint, options = {}) {
+  if (!Array.isArray(images) || !images.length) {
+    return { outputDir: null, items: [] };
+  }
   const evidenceRevision = String(options.rendererRevision || "").trim();
   const evidenceRevisionSegment = evidenceRevision
     ? `${safeId(evidenceRevision).slice(0, 48)}_${crypto.createHash("sha256").update(evidenceRevision).digest("hex").slice(0, 12)}`
@@ -950,9 +978,9 @@ function persistLocalQualityReviewImages(db, task, images, packageFingerprint, o
     packageFingerprint,
     ...(evidenceRevisionSegment ? [evidenceRevisionSegment] : []),
   );
-  fs.mkdirSync(outputDir, { recursive: true });
-  const ts = now();
-  return images.map((image, index) => {
+  const seenDeliverableIds = new Set();
+  const seenOutputPaths = new Set();
+  const items = images.map((image, index) => {
     const filename = safeProductFilename(image.filename, `quality-review-${index + 1}.png`);
     const bytes = Buffer.isBuffer(image.bytes) ? image.bytes : Buffer.from(image.bytes || []);
     const validation = validateProductFile(bytes, filename);
@@ -972,29 +1000,120 @@ function persistLocalQualityReviewImages(db, task, images, packageFingerprint, o
     const deliverableScope = evidenceRevision
       ? `${task.id}:${evidenceRevision}:${evidenceRole}`
       : task.id;
+    const deliverableOrdinal = evidenceRevision
+      ? evidenceRole === "workbook_inspection"
+        ? 1
+        : evidenceRole === "setup_guide_inspection"
+          ? 2
+          : index + 1
+      : index + 1;
     const deliverableId = taskScopedDeliverableId(
       "deliv_quality_preview",
       deliverableScope,
-      index + 1,
+      deliverableOrdinal,
     );
-    const outputName = `${String(index + 1).padStart(2, "0")}-${filename}`;
+    const outputName = `${String(deliverableOrdinal).padStart(2, "0")}-${filename}`;
     const outputPath = path.join(outputDir, outputName);
-    if (fs.existsSync(outputPath)) {
-      const existingHash = crypto.createHash("sha256").update(fs.readFileSync(outputPath)).digest("hex");
-      if (existingHash !== hash) {
-        throw new Error(`Quality-review image path ${outputName} already contains different bytes.`);
-      }
-    } else {
-      const temporaryPath = `${outputPath}.${process.pid}.${randomId().slice(0, 8)}.tmp`;
-      fs.writeFileSync(temporaryPath, bytes, { flag: "wx" });
-      fs.renameSync(temporaryPath, outputPath);
-    }
     const relativePath = path.relative(CONFIG.rootDir, outputPath).replace(/\\/g, "/");
     const humanName = evidenceRole === "workbook_inspection"
       ? "Actual Workbook Review"
       : evidenceRole === "setup_guide_inspection"
         ? "Actual Setup Guide Review"
         : `Product File Review ${index + 1}`;
+    if (seenDeliverableIds.has(deliverableId) || seenOutputPaths.has(outputPath)) {
+      throw new Error("Pantheon refused duplicate quality-review evidence within one renderer revision.");
+    }
+    seenDeliverableIds.add(deliverableId);
+    seenOutputPaths.add(outputPath);
+    const metadata = {
+      ...(image.metadata || {}),
+      qualityReviewOnly: true,
+      derivedFromActualSavedFile: image.metadata?.derivedFromActualSavedFile === true,
+      evidenceRole,
+      rendererRevision: evidenceRevision || null,
+      sha256: hash,
+      bytes: bytes.length,
+      approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
+      localRecovery: options.localRecovery || undefined,
+    };
+    return {
+      id: deliverableId,
+      humanName,
+      outputName,
+      outputPath,
+      relativePath,
+      bytes,
+      hash,
+      evidenceRole,
+      evidenceRevision,
+      metadata,
+      deliverable: {
+        id: deliverableId,
+        humanName,
+        filePath: relativePath,
+        format: "image/png",
+        status: "built_pending_quality_review",
+        bytes: bytes.length,
+        sha256: hash,
+        qualityReviewOnly: true,
+        derivedFromActualSavedFile: image.metadata?.derivedFromActualSavedFile === true,
+        evidenceRole,
+        rendererRevision: evidenceRevision || null,
+        inspectionCoverage: image.metadata?.inspectionCoverage || null,
+      },
+    };
+  });
+  return { outputDir, items };
+}
+
+function assertLocalQualityReviewImagesCanPersist(db, plan) {
+  for (const item of plan.items) {
+    if (fs.existsSync(item.outputPath)) {
+      const existingHash = crypto
+        .createHash("sha256")
+        .update(fs.readFileSync(item.outputPath))
+        .digest("hex");
+      if (existingHash !== item.hash) {
+        throw new Error(
+          `Pantheon refused the local renderer refresh before persistence because quality-review revision ${item.evidenceRevision || "legacy"} already contains different bytes.`,
+        );
+      }
+    }
+    const existing = get(
+      db,
+      "SELECT file_path, content_hash, metadata FROM deliverables WHERE id = ?",
+      [item.id],
+    );
+    if (!existing) continue;
+    const metadata = fromJson(existing.metadata, {});
+    if (
+      String(existing.file_path || "") !== item.relativePath
+      || String(existing.content_hash || "") !== item.hash
+      || String(metadata.rendererRevision || "") !== item.evidenceRevision
+      || String(metadata.evidenceRole || "") !== item.evidenceRole
+    ) {
+      throw new Error(
+        "Pantheon refused the local renderer refresh before persistence because an immutable quality-review deliverable ID already resolves different evidence.",
+      );
+    }
+  }
+}
+
+function persistLocalQualityReviewImages(db, task, images, packageFingerprint, options = {}) {
+  const plan = options.qualityReviewImagePlan
+    || prepareLocalQualityReviewImages(task, images, packageFingerprint, options);
+  if (!plan.items.length) return [];
+  if (options.qualityReviewImagePlanPreflighted !== true) {
+    assertLocalQualityReviewImagesCanPersist(db, plan);
+  }
+  fs.mkdirSync(plan.outputDir, { recursive: true });
+  const ts = now();
+  return plan.items.map((item) => {
+    if (!fs.existsSync(item.outputPath)) {
+      const temporaryPath = `${item.outputPath}.${process.pid}.${randomId().slice(0, 8)}.tmp`;
+      fs.writeFileSync(temporaryPath, item.bytes, { flag: "wx" });
+      fs.renameSync(temporaryPath, item.outputPath);
+    }
     run(
       db,
       `INSERT INTO deliverables
@@ -1002,53 +1121,23 @@ function persistLocalQualityReviewImages(db, task, images, packageFingerprint, o
         format, status, file_path, summary, metadata, content_hash, version, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 'Product File Review', ?, 'internal', 'image/png',
         'built_pending_quality_review', ?, ?, ?, ?, 1, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         workflow_id = excluded.workflow_id, command_id = excluded.command_id,
-         task_id = excluded.task_id, venture_id = excluded.venture_id,
-         human_name = excluded.human_name, status = excluded.status,
-         file_path = excluded.file_path, summary = excluded.summary,
-         metadata = excluded.metadata, content_hash = excluded.content_hash,
-         version = CASE WHEN deliverables.content_hash IS NOT excluded.content_hash THEN deliverables.version + 1 ELSE deliverables.version END,
-         updated_at = excluded.updated_at`,
+       ON CONFLICT(id) DO NOTHING`,
       [
-        deliverableId,
+        item.id,
         task.workflow_id,
         task.payload?.commandId || null,
         task.id,
         task.venture_id,
-        humanName,
-        relativePath,
+        item.humanName,
+        item.relativePath,
         "QA-only visual rendered from the exact saved customer file for independent product inspection.",
-        toJson({
-          ...(image.metadata || {}),
-          qualityReviewOnly: true,
-          derivedFromActualSavedFile: image.metadata?.derivedFromActualSavedFile === true,
-          evidenceRole,
-          rendererRevision: evidenceRevision || null,
-          sha256: hash,
-          bytes: bytes.length,
-          approvalId: task.approval_id || task.payload?.liveSpendRequest?.approvalId || null,
-          localRecovery: options.localRecovery || undefined,
-        }),
-        hash,
+        toJson(item.metadata),
+        item.hash,
         ts,
         ts,
       ],
     );
-    return {
-      id: deliverableId,
-      humanName,
-      filePath: relativePath,
-      format: "image/png",
-      status: "built_pending_quality_review",
-      bytes: bytes.length,
-      sha256: hash,
-      qualityReviewOnly: true,
-      derivedFromActualSavedFile: image.metadata?.derivedFromActualSavedFile === true,
-      evidenceRole,
-      rendererRevision: evidenceRevision || null,
-      inspectionCoverage: image.metadata?.inspectionCoverage || null,
-    };
+    return item.deliverable;
   });
 }
 
@@ -1077,7 +1166,7 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
     const factory = testDigitalProductFactory || renderDigitalProductKit;
     const rendered = await factory(task, blueprint, {
       capabilityPlan,
-      artifactRoot: options.artifactRoot || CONFIG.artifactRoot,
+      artifactRoot: options.factoryArtifactRoot || options.artifactRoot || CONFIG.artifactRoot,
     });
     localRender = rendered;
     preparedFiles = Array.isArray(rendered?.files) ? rendered.files : [];
@@ -1122,6 +1211,12 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
     embeddedManifestMatches,
     archiveInventoryVerified,
   } = validateProductManifest(downloads, task);
+  const persistedBlueprint = localSpec
+    ? result?.finalOutput?.work?.productBlueprint || null
+    : null;
+  const persistedBlueprintHash = persistedBlueprint
+    ? crypto.createHash("sha256").update(JSON.stringify(persistedBlueprint)).digest("hex")
+    : null;
   if (options.expectedQualityEvidenceSnapshot) {
     const expectedEvidence = options.expectedQualityEvidenceSnapshot;
     const candidateEvidence = (localRender?.qualityReviewImages || []).map((image, index) => {
@@ -1219,6 +1314,23 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
         "Pantheon refused the local renderer refresh before persistence because the customer package or storefront previews changed.",
       );
     }
+  }
+  const qualityReviewImagePlan = prepareLocalQualityReviewImages(
+    task,
+    localRender?.qualityReviewImages || [],
+    packageFingerprint,
+    options,
+  );
+  assertLocalQualityReviewImagesCanPersist(db, qualityReviewImagePlan);
+  if (typeof options.prePersistValidation === "function") {
+    await options.prePersistValidation({
+      downloads,
+      manifest,
+      packageFingerprint,
+      blueprint: persistedBlueprint,
+      blueprintHash: persistedBlueprintHash,
+      qualityReviewImages: qualityReviewImagePlan.items.map((item) => item.deliverable),
+    });
   }
   const outputDir = path.join(
     options.artifactRoot || CONFIG.artifactRoot,
@@ -1336,9 +1448,12 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
     task,
     localRender?.qualityReviewImages || [],
     packageFingerprint,
-    options,
+    {
+      ...options,
+      qualityReviewImagePlan,
+      qualityReviewImagePlanPreflighted: true,
+    },
   );
-  const blueprint = localSpec ? result?.finalOutput?.work?.productBlueprint || null : null;
   return {
     files: [...persisted, ...customerFiles],
     manifest,
@@ -1350,10 +1465,8 @@ async function persistGeneratedProductFiles(db, task, capabilityPlan, result, op
       : "openai_code_interpreter",
     manifestEmbeddedIdentical: embeddedManifestMatches,
     archiveInventoryVerified,
-    blueprint,
-    blueprintHash: blueprint
-      ? crypto.createHash("sha256").update(JSON.stringify(blueprint)).digest("hex")
-      : null,
+    blueprint: persistedBlueprint,
+    blueprintHash: persistedBlueprintHash,
     renderedBlueprintHash: localSpec ? localRender?.renderedBlueprintHash || null : null,
     runtimeNormalizations: localSpec ? localRender?.runtimeNormalizations || [] : [],
   };
@@ -1363,9 +1476,22 @@ function recoverStoredProductBlueprint(task, options = {}) {
   const result = task.result && typeof task.result === "object"
     ? task.result
     : fromJson(task.result, {});
-  const retained = result.output?.generatedFiles?.blueprint;
-  if (retained) return retained;
   const expectedBlueprintHash = String(options.expectedBlueprintHash || "").trim();
+  const retained = result.output?.generatedFiles?.blueprint;
+  if (retained) {
+    const retainedHash = crypto.createHash("sha256").update(JSON.stringify(retained)).digest("hex");
+    if (expectedBlueprintHash && retainedHash !== expectedBlueprintHash) {
+      throw new Error(
+        "Pantheon refused the local renderer refresh before persistence because the retained Product Builder blueprint changed.",
+      );
+    }
+    return retained;
+  }
+  if (!expectedBlueprintHash) {
+    throw new Error(
+      "Pantheon cannot re-render this package because its exact frozen Product Builder blueprint hash is unavailable.",
+    );
+  }
   const production = task.payload?.liveSpendRequest?.parameters?.pantheonProduction || {};
   const spec = task.payload?.liveSpendRequest?.parameters?.productBuildSpec || {};
   const stageRoot = path.join(
@@ -1396,7 +1522,6 @@ function recoverStoredProductBlueprint(task, options = {}) {
         input,
         blueprint,
         blueprintHash,
-        modified: fs.statSync(candidate).mtimeMs,
       };
     })
     .filter(({ input, blueprint, blueprintHash }) => (
@@ -1405,9 +1530,9 @@ function recoverStoredProductBlueprint(task, options = {}) {
       && Number(input.spec?.revisionNumber || 0) === Number(production.revisionNumber || 0)
       && blueprint
       && blueprintHash === input.sourceBlueprintHash
-      && (!expectedBlueprintHash || blueprintHash === expectedBlueprintHash)
+      && blueprintHash === expectedBlueprintHash
     ))
-    .sort((left, right) => right.modified - left.modified);
+    .sort((left, right) => left.candidate.localeCompare(right.candidate));
   if (!candidates.length) {
     throw new Error("Pantheon cannot re-render this package because no matching frozen Product Builder blueprint was found.");
   }
@@ -1430,21 +1555,6 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
     throw new Error("Only a completed, locally rendered Product Builder package can use deterministic re-render recovery.");
   }
   const previousGeneratedFiles = task.result?.output?.generatedFiles || {};
-  const storedBlueprintHash = String(previousGeneratedFiles.blueprintHash || "").trim();
-  const blueprint = recoverStoredProductBlueprint(task, {
-    ...options,
-    expectedBlueprintHash: storedBlueprintHash || undefined,
-  });
-  const recoveredBlueprintHash = crypto
-    .createHash("sha256")
-    .update(JSON.stringify(blueprint))
-    .digest("hex");
-  const previousBlueprintHash = storedBlueprintHash || recoveredBlueprintHash;
-  if (recoveredBlueprintHash !== previousBlueprintHash) {
-    throw new Error(
-      "Pantheon refused the local renderer refresh before persistence because the frozen Product Builder blueprint changed.",
-    );
-  }
   const rendererRevision = String(
     options.rendererRevision || "unspecified-local-renderer-revision",
   ).trim() || "unspecified-local-renderer-revision";
@@ -1464,6 +1574,38 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
     managedArtifactRoot,
     "quality-review evidence",
   );
+  const storedBlueprintHash = String(previousGeneratedFiles.blueprintHash || "").trim();
+  const previousRefresh = task.result?.output?.localRendererRefresh || {};
+  if (String(previousRefresh.rendererRevision || "") === rendererRevision) {
+    const retainedBlueprint = previousGeneratedFiles.blueprint;
+    const retainedBlueprintHash = retainedBlueprint
+      ? crypto.createHash("sha256").update(JSON.stringify(retainedBlueprint)).digest("hex")
+      : "";
+    if (!storedBlueprintHash || retainedBlueprintHash !== storedBlueprintHash) {
+      throw new Error(
+        "Pantheon refused the idempotent local renderer replay because its retained Product Builder blueprint is not exact.",
+      );
+    }
+    assertRetainedQualityReviewDeliverables(
+      db,
+      previousGeneratedFiles.qualityReviewImages || [],
+    );
+    return previousGeneratedFiles;
+  }
+  const blueprint = recoverStoredProductBlueprint(task, {
+    ...options,
+    expectedBlueprintHash: storedBlueprintHash || undefined,
+  });
+  const recoveredBlueprintHash = crypto
+    .createHash("sha256")
+    .update(JSON.stringify(blueprint))
+    .digest("hex");
+  const previousBlueprintHash = storedBlueprintHash || recoveredBlueprintHash;
+  if (recoveredBlueprintHash !== previousBlueprintHash) {
+    throw new Error(
+      "Pantheon refused the local renderer refresh before persistence because the frozen Product Builder blueprint changed.",
+    );
+  }
   const unchangedProductSnapshot = {
     files: (previousGeneratedFiles.files || []).map((file) => ({
       id: file.id,
@@ -1474,24 +1616,70 @@ async function refreshLocalDigitalProductFiles(db, taskId, options = {}) {
       sha256: file.sha256,
     })),
   };
-  const generatedFiles = await persistGeneratedProductFiles(
-    db,
-    task,
-    {
-      specs: [{
-        kind: "runtime_transform",
-        sdkName: "product_file_factory",
-      }],
-    },
-    { finalOutput: { work: { productBlueprint: blueprint } } },
-    {
-      ...options,
-      rendererRevision,
-      unchangedProductSnapshot,
-      expectedQualityEvidenceSnapshot:
-        previousGeneratedFiles.qualityReviewImages || [],
-    },
-  );
+  const rendererScratchRoot = fs.mkdtempSync(path.join(
+    os.tmpdir(),
+    `pantheon-renderer-refresh-${safeId(task.id)}-`,
+  ));
+  let rendererScratchRemoved = false;
+  const removeRendererScratch = () => {
+    if (rendererScratchRemoved) return;
+    if (fs.existsSync(rendererScratchRoot)) {
+      fs.rmSync(rendererScratchRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 50,
+      });
+    }
+    rendererScratchRemoved = true;
+  };
+  let generatedFiles;
+  try {
+    generatedFiles = await persistGeneratedProductFiles(
+      db,
+      task,
+      {
+        specs: [{
+          kind: "runtime_transform",
+          sdkName: "product_file_factory",
+        }],
+      },
+      { finalOutput: { work: { productBlueprint: blueprint } } },
+      {
+        ...options,
+        rendererRevision,
+        factoryArtifactRoot: rendererScratchRoot,
+        unchangedProductSnapshot,
+        expectedQualityEvidenceSnapshot:
+          previousGeneratedFiles.qualityReviewImages || [],
+        prePersistValidation: ({ blueprintHash }) => {
+          if (blueprintHash !== previousBlueprintHash) {
+            throw new Error(
+              "Pantheon refused the local renderer refresh before persistence because the approved Product Builder blueprint changed.",
+            );
+          }
+          assertManagedSnapshotBytes(
+            previousGeneratedFiles.files || [],
+            managedArtifactRoot,
+            "customer package",
+          );
+          assertManagedSnapshotBytes(
+            previousGeneratedFiles.previews || [],
+            managedArtifactRoot,
+            "storefront preview",
+          );
+          assertManagedSnapshotBytes(
+            previousGeneratedFiles.qualityReviewImages || [],
+            managedArtifactRoot,
+            "quality-review evidence",
+          );
+          removeRendererScratch();
+        },
+      },
+    );
+  } finally {
+    removeRendererScratch();
+  }
   if (generatedFiles.blueprintHash !== previousBlueprintHash) {
     throw new Error("Pantheon refused the local renderer refresh because the approved Product Builder blueprint changed.");
   }

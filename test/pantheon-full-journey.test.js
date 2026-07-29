@@ -7,19 +7,13 @@ const test = require("node:test");
 const AdmZip = require("adm-zip");
 
 const CONFIG = require("../src/config");
-const { all, fromJson, get, openDatabase, seedDatabase } = require("../src/db");
+const { get, openDatabase, seedDatabase } = require("../src/db");
 const { decideApproval } = require("../src/runtime/approvals");
 const {
   __setAgentRuntimeSdkRunnerForTests,
   __setDigitalProductFactoryForTests,
 } = require("../src/runtime/agent-runtime");
-const { decideAgentHandoff, getAgentHandoff } = require("../src/runtime/ai-team");
-const { getJourneyState, startPantheonJourney } = require("../src/runtime/pantheon-journey");
-const {
-  applyPantheonHandoffDecision,
-  refreshPublicationArtifacts,
-} = require("../src/runtime/pantheon-production");
-const { runPantheonSupervisorCycle } = require("../src/runtime/pantheon-supervisor");
+const { startOpportunityRound } = require("../src/runtime/pantheon-opportunities");
 const { prepareRetentionPolicyDecision } = require("../src/runtime/retention-policy");
 const { runOnce } = require("../src/runtime/orchestrator");
 
@@ -99,7 +93,7 @@ function taskStage(task) {
   return parameters.pantheonCommercial?.step || parameters.pantheonProduction?.stage;
 }
 
-test("full journey proves discovery through a quality-passed Gumroad-ready product range", async () => {
+test("a historical broad journey cannot reach a model or product without exact commercial authority", async () => {
   const previous = {
     key: process.env.OPENAI_API_KEY,
     liveModels: process.env.PANTHEON_ENABLE_LIVE_MODELS,
@@ -119,8 +113,10 @@ test("full journey proves discovery through a quality-passed Gumroad-ready produ
 
   const runtime = runtimeDb("complete");
   const calls = [];
+  let productFactoryCalls = 0;
   let sequence = 0;
   __setDigitalProductFactoryForTests(async (task, blueprint) => {
+    productFactoryCalls += 1;
     const spec = task.payload.liveSpendRequest.parameters.productBuildSpec;
     const archiveFiles = [];
     for (const [index, item] of blueprint.catalogueItems.entries()) {
@@ -538,217 +534,61 @@ test("full journey proves discovery through a quality-passed Gumroad-ready produ
     const protectionRun = await runOnce(runtime.db, { taskId: protectionApproval.task_id });
     assert.equal(protectionRun.status, "completed");
 
-    const started = startPantheonJourney(runtime.db, {
-      mode: "rehearsal",
-      prompt: "Research broad lawful online opportunities and build the strongest currently executable digital-product range.",
-      budgetCapCents: 1500,
-    });
-    assert.equal(started.journey.model, CONFIG.lunaModel);
-    assert.equal(started.journey.model_locked, 1);
-    let finalHandoff = null;
-    const cycles = [];
-    for (let step = 0; step < 100; step += 1) {
-      const state = getJourneyState(runtime.db, started.journey.id);
-      if (state.journey.status === "completed") break;
-      assert.notEqual(state.journey.status, "needs_attention", state.journey.metadata.blocker);
-      if (state.journey.status === "waiting_for_operator" && state.journey.active_stage === "product_build") {
-        const approval = get(runtime.db, "SELECT * FROM approvals WHERE id = ?", [state.journey.metadata.currentApprovalId]);
-        assert.ok(approval, "The product build must stop at an exact operator decision.");
-        if (approval.status === "pending") {
-          decideApproval(runtime.db, approval.id, "approved", "Approve the exact isolated full-journey product build.", {
-            expectedScopeHash: approval.scope_hash,
-          });
-        }
-      }
-      if (state.journey.status === "waiting_for_operator" && state.journey.active_stage === "launch_decision") {
-        const handoff = getAgentHandoff(runtime.db, state.journey.metadata.launchDecisionHandoffId);
-        assert.ok(handoff, "The final Chief brief must create one exact launch decision.");
-        const decided = decideAgentHandoff(runtime.db, handoff.id, "approve", "Mark this exact local package ready to publish.", {
-          decidedBy: "test-operator",
-          skipFollowupTask: true,
-        });
-        applyPantheonHandoffDecision(runtime.db, decided.handoff, "approve", "Mark this exact local package ready to publish.");
-        finalHandoff = decided.handoff;
-        continue;
-      }
-      const cycle = await runPantheonSupervisorCycle(runtime.db, {
-        triggerType: "test",
-        triggerId: started.journey.id,
-        startedBy: "pantheon-full-journey-test",
-        maxSteps: 2,
-      });
-      cycles.push({
-        status: cycle.status,
-        actions: cycle.actions?.map((action) => `${action.type}:${action.status || action.step || ""}`),
-      });
-      const latestProductTask = get(
-        runtime.db,
-        `SELECT result FROM tasks
-         WHERE json_extract(payload, '$.liveSpendRequest.parameters.pantheonProduction.stage') = 'product_build'
-         ORDER BY created_at DESC LIMIT 1`,
-      );
-      assert.notEqual(cycle.status, "needs_attention", JSON.stringify({
-        error: cycle.error || cycle.cycle?.summary,
-        calls: calls.map((call) => call.stage),
-        workflowStatus: get(runtime.db, "SELECT status, current_step FROM workflows WHERE id = ?", [started.journey.workflow_id]),
-        allOpenTasks: all(
-          runtime.db,
-          "SELECT id, kind, status, priority, created_at FROM tasks WHERE workflow_id = ? AND status NOT IN ('completed', 'cancelled') ORDER BY priority, created_at, id",
-          [started.journey.workflow_id],
-        ),
-        tasks: getJourneyState(runtime.db, started.journey.id).tasks.map((task) => ({
-          id: task.id,
-          stage: task.payload?.liveSpendRequest?.parameters?.pantheonProduction?.stage
-            || task.payload?.liveSpendRequest?.parameters?.pantheonCommercial?.step,
-          status: task.status,
-          dependsOn: task.depends_on,
-          priority: task.priority,
-        })),
-        productResult: fromJson(latestProductTask?.result, null),
-      }, null, 2));
-    }
-
-    const state = getJourneyState(runtime.db, started.journey.id);
-    assert.equal(state.journey.status, "completed", JSON.stringify({
-      stage: state.journey.active_stage,
-      blocker: state.journey.metadata.blocker,
-      calls: calls.map((call) => call.stage),
-      cycles: cycles.slice(-15),
-      tasks: state.tasks.map((task) => ({
-        id: task.id,
-        status: task.status,
-        worker: task.worker_id,
-        approvalId: task.approval_id,
-        setupBlockReason: task.setup_block_reason,
-        error: task.error,
-        outputKeys: Object.keys(task.result?.output || {}),
-        generatedFiles: task.result?.output?.generatedFiles,
-        stage: task.payload?.liveSpendRequest?.parameters?.pantheonCommercial?.step
-          || task.payload?.liveSpendRequest?.parameters?.pantheonProduction?.stage,
-      })),
-    }, null, 2));
-    assert.equal(state.journey.active_stage, "ready_to_publish");
-    assert.ok(state.currentProduct);
-    assert.ok(state.currentProduct.itemCount >= 3 && state.currentProduct.itemCount <= 6);
-    assert.match(state.currentProduct.title, /Freelancer Cash/i);
-    assert.equal(typeof state.currentProduct.customerPromise, "string");
-    assert.ok(finalHandoff);
-    assert.ok(state.exposure.totalCents <= 1500, JSON.stringify(state.exposure));
-    assert.equal(calls.length, 12);
-    assert.ok(calls.every((call) => call.model === CONFIG.lunaModel));
-    assert.ok(calls.every((call) => call.modelLocked === true));
-    assert.ok(calls.every((call) => call.journeyId === started.journey.id));
-    assert.deepEqual(
-      calls.map((call) => call.stage),
-      [
-        "opportunity_scout",
-        "demand_validator",
-        "demand_validator",
-        "demand_validator",
-        "finance_analysis",
-        "offer_architecture",
-        "product_build",
-        "storefront_visuals",
-        "quality_review",
-        "conversion_copy",
-        "distribution_plan",
-        "chief_brief",
-      ],
-    );
-
-    const selected = get(runtime.db, "SELECT * FROM opportunities WHERE id = ?", [state.journey.selected_opportunity_id]);
-    const selectedState = state.candidates.find((candidate) => candidate.id === state.journey.selected_opportunity_id);
-    assert.equal(selected.title, "Freelancer Cash-Flow Control Toolkit");
-    assert.ok(selectedState.sources.length > 0);
-    assert.ok(selectedState.sources.every((source) => /^https?:\/\//.test(source.source_url)));
-    assert.equal(selected.overall_score, 86);
-    assert.equal(fromJson(selected.metadata, {}).scoreScale, "normalized_from_0_10");
-    assert.equal(state.journey.metadata.selectionBasis, "paid_test_ready");
-    assert.match(state.journey.metadata.selectionRationale, /Demand remains unproven until real buyers pay/i);
-    assert.doesNotMatch(state.journey.metadata.selectionRationale, /paid-test case/i);
-    assert.equal(
-      get(runtime.db, "SELECT COUNT(*) AS count FROM opportunities WHERE round_id = ? AND json_extract(metadata, '$.validation.taskId') IS NOT NULL", [state.journey.round_id]).count,
-      3,
-    );
-    assert.equal(
-      get(runtime.db, "SELECT status FROM catalogue_plans WHERE opportunity_id = ?", [selected.id]).status,
-      "ready_to_publish",
-    );
-    const catalogueCount = get(
+    const writesBeforeRetiredStart = get(
       runtime.db,
-      "SELECT COUNT(*) AS count FROM catalogue_items WHERE plan_id = (SELECT id FROM catalogue_plans WHERE opportunity_id = ?)",
-      [selected.id],
+      "SELECT total_changes() AS count",
     ).count;
-    assert.ok(catalogueCount >= 3 && catalogueCount <= 6);
-    assert.equal(
-      get(runtime.db, "SELECT COUNT(*) AS count FROM catalogue_items WHERE plan_id = (SELECT id FROM catalogue_plans WHERE opportunity_id = ?) AND quality_status = 'passed'", [selected.id]).count,
-      catalogueCount,
+    assert.throws(
+      () => startOpportunityRound(runtime.db, {
+        prompt: "Research broad lawful online opportunities and build the strongest currently executable digital-product range.",
+        source: "historical-full-journey-test",
+        journeyId: "historical-broad-journey",
+        model: CONFIG.lunaModel,
+        modelLocked: true,
+      }),
+      (error) => (
+        error.statusCode === 410
+        && error.code === "legacy_commercial_path_retired"
+        && error.details?.path === "pantheon_opportunity_round_start"
+        && error.details?.replacement
+          === "bounded_preventure_research_authority_pending"
+      ),
     );
     assert.equal(
-      get(runtime.db, "SELECT COUNT(*) AS count FROM commercial_experiments WHERE status = 'ready'").count,
-      1,
+      get(runtime.db, "SELECT total_changes() AS count").count,
+      writesBeforeRetiredStart,
+      "The retired broad-journey path must fail before any database write.",
+    );
+    assert.equal(calls.length, 0, "The model adapter must not be called.");
+    assert.equal(
+      productFactoryCalls,
+      0,
+      "The product factory must not be called.",
     );
     assert.equal(
       get(
         runtime.db,
         `SELECT COUNT(*) AS count
          FROM agent_runs
-         JOIN tasks ON tasks.id = agent_runs.task_id
-         WHERE agent_runs.mode = 'openai-agents-sdk'
-           AND agent_runs.status = 'completed'
-           AND json_extract(tasks.payload, '$.liveSpendRequest.parameters.pantheonJourney.journeyId') = ?`,
-        [started.journey.id],
+         WHERE status = 'completed'`,
       ).count,
-      12,
-    );
-    assert.equal(
-      get(runtime.db, "SELECT COUNT(*) AS count FROM tasks WHERE json_extract(payload, '$.liveSpendRequest.parameters.pantheonJourney.journeyId') = ? AND json_extract(payload, '$.liveSpendRequest.parameters.modelRoute.modelLocked') != 1", [started.journey.id]).count,
       0,
     );
-
-    const refreshedArtifacts = refreshPublicationArtifacts(runtime.db, state.currentProduct.planId);
-    assert.equal(refreshedArtifacts.refreshed, true);
-    assert.equal(refreshedArtifacts.noProviderCall, true);
-    assert.deepEqual(refreshedArtifacts.issues, []);
-    const deliverables = all(runtime.db, "SELECT * FROM deliverables WHERE workflow_id = ?", [state.journey.workflow_id]);
-    const bundle = deliverables.find((item) => item.human_name.endsWith(".zip"));
-    const manifest = deliverables.find((item) => item.human_name === "pantheon-product-manifest.json");
-    const previews = deliverables.filter((item) => item.title === "Storefront Preview");
-    const cover = deliverables.find((item) => item.title === "Generated Product Asset");
-    const listing = deliverables.find((item) => /Listing Copy/.test(item.title));
-    const launchPack = deliverables.find((item) => /Launch Pack/.test(item.title));
-    const chiefBrief = deliverables.find((item) => /Ready-to-Publish Brief/.test(item.title));
-    assert.ok(
-      bundle && manifest && cover && listing && launchPack && chiefBrief,
-      JSON.stringify(deliverables.map((item) => ({
-        id: item.id,
-        title: item.title,
-        name: item.human_name,
-        format: item.format,
-      })), null, 2),
-    );
-    assert.equal(previews.length, 2);
-    for (const item of [bundle, manifest, cover, ...previews, listing, launchPack, chiefBrief]) {
-      const filePath = path.resolve(CONFIG.rootDir, item.file_path);
-      assert.equal(fs.existsSync(filePath), true, `${item.human_name} should exist`);
-      assert.ok(fs.statSync(filePath).size > 0, `${item.human_name} should not be empty`);
-    }
-    const archive = new AdmZip(path.resolve(CONFIG.rootDir, bundle.file_path));
-    assert.ok(archive.getEntries().some((entry) => entry.entryName === "README.txt"));
-    assert.equal(archive.getEntries().filter((entry) => entry.entryName.startsWith("customer-files/")).length, catalogueCount);
-    assert.equal(archive.getEntries().filter((entry) => entry.entryName.startsWith("storefront-previews/")).length, 2);
-    const listingText = fs.readFileSync(path.resolve(CONFIG.rootDir, listing.file_path), "utf8");
-    const chiefBriefText = fs.readFileSync(path.resolve(CONFIG.rootDir, chiefBrief.file_path), "utf8");
-    assert.match(listingText, /Freelancer Cash-Flow Control Toolkit/);
-    assert.match(listingText, /A\$29/);
-    assert.doesNotMatch(listingText, /(^|[^A-Za-z])\$29/);
-    assert.match(chiefBriefText, /What Approval Does/);
-    assert.match(chiefBriefText, /Current tracked pre-publication AI and tool exposure: A\$/);
-    assert.match(chiefBriefText, /A\$29 digital bundle/);
-    assert.doesNotMatch(chiefBriefText, /US\$29|USD\s*29|29\s*USD/);
     assert.equal(
-      get(runtime.db, "SELECT COUNT(*) AS count FROM events WHERE type = 'production.launch_decision_recorded'").count,
-      1,
+      get(
+        runtime.db,
+        `SELECT COUNT(*) AS count
+         FROM deliverables`,
+      ).count,
+      0,
+    );
+    assert.equal(
+      get(
+        runtime.db,
+        `SELECT COUNT(*) AS count
+         FROM catalogue_plans`,
+      ).count,
+      0,
     );
   } finally {
     closeRuntime(runtime);

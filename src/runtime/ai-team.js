@@ -2,6 +2,11 @@ const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require(
 const { bindAgentRunToAttempt, sha256 } = require("./agent-execution-evidence");
 const { evaluateAgentBehavior } = require("./agent-assurance");
 const {
+  assertCommercialAuthority,
+  classifyCommercialTaskSafety,
+  classifyCommercialWorkflowSafety,
+} = require("./commercial-authority");
+const {
   digitalProductKitCompatibilityIssues,
   offerClaimAlignmentIssues,
 } = require("./product-claim-alignment");
@@ -1400,13 +1405,8 @@ function nextTaskPriority(db, workflowId) {
   return row?.priority || 1;
 }
 
-function createHandoffFollowupTask(db, handoff, note, ts) {
-  if (!handoff.workflow_id) return null;
-  const taskId = followupTaskIdForHandoff(handoff.id);
-  const existing = get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]);
-  if (existing) return existing;
-
-  const payload = {
+function handoffFollowupPayload(handoff, note) {
+  return {
     handoffId: handoff.id,
     sourceRunId: handoff.from_run_id,
     sourceTaskId: handoff.task_id || null,
@@ -1421,14 +1421,79 @@ function createHandoffFollowupTask(db, handoff, note, ts) {
     operatorNote: note || "",
     sourceBusinessDecision: handoff.metadata?.businessDecision || null,
   };
+}
+
+function handoffFollowupCommercialAuthority(db, handoff, note) {
+  if (!handoff.workflow_id) return null;
+  const sourceTask = handoff.task_id
+    ? get(db, "SELECT * FROM tasks WHERE id = ?", [handoff.task_id])
+    : null;
+  if (handoff.task_id && !sourceTask) {
+    throw new Error("The handoff source task is no longer present.");
+  }
+  const prospectiveSafety = classifyCommercialTaskSafety(db, {
+    id: followupTaskIdForHandoff(handoff.id),
+    workflow_id: handoff.workflow_id,
+    venture_id: sourceTask?.venture_id || null,
+    title: "Chief of Staff handoff follow-up",
+    kind: "handoff_followup",
+    agent: handoff.to_agent_id || "chief_of_staff",
+    payload: handoffFollowupPayload(handoff, note),
+  });
+  const parentSafety = sourceTask
+    ? classifyCommercialTaskSafety(db, sourceTask)
+    : classifyCommercialWorkflowSafety(db, handoff.workflow_id);
+  if (
+    !parentSafety.requiresCommercialAuthority
+    && !prospectiveSafety.requiresCommercialAuthority
+  ) {
+    return null;
+  }
+  return sourceTask
+    ? assertCommercialAuthority(db, { taskId: sourceTask.id })
+    : assertCommercialAuthority(db, { workflowId: handoff.workflow_id });
+}
+
+function createHandoffFollowupTask(
+  db,
+  handoff,
+  note,
+  ts,
+  commercialAuthority = null,
+) {
+  if (!handoff.workflow_id) return null;
+  const taskId = followupTaskIdForHandoff(handoff.id);
+  const existing = get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]);
+  if (existing) {
+    if (commercialAuthority) {
+      assertCommercialAuthority(db, { taskId: existing.id });
+    }
+    return existing;
+  }
+  const sourceTask = handoff.task_id
+    ? get(db, "SELECT venture_id FROM tasks WHERE id = ?", [handoff.task_id])
+    : null;
+  const workflow = get(
+    db,
+    "SELECT venture_id FROM workflows WHERE id = ?",
+    [handoff.workflow_id],
+  );
+  const payload = {
+    ...(commercialAuthority?.binding
+      ? { commercialTestContract: commercialAuthority.binding }
+      : {}),
+    ...handoffFollowupPayload(handoff, note),
+  };
   run(
     db,
     `INSERT INTO tasks
-      (id, workflow_id, title, kind, agent, status, priority, max_retries, cost_budget_cents, payload, result, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, workflow_id, venture_id, title, kind, agent, status, priority,
+       max_retries, cost_budget_cents, payload, result, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       taskId,
       handoff.workflow_id,
+      sourceTask?.venture_id || workflow?.venture_id || null,
       "Chief of Staff handoff follow-up",
       "handoff_followup",
       handoff.to_agent_id || "chief_of_staff",
@@ -1525,8 +1590,18 @@ function decideAgentHandoff(db, handoffId, decision, note = "", options = {}) {
 
   const ts = now();
   const status = handoffDecisionStatus(normalizedDecision);
+  const commercialAuthority = normalizedDecision === "approve"
+    && options.skipFollowupTask !== true
+    ? handoffFollowupCommercialAuthority(db, handoff, note)
+    : null;
   const followupTask = normalizedDecision === "approve" && options.skipFollowupTask !== true
-    ? createHandoffFollowupTask(db, handoff, note, ts)
+    ? createHandoffFollowupTask(
+      db,
+      handoff,
+      note,
+      ts,
+      commercialAuthority,
+    )
     : null;
   const metadata = {
     ...(handoff.metadata || {}),

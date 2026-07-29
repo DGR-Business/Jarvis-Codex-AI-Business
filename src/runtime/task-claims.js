@@ -28,6 +28,103 @@ function withSavepoint(db, prefix, operation) {
   }
 }
 
+function claimCandidateFilter(options = {}) {
+  const filters = [];
+  const params = [];
+  if (options.workflowId) {
+    filters.push("candidate.workflow_id = ?");
+    params.push(options.workflowId);
+  }
+  if (options.taskId) {
+    filters.push("candidate.id = ?");
+    params.push(options.taskId);
+  }
+  return {
+    clause: filters.length ? `AND ${filters.join(" AND ")}` : "",
+    params,
+  };
+}
+
+function claimCandidateQuery(projection, filterClause = "") {
+  return `SELECT ${projection}
+    FROM tasks AS candidate
+    JOIN workflows AS workflow ON workflow.id = candidate.workflow_id
+    WHERE candidate.status IN ('queued', 'planned') ${filterClause}
+      AND workflow.status IN ('planned', 'ready', 'agent_running', 'agent_retrying')
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks AS earlier
+        WHERE earlier.workflow_id = candidate.workflow_id
+          AND earlier.id <> candidate.id
+          AND earlier.status IN (
+            'planned',
+            'queued',
+            'running',
+            'blocked',
+            'waiting_approval',
+            'needs_attention'
+          )
+          AND NOT (
+            CASE
+              WHEN json_valid(candidate.payload)
+              THEN json_extract(
+                candidate.payload,
+                '$.liveSpendRequest.parameters.pantheonProduction.planId'
+              )
+              ELSE NULL
+            END IS NOT NULL
+            AND CASE
+              WHEN json_valid(earlier.payload)
+              THEN json_extract(
+                earlier.payload,
+                '$.liveSpendRequest.parameters.pantheonProduction.planId'
+              )
+              ELSE NULL
+            END = CASE
+              WHEN json_valid(candidate.payload)
+              THEN json_extract(
+                candidate.payload,
+                '$.liveSpendRequest.parameters.pantheonProduction.planId'
+              )
+              ELSE NULL
+            END
+            AND EXISTS (
+              SELECT 1
+              FROM catalogue_plans AS recovered_plan,
+                   json_each(
+                     recovered_plan.metadata,
+                     '$.recoverySupersededTaskIds'
+                   ) AS superseded
+              WHERE recovered_plan.id = CASE
+                WHEN json_valid(candidate.payload)
+                THEN json_extract(
+                  candidate.payload,
+                  '$.liveSpendRequest.parameters.pantheonProduction.planId'
+                )
+                ELSE NULL
+              END
+                AND superseded.value = earlier.id
+            )
+          )
+          AND (
+            earlier.priority < candidate.priority
+            OR (
+              earlier.priority = candidate.priority
+              AND earlier.created_at < candidate.created_at
+            )
+            OR (
+              earlier.priority = candidate.priority
+              AND earlier.created_at = candidate.created_at
+              AND earlier.id < candidate.id
+            )
+          )
+      )
+    ORDER BY CASE candidate.status WHEN 'queued' THEN 0 ELSE 1 END,
+             candidate.priority ASC,
+             candidate.created_at ASC,
+             candidate.id ASC
+    LIMIT 1`;
+}
+
 function attemptMayHaveReachedProvider(attempt) {
   if (!attempt) return false;
   const metadata = fromJson(attempt.metadata, {});
@@ -127,60 +224,35 @@ function claimNextTask(db, options = {}) {
   const claimedAt = now();
   const leaseMs = claimLeaseMs(options);
   const leaseExpiresAt = new Date(Date.parse(claimedAt) + leaseMs).toISOString();
-  const filters = [];
-  const filterParams = [];
-  if (options.workflowId) {
-    filters.push("candidate.workflow_id = ?");
-    filterParams.push(options.workflowId);
-  }
-  if (options.taskId) {
-    filters.push("candidate.id = ?");
-    filterParams.push(options.taskId);
-  }
-  const filterClause = filters.length ? `AND ${filters.join(" AND ")}` : "";
+  const filter = claimCandidateFilter(options);
   db.exec("BEGIN IMMEDIATE");
   try {
+    const candidate = db.prepare(
+      claimCandidateQuery("candidate.*", filter.clause),
+    ).get(...filter.params);
+    if (!candidate) {
+      db.exec("COMMIT");
+      return null;
+    }
+    let guardResult = null;
+    if (typeof options.guard === "function") {
+      guardResult = options.guard(candidate);
+      if (!guardResult?.safe) {
+        db.exec("COMMIT");
+        return {
+          guardBlocked: true,
+          task: hydrateTask(candidate),
+          guardResult,
+        };
+      }
+    }
     const task = db.prepare(
       `UPDATE tasks
        SET status = 'running', claim_token = ?, claimed_at = ?, started_at = COALESCE(started_at, ?),
            attempt_count = attempt_count + 1, outcome_status = 'not_started', updated_at = ?
-       WHERE id = (
-         SELECT candidate.id FROM tasks AS candidate
-         JOIN workflows AS workflow ON workflow.id = candidate.workflow_id
-         WHERE candidate.status IN ('queued', 'planned') ${filterClause}
-           AND workflow.status IN ('planned', 'ready', 'agent_running', 'agent_retrying')
-           AND NOT EXISTS (
-             SELECT 1 FROM tasks AS earlier
-             WHERE earlier.workflow_id = candidate.workflow_id
-               AND earlier.id <> candidate.id
-               AND earlier.status IN ('planned', 'queued', 'running', 'blocked', 'waiting_approval', 'needs_attention')
-               AND NOT (
-                 json_extract(candidate.payload, '$.liveSpendRequest.parameters.pantheonProduction.planId') IS NOT NULL
-                 AND json_extract(earlier.payload, '$.liveSpendRequest.parameters.pantheonProduction.planId')
-                   = json_extract(candidate.payload, '$.liveSpendRequest.parameters.pantheonProduction.planId')
-                 AND EXISTS (
-                   SELECT 1
-                   FROM catalogue_plans AS recovered_plan,
-                        json_each(recovered_plan.metadata, '$.recoverySupersededTaskIds') AS superseded
-                   WHERE recovered_plan.id = json_extract(
-                     candidate.payload,
-                     '$.liveSpendRequest.parameters.pantheonProduction.planId'
-                   )
-                     AND superseded.value = earlier.id
-                 )
-               )
-               AND (
-                 earlier.priority < candidate.priority
-                 OR (earlier.priority = candidate.priority AND earlier.created_at < candidate.created_at)
-                 OR (earlier.priority = candidate.priority AND earlier.created_at = candidate.created_at AND earlier.id < candidate.id)
-               )
-           )
-         ORDER BY CASE candidate.status WHEN 'queued' THEN 0 ELSE 1 END,
-                  candidate.priority ASC, candidate.created_at ASC, candidate.id ASC
-         LIMIT 1
-       ) AND status IN ('queued', 'planned')
+       WHERE id = ? AND status IN ('queued', 'planned')
        RETURNING *`,
-    ).get(token, claimedAt, claimedAt, claimedAt, ...filterParams);
+    ).get(token, claimedAt, claimedAt, claimedAt, candidate.id);
     if (!task) {
       db.exec("COMMIT");
       return null;
@@ -201,7 +273,14 @@ function claimNextTask(db, options = {}) {
       ],
     );
     db.exec("COMMIT");
-    return { task: hydrateTask(task), attemptId, claimToken: token, leaseMs, leaseExpiresAt };
+    return {
+      task: hydrateTask(task),
+      attemptId,
+      claimToken: token,
+      leaseMs,
+      leaseExpiresAt,
+      guardResult,
+    };
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;

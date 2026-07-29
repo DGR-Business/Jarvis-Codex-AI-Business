@@ -9,8 +9,9 @@ Technical steward: Jarvis (Codex)
 
 Pantheon is a local, desktop-first AI business operating system. Its purpose is
 to let a supervised team of specialist AI workers investigate, build, launch,
-measure, and improve online ventures while Daniel remains the owner and final
-decision-maker for consequential actions.
+measure, and improve online ventures while Daniel remains the owner, strategic
+guide, and final approver for consequential actions rather than the routine
+operator.
 
 The system is successful when it produces profitable real-world results with
 low operator effort. Internal activity, documents, traces, and elaborate
@@ -76,8 +77,46 @@ exact starting blocker and ordered execution path but is superseded as an
 active instruction by
 `docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`. The proof
 records unchanged customer hashes, complete QA coverage, the one approved
-recheck, the terminal non-pass result, browser evidence, and remaining release
+recheck, the terminal non-pass result, browser evidence, and passed release
 gates.
+
+The active implementation directive is
+`docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
+Its exact goal is:
+
+> Make Pantheon’s current release the canonical, compatibility-verified
+> baseline; align what the system reports with what it can actually prove;
+> establish one channel-consistent path from a selected offer to attributable
+> buyer and cash evidence; prove the owner journey end to end; and prepare the
+> next commercial test without contacting customers, publishing, or spending
+> money until separately approved.
+
+The local implementation is now a schema-26 release candidate. Production state
+has been reconciled, and the owner screens now report the commercial position
+that durable evidence can support. Current records contain zero active external
+tests, zero verified buyers, zero attributable cash evidence, and zero settled
+net cash contribution; the owner result is withheld rather than presenting
+those empty records as a tested business outcome. No buyer contact, publication,
+advertising, account action, or external spend occurred.
+
+The candidate has passed its local tests, lint, clean-install and dependency
+checks, real-browser owner journey, Doctor, database migration, and two
+independent encrypted-recovery drills. Implementation checkpoint `d039d8b` is
+local on `codex/commercial-truth-hardening`; this documentation reconciliation
+will follow it. The released online `main` baseline remains `f61d7eb` until the
+candidate is pushed, passes pull-request CI, and is merged. The candidate must
+therefore not yet be described as the canonical online release.
+
+The next commercial work is bounded pre-venture diligence for a distinct,
+low-touch Social Media Manager Client Approval & Scope Guard Kit at an initial
+A$29 price hypothesis. Etsy is the primary channel hypothesis and Gumroad is a
+fallback hypothesis. Neither channel, the price, the buyer, the offer, the
+format, nor the test rules are proved. Diligence may recommend `research_more`,
+`revise`, `reject`, or retaining cash; it does not itself create build,
+production, or external-test authority. The current versioned readiness record
+is `research_more`, with the offer marked `revise`; it grants no build or live
+test authority. This work does not reopen, revise, or rename the stopped Client
+Control and Profitability Workbook.
 
 `digital_product_v1` is one registered, non-universal kit. Generic commercial
 logic has no Gumroad-first or digital-product-first channel assumption. The
@@ -105,6 +144,28 @@ The commercial loop is:
 Every meaningful action must carry a hypothesis, expected measure, deadline,
 actual result, learning, and next money move. A task without a commercial
 purpose is support work and must not crowd the operator view.
+
+## Owner-Absent Operating Policy
+
+Pantheon is being built for brand-operated, low-touch ownership. Daniel supplies
+strategy, guidance, and exact protected approvals. He is not the intended
+routine caller, email sender, marketplace publisher, advertiser, fulfiller, or
+monitor.
+
+Brand-operated does not mean anonymous, deceptive, or identity-evasive. A
+venture may operate without Daniel's face, personal voice, or daily labour, but
+Pantheon must represent the brand, offer, sender, caller, and evidence
+truthfully. Platform identity, KYC, OAuth, MFA, legal acceptance, or other
+owner-only controls may still require Daniel when law or the service requires
+it.
+
+Voice, email, messaging, marketplace, publishing, advertising, customer-service,
+and fulfilment adapters are a destination, not present authority. Before live
+use, each requires a venture-scoped purpose and credential, dry-run path,
+health/status surface, exact approval rule, cost limits, receipts, event and
+attribution records, monitoring, and safe timeout and unknown-outcome handling.
+The idea that an internet buyer can be reached through an appropriate channel
+is an aspiration; actual buyer access must be proved lawfully for each channel.
 
 ## System Boundaries
 
@@ -285,10 +346,23 @@ Pantheon default.
   remaining monthly mandate.
 - Unknown post-dispatch outcomes remain counted as possible exposure until
   provider billing is reconciled.
+- Buyer and cash evidence must state whether it came from an attributable
+  platform import or a manual operator-attested record backed by a retained
+  receipt, invoice, settlement reference, or equivalent source. The two routes
+  remain visibly distinct and deduplicate against exact transaction identity.
+- Three independent paying buyers and positive actual net cash contribution in
+  AUD are the commercial proof gate. Net cash contribution includes revenue,
+  refunds, platform and payment fees, advertising, fulfilment, paid tools, model
+  usage, and every other attributable cash cost.
+- A model verdict, prepared listing, favourite, enquiry, estimated margin, or
+  technically passing build cannot satisfy the commercial proof gate.
 
 ## Roadmap
 
-### Now
+### Closed Buyer-Intent Result (historical "Now")
+
+This subsection preserves the completed 2026-07-29 closeout position. It is not
+an instruction to reopen the terminal build.
 
 - Keep the Social Media Manager Client Control and Profitability Workbook build
   permanently stopped. The zero-spend QA refresh preserved all seven customer
@@ -338,7 +412,10 @@ Pantheon default.
   future estimates. Keep estimates visibly separate from reconciled usage and
   subscription cash outflow.
 
-### Next
+### Closed Continuation State (historical "Next")
+
+This subsection preserves the release instructions recorded when the terminal
+buyer-intent work closed. The current plan below supersedes it.
 
 - Keep the released workflow terminally stopped and Pantheon in Standby. Its
   local, browser, clean-install, Doctor, dependency, encrypted-recovery, health,
@@ -357,6 +434,50 @@ Pantheon default.
 - After a case clears every gate, implement only the Venture Kit required by
   that opportunity. Venture Factory creates an inactive venture; production and
   every external action remain separate gates.
+
+### Now
+
+- Preserve the exact schema-26 local candidate and complete its online release
+  gate without altering the proven source: one-time GitHub authentication, push,
+  pull request, private CI, and merge. Until that succeeds, released online
+  `main` remains `f61d7eb`, while local implementation checkpoint `d039d8b` plus
+  its documentation follow-up remain the candidate.
+- Retain the reconciled production truth: no active external test, verified
+  current buyer, attributable current cash evidence, or settled net cash
+  contribution. Historical work remains available in audit views but cannot
+  compete with current owner decisions.
+- Use the implemented platform-import and manual receipt-backed routes for future
+  attributable buyer-and-cash evidence. Keep estimates, cash paid, provider
+  costs, revenue, refunds, and actual net cash contribution distinct.
+- Scope the next commercial work to bounded pre-venture diligence for the new
+  Social Media Manager Client Approval & Scope Guard Kit. Revalidate the buyer,
+  problem, low-touch offer, format, A$29 price, Etsy-primary route, Gumroad
+  fallback, attribution, reach, duration, economics, and revise or stop rules.
+- Keep this work preparation-only at A$0 external spend. No customer contact,
+  calls, emails, messages, publication, advertising, account action, KYC, OAuth,
+  MFA, legal acceptance, or money movement is authorised.
+
+### Next
+
+- Record the new kit's evidence-backed readiness outcome as build, research more,
+  revise, reject, or retain cash. Do not force production to make the system look
+  active.
+- If readiness passes, present one protected external-test proposal with current
+  channel evidence, exact cohort and attribution, expected cost, expected net
+  cash contribution, and diagnose/revise/stop rules.
+- Require a separate exact acceptance of that proposal and then a separate exact
+  activation. Each remains single-use, evidence-bound, owner-visible, and
+  protected; diligence or technical readiness cannot silently activate a
+  venture or external test.
+- Only after activation may Pantheon begin contract-bound work that its recorded
+  authority and adapter health actually permit.
+- Etsy remains a future protected setup decision. If selected, Daniel must decide
+  whether to complete the lawful one-time owner identity, bank or card, 2FA, and
+  seller-term steps, or direct Pantheon to exclude Etsy and assess another
+  channel. No choice is assumed by this plan.
+- Activation does not approve contact, publication, advertising, account work,
+  legal acceptance, or external spend. Each such action can begin only after its
+  own later exact approval and the relevant adapter-readiness proof.
 
 ### Later
 
@@ -457,6 +578,25 @@ Pantheon was returned to Standby. Nothing in this result is accepted as an
 independent quality pass, buyer proof, commercial validation, or publication
 authority.
 
+The prior release evidence remains valid for its exact commits. The schema-26
+commercial-truth and owner-absent readiness candidate has now passed its exact
+local suite, lint, clean install, dependency audit, production migration,
+commercial-history reconciliation with accounting-preservation checks, Doctor,
+real-browser owner journey, and dual encrypted-recovery proof. The final current
+recovery set is identified by
+`b5beeedc`; the separately reconstructed and retained rollback set is identified
+by `f2733fe4`. Both restored and completed a locked independent boot.
+
+Four older retained recovery sets could not authenticate under the current
+passphrase. They have not been deleted or altered. Daniel must later decide
+whether they should remain quarantined as historical evidence or be removed
+through a separately confirmed retention action.
+
+These local gates do not make the candidate an online release. Implementation
+checkpoint `d039d8b` and its documentation follow-up still require push,
+pull-request CI, and merge. Until those complete, `f61d7eb` remains the released
+online `main` baseline.
+
 Foundation is releasable only when:
 
 - encrypted source, database, and artifact backups restore successfully;
@@ -467,12 +607,20 @@ Foundation is releasable only when:
 - dashboard APIs require the signed local operator session;
 - browser proof passes at supported desktop sizes with no console errors or
   horizontal overflow;
-- the active cockpit contains no pilot decisions, outputs, runs, or test history;
+- the active cockpit contains no stale or actionable pilot decisions, outputs,
+  runs, or test history competing with current work; retained terminal history
+  remains available in its appropriate audit and historical views;
 - real accounting remains exact and recoverable.
 
 ## Durable Records
 
 - `docs/Pantheon Build Log.md`: current decisions, proof, and next work.
+- `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`:
+  active canonical-release, truth-reconciliation, evidence, owner-journey, and
+  next-kit readiness directive.
+- `docs/decisions/0009-owner-absent-low-touch-digital-kit-reentry.md`: accepted
+  owner-absent, truthful-brand, preparation boundary, new kit hypothesis, and
+  buyer-and-cash evidence decision.
 - `docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`: exact
   customer hashes, complete QA evidence, one approved recheck, terminal
   non-pass result, browser proof, passed release gates, and exact private CI.
@@ -485,8 +633,8 @@ Foundation is releasable only when:
 - `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`: exact Job Object,
   repeated-cycle, forced-failure, ordinary-suite, and first-CI evidence.
 - `docs/plans/PANTHEON-AGENT-ASSURANCE-AND-OPENAI-INTEGRATION-HARDENING-2026-07-28.md`:
-  active harness, trace, evaluation, guardrail, and operator-observability
-  implementation directive.
+  completed harness, trace, evaluation, guardrail, and operator-observability
+  directive.
 - `docs/architecture/PANTHEON-OPENAI-CAPABILITY-ADOPTION-ROADMAP.md`: explicit
   future OpenAI capability triggers, reasons for deferral, and release gates.
 - `docs/decisions/0007-agent-assurance-before-capability-expansion.md`: accepted
@@ -511,13 +659,16 @@ Foundation is releasable only when:
 - `docs/plans/PANTHEON-COMMERCIAL-OPERATING-SYSTEM-EXECUTION-PLAN-2026-07-18.md`:
   completed foundation execution directive and first-use gates.
 - `docs/operating-procedures.md`: operating and recovery procedures.
-- `docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md`: active worker
-  operations scope, gates, receipt contract, and implementation boundary.
+- `docs/plans/AUTONOMOUS-AGENT-OPERATIONS-FOUNDATION-PHASE-1.md`: completed Phase
+  1 worker-operations scope, gates, receipt contract, and implementation
+  boundary; wider autonomy remains gated.
 - `docs/decisions/0006-autonomous-agent-operations-foundation.md`: accepted
   fixed-team and supervised-operations decision.
 - `docs/architecture/README.md`: index of current architecture records.
-- `docs/commercial/GUMROAD-LAUNCH-GATE.md`: launch requirements.
+- `docs/commercial/GUMROAD-LAUNCH-GATE.md`: conditional historical
+  Gumroad-specific launch requirements; not a generic or selected current
+  channel gate.
 - `docs/reviews/PRE-FIRST-USE-ENGINEERING-AND-SECURITY-REVIEW-2026-07-17.md`:
-  current engineering review.
+  historical first-use engineering review.
 - `archive/historical/`: superseded plans, pilot reviews, prior logs, and legacy
   implementations retained for reference only.

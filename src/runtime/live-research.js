@@ -9,6 +9,10 @@ const {
   configuredEnvironmentName,
   environmentValue,
 } = require("../adapters/pantheon-environment");
+const {
+  preflightCommercialWrite,
+  requireExistingCommercialTaskBinding,
+} = require("./commercial-prewrite-guard");
 
 const MIN_LIVE_RESEARCH_BUDGET_CENTS = 60;
 const MAX_LIVE_RESEARCH_BUDGET_CENTS = 5000;
@@ -70,8 +74,29 @@ function approvalIdForRequest(db, taskId, workflowId, requestedAt) {
 }
 
 function requestLiveResearch(db, workflowId, options = {}) {
-  const workflow = hydrateWorkflow(get(db, "SELECT * FROM workflows WHERE id = ?", [workflowId]));
-  if (!workflow) throw new Error(`Workflow not found: ${workflowId}`);
+  const workflowRow = get(db, "SELECT * FROM workflows WHERE id = ?", [workflowId]);
+  const taskId = `task_live_research_${safeId(workflowId)}`;
+  const authority = preflightCommercialWrite(db, {
+    workflow: workflowRow,
+    workflowId,
+    options,
+    rootTexts: [
+      options.title,
+      options.reason,
+      options.text,
+    ],
+    taskId,
+    taskKind: "live_market_research",
+    taskTitle: options.title || "Live research request",
+  });
+  const workflow = hydrateWorkflow(workflowRow);
+  const commercialTestContract = authority.commercialTestContract;
+  const existingTaskRow = get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]);
+  requireExistingCommercialTaskBinding(db, {
+    task: existingTaskRow,
+    workflow: workflowRow,
+    workflowSafety: authority.workflowSafety,
+  });
 
   const command = latestCommand(db, workflowId);
   const sourceTask = sourceResearchTask(db, workflowId);
@@ -79,7 +104,6 @@ function requestLiveResearch(db, workflowId, options = {}) {
   const channel = workflow.metadata.channel || sourceTask?.payload?.channel || workflow.type || "Business Idea";
   const amountCents = normalizeBudgetCents(options.estimatedCostCents);
   const ts = now();
-  const taskId = `task_live_research_${safeId(workflowId)}`;
   const approvalId = approvalIdForRequest(db, taskId, workflowId, ts);
   const title = `Live research evidence for ${subject}`;
   const reason = options.reason || "Current market, competitor, pricing, and risk evidence is required before treating this workflow as commercially validated.";
@@ -108,6 +132,7 @@ function requestLiveResearch(db, workflowId, options = {}) {
     throw new Error("Live research is blocked because the requested input ceiling exceeds the low-context research limit.");
   }
   const payload = {
+    ...(commercialTestContract ? { commercialTestContract } : {}),
     subject,
     channel,
     sourceTaskId: sourceTask?.id || null,
@@ -209,7 +234,7 @@ function requestLiveResearch(db, workflowId, options = {}) {
     provider: payload.liveSpendRequest.provider,
   };
 
-  const existing = hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]));
+  const existing = hydrateTask(existingTaskRow);
   if (!existing) {
     run(
       db,
@@ -277,7 +302,23 @@ function defaultSmokeInstruction() {
   ].join(" ");
 }
 
-function createLiveResearchSmokeTest(db, options = {}) {
+function retiredLiveSmokeError(pathName) {
+  const error = new Error(
+    `${pathName} is permanently retired because caller-defined smoke text could create unbound commercial work, approvals, and cost records.`,
+  );
+  error.code = "commercial_route_retired";
+  error.statusCode = 410;
+  return error;
+}
+
+function runningUnderNodeTest() {
+  return Boolean(process.env.NODE_TEST_CONTEXT)
+    || process.execArgv.some((argument) => (
+      argument === "--test" || argument.startsWith("--test-")
+    ));
+}
+
+function createLiveResearchSmokeTestOperation(db, options = {}) {
   const estimatedCostCents = normalizeBudgetCents(options.estimatedCostCents || Math.min(Number(CONFIG.liveResearchDefaultBudgetCents || 200), 100));
   const planned = createCommandPlan(db, {
     text: options.text || defaultSmokeInstruction(),
@@ -308,8 +349,20 @@ function createLiveResearchSmokeTest(db, options = {}) {
   };
 }
 
+function createLiveResearchSmokeTest() {
+  throw retiredLiveSmokeError("createLiveResearchSmokeTest");
+}
+
+function createLiveResearchSmokeTestForTest(db, options = {}) {
+  if (!runningUnderNodeTest()) {
+    throw new Error("Live-research smoke fixtures are available only inside Node's isolated test runner.");
+  }
+  return createLiveResearchSmokeTestOperation(db, options);
+}
+
 module.exports = {
   MIN_LIVE_RESEARCH_BUDGET_CENTS,
   createLiveResearchSmokeTest,
+  createLiveResearchSmokeTestForTest,
   requestLiveResearch,
 };

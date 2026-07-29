@@ -31,6 +31,10 @@ const {
   canPrepareReviewedRetry,
 } = require("./live-ai-retry-policy");
 const { configuredEnvironmentName } = require("../adapters/pantheon-environment");
+const {
+  preflightCommercialWrite,
+  requireExistingCommercialTaskBinding,
+} = require("./commercial-prewrite-guard");
 
 const MIN_LIVE_AI_WORKER_BUDGET_CENTS = 40;
 const MAX_LIVE_AI_WORKER_BUDGET_CENTS = 5000;
@@ -1171,8 +1175,32 @@ function refreshOutdatedLiveAiWorkerApprovals(db, options = {}) {
 }
 
 function requestLiveAiWorker(db, workflowId, options = {}) {
-  const workflow = hydrateWorkflow(get(db, "SELECT * FROM workflows WHERE id = ?", [workflowId]));
-  if (!workflow) throw new Error(`Workflow not found: ${workflowId}`);
+  const workflowRow = get(db, "SELECT * FROM workflows WHERE id = ?", [workflowId]);
+  const requestSuffix = options.requestKey ? `_${safeId(options.requestKey)}` : "";
+  const taskId = `task_live_worker_${safeId(workflowId)}${requestSuffix}`;
+  const authority = preflightCommercialWrite(db, {
+    workflow: workflowRow,
+    workflowId,
+    options,
+    rootTexts: [
+      options.taskTitle,
+      options.approvalTitle,
+      options.reason,
+      options.expectedOutput,
+      options.expectedMetric,
+    ],
+    taskId,
+    taskKind: "live_ai_worker_execution",
+    taskTitle: options.taskTitle || "Live AI worker request",
+  });
+  const workflow = hydrateWorkflow(workflowRow);
+  const commercialTestContract = authority.commercialTestContract;
+  const existingTaskRow = get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]);
+  requireExistingCommercialTaskBinding(db, {
+    task: existingTaskRow,
+    workflow: workflowRow,
+    workflowSafety: authority.workflowSafety,
+  });
   ensureAiTeam(db);
 
   const command = latestCommand(db, workflowId);
@@ -1190,8 +1218,6 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
   const channel = businessContext.channel || workflow.metadata.channel || sourceTask?.payload?.channel || workflow.type || "Business Idea";
   const amountCents = normalizeBudgetCents(options.estimatedCostCents);
   const ts = now();
-  const requestSuffix = options.requestKey ? `_${safeId(options.requestKey)}` : "";
-  const taskId = `task_live_worker_${safeId(workflowId)}${requestSuffix}`;
   const approvalId = approvalIdForRequest(db, taskId, workflowId, ts);
   const title = options.taskTitle || `Live ${workerDefinition.name} test for ${subject}`;
   const reason = options.reason || "A live OpenAI-backed worker should only run after the dry-run path is reviewable, the cost cap is accepted, and provider readiness passes.";
@@ -1314,6 +1340,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     throw new Error("Live execution is blocked because the requested input ceiling exceeds the approved hosted-tool limit.");
   }
   const payload = {
+    ...(commercialTestContract ? { commercialTestContract } : {}),
     requestKey: options.requestKey ? safeId(options.requestKey) : null,
     subject,
     channel,
@@ -1530,7 +1557,7 @@ function requestLiveAiWorker(db, workflowId, options = {}) {
     ventureContextException: contextException?.binding || null,
   };
 
-  const existing = hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [taskId]));
+  const existing = hydrateTask(existingTaskRow);
   if (!existing) {
     run(
       db,
@@ -1638,7 +1665,23 @@ function defaultSmokeInstruction() {
   ].join(" ");
 }
 
-function createLiveAiWorkerSmokeTest(db, options = {}) {
+function retiredLiveSmokeError(pathName) {
+  const error = new Error(
+    `${pathName} is permanently retired because caller-defined smoke text could create unbound commercial work, approvals, and cost records.`,
+  );
+  error.code = "commercial_route_retired";
+  error.statusCode = 410;
+  return error;
+}
+
+function runningUnderNodeTest() {
+  return Boolean(process.env.NODE_TEST_CONTEXT)
+    || process.execArgv.some((argument) => (
+      argument === "--test" || argument.startsWith("--test-")
+    ));
+}
+
+function createLiveAiWorkerSmokeTestOperation(db, options = {}) {
   const estimatedCostCents = normalizeBudgetCents(options.estimatedCostCents || Math.min(Number(CONFIG.liveModelDefaultBudgetCents || 100), 100));
   const planned = createCommandPlan(db, {
     text: options.text || defaultSmokeInstruction(),
@@ -1670,11 +1713,23 @@ function createLiveAiWorkerSmokeTest(db, options = {}) {
   };
 }
 
+function createLiveAiWorkerSmokeTest() {
+  throw retiredLiveSmokeError("createLiveAiWorkerSmokeTest");
+}
+
+function createLiveAiWorkerSmokeTestForTest(db, options = {}) {
+  if (!runningUnderNodeTest()) {
+    throw new Error("Live-AI smoke fixtures are available only inside Node's isolated test runner.");
+  }
+  return createLiveAiWorkerSmokeTestOperation(db, options);
+}
+
 module.exports = {
   DEMAND_VALIDATOR_FIXTURE_CAPABILITY,
   MIN_LIVE_AI_WORKER_BUDGET_CENTS,
   SUPPLIED_EVIDENCE_CONTEXT_EXCEPTION,
   createLiveAiWorkerSmokeTest,
+  createLiveAiWorkerSmokeTestForTest,
   preDispatchRecoveryStatus,
   prepareReviewedLiveAiWorkerRetry,
   refreshOutdatedLiveAiWorkerApproval,

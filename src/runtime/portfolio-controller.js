@@ -29,6 +29,19 @@ const { ensureVentureKitRegistry, listVentureKits } = require("./venture-kit-reg
 const MAX_BOUNDED_DISCOVERY_ROUNDS = 2;
 const MAX_TECHNICAL_DISCOVERY_FAILURES = 2;
 
+function requireBoundedPreventureResearchAuthority(pathName) {
+  const error = new Error(
+    "Legacy pre-venture portfolio research is retired until Pantheon has a narrow, auditable pre-venture research authority.",
+  );
+  error.statusCode = 410;
+  error.code = "legacy_commercial_path_retired";
+  error.details = {
+    path: pathName,
+    replacement: "bounded_preventure_research_authority_pending",
+  };
+  throw error;
+}
+
 function cleanOpportunityTitle(value) {
   return String(value || "")
     .replace(/^\s*\d+\s*[.)-]\s*/, "")
@@ -362,6 +375,9 @@ function activePortfolioWorkRound(db) {
 }
 
 function startTargetedInvestmentReview(db, input = {}) {
+  requireBoundedPreventureResearchAuthority(
+    "portfolio_targeted_investment_review_start",
+  );
   ensurePortfolioController(db);
   const sourceOpportunityId = String(input.sourceOpportunityId || "").trim();
   const decisionGap = String(input.decisionGap || "").trim();
@@ -609,6 +625,9 @@ function discoveryPrompt(roundNumber, priorRound = null, operatorIdea = "") {
 }
 
 function startPortfolioDiscovery(db, input = {}) {
+  requireBoundedPreventureResearchAuthority(
+    "portfolio_discovery_start",
+  );
   ensurePortfolioController(db);
   const rounds = portfolioRounds(db);
   const evidenceRounds = rounds.filter((round) => round.status !== "stopped_unknown_outcome");
@@ -709,66 +728,96 @@ function startPortfolioDiscovery(db, input = {}) {
 
 function getPortfolioState(db) {
   const discoveryRounds = portfolioRounds(db);
-  const rounds = portfolioWorkRounds(db);
+  const recordedRounds = portfolioWorkRounds(db);
   const evidenceRounds = discoveryRounds.filter((round) => round.status !== "stopped_unknown_outcome");
   const technicalFailures = discoveryRounds.filter((round) => round.status === "stopped_unknown_outcome");
   const recoveryRounds = discoveryRounds.filter((round) => round.metadata.developerRecovery === true);
   const failedRecovery = recoveryRounds.some((round) => round.status === "stopped_unknown_outcome");
-  const targetedRounds = rounds.filter((round) => round.mode === "targeted_diligence");
+  const targetedRounds = recordedRounds.filter((round) => round.mode === "targeted_diligence");
   const opportunityState = getOpportunityState(db);
   const cases = listInvestmentCases(db);
   const selectedCase = cases.find((item) => item.recommendation === "advance" && item.status === "decided") || null;
-  const activeRound = rounds.find((round) => [
+  const retainedActiveRound = recordedRounds.find((round) => [
     "researching",
     "validating",
     "checking_economics",
     "investment_review",
   ].includes(round.status)) || null;
-  const nextAction = activeRound
+  const rounds = recordedRounds.map((round) => {
+    const retainedLiveStatus = [
+      "researching",
+      "validating",
+      "checking_economics",
+      "investment_review",
+    ].includes(round.status);
+    return {
+      ...round,
+      recordedStatus: round.status,
+      status: retainedLiveStatus ? "retained_read_only" : round.status,
+      readOnly: true,
+      live: false,
+      legacyPathRetired: true,
+    };
+  });
+  const activeRound = retainedActiveRound
+    ? rounds.find((round) => round.id === retainedActiveRound.id)
+    : null;
+  const recordedCurrentTask = opportunityState.currentTask;
+  const currentTask = recordedCurrentTask
     ? {
-      label: "Pantheon is working",
-      detail: `Current stage: ${String(activeRound.status).replaceAll("_", " ")}.`,
+      ...recordedCurrentTask,
+      recordedStatus: recordedCurrentTask.status,
+      status: "retained_read_only",
+      readOnly: true,
+      live: false,
+      legacyPathRetired: true,
+    }
+    : null;
+  const nextAction = retainedActiveRound
+    ? {
+      status: "retained_read_only",
+      label: "Earlier portfolio research retained",
+      detail: `The earlier round was recorded at ${String(retainedActiveRound.status).replaceAll("_", " ")}. It is read-only now; no portfolio research is running.`,
       action: null,
     }
     : selectedCase
       ? {
-        label: "Investment case ready",
-        detail: "The next goal is to implement the venture kit required by the selected opportunity.",
+        status: "retained_read_only",
+        label: "Earlier investment case retained",
+        detail: "The recorded investment case is read-only. Any new work needs a separate exact current commercial authority.",
         action: null,
       }
       : failedRecovery
         ? {
+          status: "retained_read_only",
           label: "Research could not be completed",
-          detail: "The bounded technical recovery also stopped without usable evidence. Pantheon has not reached a commercial conclusion.",
+          detail: "The retained technical recovery stopped without usable evidence. No research is running and Pantheon has not reached a commercial conclusion.",
           action: null,
         }
-        : technicalFailures.length >= MAX_TECHNICAL_DISCOVERY_FAILURES
-        && recoveryRounds.length === 0
+        : recordedRounds.length === 0
         ? {
-          label: "Run the repaired market scan",
-          detail: "The earlier calls produced no usable evidence. Jarvis simplified the Scout and this is the single bounded recovery.",
-          action: "start_portfolio_discovery",
-          developerRecovery: true,
-        }
-        : evidenceRounds.length < MAX_BOUNDED_DISCOVERY_ROUNDS
-        ? {
-          label: evidenceRounds.length
-            ? "Run the second evidence round"
-            : technicalFailures.length
-              ? "Run a replacement evidence round"
-              : "Find investable opportunities",
-          detail: "Pantheon will research five spaces, compare three finalists, and stop before production.",
-          action: "start_portfolio_discovery",
+          status: "authority_required",
+          label: "Commercial research needs an authorised plan",
+          detail: "No portfolio research is running. The retired broad-research path cannot create work; a narrow, auditable pre-venture authority is required first.",
+          action: null,
         }
         : {
-          label: "No investment selected",
+          status: "retained_read_only",
+          label: "Earlier portfolio evidence retained",
           detail: targetedRounds.length
-            ? "The bounded discovery and targeted review are complete. Pantheon will not force a weak opportunity into production."
-            : "Both bounded rounds are complete. Pantheon will not force a weak opportunity into production.",
+            ? "The earlier discovery and targeted review are retained for audit. No portfolio research is running."
+            : "The earlier discovery rounds are retained for audit. No portfolio research is running.",
           action: null,
         };
   return {
     schema: "pantheon.portfolio-controller.v1",
+    status: activeRound || recordedRounds.length
+      ? "retained_read_only"
+      : "authority_required",
+    readOnly: true,
+    liveWork: false,
+    legacyCreationPath: "retired",
+    requiredAuthority: "bounded_preventure_research_authority_pending",
     policy: {
       maximumBoundedRounds: MAX_BOUNDED_DISCOVERY_ROUNDS,
       maximumTechnicalFailuresBeforeDeveloperRecovery: MAX_TECHNICAL_DISCOVERY_FAILURES,
@@ -779,7 +828,7 @@ function getPortfolioState(db) {
       noForcedInvestment: true,
     },
     activeRound,
-    currentTask: opportunityState.currentTask,
+    currentTask,
     rounds,
     evidenceRoundCount: evidenceRounds.length,
     technicalFailureCount: technicalFailures.length,

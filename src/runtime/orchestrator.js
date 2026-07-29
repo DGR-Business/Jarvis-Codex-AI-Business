@@ -15,9 +15,17 @@ const { ensureSpendApproval } = require("./spend-gate");
 const { upsertWorkflowScorecard } = require("./scorecard");
 const { consumeApproval, validateApprovalScope } = require("./approval-scope");
 const { reserveBudget, resolveReservation } = require("./cost-ledger");
-const { claimNextTask, completeTaskClaim, releaseTaskClaim } = require("./task-claims");
+const {
+  claimNextTask,
+  completeTaskClaim,
+  releaseTaskClaim,
+} = require("./task-claims");
 const { finalizeAgentExecutionReceipt } = require("./agent-execution-evidence");
 const { activateRetentionPolicy } = require("./retention-policy");
+const {
+  SEEDED_DRY_RUN_EXECUTION_CONTRACT_SCHEMA,
+  classifyCommercialTaskSafety,
+} = require("./commercial-authority");
 
 function hydrateTask(task) {
   if (!task) return null;
@@ -34,23 +42,6 @@ function hydrateWorkflow(workflow) {
     ...workflow,
     metadata: fromJson(workflow.metadata),
   };
-}
-
-function nextRunnableTask(db, workflowId) {
-  const params = [];
-  let clause = "status IN ('queued', 'planned')";
-  if (workflowId) {
-    clause += " AND workflow_id = ?";
-    params.push(workflowId);
-  }
-  return hydrateTask(
-    get(
-      db,
-      `SELECT * FROM tasks WHERE ${clause}
-       ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END, priority ASC, created_at ASC LIMIT 1`,
-      params,
-    ),
-  );
 }
 
 function blockedTasks(db, workflowId) {
@@ -139,7 +130,27 @@ async function executeTask(db, task, options = {}) {
   }
 
   if (task.kind === "publish_digital_product_dry_run") {
-    const result = await createDigitalProductDraft(workflow, { dryRun: true });
+    const executionOptions = Object.freeze({ dryRun: true });
+    const isSeededDiagnostic = options.taskSafety?.code
+      === "diagnostic_task";
+    const seededExecution = options.taskSafety?.executionContract || null;
+    if (
+      isSeededDiagnostic
+      && (
+        seededExecution?.schema
+          !== SEEDED_DRY_RUN_EXECUTION_CONTRACT_SCHEMA
+        || typeof seededExecution.execute !== "function"
+      )
+    ) {
+      const error = new Error(
+        "The exact seeded dry-run task lost its verified execution contract before dispatch.",
+      );
+      error.code = "seeded_dry_run_execution_contract_missing";
+      throw error;
+    }
+    const result = isSeededDiagnostic
+      ? await seededExecution.execute()
+      : await createDigitalProductDraft(workflow, executionOptions);
     run(
       db,
       `INSERT INTO costs (id, workflow_id, category, source, status, amount_cents, currency, occurred_at, metadata)
@@ -389,7 +400,22 @@ async function runOnce(db, options = {}) {
     workflowId: options.workflowId,
     taskId: options.taskId,
     claimant: options.claimant || "orchestrator",
+    guard: (candidate) => classifyCommercialTaskSafety(db, candidate.id),
   });
+  if (claim?.guardBlocked) {
+    const commercialSafety = claim.guardResult;
+    return {
+      status: "safety_blocked",
+      reason: commercialSafety.code || "commercial_authority_required",
+      message: commercialSafety.message,
+      task: claim.task,
+      commercialAuthority: {
+        allowed: false,
+        required: commercialSafety.requiresCommercialAuthority,
+        code: commercialSafety.code,
+      },
+    };
+  }
   if (!claim) {
     if (options.taskId) {
       const target = hydrateTask(get(db, "SELECT * FROM tasks WHERE id = ?", [options.taskId]));
@@ -520,6 +546,7 @@ async function runOnce(db, options = {}) {
     const result = await executeTask(db, task, {
       taskClaim: claim,
       spendApprovalState: spendGate?.state || null,
+      taskSafety: claim.guardResult || null,
     });
     const done = now();
     const incurredEstimateCents = Number(

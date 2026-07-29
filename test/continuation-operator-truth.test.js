@@ -18,9 +18,9 @@ const {
 const {
   getAgentRunDetail,
   getAgentRunsState,
-  getBusinessTestsState,
   getCockpitState,
-  getTestDetail,
+  getHistoricalBusinessTestsState: getBusinessTestsState,
+  getHistoricalTestDetail: getTestDetail,
 } = require("../src/runtime/cockpit-state");
 const { ensureAiTeam } = require("../src/runtime/ai-team");
 
@@ -194,10 +194,14 @@ test("operator projections use the customer product title without rewriting sign
       .flat()
       .find((item) => item.id === fixture.experimentId);
 
-    assert.equal(cockpit.currentTest.name, CUSTOMER_PRODUCT_TITLE);
-    assert.equal(cockpit.buyerIntentValidation.name, CUSTOMER_PRODUCT_TITLE);
-    assert.equal(cockpit.currentTest.status, "product_needs_attention");
-    assert.notEqual(cockpit.currentTest.status, "ready");
+    assert.equal(cockpit.currentTest, null);
+    assert.equal(cockpit.buyerIntentValidation, null);
+    assert.deepEqual(cockpit.historicalCommercialContext, {
+      exists: true,
+      label: "Historical buyer-intent record retained for audit only.",
+      authoritative: false,
+      currentBuyerOrCashEvidence: false,
+    });
     assert.equal(surfacedTest.name, CUSTOMER_PRODUCT_TITLE);
     assert.equal(surfacedTest.status, "candidate");
     assert.equal(surfacedTest.workflowStatus, "product_needs_attention");
@@ -240,7 +244,6 @@ test("buyer-intent projections expose the exact 100-visit and 30-day decision co
     const detail = getTestDetail(runtime.db, fixture.experimentId);
 
     for (const measurement of [
-      cockpit.buyerIntentValidation.measurement,
       testsState.buyerIntentValidation.measurement,
       detail.buyerIntentValidation.measurement,
     ]) {
@@ -542,25 +545,35 @@ test("terminal inspection-recheck outcomes permanently stop and cancel the pre-v
       const cockpit = getCockpitState(runtime.db);
       const testsState = getBusinessTestsState(runtime.db);
 
-      assert.equal(cockpit.buyerIntentValidation.status, "stopped_permanently");
-      assert.equal(cockpit.currentTest.id, fixture.experimentId);
-      assert.equal(cockpit.currentTest.status, "stopped_permanently");
-      assert.equal(cockpit.currentTest.storedStatus, "cancelled");
-      assert.equal(cockpit.currentTest.retainedTerminal, true);
-      assert.equal(cockpit.currentTest.marketTestRunning, false);
-      assert.equal(cockpit.currentTest.marketEvidenceRecorded, false);
-      assert.equal(cockpit.currentTest.marketResultCount, 0);
-      assert.equal(cockpit.currentTest.actionable, false);
-      assert.equal(cockpit.currentTest.name, CUSTOMER_PRODUCT_TITLE);
-      assert.equal(cockpit.currentTest.buyer, buyerIntentSpec.buyer);
-      assert.equal(cockpit.currentTest.offer, buyerIntentSpec.offer);
-      assert.equal(cockpit.currentTest.price_cents, buyerIntentSpec.priceCents);
-      assert.equal(cockpit.currentTest.channel, buyerIntentSpec.channel.label);
+      const historical = testsState.buyerIntentValidation;
+      assert.equal(cockpit.buyerIntentValidation, null);
+      assert.equal(cockpit.currentTest, null);
+      assert.deepEqual(cockpit.historicalCommercialContext, {
+        exists: true,
+        label: "Historical buyer-intent record retained for audit only.",
+        authoritative: false,
+        currentBuyerOrCashEvidence: false,
+      });
+      assert.equal(historical.status, "stopped_permanently");
+      assert.equal(historical.terminal, true);
+      assert.equal(historical.marketEvidenceRecorded, false);
+      assert.equal(historical.marketResultCount, 0);
+      assert.equal(historical.externalActionsAllowed, false);
+      assert.equal(historical.investmentCaseRemainsParked, true);
+      assert.equal(historical.name, CUSTOMER_PRODUCT_TITLE);
+      assert.equal(historical.buyer, buyerIntentSpec.buyer);
+      assert.equal(historical.offer, buyerIntentSpec.offer);
+      assert.equal(historical.priceCents, buyerIntentSpec.priceCents);
+      assert.equal(historical.channel.label, buyerIntentSpec.channel.label);
       assert.equal(
-        cockpit.currentTest.hypothesis,
+        historical.measurement.qualificationQuestion,
         buyerIntentSpec.measurement.qualificationQuestion,
       );
-      assert.equal(cockpit.currentTest.expected_metric, buyerIntentSpec.measurement.passRule);
+      assert.equal(historical.measurement.passRule, buyerIntentSpec.measurement.passRule);
+      assert.equal(cockpit.economics.cashContributionCents, null);
+      assert.equal(cockpit.economics.independentBuyers, null);
+      assert.equal(cockpit.economics.buyerProofStatus, "not_current");
+      assert.equal(cockpit.economics.cashContributionStatus, "not_current");
       assert.equal(
         get(
           runtime.db,
@@ -607,66 +620,41 @@ test("terminal inspection-recheck outcomes permanently stop and cancel the pre-v
     path.join(__dirname, "..", "public", "app.js"),
     "utf8",
   );
-  assert.match(source, /inspection_evidence_recheck_failed_terminal/);
-  assert.match(source, /inspection_evidence_recheck_declined_terminal/);
-  assert.match(source, /This product build is permanently stopped/);
-  assert.match(source, /will not retry, revise, or spend more on this build/i);
-  assert.match(
+  assert.doesNotMatch(
     source,
-    /No retry, revision, publication, marketplace action, or additional model spend is authorised/i,
+    /\/api\/tests\/\$\{encodeURIComponent\(id\)\}/,
+    "the retired legacy test-detail route must not remain reachable from the owner UI",
   );
+  assert.doesNotMatch(source, /data-kind="test"/);
   const renderCockpitStart = source.indexOf("function renderCockpit");
   const renderCockpitEnd = source.indexOf("\nfunction decisionTabs", renderCockpitStart);
   const renderCockpitProjection = source.slice(renderCockpitStart, renderCockpitEnd);
-  assert.match(renderCockpitProjection, /Retained commercial test/);
   assert.match(
     renderCockpitProjection,
-    /The stopped test remains visible as evidence\. It is not live, runnable, or proof of buyer demand\./,
+    /buyer and cash proof appears only from the verified commercial ledger/i,
   );
-  assert.match(
+  assert.match(renderCockpitProjection, /Actual net cash contribution/);
+  assert.match(renderCockpitProjection, /Not settled/);
+  assert.match(renderCockpitProjection, /Open Tests &amp; Results/);
+  assert.doesNotMatch(
     renderCockpitProjection,
-    /No market test is running\. No listing, visit, order, refund, or contribution result was recorded\./,
+    /Retained commercial test|terminalRetainedTest|marketResultCount|buyerIntentValidation/,
   );
-  assert.match(
-    renderCockpitProjection,
-    /retainedExposureTarget[\s\S]*qualified visits or \$\{retainedDurationDays\} days/,
-  );
-  assert.match(renderCockpitProjection, /No market test is running; the stopped path is retained as evidence\./);
-  assert.match(renderCockpitProjection, /terminalRetainedTest \? "Retained test" : "Current test"/);
-  assert.doesNotMatch(renderCockpitProjection, /qualifiedViewTarget|testDurationDays/);
-  assert.match(
-    renderCockpitProjection,
-    /terminalRetainedTest \? "" : `<button class="text-button" data-action="open-drawer"/,
-    "the retained terminal card must not expose an action or run control",
-  );
-  const renderTestsStart = source.indexOf("function renderTests");
-  const renderTestsEnd = source.indexOf("\nfunction initials", renderTestsStart);
-  const renderTestsProjection = source.slice(renderTestsStart, renderTestsEnd);
-  assert.match(
-    renderTestsProjection,
-    /buyerIntentValidation\.planId === productionPlan\?\.id/,
-  );
-  assert.match(
-    renderTestsProjection,
-    /const buyerIntentMeasurement = buyerIntentPlanMatches\s*\?\s*buyerIntentValidation\.measurement \|\| null\s*:\s*null/,
-  );
-  assert.match(
-    renderTestsProjection,
-    /const buyerIntentBoundaryTerminal = buyerIntentPlanMatches\s*&& buyerIntentValidation\.terminal === true/,
-  );
-  assert.match(renderTestsProjection, /Retained stopped-test rules/);
-  assert.match(
-    renderTestsProjection,
-    /exact 30-day and 100-visit rules for the stopped build/i,
-  );
-  assert.ok(
-    renderTestsProjection.indexOf("buyerIntentMeasurement.durationDays")
-      < renderTestsProjection.indexOf("data.pilotPolicy.testDurationDays"),
-    "a matching terminal validation must retain its exact contract before the generic fallback",
+  const ownerTestsStart = source.indexOf("function ownerTestsMarkup");
+  const ownerTestsEnd = source.indexOf("\nfunction renderTests", ownerTestsStart);
+  const ownerTestsProjection = source.slice(ownerTestsStart, ownerTestsEnd);
+  assert.match(ownerTestsProjection, /pantheon\.owner-tests-results\.v1/);
+  assert.match(ownerTestsProjection, /const history = ownerClosedTestHistory\(data\.closedHistory\)/);
+  assert.match(ownerTestsProjection, /if \(!current\)/);
+  assert.match(ownerTestsProjection, /No commercial test is authorised/);
+  assert.match(ownerTestsProjection, /data-read-only="true"/);
+  assert.doesNotMatch(
+    ownerTestsProjection,
+    /buyerIntentValidation|pilotPolicy|Retained stopped-test rules/,
   );
 });
 
-test("a later genuinely active test takes precedence over retained terminal evidence", () => {
+test("a later legacy active experiment cannot displace canonical commercial truth", () => {
   const runtime = makeRuntime();
   try {
     const terminal = insertBuyerIntentProjectionFixture(runtime.db, {
@@ -705,10 +693,15 @@ test("a later genuinely active test takes precedence over retained terminal evid
     );
 
     const cockpit = getCockpitState(runtime.db);
-    assert.equal(cockpit.buyerIntentValidation.terminal, true);
-    assert.equal(cockpit.currentTest.id, "experiment-later-active");
-    assert.equal(cockpit.currentTest.status, "ready");
-    assert.notEqual(cockpit.currentTest.retainedTerminal, true);
+    assert.equal(cockpit.buyerIntentValidation, null);
+    assert.equal(cockpit.historicalCommercialContext.exists, true);
+    assert.equal(cockpit.historicalCommercialContext.authoritative, false);
+    assert.equal(cockpit.historicalCommercialContext.currentBuyerOrCashEvidence, false);
+    assert.equal(cockpit.currentTest, null);
+    assert.equal(cockpit.economics.independentBuyers, null);
+    assert.equal(cockpit.economics.buyerProofStatus, "not_current");
+    assert.equal(cockpit.economics.cashContributionStatus, "not_current");
+    assert.equal(cockpit.economics.cashContributionCents, null);
   } finally {
     closeRuntime(runtime);
   }
@@ -722,63 +715,168 @@ test("dashboard copy separates cost truth, preserves buyer-intent boundaries, an
   assert.match(source, /"Estimated incurred cost"/);
   assert.match(source, /<span>Approved ceiling<\/span>/);
   assert.match(source, /The approved ceiling is an upper limit, not spend\./);
-  assert.match(source, /prove any eligible zero-spend local repair/);
-  assert.match(source, /eligible for an exact zero-spend local repair/);
+  assert.match(source, /Actual net cash contribution/);
+  assert.match(source, /Not settled/);
+  assert.doesNotMatch(source, /data-kind="test"/);
   assert.doesNotMatch(source, /authorising a fresh bounded revision/);
   assert.doesNotMatch(source, /create a the|any the/i);
 
-  const boundariesStart = source.indexOf("const buyerIntentPlanMatches");
-  const boundariesEnd = source.indexOf("${resultsPanel}", boundariesStart);
-  assert.notEqual(boundariesStart, -1);
-  assert.notEqual(boundariesEnd, -1);
-  const boundaries = source.slice(boundariesStart, boundariesEnd);
-  assert.match(boundaries, /buyerIntentMeasurement\s*\?/);
+  const ownerProofStart = source.indexOf("function ownerTestProofPresentation");
+  const ownerProofEnd = source.indexOf("\nfunction ownerTestEvidenceTone", ownerProofStart);
+  assert.notEqual(ownerProofStart, -1);
+  assert.notEqual(ownerProofEnd, -1);
+  const ownerProof = source.slice(ownerProofStart, ownerProofEnd);
+  assert.match(ownerProof, /netCash\.status === "settled"/);
+  assert.match(ownerProof, /netCash\.currency === "AUD"/);
+  assert.match(ownerProof, /Number\.isSafeInteger\(netCash\.amountCents\)/);
+  assert.match(ownerProof, /typeof proof\.commercialProofReached === "boolean"/);
+  assert.match(ownerProof, /netCash\.status === "not_settled"/);
+  assert.match(ownerProof, /netCash\.amountCents === null/);
   assert.match(
-    boundaries,
-    /buyerIntentMeasurement\.durationDays \|\| 30[\s\S]*buyerIntentMeasurement\.exposureTarget \|\| 100/,
+    ownerProof,
+    /cashLabel: settledCashValid[\s\S]*money\(netCash\.amountCents, "AUD"\)[\s\S]*unsettledCashValid[\s\S]*"Not settled"[\s\S]*"Withheld - needs review"/,
   );
-  assert.match(
-    boundaries,
-    /data\.pilotPolicy\.testDurationDays \|\| 14[\s\S]*data\.pilotPolicy\.qualifiedViewTarget \|\| 50/,
-  );
-  assert.ok(
-    boundaries.indexOf("buyerIntentMeasurement.durationDays")
-      < boundaries.indexOf("data.pilotPolicy.testDurationDays"),
-    "the exact buyer-intent branch must precede the generic pilot fallback",
-  );
+  assert.match(ownerProof, /verifiedPositive/);
+  assert.doesNotMatch(ownerProof, /pilotPolicy|qualifiedViewTarget|optionalPaidTestCents/);
 });
 
-test("dashboard does not offer discovery or run controls beside an approval-gated continuation", () => {
+test("owner Tests & Results exposes only the exact linked decision control", () => {
   const source = fs.readFileSync(
     path.join(__dirname, "..", "public", "app.js"),
     "utf8",
   );
-  const renderTestsStart = source.indexOf("function renderTests");
-  const renderTestsEnd = source.indexOf("\nfunction initials", renderTestsStart);
-  const renderTestsProjection = source.slice(renderTestsStart, renderTestsEnd);
+  const ownerTestsStart = source.indexOf("function ownerTestsMarkup");
+  const ownerTestsEnd = source.indexOf("\nfunction renderTests", ownerTestsStart);
+  const ownerTestsProjection = source.slice(ownerTestsStart, ownerTestsEnd);
 
-  assert.match(
-    renderTestsProjection,
-    /const activeDiscoveryRound = latestRound\s*&& \["researching", "validating", "checking_economics", "structuring_offer"\]\.includes\(latestRound\.status\)/,
-  );
-  assert.match(
-    renderTestsProjection,
-    /const hasProductionContinuation = Boolean\([\s\S]*buyerIntentPlanMatches[\s\S]*!\["complete", "completed", "cancelled", "archived"\]\.includes\(productionPlan\.status\)/,
-  );
-  assert.match(
-    renderTestsProjection,
-    /activeDiscoveryRound && !hasProductionContinuation \? `<button class="primary-button" data-action="run-pantheon"/,
-  );
-  assert.match(
-    renderTestsProjection,
-    /const runnableInternalTask = production\.currentTask\s*&& \["planned", "queued"\]\.includes\(production\.currentTask\.status\)/,
-  );
-  assert.match(
-    renderTestsProjection,
-    /productionPlan && \["quality_review", "preparing_launch"\]\.includes\(productionPlan\.status\) && runnableInternalTask/,
-  );
+  assert.match(ownerTestsProjection, /allowed\.includes\("review_decision"\)/);
+  assert.match(ownerTestsProjection, /Review decision<\/button>/);
+  assert.match(ownerTestsProjection, /data-kind="decision"/);
   assert.doesNotMatch(
-    renderTestsProjection,
-    /production\.currentTask\.status !== "running"/,
+    ownerTestsProjection,
+    /start-discovery|run-pantheon|restart-journey|import-gumroad|open-outputs|test-tab/,
   );
+  assert.doesNotMatch(ownerTestsProjection, /<form|<input|type="file"/i);
+});
+
+test("quality evidence recheck decision shows all four exact assets without the legacy final-review gate", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "public", "app.js"),
+    "utf8",
+  );
+  const helpersStart = source.indexOf("function approvedEvidencePurpose");
+  const helpersEnd = source.indexOf("\nfunction plainAgentText", helpersStart);
+  assert.notEqual(helpersStart, -1);
+  assert.notEqual(helpersEnd, -1);
+  const helpers = vm.runInNewContext(
+    `(() => {
+      ${source.slice(helpersStart, helpersEnd)}
+      return { renderDecisionEvidenceFiles, inspectionEvidenceStopBoundary };
+    })()`,
+    {
+      badge: (value) => `<span>${value}</span>`,
+      canPreview: () => true,
+      detailSection: (title, body) => `<section><h2>${title}</h2>${body}</section>`,
+      encodeURIComponent,
+      escapeHtml: (value) => String(value ?? ""),
+      humanStatus: (value) => String(value || ""),
+      icon: (name) => `<i>${name}</i>`,
+    },
+  );
+  const productFiles = [
+    {
+      id: "preview-1",
+      name: "Storefront Preview 1",
+      format: "image/png",
+      status: "ready_for_review",
+    },
+    {
+      id: "preview-2",
+      name: "Storefront Preview 2",
+      format: "image/png",
+      status: "ready_for_review",
+    },
+    {
+      id: "workbook-inspection",
+      name: "Actual Workbook Review",
+      format: "image/png",
+      qualityReviewOnly: true,
+      evidenceRole: "workbook_inspection",
+    },
+    {
+      id: "setup-guide-inspection",
+      name: "Actual Setup Guide Review",
+      format: "image/png",
+      qualityReviewOnly: true,
+      evidenceRole: "setup_guide_inspection",
+    },
+  ];
+  const rendered = helpers.renderDecisionEvidenceFiles({
+    explicitOperatorFinalReview: false,
+    inspectionEvidenceRecheck: true,
+    productFiles,
+  });
+
+  assert.match(rendered, /All four exact approved inputs are available/);
+  assert.match(rendered, /two storefront previews, the workbook inspection, and the complete three-page setup-guide inspection/i);
+  assert.match(rendered, /Storefront preview 1/);
+  assert.match(rendered, /Storefront preview 2/);
+  assert.match(rendered, /Workbook inspection/);
+  assert.match(rendered, /Setup-guide inspection/);
+  for (const file of productFiles) {
+    assert.match(rendered, new RegExp(file.name));
+    assert.match(rendered, new RegExp(`/api/deliverables/${file.id}/download`));
+  }
+  assert.equal((rendered.match(/data-action="open-pdf"/g) || []).length, 4);
+  assert.equal((rendered.match(/\/download"/g) || []).length, 4);
+
+  const genericFiles = helpers.renderDecisionEvidenceFiles({
+    explicitOperatorFinalReview: false,
+    inspectionEvidenceRecheck: false,
+    productFiles: [productFiles[0]],
+  });
+  assert.match(genericFiles, /Storefront Preview 1/);
+  assert.doesNotMatch(
+    source,
+    /\(explicitOperatorFinalReview \|\| inspectionEvidenceRecheck\) && item\.productFiles/,
+  );
+});
+
+test("quality evidence recheck decision states the permanent stop boundary in owner language", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "public", "app.js"),
+    "utf8",
+  );
+  const helpersStart = source.indexOf("function approvedEvidencePurpose");
+  const helpersEnd = source.indexOf("\nfunction plainAgentText", helpersStart);
+  const helpers = vm.runInNewContext(
+    `(() => {
+      ${source.slice(helpersStart, helpersEnd)}
+      return { inspectionEvidenceStopBoundary };
+    })()`,
+    {
+      badge: (value) => `<span>${value}</span>`,
+      canPreview: () => true,
+      detailSection: (title, body) => `<section><h2>${title}</h2>${body}</section>`,
+      encodeURIComponent,
+      escapeHtml: (value) => String(value ?? ""),
+      humanStatus: (value) => String(value || ""),
+      icon: (name) => `<i>${name}</i>`,
+    },
+  );
+  const boundary = helpers.inspectionEvidenceStopBoundary({
+    inspectionEvidenceRecheck: true,
+  });
+
+  assert.match(boundary, /Permanent stop boundary/);
+  assert.match(boundary, /This is not a normal retry/);
+  assert.match(boundary, /A non-pass result permanently ends this product build/);
+  assert.match(boundary, /does not allow another product correction, another recheck, or a fallback model/i);
+  assert.equal(
+    helpers.inspectionEvidenceStopBoundary({ inspectionEvidenceRecheck: false }),
+    "",
+  );
+  assert.match(source, /one-time evidence review, not a product repair or an ordinary retry/i);
+  assert.match(source, /Approve only if you accept the permanent stop boundary/);
+  assert.match(source, /It does not approve a correction, ordinary retry, or model fallback/);
 });

@@ -5,14 +5,33 @@ const CONFIG = require("../config");
 const { fromJson, get, insertEvent, now, run, toJson } = require("../db");
 const {
   BUYER_INTENT_VALIDATION_SPEC_VERSION,
+  buyerIntentValidationSpecIsActive,
   getBuyerIntentValidationSpec,
 } = require("../../config/buyer-intent-validation-specs");
+const { claimSafetyIsConfirmed } = require("./claim-safety");
 const { createCommercialExperiment, getCommercialExperiment } = require("./commercial-results");
 const { getInvestmentCase } = require("./commercial-investment-review");
 const { generateExecutionPack, getExecutionPack } = require("./test-execution-pack");
 const { stableIdSegment } = require("./stable-id");
 
 const BUYER_INTENT_CONTRACT_SCHEMA = "pantheon.buyer-intent-validation.v1";
+const LEGACY_BUYER_INTENT_PATH_RETIRED_CODE = "legacy_commercial_path_retired";
+const TERMINAL_FIXTURE_CAPABILITIES = new WeakMap();
+
+function legacyBuyerIntentPathRetired(pathName) {
+  const error = new Error(
+    "This v1 buyer-intent creation path is permanently retired. "
+      + "Use a validated immutable v2 commercial-test contract.",
+  );
+  error.name = "LegacyCommercialPathRetiredError";
+  error.statusCode = 410;
+  error.code = LEGACY_BUYER_INTENT_PATH_RETIRED_CODE;
+  error.details = {
+    path: pathName,
+    replacement: "pantheon.commercial-test-contract.v2",
+  };
+  return error;
+}
 
 function stableHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -319,9 +338,31 @@ function ensureCataloguePlan(db, contract, investmentCase, opportunity, spec) {
   );
 }
 
-function prepareBuyerIntentValidationRecords(db, caseId, input = {}) {
+function runningUnderNodeTest() {
+  return Boolean(process.env.NODE_TEST_CONTEXT)
+    || process.execArgv.some((argument) => (
+      argument === "--test" || argument.startsWith("--test-")
+    ));
+}
+
+function prepareBuyerIntentValidationRecordsOperation(
+  db,
+  caseId,
+  input = {},
+  terminalFixtureCapability = null,
+) {
   const spec = getBuyerIntentValidationSpec(input.specId);
-  if (!spec || spec.status !== "active") throw new Error("This buyer-intent validation specification is not active.");
+  if (
+    !spec
+    || (
+      !buyerIntentValidationSpecIsActive(spec.id)
+      && TERMINAL_FIXTURE_CAPABILITIES.get(terminalFixtureCapability) !== db
+    )
+  ) {
+    const error = new Error("This buyer-intent validation specification is permanently stopped and cannot be prepared again.");
+    error.statusCode = 410;
+    throw error;
+  }
   const investmentCase = getInvestmentCase(db, caseId);
   if (!investmentCase) throw new Error(`Investment case not found: ${caseId}`);
   if (!input.expectedDecisionHash) throw new Error("The expected investment-case hash is required.");
@@ -389,6 +430,31 @@ function prepareBuyerIntentValidationRecords(db, caseId, input = {}) {
   }
 }
 
+function prepareBuyerIntentValidationRecords(db, caseId, input = {}) {
+  void db;
+  void caseId;
+  void input;
+  throw legacyBuyerIntentPathRetired("buyer_intent_validation_preparation");
+}
+
+function prepareBuyerIntentValidationRecordsForTest(db, caseId, input = {}) {
+  if (!CONFIG.dryRun || !runningUnderNodeTest()) {
+    throw new Error("Terminal buyer-intent fixtures are available only in the isolated dry-run test harness.");
+  }
+  const capability = Object.freeze({});
+  TERMINAL_FIXTURE_CAPABILITIES.set(capability, db);
+  try {
+    return prepareBuyerIntentValidationRecordsOperation(
+      db,
+      caseId,
+      input,
+      capability,
+    );
+  } finally {
+    TERMINAL_FIXTURE_CAPABILITIES.delete(capability);
+  }
+}
+
 function finalizedValidation(db, plan) {
   const executionPackId = plan?.metadata?.validationExecutionPackId;
   if (!executionPackId) return null;
@@ -422,7 +488,7 @@ function completedProductionTask(db, taskId, expected = {}) {
 function materialQualityFinding(value) {
   const finding = String(value || "").trim();
   if (!finding) return false;
-  const materialPattern = /\b(?:high[- ]risk|major|material(?:ly)?|critical|severe|unsafe|illegal|misleading|unsupported|inaccurate|incorrect|broken|unusable|illegible|not legible|not complete|incomplete|clipp\w*|overflow\w*|formula error|wrong result|data loss|does not work|cannot be used)\b/gi;
+  const materialPattern = /\b(?:high[- ]risk|major|material(?:ly)?|critical|severe|unsafe|illegal|misleading|unsupported|inaccurate|incorrect|broken|unusable|unreliable|untrustworthy|illegible|not legible|not complete|incomplete|clipp\w*|overflow\w*|formula error|wrong result|data loss|does not work|cannot be used|cannot be trusted|cannot be relied upon|does not reconcile|fail\w* to reconcile|overstat\w*|exaggerat\w*|deceptive|corrupt\w*)\b/gi;
   let match = materialPattern.exec(finding);
   while (match) {
     const phrase = match[0].toLowerCase();
@@ -449,8 +515,7 @@ function qualityVerdictPassed(task) {
     ? roleOutput.missingEvidence
     : null;
   const claimSafety = String(roleOutput.claimSafety || "").trim();
-  const claimSafetyPassed = /^(?:safe|supported|acceptable)\b/i.test(claimSafety)
-    && !/\b(?:revise|revision required|needs? changes?|unsafe)\b/i.test(claimSafety)
+  const claimSafetyPassed = claimSafetyIsConfirmed(claimSafety)
     && !materialQualityFinding(claimSafety);
   const outputRisks = Array.isArray(output.risks) ? output.risks : [];
   const highRisk = outputRisks.some((risk) => materialQualityFinding(risk));
@@ -665,6 +730,15 @@ function finalizeBuyerIntentValidationSampleOperation(db, input = {}) {
 }
 
 function finalizeBuyerIntentValidationSample(db, input = {}) {
+  void db;
+  void input;
+  throw legacyBuyerIntentPathRetired("buyer_intent_validation_finalization");
+}
+
+function finalizeBuyerIntentValidationSampleForTest(db, input = {}) {
+  if (!CONFIG.dryRun || !runningUnderNodeTest()) {
+    throw new Error("Terminal buyer-intent fixtures are available only in the isolated dry-run test harness.");
+  }
   const savepoint = `finalize_buyer_intent_${crypto.randomBytes(6).toString("hex")}`;
   db.exec(`SAVEPOINT ${savepoint}`);
   try {
@@ -680,6 +754,9 @@ function finalizeBuyerIntentValidationSample(db, input = {}) {
 
 module.exports = {
   BUYER_INTENT_CONTRACT_SCHEMA,
+  LEGACY_BUYER_INTENT_PATH_RETIRED_CODE,
   finalizeBuyerIntentValidationSample,
+  finalizeBuyerIntentValidationSampleForTest,
   prepareBuyerIntentValidationRecords,
+  prepareBuyerIntentValidationRecordsForTest,
 };

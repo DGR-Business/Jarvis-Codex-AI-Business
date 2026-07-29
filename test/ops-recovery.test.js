@@ -130,8 +130,9 @@ test("database restore is staged, integrity checked and refused for the active r
   const root = tempRoot("database-restore");
   try {
     const sourceDbPath = path.join(root, "source.sqlite");
-    const sourceDb = new DatabaseSync(sourceDbPath);
-    sourceDb.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; CREATE TABLE proof (value TEXT NOT NULL); INSERT INTO proof VALUES ('restored');");
+    const sourceDb = openDatabase(sourceDbPath);
+    seedDatabase(sourceDb);
+    sourceDb.exec("CREATE TABLE proof (value TEXT NOT NULL); INSERT INTO proof VALUES ('restored');");
     sourceDb.close();
     const backup = await createBackup({
       kind: "database",
@@ -163,7 +164,7 @@ test("database restore is staged, integrity checked and refused for the active r
     await encryptFile(invalidPayload, invalidBackup, { kind: "database", passphrase: PASSPHRASE });
     await assert.rejects(
       restoreBackup(invalidBackup, path.join(root, "invalid-restore.sqlite"), { passphrase: PASSPHRASE }),
-      /valid, consistent SQLite database/,
+      /valid, compatible Pantheon database/,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

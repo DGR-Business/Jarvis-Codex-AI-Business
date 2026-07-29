@@ -20,11 +20,11 @@
           </div>
         </div>
 
-        <div class="venture-switcher">
-          <span>Active venture</span>
+        <div class="venture-switcher" title="Venture switching is read-only until the protected switch control is available.">
+          <span>Active venture (read-only)</span>
           <div class="venture-control">
             <i data-lucide="package-open"></i>
-            <select id="venture-select" aria-label="Active venture" disabled>
+            <select id="venture-select" aria-label="Active venture (read-only)" aria-disabled="true" title="Venture switching is read-only until the protected switch control is available." disabled>
               <option>Loading venture...</option>
             </select>
             <i data-lucide="chevron-down"></i>
@@ -43,6 +43,9 @@
           </button>
           <button type="button" class="nav-button" data-view="portfolio">
             <i data-lucide="briefcase-business"></i><span>Portfolio</span>
+          </button>
+          <button type="button" class="nav-button" data-view="tests">
+            <i data-lucide="flask-conical"></i><span>Tests &amp; Results</span>
           </button>
           <button type="button" class="nav-button" data-view="ai-team">
             <i data-lucide="users"></i><span>AI Team</span>

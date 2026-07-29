@@ -16,6 +16,9 @@ const { ensureAgentTools } = require("../src/runtime/agent-tools");
 const { runOnce } = require("../src/runtime/orchestrator");
 const { prepareProductBuilderAsset } = require("../src/runtime/product-builder-workspace");
 const { getLiveAiWorkerReadiness } = require("../src/runtime/live-ai-worker-readiness");
+const {
+  installActivatedCommercialTestFixture,
+} = require("./support/commercial-authority-fixture");
 
 function makeRuntime() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-product-builder-"));
@@ -32,6 +35,10 @@ function makeRuntime() {
       'Freelancer cash-control product', 'planned', '', 1, '{}', ?, ?)`,
     [ts, ts],
   );
+  installActivatedCommercialTestFixture(db, {
+    suffix: "product-builder-workspace",
+    workflowIds: ["wf-product-asset"],
+  });
   return { root, db };
 }
 
