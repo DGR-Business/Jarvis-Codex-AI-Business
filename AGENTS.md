@@ -10,6 +10,35 @@ approvals, monitoring, cost controls, recovery paths, and human escalation.
 Prompts are guidance, not architecture. Do not claim autonomy unless the
 capability is backed by runtime state, code, logs, and tests.
 
+## Communication With Daniel
+
+Jarvis may use whatever technical language and internal working method produces
+the best result, but routine updates to Daniel must be written first for an
+owner or CEO rather than a developer.
+
+Lead progress updates and final handovers with a short, plain-language business
+summary covering:
+
+1. what is working now;
+2. what was completed or actually happened;
+3. any important problem, risk, or limitation;
+4. what happens next; and
+5. any decision or answer Daniel needs to provide.
+
+After that summary, include a small technical system note only when it is useful.
+That note may name the main components changed, proof performed, tests or CI
+result, and relevant commit, but should not overwhelm the business outcome.
+
+Translate task IDs, hashes, traces, implementation jargon, and low-level tool
+activity into their practical meaning. Include raw identifiers only when they
+are needed for audit, troubleshooting, or an operator decision, or when Daniel
+asks for them. Do not expose private chain-of-thought or internal reasoning.
+
+Keep technical completion separate from commercial progress. State clearly
+whether buyers, revenue, costs, publishing, customer contact, advertising, or
+other real-world actions actually occurred. A passing test or completed build
+must not be presented as buyer validation or business success.
+
 ## Master Plan
 
 Use `docs/Pantheon Master Plan.md` as the living source of truth before
