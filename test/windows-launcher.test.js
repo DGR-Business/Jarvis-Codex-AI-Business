@@ -171,12 +171,25 @@ function runPowerShell(
   });
 }
 
+function launcherFailureDetails(root, port, result) {
+  const serverErrorPath = path.join(root, "tmp", `pantheon-server-${port}-error.log`);
+  const serverError = fs.existsSync(serverErrorPath)
+    ? fs.readFileSync(serverErrorPath, "utf8").trim()
+    : "";
+  return [
+    `Pantheon launcher exited with code ${result.code}.`,
+    result.stdout.trim() ? `stdout:\n${result.stdout.trim()}` : "",
+    result.stderr.trim() ? `stderr:\n${result.stderr.trim()}` : "",
+    serverError ? `server stderr:\n${serverError}` : "",
+  ].filter(Boolean).join("\n");
+}
+
 test("OpenAI credentials persist outside the repository and ignore unreadable legacy recovery fields", {
   skip: process.platform !== "win32",
   timeout: 60_000,
-}, async () => {
+}, async (context) => {
   const root = makeLauncherWorkspace("credential-store");
-  const port = await freePort();
+  let port = await freePort();
   const fakeKey = `sk-proj-pantheon-test-${"x".repeat(48)}`;
   try {
     const configured = await runPowerShell(
@@ -204,13 +217,26 @@ test("OpenAI credentials persist outside the repository and ignore unreadable le
       privacyHashKeyProtected: "unreadable-legacy-privacy-secret",
     }));
 
-    const started = await runPowerShell(
+    const startPantheon = (candidatePort) => runPowerShell(
       path.join(root, "scripts", "start-pantheon.ps1"),
-      ["-Port", port, "-NoOpen", "-ReadyTimeoutSeconds", "5"],
+      ["-Port", candidatePort, "-NoOpen", "-ReadyTimeoutSeconds", "5"],
       root,
-      false,
+      true,
+      {},
+      true,
     );
-    assert.equal(started.code, 0);
+    let started = await startPantheon(port);
+    let failureDetails = launcherFailureDetails(root, port, started);
+    if (
+      started.code !== 0
+      && /Port \d+ is already in use by a process Pantheon does not own/i.test(failureDetails)
+    ) {
+      context.diagnostic(`Windows reclaimed test port ${port}; retrying once on a newly verified port.`);
+      port = await freePort();
+      started = await startPantheon(port);
+      failureDetails = launcherFailureDetails(root, port, started);
+    }
+    assert.equal(started.code, 0, failureDetails);
     const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
     assert.equal(health.paidAiArmed, true);
   } finally {
