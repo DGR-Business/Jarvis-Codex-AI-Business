@@ -394,8 +394,15 @@ if (-not $health) {
   $process = [Diagnostics.Process]::new()
   $process.StartInfo = $startInfo
   if (-not $process.Start()) { throw "Pantheon server process could not be started." }
-  $process.Refresh()
-  $processSnapshot = Get-PantheonProcessSnapshot -ProcessId $process.Id
+  $processSnapshotDeadline = [DateTime]::UtcNow.AddMilliseconds(2000)
+  $processSnapshot = $null
+  do {
+    $process.Refresh()
+    if ($process.HasExited) { break }
+    $processSnapshot = Get-PantheonProcessSnapshot -ProcessId $process.Id
+    if ($processSnapshot) { break }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $processSnapshotDeadline)
   if (-not $processSnapshot) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     throw "Pantheon could not record the exact identity of its new Windows process. The process was stopped."

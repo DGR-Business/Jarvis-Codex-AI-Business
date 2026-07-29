@@ -184,6 +184,22 @@ function launcherFailureDetails(root, port, result) {
   ].filter(Boolean).join("\n");
 }
 
+const transientProcessSnapshotProbe = String.raw`
+$script:PantheonOriginalGetProcessSnapshot = (Get-Item Function:\Get-PantheonProcessSnapshot).ScriptBlock
+$script:PantheonInjectedSnapshotMisses = 0
+function Get-PantheonProcessSnapshot {
+  param([Parameter(Mandatory = $true)][int]$ProcessId)
+  if (
+    [Environment]::GetEnvironmentVariable("PANTHEON_TEST_TRANSIENT_SNAPSHOT", "Process") -eq "1" -and
+    $script:PantheonInjectedSnapshotMisses -lt 2
+  ) {
+    $script:PantheonInjectedSnapshotMisses += 1
+    return $null
+  }
+  return & $script:PantheonOriginalGetProcessSnapshot -ProcessId $ProcessId
+}
+`;
+
 test("OpenAI credentials persist outside the repository and ignore unreadable legacy recovery fields", {
   skip: process.platform !== "win32",
   timeout: 60_000,
@@ -216,13 +232,17 @@ test("OpenAI credentials persist outside the repository and ignore unreadable le
       backupPassphraseProtected: "unreadable-legacy-backup-secret",
       privacyHashKeyProtected: "unreadable-legacy-privacy-secret",
     }));
+    fs.appendFileSync(
+      path.join(root, "scripts", "pantheon-launcher-common.ps1"),
+      transientProcessSnapshotProbe,
+    );
 
     const startPantheon = (candidatePort) => runPowerShell(
       path.join(root, "scripts", "start-pantheon.ps1"),
       ["-Port", candidatePort, "-NoOpen", "-ReadyTimeoutSeconds", "5"],
       root,
       true,
-      {},
+      { PANTHEON_TEST_TRANSIENT_SNAPSHOT: "1" },
       true,
     );
     let started = await startPantheon(port);
