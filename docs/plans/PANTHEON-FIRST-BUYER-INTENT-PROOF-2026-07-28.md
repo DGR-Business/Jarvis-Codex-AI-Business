@@ -211,9 +211,8 @@ or start advertising.
   sample-file, formula, preview, quality-failure, correction-limit, external
   action, and result-classification tests pass.
 - Existing commercial and production tests remain green.
-- The complete isolated Node suite, lint, dependency audit, Doctor, and
-  encrypted recovery pass locally; private GitHub CI remains the final release
-  gate.
+- The complete isolated Node suite, lint, dependency audit, Doctor, encrypted
+  recovery, and private GitHub CI pass.
 - A real browser at 1440x900, 1280x720, and 1024x768 can open Business Tests,
   inspect every sample output, understand the measurement rules, and reach the
   one decision without console errors or horizontal overflow.
@@ -231,8 +230,7 @@ evidence plan. The investment case remains parked because this work produced no
 buyer, order, conversion, refund, revenue, or actual net cash contribution
 evidence.
 
-The current worktree passed its clean-install, Doctor, dependency,
-encrypted-recovery, health, test, and browser release gates. Commit, push, and
-private CI remain pending. Passing those remaining gates would release the
-truthful terminal state; it would not convert this outcome into an independent
-quality pass or commercial success.
+The worktree passed its clean-install, Doctor, dependency, encrypted-recovery,
+health, test, browser, push, and private CI release gates at implementation
+commit `c5c2436`. Those gates release the truthful terminal state; they do not
+convert this outcome into an independent quality pass or commercial success.

@@ -1,8 +1,7 @@
 # Pantheon Continuation Handover
 
 Date: 2026-07-29
-Status: closed and superseded as an active handover; terminal quality result
-and pre-push release gates complete, commit, push, and private CI pending
+Status: closed and complete; terminal quality result and release proof recorded
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 Branch: `codex/first-buyer-intent-proof`
@@ -58,8 +57,10 @@ cancelled; all nine current plan artifacts are `needs_changes`; and all nine
 hashes and byte counts were reverified unchanged.
 
 Clean installation, Doctor, dependency, encrypted-recovery, health, test, and
-browser checks passed. Commit, push, and private CI for the current worktree
-remain pending and must not be represented as passed.
+browser checks passed. Implementation commit
+`c5c243608907071b16dc6e954c49a03cadd3d2cc` was pushed, and private GitHub
+`Pantheon checks #23` passed all seven jobs in 12 minutes 10 seconds. Pantheon
+was then confirmed in Standby with the business runtime stopped.
 
 ## Pantheon's Purpose And Final Form
 
@@ -392,9 +393,9 @@ Finish and prove Pantheon's first evidence-bound buyer-intent workflow:
 ## Ordered Next Actions
 
 This list is closed as an execution handover. Steps 1 through 11 and 13 through
-14 completed; the terminal non-pass branch at step 11 correctly skipped the
-conditional pass work in step 12. Step 15's pre-push gates passed; commit, push,
-and private CI remain pending. No step authorises reopening the stopped build.
+16 completed; the terminal non-pass branch at step 11 correctly skipped the
+conditional pass work in step 12. No step authorises reopening the stopped
+build.
 
 1. Review the uncommitted diff. Preserve all existing user work.
 2. Fix and test the stale current preview/QA IDs and the three dashboard wording
@@ -453,9 +454,9 @@ The original completion gate below described the quality-pass branch:
 That branch did not complete because independent quality did not pass. The
 authorised terminal branch did complete: Pantheon stopped permanently after the
 single non-pass recheck and created no buyer-test or external-action path.
-Release completion remains open until commit, push, and private CI pass. The
-clean-install, Doctor, dependency, encrypted-recovery, health, test, and browser
-gates have passed.
+Release completion is closed. The clean-install, Doctor, dependency,
+encrypted-recovery, health, test, browser, push, and private CI gates passed at
+implementation commit `c5c2436`, and Pantheon is in Standby.
 
 ## Retained Work Discipline From The Handover
 

@@ -29,8 +29,8 @@ commercial move.
   branch. A zero-spend refresh preserved all seven customer and storefront
   hashes and proved all three setup-guide pages. The one manually approved
   Terra evidence recheck returned `revise`, score 78, so Pantheon permanently
-  stopped the build. Pre-push release gates passed; commit, push, and private CI
-  remain.
+  stopped the build. The release proof passed locally, in Chrome, and in all
+  seven private CI jobs at implementation commit `c5c2436`.
 - Current commercial result: two bounded rounds retained ten hypotheses,
   performed comparable live demand and finance review on six finalists, and
   completed two Sol investment reviews. Pantheon selected no investment.
@@ -1786,19 +1786,19 @@ validated 166 exact locked packages, the dependency audit reported zero
 vulnerabilities, operations-ready Doctor validated the current encrypted
 recovery set, and the live health endpoint reported `operationsReady: true`.
 
-This terminal result is not a quality pass or commercial success. Commit, push,
-and private CI remain pending and are not claimed as passed. Exact evidence is
+This terminal result is not a quality pass or commercial success.
+Implementation commit `c5c243608907071b16dc6e954c49a03cadd3d2cc` was pushed
+to `codex/first-buyer-intent-proof`. Private GitHub `Pantheon checks #23`
+passed in 12 minutes 10 seconds: verify, all four test shards, lifecycle
+containment, and lifecycle repeat completed successfully. Pantheon was then
+confirmed in Standby with the business runtime stopped. Exact evidence is
 retained in
 `docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`.
 
 ## Current Next Best Work
 
-Close the release record for the terminal stopped state without reopening the
-build:
-
-1. commit and push the preserved worktree;
-2. wait for private CI and record its factual result; and
-3. leave Pantheon in Standby unless Daniel is actively testing.
+The continuation is released and Pantheon is in Standby. No further action is
+authorised for this terminal build.
 
 Any future buyer-intent attempt requires a separate commercial decision and new
 evidence plan. Do not create another review, buyer pack, or external-test

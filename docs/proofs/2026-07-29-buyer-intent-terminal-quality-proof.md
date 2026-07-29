@@ -1,8 +1,7 @@
 # Pantheon Buyer-Intent Terminal Quality Proof
 
 Date: 2026-07-29
-Status: terminal workflow proof; local, browser, and pre-push release evidence
-complete; commit, push, and private CI pending
+Status: complete terminal workflow and release proof
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 
@@ -181,5 +180,13 @@ warning was the expected occupied dashboard port. `GET /api/health` reported
 `operationsReady: true`.
 
 These checks support the implementation and terminal state; they do not replace
-the failed independent product-quality verdict. Commit, push, and private GitHub
-CI remain pending and are not claimed as passed in this pre-push record.
+the failed independent product-quality verdict.
+
+Implementation commit
+`c5c243608907071b16dc6e954c49a03cadd3d2cc` was pushed to
+`codex/first-buyer-intent-proof`. Private GitHub
+[`Pantheon checks #23`](https://github.com/DGR-Business/Jarvis-Codex-AI-Business/actions/runs/30416178130)
+passed in 12 minutes 10 seconds: `verify`, test shards 0 through 3, Windows
+lifecycle containment, and Windows lifecycle repeat all completed successfully.
+Pantheon was then confirmed in Standby with the business runtime stopped and no
+AI workers, scheduler, or business automation active.

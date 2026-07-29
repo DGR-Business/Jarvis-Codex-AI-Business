@@ -340,10 +340,10 @@ Pantheon default.
 
 ### Next
 
-- Finish the release work for the terminal stopped state: commit, push, and
-  private CI. The clean installation, Doctor, dependency, encrypted-recovery,
-  health, test, and browser gates have passed. Keep Windows lifecycle
-  integration in its dedicated private CI jobs.
+- Keep the released workflow terminally stopped and Pantheon in Standby. Its
+  local, browser, clean-install, Doctor, dependency, encrypted-recovery, health,
+  and seven-job private CI gates passed. Keep Windows lifecycle integration in
+  its dedicated private CI jobs.
 - Preserve the completed Chrome evidence: all seven downloads, three-page PDF
   preview, exact 100-visit/30-day rules, no stale 50-view fallback, no
   horizontal overflow at the three supported desktop sizes, and no Pantheon
@@ -451,10 +451,11 @@ The launcher is operations-ready for normal Stopped, Standby, and Working use.
 The buyer-intent workflow is terminally stopped. Its A$1.00 incurred estimate,
 unchanged customer package, complete three-page QA evidence, and final score-78
 `revise` verdict are retained as evidence. The 316-test ordinary suite, browser,
-disposable clean-install, Doctor, dependency, encrypted-recovery, and health
-gates passed; commit, push, and private CI remain pending. Nothing in this
-result is accepted as an independent quality pass, buyer proof, commercial
-validation, or publication authority.
+disposable clean-install, Doctor, dependency, encrypted-recovery, health, push,
+and seven-job private CI gates passed at implementation commit `c5c2436`.
+Pantheon was returned to Standby. Nothing in this result is accepted as an
+independent quality pass, buyer proof, commercial validation, or publication
+authority.
 
 Foundation is releasable only when:
 
@@ -474,7 +475,7 @@ Foundation is releasable only when:
 - `docs/Pantheon Build Log.md`: current decisions, proof, and next work.
 - `docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`: exact
   customer hashes, complete QA evidence, one approved recheck, terminal
-  non-pass result, browser proof, passed pre-push gates, and pending private CI.
+  non-pass result, browser proof, passed release gates, and exact private CI.
 - `docs/plans/PANTHEON-CONTINUATION-HANDOVER-2026-07-29.md`: closed execution
   handover preserving the exact starting blocker and continuation order.
 - `docs/reviews/PANTHEON-DEV-AUDIT-2026-07-28.md`: command-hang,
