@@ -1,8 +1,8 @@
 # 0009 - Owner-Absent Low-Touch Digital Kit Re-entry
 
 Date: 2026-07-29
-Status: accepted policy; technical foundation implemented in the local
-schema-26 candidate; commercial readiness remains `research_more` / `revise`
+Status: accepted policy; technical foundation released in the canonical
+schema-26 baseline; commercial readiness remains `research_more` / `revise`
 
 ## Decision
 
@@ -50,7 +50,7 @@ operating burden, and expected net cash contribution. Neither is a generic
 Pantheon default, and the fallback must not be treated as validated merely
 because the primary channel proves unsuitable.
 
-## Active Goal
+## Completed Release Goal
 
 > Make Pantheon’s current release the canonical, compatibility-verified baseline;
 > align what the system reports with what it can actually prove; establish one
@@ -64,7 +64,7 @@ The detailed implementation and proof scope is recorded in
 
 ## Implementation Outcome - 2026-07-29
 
-Pantheon's local schema-26 candidate now has the technical controls needed to
+Pantheon's released schema-26 baseline has the technical controls needed to
 hold a future commercial test to one exact decision and evidence record. The
 owner views use that record for current authority, buyer proof, cash truth, and
 closed results. The stopped Decision 0008 attempt remains closed history, and
@@ -80,15 +80,15 @@ That technical progress has not changed the new kit's commercial answer:
 - no buyer, order, revenue, refund, or settled net cash contribution exists for
   this hypothesis.
 
-The candidate includes an immutable v2 contract and lifecycle, exact
+The release includes an immutable v2 contract and lifecycle, exact
 contract-bound work authority, distinct imported-platform and
 operator-attested evidence records, append-only corrections, reconciled-cost
 rules, deterministic proof evaluation, and owner-first Tests & Results. These
-controls are fixture- and regression-proved locally. They are not an Etsy or
-Gumroad connection, a trusted live importer, a real manual receipt, or evidence
-that this offer can sell. Live use still needs the selected channel's proved
-adapter, credential and account binding, trusted receipt verification, and a
-secure buyer-pseudonym key.
+controls are fixture-, regression-, browser-, and release-proved. They are not
+an Etsy or Gumroad connection, a trusted live importer, a real manual receipt,
+or evidence that this offer can sell. Live use still needs the selected
+channel's proved adapter, credential and account binding, trusted receipt
+verification, and a secure buyer-pseudonym key.
 
 The current v2 authority also requires an exact venture, offer, channel,
 account, adapter, cohort, and test contract. Because this opportunity has not
@@ -98,10 +98,11 @@ Owner-authorised, read-only diligence by Jarvis may continue, but it must not be
 represented as market validation or commercial execution. A narrow, auditable
 pre-venture research authority is the next system-policy design decision.
 
-The local release candidate has passed its real signed owner-browser gate.
-Remote branch publication, private CI, and promotion remain pending. No push,
-pull request, private CI result, merge, or canonical remote release is claimed
-here.
+Runtime implementation checkpoint `d039d8b` passed its real signed
+owner-browser gate locally. Documentation-only release head `cc14ae6` preserved
+that runtime implementation and passed all eight pull-request jobs in run
+`30451251704`. Pull request #5 merged it to private GitHub `main` as `abf6f0d`,
+and immediate `main` run `30452100846` independently passed all eight jobs.
 
 ## Evidence And Proof Contract
 
@@ -132,10 +133,10 @@ volume, model opinion, or estimated margin cannot satisfy this threshold.
 
 ## Current Authority Boundary
 
-The current session is preparation-only with A$0 external spend. It may perform
-internal, reversible work needed to verify the release, reconcile system truth,
-design the evidence contract, conduct read-only diligence, prepare the offer and
-test specification, and prove the protected owner journey using dry runs.
+The completed release session was preparation-only with A$0 external spend. Its
+verified work was limited to release verification, system-truth reconciliation,
+evidence-contract implementation, versioned readiness recording, and protected
+owner-journey dry-run proof. It did not prepare an exact live-test contract.
 
 It may not:
 
@@ -234,5 +235,6 @@ account action, KYC, OAuth, MFA, legal acceptance, money movement, external
 spend, order, revenue, refund, or actual net cash contribution occurred.
 
 The A$29 price, Etsy-primary route, Gumroad fallback, buyer, problem, offer, and
-commercial test all remain hypotheses. Technical and documentation work is in
-progress and has not yet earned release or commercial-readiness status.
+commercial test all remain hypotheses. The technical release is complete, while
+commercial readiness remains `research_more` / `revise`; no build, test, or
+external-action authority has been created.

@@ -1,13 +1,12 @@
 # Pantheon Commercial Truth And Owner-Absent Kit Readiness
 
 Date: 2026-07-29
-Status: active release plan; local schema-26 implementation, production
-migration, recovery, and real owner-browser proof complete, with remote release
-gates pending
+Status: complete; canonical schema-26 release, production migration, recovery,
+owner-browser proof, private CI, and no-action kit readiness recorded
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 
-## Active Goal
+## Completed Goal
 
 > Make Pantheon’s current release the canonical, compatibility-verified baseline;
 > align what the system reports with what it can actually prove; establish one
@@ -16,8 +15,8 @@ Technical steward: Jarvis (Codex)
 > test without contacting customers, publishing, or spending money until
 > separately approved.
 
-This wording is authoritative for the current working session. The detail below
-defines scope and proof; it does not expand the authority in the goal.
+This wording was authoritative for the completed working session. The detail
+below defines scope and proof; it did not expand the authority in the goal.
 
 ## Owner Outcome
 
@@ -64,17 +63,19 @@ incurred estimates, buyer transactions, refunds, and attributable net cash
 contribution.
 
 These were the starting implementation findings. The checkpoint below records
-what the local candidate has now addressed without rewriting that starting
-truth.
+what the candidate addressed during implementation without rewriting that
+starting truth.
 
-### Local implementation checkpoint - not yet the remote release
+### Released implementation baseline
 
-The correct repository is `C:\Jarvis-Codex-AI-Business`. Released `main` was
-confirmed at `f61d7eb`; the implementation checkpoint is committed on
-`codex/commercial-truth-hardening` at `d039d8b`. The dated proof must identify
-the later exact documentation/release head.
+The correct repository is `C:\Jarvis-Codex-AI-Business`. Implementation
+checkpoint `d039d8b` and release documentation head `cc14ae6` were committed on
+`codex/commercial-truth-hardening`. Pull request #5 passed all eight private
+checks in run `30451251704` and merged to canonical online `main` as
+`abf6f0d`. The immediate `main` push run `30452100846` independently passed
+the same eight-job workflow.
 
-The candidate has completed these local outcomes:
+The release completed these local outcomes before merge:
 
 - database migrations 25 and 26 establish the immutable v2 commercial
   contract, lifecycle, evidence, cash, and evaluation store;
@@ -99,9 +100,8 @@ The candidate has completed these local outcomes:
 This is system-readiness evidence, not market evidence. The store is not a
 live Etsy or Gumroad adapter, a trusted platform import, or a real manual buyer
 receipt. No current program has both been accepted and activated. Production
-migration, post-migration recovery, and the real signed owner-browser path are
-now recorded in the dated release proof. Remote branch publication, private CI,
-and promotion to canonical `main` remain before this plan can close.
+migration, post-migration recovery, the real signed owner-browser path, private
+CI, and canonical merge are recorded in the dated release proof.
 
 ### Commercial reality
 
@@ -335,7 +335,7 @@ erased, and reconciliation creates no provider or external action.
 - Keep destructive cleanup separate and previewed.
 
 **Gate:** clean install, start, health, Doctor, encrypted restore, integrity, and
-safe lifecycle behavior pass for the exact candidate release.
+safe lifecycle behavior pass for the exact released source state.
 
 ### 3. Align accounting and result truth
 
@@ -441,11 +441,13 @@ price, or result.
 **Gate:** local source, runtime state, recovery evidence, owner view, remote
 branch, and private CI all identify the same release and factual result.
 
-**Local outcome:** the implementation checkpoint, full local suite, lint, clean
-install, production schema-26 migration, Doctor, dual encrypted recovery, and
-real-browser gates have passed and Pantheon is in Standby. Documentation
-reconciliation is in progress. Push, pull-request CI, merge, and exact remote
-release recording remain open.
+**Released outcome:** the implementation checkpoint, full local suite, lint,
+clean install, production schema-26 migration, Doctor, dual encrypted recovery,
+and real-browser gates passed with Pantheon in Standby. Release head `cc14ae6`
+then passed all eight private checks in run `30451251704` and pull request #5
+merged to canonical online `main` as `abf6f0d`. Push-triggered run
+`30452100846` then passed all eight jobs on the merge commit. No protected
+commercial action was taken.
 
 ## Completion Criteria
 
@@ -476,6 +478,15 @@ This plan is complete only when:
 Passing these criteria establishes preparation and system readiness. It does
 not establish buyer demand, revenue, positive contribution, or commercial
 success.
+
+### Completion disposition
+
+All technical and preparation criteria above are complete for release head
+`cc14ae6` and canonical merge `abf6f0d`. The legitimate commercial-readiness
+outcome is `research_more` / `revise`, so no v2 external-test contract, product
+build, live adapter, or external authority was created. External commercial
+spend remained A$0. The owner decisions below are future gates, not unfinished
+release work.
 
 ## Out Of Scope
 

@@ -69,8 +69,8 @@ credentials, costs, receipts, attribution, timeouts, and unknown outcomes before
 live use.
 
 This operating destination does not widen current authority. Decision 0009 and
-the active commercial-truth plan keep the current session preparation-only with
-A$0 external spend.
+the completed commercial-truth plan kept the schema-26 release session
+preparation-only with A$0 external spend.
 
 ## Honest Starting Position
 
@@ -330,16 +330,18 @@ bounded Product Builder, Quality Reviewer, protected approval, and release path,
 but created no buyer-test pack, publication, buyer contact, order, revenue, or
 actual net cash contribution.
 
-The current work is
+The completed schema-26 gate is recorded in
 `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
-It must establish a canonical compatibility-verified release, reconcile runtime
-and owner truth, implement attributable buyer-and-cash evidence, prove recovery
-and the owner journey, and prepare a separate low-touch kit hypothesis. Etsy,
-Gumroad, A$29, and the exact offer and test rules remain unproven.
+It established a canonical compatibility-verified release, reconciled runtime
+and owner truth, implemented attributable buyer-and-cash evidence, proved
+recovery and the owner journey, and retained a separate low-touch kit
+hypothesis at `research_more` / `revise`. Etsy, Gumroad, A$29, and the exact
+offer and test rules remain unproven.
 
-Venture Factory, Kit 2, and concurrent lanes must not begin during this work.
-No customer contact, publication, advertising, account action, legal
-acceptance, or external spend is authorised.
+The next gate is whether to add narrow, auditable pre-venture research authority
+and, if authorised, complete bounded diligence. Venture Factory, Kit 2,
+concurrent lanes, customer contact, publication, advertising, account action,
+legal acceptance, and external spend remain separately gated.
 
 ### Phase 0 - Historical Vertical Proof (engineering complete; first buyer attempt closed without commercial proof)
 
@@ -490,9 +492,11 @@ Do not use the historical 14-day or 50-view instruction. The first attempt never
 reached a published market test, and its A$29.95, Etsy, 100-visit, and 30-day
 terms do not transfer to another offer.
 
-Complete the active commercial-truth and owner-absent kit-readiness plan first.
-If the new hypothesis clears its commercial and system-readiness gates, prepare
-one separate protected external-test proposal using current channel evidence,
-exact attribution, an approved cohort and deadline, actual AUD economics, and
-diagnose/revise/stop rules. Do not schedule Venture Factory, Kit 2, or concurrent
-lanes merely to fill a measurement window.
+The commercial-truth and owner-absent kit-readiness plan is complete. Decide
+whether to add narrow, auditable pre-venture research authority and, if
+authorised, complete bounded diligence. Only if the new hypothesis later clears
+its commercial and system-readiness gates should Pantheon prepare one separate
+protected external-test proposal using current channel evidence, exact
+attribution, an approved cohort and deadline, actual AUD economics, and
+diagnose/revise/stop rules. Do not schedule Venture Factory, Kit 2, or
+concurrent lanes merely to fill a measurement window.

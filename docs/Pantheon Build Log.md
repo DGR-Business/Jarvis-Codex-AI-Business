@@ -15,24 +15,25 @@ commercial move.
 
 ## Current Position
 
-- Owner position: the schema-26 commercial-truth implementation is a completed
-  local release candidate. Production state and the owner screens now agree:
+- Owner position: the schema-26 commercial-truth implementation is the
+  canonical online release. Production state and the owner screens now agree:
   current records contain no active external test, verified current buyer,
   attributable current cash evidence, or settled net cash contribution. The
   owner result is withheld rather than presenting empty records as a tested
   zero. Historical records remain available without being presented as current
   work.
-- Release position: released online `main` remains `f61d7eb`. Local branch
-  `codex/commercial-truth-hardening` contains implementation checkpoint
-  `d039d8b`; this documentation reconciliation will be its follow-up. The local
-  candidate must still be pushed, pass pull-request CI, and merge before it is
-  called the canonical online release. A one-time GitHub CLI authentication is
-  the remaining access prerequisite.
-- Product direction: after the exact release gate, perform bounded pre-venture
-  diligence for the separate low-touch Social Media Manager Client Approval &
-  Scope Guard Kit hypothesis. Diligence is not build, production, or
-  external-test authority. Its current readiness result is `research_more`, with
-  the offer marked `revise`.
+- Release position: release head `cc14ae6` passed all eight private checks in
+  pull request #5, GitHub Actions run `30451251704`, and merged to online `main`
+  as `abf6f0d` on 2026-07-29. The immediate `main` push run `30452100846`
+  independently passed the same eight-job workflow in 6 minutes 29 seconds. The
+  documentation-only release closeout changes release records only; it does not
+  alter the proved runtime implementation.
+- Product direction: with the exact release gate complete, first decide whether
+  to add a narrow, auditable pre-venture research authority. If authorised,
+  perform bounded diligence for the separate low-touch Social Media Manager
+  Client Approval & Scope Guard Kit hypothesis. Diligence is not build,
+  production, or external-test authority. Its current readiness result is
+  `research_more`, with the offer marked `revise`.
 - Commercial hypothesis: freelance or independent social media managers,
   fragmented approval and scope control, a practical low-touch kit, and an
   initial A$29 price. The buyer, problem, offer, price, format, channel, reach
@@ -47,8 +48,8 @@ commercial move.
   direct control is useful.
 - Active engineering: commercial truth, exact lifecycle authority, owner
   reporting, channel-neutral buyer-and-cash evidence, production migration,
-  recovery, and the owner journey have completed local proof. Online push,
-  private CI, and merge remain open.
+  recovery, owner journey, private CI, and online release are complete. The next
+  system gate is the bounded pre-venture research-authority decision.
 - Current commercial result: two bounded rounds retained ten hypotheses,
   performed comparable live demand and finance review on six finalists, and
   completed two Sol investment reviews. Pantheon selected no investment.
@@ -65,7 +66,7 @@ commercial move.
 - Commercial reality: no buyer contact, call, email, message, publication,
   listing, public post, advertisement, account action, KYC, OAuth, MFA, paid
   market test, external spend, order, revenue, refund, or actual net cash
-  contribution occurred in this release-candidate work.
+  contribution occurred in this release work.
 - Historical product: the Job Search Evidence Tracker package remains
   recoverable engineering evidence but is parked after an unbiased comparison.
   It is not an active venture or publication recommendation.
@@ -74,18 +75,18 @@ commercial move.
   Pantheon is intended to perform routine work through implemented and proved
   capabilities. Public operation is truthful and brand-led, without depending
   on Daniel's face, personal voice, or routine labour.
-- Current external budget: A$0. This session is preparation-only. Contact,
-  publishing, advertising, account work, legal acceptance, and money movement
-  remain separately protected.
+- Current external budget: A$0. The release session was preparation-only and
+  incurred A$0 external spend. Contact, publishing, advertising, account work,
+  legal acceptance, and money movement remain separately protected.
 - Pre-revenue AI and tool cap: A$100 per month. The production database records
   July runtime exposure of A$9.44, comprising A$3.10 reconciled provider usage
   and A$6.34 incurred estimates. The complete retained buyer-intent workflow
   accounts for A$1.00 of billing-pending estimates. There are no unknown
   provider outcomes.
 - Operations: Stopped, Standby, and Working remain the intended interface. The
-  local candidate passed compatibility, Doctor, recovery, and real-browser
-  proof. Lifecycle integration remains quarantined to disposable, externally
-  bounded Windows CI rather than ordinary local tests.
+  released baseline passed compatibility, Doctor, recovery, real-browser, and
+  private-CI proof. Lifecycle integration remains quarantined to disposable,
+  externally bounded Windows CI rather than ordinary local tests.
 - Recovery: final current set `b5beeedc` and reconstructed retained rollback set
   `f2733fe4` each restored and booted independently in locked mode. Four older
   sets could not authenticate under the current passphrase; they remain
@@ -1897,21 +1898,22 @@ cash contribution in AUD after revenue, refunds, marketplace and payment fees,
 advertising, fulfilment, paid tools, model usage, and every other attributable
 cash cost.
 
-The starting inspection found system-truth work to reconcile across terminal
+At that starting checkpoint, the inspection found system-truth work to
+reconcile across terminal
 history, current runtime states, recovery compatibility, accounting
-classification, channel-specific assumptions, and owner-facing status. That
-implementation is in progress. No correction is represented here as migrated,
-released, recovered, or browser-proved.
+classification, channel-specific assumptions, and owner-facing status.
+Implementation was then in progress; this starting entry did not represent a
+correction as migrated, released, recovered, or browser-proved.
 
 No buyer contact, call, email, message, publication, listing, public post,
 advertisement, account action, KYC, OAuth, MFA, external spend, order, revenue,
 refund, or actual net cash contribution occurred in this documentation and
 planning step.
 
-The exact active plan is
+The succeeding exact plan was
 `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
 
-## 2026-07-29 Schema-26 Commercial-Truth Local Release Candidate
+## 2026-07-29 Schema-26 Commercial-Truth Canonical Release
 
 ### Owner summary
 
@@ -1936,11 +1938,11 @@ email, customer contact, listing, publication, advertisement, account or KYC
 action, legal acceptance, money movement, or external spend. It produced no
 buyer, order, revenue, refund, or commercial validation.
 
-The implementation is locally proven but not yet the online release. Released
-`main` remains `f61d7eb`; implementation checkpoint `d039d8b` plus this
-documentation follow-up must still be pushed, pass private pull-request CI, and
-merge. GitHub CLI needs Daniel's one-time login before Jarvis can complete that
-online gate.
+The implementation is now the online release. Release head `cc14ae6` passed all
+eight private checks in pull request #5, GitHub Actions run `30451251704`, and
+merged to `main` as `abf6f0d`. This later documentation-only release closeout
+changes release records only and does not alter the proved runtime
+implementation.
 
 ### Technical proof
 
@@ -1971,6 +1973,12 @@ online gate.
 - Four older retained sets could not authenticate under the current passphrase.
   They were not deleted or modified. Their eventual quarantine or removal is an
   owner retention decision, not an automatic cleanup action.
+- Pull request #5 passed all eight hosted checks in run `30451251704`, including
+  five ordinary test shards, the verification job, and both disposable Windows
+  lifecycle jobs. GitHub then merged the checked release head `cc14ae6` to
+  online `main` as `abf6f0d`. Push-triggered run `30452100846` independently
+  passed the same eight-job workflow on that canonical merge in 6 minutes
+  29 seconds.
 
 ## Current Next Best Work
 
@@ -1981,14 +1989,15 @@ online gate.
 > next commercial test without contacting customers, publishing, or spending
 > money until separately approved.
 
-The local implementation and proof portion of this goal is complete. Finish the
-release and then the next commercial work in this order:
+The release, commercial-truth, evidence-path, owner-journey, and no-action
+preparation portions of this goal are complete. The next separately gated work
+is:
 
-1. preserve implementation checkpoint `d039d8b` and this documentation
-   follow-up, obtain the one-time GitHub CLI login, push the exact branch, pass
-   private pull-request CI, and merge it to `main`;
-2. perform bounded pre-venture diligence for the low-touch Social Media Manager
-   Client Approval & Scope Guard Kit, testing the exact buyer, problem, offer,
+1. decide whether Pantheon should add a narrow, auditable pre-venture research
+   authority rather than reviving the retired broad discovery routes;
+2. if authorised, perform bounded pre-venture diligence for the low-touch
+   Social Media Manager Client Approval & Scope Guard Kit, testing the exact
+   buyer, problem, offer,
    format, A$29 price, Etsy-primary and Gumroad-fallback channels, attribution,
    reach, duration, economics, and revise or stop rules;
 3. record a versioned readiness result of build, research more, revise, reject,
@@ -2007,6 +2016,6 @@ one-time owner identity, bank or card, 2FA, and seller-term requirements, or
 exclude Etsy and assess another channel.
 
 Do not contact customers, publish, advertise, create or connect accounts, accept
-terms, move money, or incur external spend during the remaining release and
-diligence work. Do not begin Venture Factory, a second Venture Kit, concurrent
-venture lanes, or broad capability expansion.
+terms, move money, or incur external spend during future diligence unless
+separately approved. Do not begin Venture Factory, a second Venture Kit,
+concurrent venture lanes, or broad capability expansion.

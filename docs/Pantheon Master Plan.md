@@ -80,7 +80,7 @@ records unchanged customer hashes, complete QA coverage, the one approved
 recheck, the terminal non-pass result, browser evidence, and passed release
 gates.
 
-The active implementation directive is
+The completed implementation directive is
 `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
 Its exact goal is:
 
@@ -91,29 +91,32 @@ Its exact goal is:
 > next commercial test without contacting customers, publishing, or spending
 > money until separately approved.
 
-The local implementation is now a schema-26 release candidate. Production state
-has been reconciled, and the owner screens now report the commercial position
+Schema 26 is now Pantheon's canonical online release baseline. Production state
+has been reconciled, and the owner screens report only the commercial position
 that durable evidence can support. Current records contain zero active external
 tests, zero verified buyers, zero attributable cash evidence, and zero settled
 net cash contribution; the owner result is withheld rather than presenting
 those empty records as a tested business outcome. No buyer contact, publication,
 advertising, account action, or external spend occurred.
 
-The candidate has passed its local tests, lint, clean-install and dependency
-checks, real-browser owner journey, Doctor, database migration, and two
-independent encrypted-recovery drills. Implementation checkpoint `d039d8b` is
-local on `codex/commercial-truth-hardening`; this documentation reconciliation
-will follow it. The released online `main` baseline remains `f61d7eb` until the
-candidate is pushed, passes pull-request CI, and is merged. The candidate must
-therefore not yet be described as the canonical online release.
+Runtime implementation checkpoint `d039d8b` passed the full local and
+real-browser proof. Documentation-only release head `cc14ae6` preserved that
+runtime implementation, passed all eight private checks in pull request #5,
+GitHub Actions run `30451251704`, and merged to online `main` as `abf6f0d` on
+2026-07-29. The release includes the schema-26 migration, clean install and
+dependency checks, real-browser owner journey, Doctor, and two independent
+encrypted-recovery drills. The immediate `main` push run `30452100846`
+independently passed the same eight-job workflow.
 
-The next commercial work is bounded pre-venture diligence for a distinct,
-low-touch Social Media Manager Client Approval & Scope Guard Kit at an initial
-A$29 price hypothesis. Etsy is the primary channel hypothesis and Gumroad is a
-fallback hypothesis. Neither channel, the price, the buyer, the offer, the
-format, nor the test rules are proved. Diligence may recommend `research_more`,
-`revise`, `reject`, or retaining cash; it does not itself create build,
-production, or external-test authority. The current versioned readiness record
+The next owner gate is whether to add a narrow, auditable pre-venture research
+authority. If authorised, the next commercial work is bounded diligence for a
+distinct, low-touch Social Media Manager Client Approval & Scope Guard Kit at
+an initial A$29 price hypothesis. Etsy is the primary channel hypothesis and
+Gumroad is a fallback hypothesis. Neither channel, the price, the buyer, the
+offer, the format, nor the test rules are proved. Diligence may recommend
+`research_more`, `revise`, `reject`, or retaining cash; it does not itself
+create build, production, or external-test authority. The current versioned
+readiness record
 is `research_more`, with the offer marked `revise`; it grants no build or live
 test authority. This work does not reopen, revise, or rename the stopped Client
 Control and Profitability Workbook.
@@ -437,11 +440,10 @@ buyer-intent work closed. The current plan below supersedes it.
 
 ### Now
 
-- Preserve the exact schema-26 local candidate and complete its online release
-  gate without altering the proven source: one-time GitHub authentication, push,
-  pull request, private CI, and merge. Until that succeeds, released online
-  `main` remains `f61d7eb`, while local implementation checkpoint `d039d8b` plus
-  its documentation follow-up remain the candidate.
+- Preserve canonical schema-26 release `abf6f0d` and its pull-request proof:
+  release head `cc14ae6`, pull request #5, and eight successful private checks
+  in run `30451251704`. The follow-up closeout changes release records only, not
+  the proved runtime implementation.
 - Retain the reconciled production truth: no active external test, verified
   current buyer, attributable current cash evidence, or settled net cash
   contribution. Historical work remains available in audit views but cannot
@@ -449,8 +451,10 @@ buyer-intent work closed. The current plan below supersedes it.
 - Use the implemented platform-import and manual receipt-backed routes for future
   attributable buyer-and-cash evidence. Keep estimates, cash paid, provider
   costs, revenue, refunds, and actual net cash contribution distinct.
-- Scope the next commercial work to bounded pre-venture diligence for the new
-  Social Media Manager Client Approval & Scope Guard Kit. Revalidate the buyer,
+- Decide whether Pantheon should add a narrow, auditable pre-venture research
+  authority. If authorised, scope the next commercial work to bounded
+  pre-venture diligence for the new Social Media Manager Client Approval &
+  Scope Guard Kit. Revalidate the buyer,
   problem, low-touch offer, format, A$29 price, Etsy-primary route, Gumroad
   fallback, attribution, reach, duration, economics, and revise or stop rules.
 - Keep this work preparation-only at A$0 external spend. No customer contact,
@@ -578,8 +582,8 @@ Pantheon was returned to Standby. Nothing in this result is accepted as an
 independent quality pass, buyer proof, commercial validation, or publication
 authority.
 
-The prior release evidence remains valid for its exact commits. The schema-26
-commercial-truth and owner-absent readiness candidate has now passed its exact
+The prior release evidence remains valid for its exact commits. The released
+schema-26 commercial-truth and owner-absent readiness baseline passed its exact
 local suite, lint, clean install, dependency audit, production migration,
 commercial-history reconciliation with accounting-preservation checks, Doctor,
 real-browser owner journey, and dual encrypted-recovery proof. The final current
@@ -592,10 +596,11 @@ passphrase. They have not been deleted or altered. Daniel must later decide
 whether they should remain quarantined as historical evidence or be removed
 through a separately confirmed retention action.
 
-These local gates do not make the candidate an online release. Implementation
-checkpoint `d039d8b` and its documentation follow-up still require push,
-pull-request CI, and merge. Until those complete, `f61d7eb` remains the released
-online `main` baseline.
+The schema-26 release is online. Release head `cc14ae6` passed all eight private
+pull-request checks in run `30451251704` before pull request #5 merged to `main`
+as `abf6f0d`. The immediate `main` push run `30452100846` also passed all eight
+jobs. The documentation-only release closeout records those external facts
+without altering the proved runtime implementation.
 
 Foundation is releasable only when:
 
@@ -616,14 +621,17 @@ Foundation is releasable only when:
 
 - `docs/Pantheon Build Log.md`: current decisions, proof, and next work.
 - `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`:
-  active canonical-release, truth-reconciliation, evidence, owner-journey, and
-  next-kit readiness directive.
+  completed canonical-release, truth-reconciliation, evidence, owner-journey,
+  and next-kit readiness directive.
 - `docs/decisions/0009-owner-absent-low-touch-digital-kit-reentry.md`: accepted
   owner-absent, truthful-brand, preparation boundary, new kit hypothesis, and
   buyer-and-cash evidence decision.
 - `docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`: exact
   customer hashes, complete QA evidence, one approved recheck, terminal
   non-pass result, browser proof, passed release gates, and exact private CI.
+- `docs/proofs/2026-07-29-pantheon-commercial-truth-schema-26-release-proof.md`:
+  exact schema-26 source, migration, reconciliation, recovery, owner-browser,
+  pull-request, private-CI, merge, and no-external-action evidence.
 - `docs/plans/PANTHEON-CONTINUATION-HANDOVER-2026-07-29.md`: closed execution
   handover preserving the exact starting blocker and continuation order.
 - `docs/reviews/PANTHEON-DEV-AUDIT-2026-07-28.md`: command-hang,

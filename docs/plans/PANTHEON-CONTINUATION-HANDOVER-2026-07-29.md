@@ -80,9 +80,9 @@ new low-touch kit hypothesis.
 The implementation and release disposition of the later schema-26 commercial
 truth candidate is recorded separately in
 `docs/proofs/2026-07-29-pantheon-commercial-truth-schema-26-release-proof.md`.
-Use that record for the exact completed and pending local, recovery, browser,
-remote, and private-CI gates. This historical handover does not claim those
-later gates or become active again.
+Use that record for the exact completed local, recovery, browser, remote, and
+private-CI gates. This historical handover does not itself claim those later
+gates or become active again.
 
 ## Pantheon's Purpose And Final Form
 
@@ -300,16 +300,16 @@ decision `revise`.
 
 ## Accounting Truth
 
-The production database currently records July OpenAI runtime exposure as:
+At handover, the production database recorded July OpenAI runtime exposure as:
 
 - A$3.10 reconciled;
 - A$6.17 incurred estimates with billing pending;
 - A$9.27 combined runtime exposure; and
 - no unknown provider outcomes.
 
-The complete retained buyer-intent workflow currently contributes A$0.83 of
+At handover, the complete retained buyer-intent workflow contributed A$0.83 of
 incurred estimates. The clean revision-1 Product Builder and Quality Reviewer
-added A$0.20 of that amount.
+had added A$0.20 of that amount.
 
 Do not show these estimates as settled cash spend. ChatGPT subscription and API
 credit purchases remain separate cash-accounting records.
@@ -523,7 +523,7 @@ After the buyer-intent proof and a real measured market result:
 - build the mobile companion after the desktop operating model is stable.
 
 The historical continuation goal above is complete and must not be continued.
-The current goal is recorded verbatim in
+The succeeding schema-26 goal was recorded verbatim and completed in
 `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
 Venture Factory, a second kit, concurrent lanes, and live external-action
-capabilities remain gated by that plan and the Master Plan.
+capabilities remain gated by the Master Plan and later explicit decisions.

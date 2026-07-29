@@ -9,7 +9,7 @@ integration contracts, deployment notes, and runtime diagrams.
 
 - `docs/Pantheon Master Plan.md`: business and system source of truth.
 - `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`:
-  active canonical-release, truth-reconciliation, attributable-evidence,
+  completed canonical-release, truth-reconciliation, attributable-evidence,
   owner-journey, and next-kit readiness directive.
 - `docs/decisions/0009-owner-absent-low-touch-digital-kit-reentry.md`: current
   owner-absent, truthful brand-operated, A$0 preparation, dual-evidence, and new
@@ -56,6 +56,9 @@ integration contracts, deployment notes, and runtime diagrams.
 - `docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`: exact stopped
   build, unchanged package, terminal result, browser, recovery, and release
   evidence.
+- `docs/proofs/2026-07-29-pantheon-commercial-truth-schema-26-release-proof.md`:
+  canonical schema-26 source, migration, recovery, owner-browser, private-CI,
+  merge, and no-external-action evidence.
 - `docs/reviews/OPENAI-AGENTS-SDK-ARCHITECTURE-REVIEW-2026-07-16.md`: historical
   implementation review and guarded-tool boundary.
 - `docs/reviews/PRE-FIRST-USE-ENGINEERING-AND-SECURITY-REVIEW-2026-07-17.md`:
@@ -65,7 +68,7 @@ integration contracts, deployment notes, and runtime diagrams.
 
 ## Current Commercial Truth Path
 
-The schema-26 release candidate implements one canonical path for a future
+The released schema-26 baseline implements one canonical path for a future
 commercial test:
 
 `v2 contract → proposed → owner-accepted → owner-activated → contract-bound work → immutable receipts and evidence → deterministic evaluation → read-only Tests & Results`
@@ -110,13 +113,14 @@ historical context; they are not authoritative v2 buyer or cash evidence.
 Retired legacy creation and execution routes return `410` or otherwise fail
 closed rather than manufacturing a new record outside this path.
 
-This is locally tested infrastructure, not commercial proof. There is currently
+This is release-proved infrastructure, not commercial proof. There is currently
 no accepted-and-activated program for the new kit, no authorised build or
 external test, no live Etsy or Gumroad adapter, and no real imported or manual
-buyer transaction. The real signed owner-browser gate has passed. Remote branch
-publication,
-private CI, and promotion remain pending before this becomes the released
-canonical baseline.
+buyer transaction. Runtime implementation checkpoint `d039d8b` passed the real
+signed owner-browser gate locally. Documentation-only release head `cc14ae6`
+preserved that runtime implementation, passed all eight pull-request jobs in run
+`30451251704`, and merged to private GitHub `main` as `abf6f0d`. The immediate
+`main` run `30452100846` independently passed all eight jobs.
 
 ## Historical Reference
 
