@@ -21,6 +21,25 @@ must not be reopened or renamed. Decision 0009 starts a separate low-touch
 Social Media Manager Client Approval & Scope Guard Kit hypothesis with new
 buyer, offer, channel, evidence, quality, economics, and stop-rule diligence.
 
+### Schema-26 enforcement note
+
+The schema-26 release candidate preserves this attempt as immutable terminal
+history. Reconciliation keeps the stopped build, cancelled candidate and
+experiment, non-pass quality result, evidence, and cost records under terminal
+history, including the retained A$1.00 incurred estimate and released
+zero-value approval; it does not create a new task, approval, retry, buyer-test
+pack, or external-test decision.
+
+Legacy routes that could previously create or promote commercial work now
+return `410` or fail closed. The v2 commercial lifecycle requires a new,
+separately accepted and activated contract and cannot reuse this stopped
+attempt. Owner views may show the record under closed Tests & Results, but may
+not present it as current work or current buyer and cash evidence.
+
+This enforcement is technical protection only. It does not change the
+historical commercial result, prove demand, or authorise any action for
+Decision 0009.
+
 ## Context
 
 Pantheon has one parked case that passed 9 of 10 commercial requirements. Its

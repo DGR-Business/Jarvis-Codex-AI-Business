@@ -1,7 +1,9 @@
 # Pantheon Commercial Truth And Owner-Absent Kit Readiness
 
 Date: 2026-07-29
-Status: active implementation plan; in progress and not yet release-proved
+Status: active release plan; local schema-26 implementation, production
+migration, recovery, and real owner-browser proof complete, with remote release
+gates pending
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 
@@ -51,9 +53,9 @@ proof against the canonical release.
 - `digital_product_v1` remains one registered, non-universal Venture Kit.
 - Portfolio Controller may retain a valid `No investment selected` result.
 
-### Known truth gaps to reconcile
+### Truth gaps identified at plan start
 
-The current quality inspection found that retained runtime and owner-facing
+The quality inspection found that retained runtime and owner-facing
 state can disagree about terminal workflows, commands, plans, candidates,
 venture status, and what still needs attention. Recovery and Doctor proof must
 also be re-run against the exact canonical release rather than inferred from a
@@ -61,8 +63,45 @@ prior branch. Accounting must distinguish cash paid, reconciled provider use,
 incurred estimates, buyer transactions, refunds, and attributable net cash
 contribution.
 
-These are implementation findings in progress. This plan does not claim they
-are fixed, migrated, released, or browser-proved.
+These were the starting implementation findings. The checkpoint below records
+what the local candidate has now addressed without rewriting that starting
+truth.
+
+### Local implementation checkpoint - not yet the remote release
+
+The correct repository is `C:\Jarvis-Codex-AI-Business`. Released `main` was
+confirmed at `f61d7eb`; the implementation checkpoint is committed on
+`codex/commercial-truth-hardening` at `d039d8b`. The dated proof must identify
+the later exact documentation/release head.
+
+The candidate has completed these local outcomes:
+
+- database migrations 25 and 26 establish the immutable v2 commercial
+  contract, lifecycle, evidence, cash, and evaluation store;
+- reconciliation preserves terminal history while removing it from current
+  work and creates no provider or external action;
+- Command Center, owner reporting, monitoring, digest, and Tests & Results use
+  the same current/closed commercial projection and withhold unsupported zero
+  buyer or cash claims;
+- acceptance and activation are exact, separate and single-use, paused tests
+  require fresh decisions, and stopped or closed programs cannot be reused;
+- imported-platform and operator-attested evidence have different provenance,
+  append-only correction rules, buyer pseudonyms, settled-cash requirements,
+  reconciled-cost gates, and deterministic proof hashes;
+- generic legacy creation, promotion, discovery, execution, and result-write
+  routes are retired with `410` or fail-closed responses;
+- the full five-shard ordinary test suite, focused authority/store/owner
+  regressions, lint, and whitespace checks passed locally; and
+- a clean install, schema-24-to-26 disposable migration, encrypted recovery
+  restore, database integrity checks, and locked restored-runtime boot passed
+  without changing the source backup.
+
+This is system-readiness evidence, not market evidence. The store is not a
+live Etsy or Gumroad adapter, a trusted platform import, or a real manual buyer
+receipt. No current program has both been accepted and activated. Production
+migration, post-migration recovery, and the real signed owner-browser path are
+now recorded in the dated release proof. Remote branch publication, private CI,
+and promotion to canonical `main` remain before this plan can close.
 
 ### Commercial reality
 
@@ -311,6 +350,11 @@ safe lifecycle behavior pass for the exact candidate release.
 **Gate:** the owner can trace every buyer and cash claim to its source and
 reproduce the AUD contribution calculation.
 
+**Local outcome:** the generic v2 store and its imported/manual provenance,
+deduplication, correction, settlement, cost, and evaluation rules are
+implemented and fixture-proved. This does not mean a live channel adapter,
+trusted platform import, real receipt, buyer, or cash result exists.
+
 ### 4. Remove channel assumptions from the generic path
 
 - Keep channel, account, listing, price, attribution, reach, duration, and stop
@@ -322,6 +366,9 @@ reproduce the AUD contribution calculation.
 
 **Gate:** the generic kernel can represent the new evidence path without
 claiming that Etsy, Gumroad, Excel, or digital products are universal.
+
+**Local outcome:** exact contract binding and fail-closed adapter authority are
+implemented. No Etsy or Gumroad channel has been selected or connected.
 
 ### 5. Prepare the new kit diligence and conditional test specification
 
@@ -342,6 +389,11 @@ unresolved offer, channel, economics, risk, and owner terms completes this step;
 a versioned external-test contract is required only after readiness passes and
 the exact test is proposed for approval. A forced build is not success.
 
+**Local outcome:** readiness is `research_more`, the offer decision is
+`revise`, and retaining cash is the next money move. The versioned readiness
+record completes this workstream without creating a v2 external-test contract,
+product build, active test, or external authority.
+
 ### 6. Prove the owner journey
 
 Use the real signed dashboard and safe dry-run data to prove:
@@ -350,8 +402,9 @@ Use the real signed dashboard and safe dry-run data to prove:
 - historical terminal work remains available without looking actionable;
 - system health and recovery state are understandable;
 - buyer and cash evidence show source and reconciliation status;
-- the selected offer, channel hypothesis, price, expected contribution, and
-  test rules are visible;
+- a selected offer, channel, price, expected contribution, and test rules are
+  visible only after readiness supports an exact proposal; otherwise the owner
+  sees that no commercial test is authorised;
 - every protected action says what would happen, what it would cost, and what
   remains locked; and
 - the operator can stop, return to Standby, and recover without command-line
@@ -363,6 +416,16 @@ errors, horizontal overflow, stale text, and actual event timeline.
 **Gate:** Daniel can understand what works, what happened, the important
 limitation, what comes next, and the one decision required without interpreting
 internal identifiers.
+
+**Local outcome:** the signed production walkthrough covered Command Center,
+Full Journey, Decisions, Portfolio, Tests & Results, AI Team, and System.
+Pantheon's monitor completed and persisted its event, Checks updated, history
+remained non-actionable, the queue was empty, and no safe dry-run step or
+protected approval was forced. Desktop and 390-by-844 mobile views had no
+document-level horizontal overflow, the final authenticated console was clean,
+and Pantheon returned to Standby. Because readiness did not pass, the owner
+screens correctly showed no authorised test rather than manufacturing an offer,
+price, or result.
 
 ### 7. Release and leave a durable handoff
 
@@ -378,6 +441,12 @@ internal identifiers.
 **Gate:** local source, runtime state, recovery evidence, owner view, remote
 branch, and private CI all identify the same release and factual result.
 
+**Local outcome:** the implementation checkpoint, full local suite, lint, clean
+install, production schema-26 migration, Doctor, dual encrypted recovery, and
+real-browser gates have passed and Pantheon is in Standby. Documentation
+reconciliation is in progress. Push, pull-request CI, merge, and exact remote
+release recording remain open.
+
 ## Completion Criteria
 
 This plan is complete only when:
@@ -391,9 +460,12 @@ This plan is complete only when:
   the evidence cannot prove;
 - imported platform evidence and manual receipt-backed evidence are implemented,
   distinguishable, deduplicated, and auditable;
-- actual net cash contribution in AUD is reproducible from source evidence;
-- the new kit has an evidence-backed readiness result and a versioned test
-  specification, even if the correct result is revise, reject, or retain cash;
+- the actual net cash contribution calculation in AUD is reproducible whenever
+  attributable source evidence exists, while the present no-test state remains
+  withheld rather than reported as an actual result;
+- the new kit has an evidence-backed, versioned readiness record; a v2
+  external-test contract exists only if readiness passes and an exact test is
+  later proposed for separate approval;
 - Etsy, Gumroad, A$29, offer format, and test rules remain labelled hypotheses
   until supported;
 - the complete protected owner journey passes in the real dashboard;
@@ -435,6 +507,26 @@ Daniel has selected:
 - owner-first reporting, closed historical work, safe receipt-backed recovery,
   and proportionate patch-versus-major-upgrade handling.
 
-No further preference is required to begin this plan. A new owner decision is
-required only if evidence changes the buyer, offer, channel, price, authority,
-risk, or external-test design materially.
+## Next Owner Gates
+
+No publishing or spending approval is due now. The next decision sequence is:
+
+1. Decide whether Pantheon should add a narrow, auditable pre-venture research
+   authority. The current v2 authority requires an exact venture, offer,
+   channel, account, adapter, cohort, and test contract; this opportunity is not
+   ready for that contract, and the old broad discovery routes are retired.
+   Jarvis may continue owner-authorised read-only diligence in the meantime,
+   but it is not market validation or commercial execution.
+2. Before Etsy can be selected, decide whether Daniel will complete any
+   unavoidable identity/selfie, bank/card, two-factor-authentication, seller
+   terms, accountable-owner, and original-design/AI-disclosure steps. If that
+   truthful owner-absent arrangement cannot be confirmed, decide whether Etsy
+   should be parked.
+3. Only after readiness passes, review one exact v2 test proposal. Acceptance
+   and activation are separate approvals; activation does not silently approve
+   account creation, KYC/OAuth/MFA, legal terms, publishing, buyer contact,
+   advertising, money movement, or spend. Each remains separately protected.
+
+No further preference was required to begin this plan. A new owner decision is
+required when one of the gates above is reached or evidence changes the buyer,
+offer, channel, price, authority, risk, or external-test design materially.

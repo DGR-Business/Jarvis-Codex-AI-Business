@@ -77,6 +77,13 @@ Those records preserve the terminal result, establish the new owner-absent and
 truthful brand-operated policy, and begin a separate A$0 preparation path for a
 new low-touch kit hypothesis.
 
+The implementation and release disposition of the later schema-26 commercial
+truth candidate is recorded separately in
+`docs/proofs/2026-07-29-pantheon-commercial-truth-schema-26-release-proof.md`.
+Use that record for the exact completed and pending local, recovery, browser,
+remote, and private-CI gates. This historical handover does not claim those
+later gates or become active again.
+
 ## Pantheon's Purpose And Final Form
 
 Pantheon is Daniel's AI-native commercial operating system. Jarvis is the

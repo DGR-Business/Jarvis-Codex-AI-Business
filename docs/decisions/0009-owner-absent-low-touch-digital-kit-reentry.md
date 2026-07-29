@@ -1,8 +1,8 @@
 # 0009 - Owner-Absent Low-Touch Digital Kit Re-entry
 
 Date: 2026-07-29
-Status: accepted policy and preparation direction; implementation and commercial
-readiness remain in progress
+Status: accepted policy; technical foundation implemented in the local
+schema-26 candidate; commercial readiness remains `research_more` / `revise`
 
 ## Decision
 
@@ -61,6 +61,47 @@ because the primary channel proves unsuitable.
 
 The detailed implementation and proof scope is recorded in
 `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
+
+## Implementation Outcome - 2026-07-29
+
+Pantheon's local schema-26 candidate now has the technical controls needed to
+hold a future commercial test to one exact decision and evidence record. The
+owner views use that record for current authority, buyer proof, cash truth, and
+closed results. The stopped Decision 0008 attempt remains closed history, and
+legacy paths cannot reopen or bypass it.
+
+That technical progress has not changed the new kit's commercial answer:
+
+- readiness is `research_more`;
+- the offer decision is `revise`;
+- no commercial program has been accepted and activated;
+- no product build or external test is authorised or active;
+- no external-action authority exists; and
+- no buyer, order, revenue, refund, or settled net cash contribution exists for
+  this hypothesis.
+
+The candidate includes an immutable v2 contract and lifecycle, exact
+contract-bound work authority, distinct imported-platform and
+operator-attested evidence records, append-only corrections, reconciled-cost
+rules, deterministic proof evaluation, and owner-first Tests & Results. These
+controls are fixture- and regression-proved locally. They are not an Etsy or
+Gumroad connection, a trusted live importer, a real manual receipt, or evidence
+that this offer can sell. Live use still needs the selected channel's proved
+adapter, credential and account binding, trusted receipt verification, and a
+secure buyer-pseudonym key.
+
+The current v2 authority also requires an exact venture, offer, channel,
+account, adapter, cohort, and test contract. Because this opportunity has not
+passed readiness and the old broad discovery routes are retired, Pantheon does
+not currently have runtime authority to conduct the next pre-venture research.
+Owner-authorised, read-only diligence by Jarvis may continue, but it must not be
+represented as market validation or commercial execution. A narrow, auditable
+pre-venture research authority is the next system-policy design decision.
+
+The local release candidate has passed its real signed owner-browser gate.
+Remote branch publication, private CI, and promotion remain pending. No push,
+pull request, private CI result, merge, or canonical remote release is claimed
+here.
 
 ## Evidence And Proof Contract
 

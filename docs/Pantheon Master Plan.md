@@ -91,17 +91,32 @@ Its exact goal is:
 > next commercial test without contacting customers, publishing, or spending
 > money until separately approved.
 
-Implementation is in progress. The current work is reconciling canonical source,
-runtime and owner-facing truth, compatibility, recovery, accounting, buyer and
-cash evidence, channel boundaries, and the protected owner journey. It has not
-yet earned a new release claim.
+The local implementation is now a schema-26 release candidate. Production state
+has been reconciled, and the owner screens now report the commercial position
+that durable evidence can support. Current records contain zero active external
+tests, zero verified buyers, zero attributable cash evidence, and zero settled
+net cash contribution; the owner result is withheld rather than presenting
+those empty records as a tested business outcome. No buyer contact, publication,
+advertising, account action, or external spend occurred.
 
-The next preparation hypothesis is a distinct, low-touch Social Media Manager
-Client Approval & Scope Guard Kit at an initial A$29 price hypothesis. Etsy is
-the primary channel hypothesis and Gumroad is a fallback hypothesis. Neither
-channel, the price, the buyer, the offer, the format, nor the test rules are
-proved. This work does not reopen, revise, or rename the stopped Client Control
-and Profitability Workbook.
+The candidate has passed its local tests, lint, clean-install and dependency
+checks, real-browser owner journey, Doctor, database migration, and two
+independent encrypted-recovery drills. Implementation checkpoint `d039d8b` is
+local on `codex/commercial-truth-hardening`; this documentation reconciliation
+will follow it. The released online `main` baseline remains `f61d7eb` until the
+candidate is pushed, passes pull-request CI, and is merged. The candidate must
+therefore not yet be described as the canonical online release.
+
+The next commercial work is bounded pre-venture diligence for a distinct,
+low-touch Social Media Manager Client Approval & Scope Guard Kit at an initial
+A$29 price hypothesis. Etsy is the primary channel hypothesis and Gumroad is a
+fallback hypothesis. Neither channel, the price, the buyer, the offer, the
+format, nor the test rules are proved. Diligence may recommend `research_more`,
+`revise`, `reject`, or retaining cash; it does not itself create build,
+production, or external-test authority. The current versioned readiness record
+is `research_more`, with the offer marked `revise`; it grants no build or live
+test authority. This work does not reopen, revise, or rename the stopped Client
+Control and Profitability Workbook.
 
 `digital_product_v1` is one registered, non-universal kit. Generic commercial
 logic has no Gumroad-first or digital-product-first channel assumption. The
@@ -422,42 +437,47 @@ buyer-intent work closed. The current plan below supersedes it.
 
 ### Now
 
-- Execute the exact active goal without restarting discovery or reopening the
-  stopped workbook.
-- Preserve the dirty worktree and establish the current integrated release as
-  canonical only after source history, local changes, upstream state, tests,
-  recovery, and private CI agree.
-- Reconcile terminal history and current runtime state so commands, workflows,
-  plans, candidates, experiments, ventures, monitor findings, accounting, health,
-  and owner-facing screens report what durable evidence proves.
-- Prove clean installation, dependency compatibility, Doctor, health, encrypted
-  recovery, SQLite integrity, Windows ownership, and the signed owner journey on
-  the exact candidate release.
-- Implement two attributable buyer-and-cash evidence routes: platform import and
-  manual receipt-backed entry. Keep estimates, cash paid, provider costs,
-  revenue, refunds, and actual net cash contribution distinct.
-- Prepare the new Social Media Manager Client Approval & Scope Guard Kit
-  diligence and test specification. Treat the A$29 price, Etsy-primary route,
-  Gumroad fallback, product format, reach rule, duration, and stop rules as
-  unproven hypotheses.
-- Keep this session preparation-only at A$0 external spend. No customer contact,
+- Preserve the exact schema-26 local candidate and complete its online release
+  gate without altering the proven source: one-time GitHub authentication, push,
+  pull request, private CI, and merge. Until that succeeds, released online
+  `main` remains `f61d7eb`, while local implementation checkpoint `d039d8b` plus
+  its documentation follow-up remain the candidate.
+- Retain the reconciled production truth: no active external test, verified
+  current buyer, attributable current cash evidence, or settled net cash
+  contribution. Historical work remains available in audit views but cannot
+  compete with current owner decisions.
+- Use the implemented platform-import and manual receipt-backed routes for future
+  attributable buyer-and-cash evidence. Keep estimates, cash paid, provider
+  costs, revenue, refunds, and actual net cash contribution distinct.
+- Scope the next commercial work to bounded pre-venture diligence for the new
+  Social Media Manager Client Approval & Scope Guard Kit. Revalidate the buyer,
+  problem, low-touch offer, format, A$29 price, Etsy-primary route, Gumroad
+  fallback, attribution, reach, duration, economics, and revise or stop rules.
+- Keep this work preparation-only at A$0 external spend. No customer contact,
   calls, emails, messages, publication, advertising, account action, KYC, OAuth,
   MFA, legal acceptance, or money movement is authorised.
 
 ### Next
 
-- Release only after the full local, browser, clean-install, compatibility,
-  Doctor, dependency, encrypted-recovery, accounting, push, and private CI gates
-  pass on the same source and runtime state.
 - Record the new kit's evidence-backed readiness outcome as build, research more,
   revise, reject, or retain cash. Do not force production to make the system look
   active.
-- If readiness passes, present one separate protected external-test proposal
-  with current channel evidence, exact cohort and attribution, expected cost,
-  expected net cash contribution, and diagnose/revise/stop rules.
-- Contact, publication, advertising, account work, legal acceptance, or external
-  spend can begin only after that later exact approval and adapter readiness
-  proof.
+- If readiness passes, present one protected external-test proposal with current
+  channel evidence, exact cohort and attribution, expected cost, expected net
+  cash contribution, and diagnose/revise/stop rules.
+- Require a separate exact acceptance of that proposal and then a separate exact
+  activation. Each remains single-use, evidence-bound, owner-visible, and
+  protected; diligence or technical readiness cannot silently activate a
+  venture or external test.
+- Only after activation may Pantheon begin contract-bound work that its recorded
+  authority and adapter health actually permit.
+- Etsy remains a future protected setup decision. If selected, Daniel must decide
+  whether to complete the lawful one-time owner identity, bank or card, 2FA, and
+  seller-term steps, or direct Pantheon to exclude Etsy and assess another
+  channel. No choice is assumed by this plan.
+- Activation does not approve contact, publication, advertising, account work,
+  legal acceptance, or external spend. Each such action can begin only after its
+  own later exact approval and the relevant adapter-readiness proof.
 
 ### Later
 
@@ -558,10 +578,24 @@ Pantheon was returned to Standby. Nothing in this result is accepted as an
 independent quality pass, buyer proof, commercial validation, or publication
 authority.
 
-The prior release evidence remains valid for its exact commits. The
-commercial-truth and owner-absent readiness implementation now in the worktree
-is not released merely because those earlier gates passed. Its own exact local,
-recovery, browser, push, and private CI evidence remains required.
+The prior release evidence remains valid for its exact commits. The schema-26
+commercial-truth and owner-absent readiness candidate has now passed its exact
+local suite, lint, clean install, dependency audit, production migration,
+commercial-history reconciliation with accounting-preservation checks, Doctor,
+real-browser owner journey, and dual encrypted-recovery proof. The final current
+recovery set is identified by
+`b5beeedc`; the separately reconstructed and retained rollback set is identified
+by `f2733fe4`. Both restored and completed a locked independent boot.
+
+Four older retained recovery sets could not authenticate under the current
+passphrase. They have not been deleted or altered. Daniel must later decide
+whether they should remain quarantined as historical evidence or be removed
+through a separately confirmed retention action.
+
+These local gates do not make the candidate an online release. Implementation
+checkpoint `d039d8b` and its documentation follow-up still require push,
+pull-request CI, and merge. Until those complete, `f61d7eb` remains the released
+online `main` baseline.
 
 Foundation is releasable only when:
 

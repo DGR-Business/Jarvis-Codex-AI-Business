@@ -131,13 +131,15 @@ assumed sales, conversion, revenue, or seller profitability.
 | [Notion Social Media Client Portal](https://www.etsy.com/listing/4348191751/notion-social-media-client-portal) | $32.82 | More comprehensive portal and different interaction model |
 | [Social Media Manager Kit](https://www.etsy.com/listing/1793743863/social-media-manager-kit-canva-and) | $33.25 | Wider planning and service kit; not like-for-like |
 
-The inspected Etsy result pages displayed hundreds of adjacent items—714+ in
-aggregate across the pages observed—and frequent discounting:
+One broad Etsy results page displayed 714+ adjacent items at the time of
+observation. The other inspected pages also showed dense adjacent supply and
+frequent discounting:
 [SMM freelance contracts](https://www.etsy.com/market/social_media_freelance_contract),
 [SMM Notion portals](https://www.etsy.com/market/notion_template_social_media_portal),
 and [general client portals](https://www.etsy.com/market/notion_templates_client_portal).
-The counts are mutable, overlapping, and not deduplicated. They support crowded
-supply, not purchases or a profitable entry gap.
+The pages overlap and the displayed counts are mutable; they were not added
+together or treated as deduplicated products. They support crowded supply, not
+purchases or a profitable entry gap.
 
 Gumroad states that an unqualified `$` price is USD.
 
@@ -210,6 +212,16 @@ cash, or net cash contribution.
 Gumroad lists a direct-sale fee of 10% plus US$0.50 and a 30% fee for sales
 through Discover. [Gumroad pricing](https://gumroad.com/pricing).
 
+This public diligence did not establish the complete seller-side treatment for
+an Australian account. In particular, it does not prove whether the headline
+fee is the only processing deduction for every payment method, how GST or other
+tax on Gumroad's fee would be shown or withheld, how buyer tax affects the
+seller statement, or what currency-conversion, payout, bank, refund, dispute,
+or chargeback deductions would apply. Pantheon therefore has no reliable
+Gumroad per-sale net-proceeds figure. The fee, processing, tax-on-fee,
+settlement, and currency assumptions must be rechecked against current
+account-specific terms and an auditable statement before activation.
+
 Discover is not a cold-start distribution solution. Official guidance requires
 payout settings, genuine sales, at least a US$100 balance, risk verification,
 at least one successful non-refunded sale, product categorisation, and ratings.
@@ -248,6 +260,38 @@ because both can independently reverse this digital-kit decision.
 No gate is represented as passed merely because the problem is credible or a
 competitor exists.
 
+## Current authority limitation
+
+Pantheon's new commercial authority requires one exact venture, offer, channel,
+account, adapter, cohort, reporting period, and v2 test contract before it can
+authorise commercial work. This opportunity is not ready for that contract.
+The former broad pre-venture discovery and promotion routes are retired, so the
+runtime currently has no authorised path for the next bounded research round.
+
+Jarvis may perform Daniel-authorised, read-only public diligence while a
+narrow, auditable pre-venture research authority is designed. That work must
+remain clearly labelled as preparation: it is not a market test, buyer
+validation, product build, or external commercial action. The implemented
+generic evidence store is likewise not a live Etsy/Gumroad adapter, trusted
+platform importer, or evidence that a real manual receipt was recorded.
+
+## Next approval sequence
+
+No publishing or spending approval is due. The next gates are:
+
+1. Decide whether to adopt a bounded pre-venture research-authority design.
+2. Resolve the Etsy identity, accountable-owner, seller-term, original-design,
+   and AI-disclosure questions below, or park Etsy and assess another lawful
+   channel.
+3. Close the remaining readiness gaps. If readiness still says
+   `research_more`, `revise`, `reject`, or retain cash, preserve a new version
+   of this readiness record and create no external-test contract.
+4. Only after readiness passes, review one exact v2 test proposal. Acceptance
+   and activation require separate owner decisions.
+5. Keep account creation, KYC/OAuth/MFA, legal acceptance, publishing, buyer
+   contact, advertising, money movement, and external spend separately
+   protected even if the test contract is accepted and activated.
+
 ## Owner decisions required before Etsy can be selected
 
 These are intentionally unresolved protected decisions:
@@ -280,9 +324,10 @@ a hypothesis and no external-test proposal should name it as an active route.
 4. Keep A$19, A$29, and A$39 as price hypotheses for a future behavioural
    validation, not as current conclusions.
 5. Resolve the protected Etsy owner/platform questions.
-6. Only if readiness improves, prepare one exact channel-consistent external
+6. Only if readiness passes, prepare one exact channel-consistent v2 external
    test with immutable attribution, period, cohort, cost, settlement,
-   diagnose/revise, and stop rules for separate approval.
+   diagnose/revise, and stop rules. Present acceptance, activation, and every
+   protected external action for their separate approvals.
 
 Doing nothing and retaining cash remain valid outcomes.
 

@@ -63,6 +63,61 @@ integration contracts, deployment notes, and runtime diagrams.
 - `docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`:
   completed live Portfolio and foundation release evidence.
 
+## Current Commercial Truth Path
+
+The schema-26 release candidate implements one canonical path for a future
+commercial test:
+
+`v2 contract → proposed → owner-accepted → owner-activated → contract-bound work → immutable receipts and evidence → deterministic evaluation → read-only Tests & Results`
+
+In owner terms, Pantheon may now describe a test as current only when one exact
+commercial decision has been accepted and activated. It may describe buyers,
+revenue, refunds, costs, or net cash contribution only when the canonical
+evidence ledger supports those claims. A stopped or closed test remains visible
+as history without looking actionable.
+
+The path is deliberately exact:
+
+- The v2 contract binds one venture, Venture Kit version and hash, offer version
+  and content hash, buyer and problem, experiment, cohort, reporting period,
+  price, channel, provider account, adapter version, attribution window,
+  evidence rules, decision rules, and protected actions.
+- Acceptance and activation are separate, single-use owner decisions. A paused
+  test requires fresh acceptance and then fresh activation; a terminal stop or
+  close takes precedence and cannot be reopened.
+- New work, approvals, tasks, costs, adapter claims, and execution records must
+  preserve the same decision binding. An unknown or substituted adapter fails
+  closed.
+- Imported platform evidence and operator-attested manual evidence retain
+  different provenance. Source and row hashes, immutable receipts,
+  provider/account transaction keys, and contract-bound HMAC buyer pseudonyms
+  support deduplication without storing raw buyer contact details in the
+  commercial record.
+- Corrections, refunds, and reversals are append-only. A verified closed
+  evidence-set manifest and deterministic evaluation hash make the result
+  reproducible.
+- Only cash-settled revenue contributes to proof. Unknown, estimated, or merely
+  incurred costs block proof until every attributable cash cost is reconciled.
+  Platform balance is not bank-settled cash.
+- The proof rule remains at least three independent paying buyers and positive
+  actual net cash contribution in AUD after refunds and all attributable cash
+  costs.
+
+The owner summary, Command Center, weekly digest, monitor, commercial
+authority, and Tests & Results projection use this same canonical record. Older
+commercial experiment, result, plan, and journey tables remain read-only
+historical context; they are not authoritative v2 buyer or cash evidence.
+Retired legacy creation and execution routes return `410` or otherwise fail
+closed rather than manufacturing a new record outside this path.
+
+This is locally tested infrastructure, not commercial proof. There is currently
+no accepted-and-activated program for the new kit, no authorised build or
+external test, no live Etsy or Gumroad adapter, and no real imported or manual
+buyer transaction. The real signed owner-browser gate has passed. Remote branch
+publication,
+private CI, and promotion remain pending before this becomes the released
+canonical baseline.
+
 ## Historical Reference
 
 The superseded 2026-07-04 runtime architecture is retained at

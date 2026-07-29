@@ -15,9 +15,24 @@ commercial move.
 
 ## Current Position
 
-- Product direction: reconcile the current release and prepare a separate
-  low-touch Social Media Manager Client Approval & Scope Guard Kit hypothesis.
-  No venture currently has authority to enter production or an external test.
+- Owner position: the schema-26 commercial-truth implementation is a completed
+  local release candidate. Production state and the owner screens now agree:
+  current records contain no active external test, verified current buyer,
+  attributable current cash evidence, or settled net cash contribution. The
+  owner result is withheld rather than presenting empty records as a tested
+  zero. Historical records remain available without being presented as current
+  work.
+- Release position: released online `main` remains `f61d7eb`. Local branch
+  `codex/commercial-truth-hardening` contains implementation checkpoint
+  `d039d8b`; this documentation reconciliation will be its follow-up. The local
+  candidate must still be pushed, pass pull-request CI, and merge before it is
+  called the canonical online release. A one-time GitHub CLI authentication is
+  the remaining access prerequisite.
+- Product direction: after the exact release gate, perform bounded pre-venture
+  diligence for the separate low-touch Social Media Manager Client Approval &
+  Scope Guard Kit hypothesis. Diligence is not build, production, or
+  external-test authority. Its current readiness result is `research_more`, with
+  the offer marked `revise`.
 - Commercial hypothesis: freelance or independent social media managers,
   fragmented approval and scope control, a practical low-touch kit, and an
   initial A$29 price. The buyer, problem, offer, price, format, channel, reach
@@ -25,16 +40,15 @@ commercial move.
 - Channel direction: Etsy is the primary hypothesis and Gumroad is a fallback
   hypothesis for the new kit. Each must earn selection through current evidence.
   Neither is a generic default.
-- Runtime: Node.js 24, CommonJS, built-in SQLite schema 24, local signed operator
+- Runtime: Node.js 24, CommonJS, built-in SQLite schema 26, local signed operator
   session, scheduler-backed supervisor, independent monitor, Portfolio
   Controller, and a registered non-universal `digital_product_v1` Venture Kit.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
-- Active engineering: commercial-truth and owner-absent kit readiness work is in
-  progress on the current integrated tree. Canonical Git state, runtime
-  reconciliation, compatibility, Doctor, recovery, accounting, channel
-  neutrality, dual buyer-and-cash evidence, and the owner journey have not yet
-  completed their new release proof.
+- Active engineering: commercial truth, exact lifecycle authority, owner
+  reporting, channel-neutral buyer-and-cash evidence, production migration,
+  recovery, and the owner journey have completed local proof. Online push,
+  private CI, and merge remain open.
 - Current commercial result: two bounded rounds retained ten hypotheses,
   performed comparable live demand and finance review on six finalists, and
   completed two Sol investment reviews. Pantheon selected no investment.
@@ -43,14 +57,15 @@ commercial move.
   its one manually approved Terra evidence recheck. The `revise`, score-78
   result permanently stopped that build. Its exact release passed locally, in
   Chrome, and in all seven private CI jobs at commit `c5c2436`.
-- Current truth status: inspection found retained runtime and owner-facing
-  records that need explicit reconciliation before the current release can be
-  called canonical. This work is in progress and no migration, recovery,
-  accounting, or owner-screen fix is claimed here as released.
+- Current truth status: production migrated from schema 24 to schema 26 and
+  completed canonical reconciliation. The active commercial position is zero
+  external commercial tests, verified buyers, attributable cash evidence, and
+  settled net cash contribution; older Portfolio and journey records remain
+  read-only history.
 - Commercial reality: no buyer contact, call, email, message, publication,
   listing, public post, advertisement, account action, KYC, OAuth, MFA, paid
   market test, external spend, order, revenue, refund, or actual net cash
-  contribution has occurred for the new kit.
+  contribution occurred in this release-candidate work.
 - Historical product: the Job Search Evidence Tracker package remains
   recoverable engineering evidence but is parked after an unbiased comparison.
   It is not an active venture or publication recommendation.
@@ -68,10 +83,13 @@ commercial move.
   accounts for A$1.00 of billing-pending estimates. There are no unknown
   provider outcomes.
 - Operations: Stopped, Standby, and Working remain the intended interface. The
-  native Windows supervisor and Job Object passed their exact prior release
-  proof. The current candidate still requires its own compatibility, recovery,
-  browser, and private CI evidence. Lifecycle integration remains quarantined
-  to disposable, externally bounded Windows CI rather than ordinary local tests.
+  local candidate passed compatibility, Doctor, recovery, and real-browser
+  proof. Lifecycle integration remains quarantined to disposable, externally
+  bounded Windows CI rather than ordinary local tests.
+- Recovery: final current set `b5beeedc` and reconstructed retained rollback set
+  `f2733fe4` each restored and booted independently in locked mode. Four older
+  sets could not authenticate under the current passphrase; they remain
+  untouched pending Daniel's future retain-or-remove decision.
 
 ## Durable Decisions
 
@@ -118,6 +136,7 @@ commercial move.
 | 2026-07-29 | Permit one approved QA-evidence recheck only when customer files are unchanged. | The independent reviewer saw only two pages of a three-page PDF. Jarvis may repair the internal contact sheet at zero provider cost, but a new model verdict requires exact approval, immutable customer hashes, complete page coverage, idempotency, and no further recheck. |
 | 2026-07-29 | Enforce the single recheck's non-pass as a permanent build stop. | The manually approved Terra recheck returned `revise`, score 78. The recorded rule forbids another paid retry, fallback, revision of this build, buyer-test pack, or external-test decision. |
 | 2026-07-29 | Adopt an owner-absent, truthful brand-operated model and prepare a separate low-touch Social Media Manager Client Approval & Scope Guard Kit hypothesis. | Daniel should provide guidance and protected approvals rather than routine execution; the new test must use attributable buyer and actual AUD cash evidence without reopening the stopped build or treating Etsy, Gumroad, or A$29 as proved. |
+| 2026-07-29 | Make immutable commercial evidence and exact lifecycle authority the schema-26 release boundary. | Owner screens may report only attributable current buyer and cash proof; readiness, acceptance, activation, and external action remain distinct, single-use gates that fail closed. |
 
 ## 2026-07-22 Full Journey Rehearsal: Genuine Quality Stop
 
@@ -1892,6 +1911,67 @@ planning step.
 The exact active plan is
 `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
 
+## 2026-07-29 Schema-26 Commercial-Truth Local Release Candidate
+
+### Owner summary
+
+Pantheon's production database and owner screens now agree on the real business
+position. There is no active external test, verified current buyer,
+attributable current cash evidence, or settled net cash contribution. Closed
+journeys and Portfolio decisions remain available as history without appearing
+as current commercial progress.
+
+The system now has two controlled ways to prove future buyer and cash outcomes:
+an attributable platform import and a separate manual, receipt-backed record.
+It also keeps readiness, owner acceptance, activation, and external action as
+separate gates. A technically ready or approved item cannot silently become a
+live venture. The low-touch kit's current readiness result is `research_more`,
+with the offer marked `revise`; that is a diligence result, not build authority.
+These are fixture-proved generic ledger routes, not a live Etsy or Gumroad
+adapter, trusted receipt verifier, configured buyer-pseudonym key, real import,
+or real manual receipt.
+
+This work changed software and local production records only. It made no call,
+email, customer contact, listing, publication, advertisement, account or KYC
+action, legal acceptance, money movement, or external spend. It produced no
+buyer, order, revenue, refund, or commercial validation.
+
+The implementation is locally proven but not yet the online release. Released
+`main` remains `f61d7eb`; implementation checkpoint `d039d8b` plus this
+documentation follow-up must still be pushed, pass private pull-request CI, and
+merge. GitHub CLI needs Daniel's one-time login before Jarvis can complete that
+online gate.
+
+### Technical proof
+
+- Production opened at schema 24, migrated to schema 26, and completed the
+  canonical commercial-truth reconciliation. SQLite integrity, migration
+  compatibility, and the reconciled owner state passed.
+- The no-argument `npm.cmd test` release suite passed in about 284.7 seconds.
+  Focused proof also passed 170 of 170 owner tests, 45 of 45 authority, store,
+  and schema tests, 11 of 11 recovery tests, 15 of 15 Backup and Doctor tests,
+  38 of 38 foundation tests, and 21 of 21 ledger, operations, and clean-slate
+  tests. Lint passed.
+- A disposable clean install passed `npm ci`, dependency listing, and audit with
+  zero reported vulnerabilities.
+- The signed real-browser proof covered Command Center, Full Journey, Decisions,
+  Portfolio, Tests & Results, AI Team, and System. Monitor run
+  `monitor_29047359-46ff-431c-8bf8-7592d7c0a4cf` completed `ok` with one
+  informational connection-setup finding. The queue was empty and no safe
+  internal step was available, so Jarvis did not force a dry run. The
+  `monitor.completed` event was persisted and the Checks Seen count advanced.
+- The final browser console contained zero application errors. Command Center
+  and Tests & Results had no document-level horizontal overflow at 390 by 844,
+  in addition to the desktop owner journey.
+- Doctor and independent locked-boot recovery passed for final current set
+  `b5beeedc-b68b-41f6-a982-1302233eb471` and separately reconstructed retained
+  rollback set `f2733fe4-0c13-4f0b-b5d3-b1ae4e2c4e25`. These prove both the
+  current schema and a retained rollback path rather than relying on an untested
+  archive.
+- Four older retained sets could not authenticate under the current passphrase.
+  They were not deleted or modified. Their eventual quarantine or removal is an
+  owner retention decision, not an automatic cleanup action.
+
 ## Current Next Best Work
 
 > Make Pantheon’s current release the canonical, compatibility-verified
@@ -1901,23 +1981,32 @@ The exact active plan is
 > next commercial test without contacting customers, publishing, or spending
 > money until separately approved.
 
-Execute that goal in this order:
+The local implementation and proof portion of this goal is complete. Finish the
+release and then the next commercial work in this order:
 
-1. establish the exact canonical Git and dirty-worktree baseline;
-2. reconcile runtime, historical, owner-facing, and monitor truth without
-   erasing evidence;
-3. prove compatibility, Doctor, encrypted recovery, database integrity, and
-   safe Windows ownership on the exact candidate release;
-4. align accounting and implement distinct imported and manual receipt-backed
-   buyer-and-cash evidence;
-5. remove channel-specific assumptions from the generic path;
-6. complete evidence-backed diligence and a versioned test specification for
-   the new kit;
-7. prove the complete protected owner journey in the real dashboard; and
-8. run all release gates, commit, push, pass private CI, record the factual
-   result, and leave Pantheon in Standby.
+1. preserve implementation checkpoint `d039d8b` and this documentation
+   follow-up, obtain the one-time GitHub CLI login, push the exact branch, pass
+   private pull-request CI, and merge it to `main`;
+2. perform bounded pre-venture diligence for the low-touch Social Media Manager
+   Client Approval & Scope Guard Kit, testing the exact buyer, problem, offer,
+   format, A$29 price, Etsy-primary and Gumroad-fallback channels, attribution,
+   reach, duration, economics, and revise or stop rules;
+3. record a versioned readiness result of build, research more, revise, reject,
+   or retain cash without forcing production;
+4. if readiness passes, present one exact external-test proposal as its own
+   protected decision with exact cohort, attribution, expected cost and
+   contribution, adapter health, and diagnose, revise, or stop rules;
+5. require a separate exact owner acceptance and then a separate exact
+   activation of that proposal; and
+6. begin contract-bound work only after activation and only within the recorded
+   authority and healthy adapter path.
+
+Etsy setup is a future protected gate, not an implementation assumption. If
+diligence selects Etsy, Daniel must decide whether to complete its lawful
+one-time owner identity, bank or card, 2FA, and seller-term requirements, or
+exclude Etsy and assess another channel.
 
 Do not contact customers, publish, advertise, create or connect accounts, accept
-terms, move money, or incur external spend during this goal. Do not begin
-Venture Factory, a second Venture Kit, concurrent venture lanes, or broad
-capability expansion.
+terms, move money, or incur external spend during the remaining release and
+diligence work. Do not begin Venture Factory, a second Venture Kit, concurrent
+venture lanes, or broad capability expansion.
