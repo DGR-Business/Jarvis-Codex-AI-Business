@@ -67,7 +67,9 @@ jobs:
 
   windows-lifecycle:
     runs-on: windows-latest
-    timeout-minutes: 10
+    # The test wrapper remains the nine-minute hard bound. This outer envelope
+    # leaves setup and accountable cleanup time without concealing a hung proof.
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
