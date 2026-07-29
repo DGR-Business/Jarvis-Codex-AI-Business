@@ -7,7 +7,7 @@ param(
   [ValidateRange(1025, 65535)]
   [int]$WorkingPort = 61501,
   [ValidateRange(30, 180)]
-  [int]$CycleTimeoutSeconds = 90
+  [int]$CycleTimeoutSeconds = 180
 )
 
 $ErrorActionPreference = "Stop"

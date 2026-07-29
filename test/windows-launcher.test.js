@@ -15,6 +15,7 @@ const powershell = path.join(
   "powershell.exe",
 );
 const lifecyclePhase = process.env.PANTHEON_LIFECYCLE_PHASE || "all";
+const workingStartRequestTimeoutMs = 170_000;
 if (!["all", "containment", "repeat"].includes(lifecyclePhase)) {
   throw new Error(`Unsupported Windows lifecycle phase: ${lifecyclePhase}`);
 }
@@ -148,10 +149,15 @@ function runPowerShell(
     let stderr = "";
     let settled = false;
     let deadline = null;
+    let timeoutError = null;
     const finish = (error, result) => {
       if (settled) return;
       settled = true;
       if (deadline) clearTimeout(deadline);
+      if (capture) {
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
       if (error) reject(error);
       else resolve(result);
     };
@@ -159,13 +165,20 @@ function runPowerShell(
       child.stdout.on("data", (chunk) => { stdout += chunk; });
       child.stderr.on("data", (chunk) => { stderr += chunk; });
     }
-    child.on("error", (error) => finish(error));
+    child.on("error", (error) => {
+      if (!timeoutError) finish(error);
+    });
     child.on(capture && resolveOnExit ? "exit" : "close", (code) => {
-      finish(null, { code, stdout, stderr });
+      if (!timeoutError) finish(null, { code, stdout, stderr });
     });
     deadline = setTimeout(() => {
+      timeoutError = new Error(
+        `Windows launcher command exceeded its ${timeoutMs}-millisecond test deadline.`,
+      );
+      // child.kill() uses the exact ChildProcess handle. Descendant cleanup is
+      // left to Pantheon's ownership-verified stop path in each test's finally.
       child.kill("SIGKILL");
-      finish(new Error(`Windows launcher command exceeded its ${timeoutMs}-millisecond test deadline.`));
+      finish(timeoutError);
     }, timeoutMs);
     // Keep the hard deadline referenced. On Windows, process exit can race the
     // final pipe-close notification; without this handle node:test can abandon
@@ -184,6 +197,26 @@ function launcherFailureDetails(root, port, result) {
     result.stderr.trim() ? `stderr:\n${result.stderr.trim()}` : "",
     serverError ? `server stderr:\n${serverError}` : "",
   ].filter(Boolean).join("\n");
+}
+
+async function fetchWithDeadline(url, options = {}, timeoutMs = 10_000) {
+  const controller = new AbortController();
+  const deadline = setTimeout(() => {
+    controller.abort(new Error(`Local launcher request exceeded ${timeoutMs} milliseconds: ${url}`));
+  }, timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const body = await response.text();
+    return {
+      ok: response.ok,
+      status: response.status,
+      headers: response.headers,
+      text: async () => body,
+      json: async () => JSON.parse(body),
+    };
+  } finally {
+    clearTimeout(deadline);
+  }
 }
 
 const transientProcessSnapshotProbe = String.raw`
@@ -259,7 +292,9 @@ test("OpenAI credentials persist outside the repository and ignore unreadable le
       failureDetails = launcherFailureDetails(root, port, started);
     }
     assert.equal(started.code, 0, failureDetails);
-    const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
+    const health = await fetchWithDeadline(
+      `http://127.0.0.1:${port}/api/health`,
+    ).then((response) => response.json());
     assert.equal(health.paidAiArmed, true);
   } finally {
     await cleanupWorkspace(root);
@@ -372,7 +407,7 @@ async function waitForCondition(condition, message, timeoutMs = 10_000) {
   throw new Error(message);
 }
 
-async function startControlSession(root, controlPort, workingPort, suffix) {
+async function startControlSession(root, controlPort, workingPort, suffix, extraEnv = {}) {
   const operatorUrlPath = path.join(root, "tmp", `control-url-${suffix}.txt`);
   const result = await runPowerShell(
     path.join(root, "scripts", "start-pantheon-control.ps1"),
@@ -390,7 +425,7 @@ async function startControlSession(root, controlPort, workingPort, suffix) {
     ],
     root,
     true,
-    {},
+    extraEnv,
     true,
     20_000,
   );
@@ -401,7 +436,7 @@ async function startControlSession(root, controlPort, workingPort, suffix) {
   const bootstrap = new URLSearchParams(parsedUrl.hash.slice(1)).get("bootstrap");
   assert.ok(bootstrap);
   const origin = `http://127.0.0.1:${controlPort}`;
-  const sessionResponse = await fetch(`${origin}/api/session`, {
+  const sessionResponse = await fetchWithDeadline(`${origin}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json", origin },
     body: JSON.stringify({ bootstrap }),
@@ -414,16 +449,20 @@ async function startControlSession(root, controlPort, workingPort, suffix) {
 }
 
 async function startWorkingFromControl(controlSession, workingPort) {
-  const response = await fetch(`${controlSession.origin}/api/control/start`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      origin: controlSession.origin,
-      cookie: controlSession.cookie,
-      "x-pantheon-csrf": controlSession.session.csrfToken,
+  const response = await fetchWithDeadline(
+    `${controlSession.origin}/api/control/start`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: controlSession.origin,
+        cookie: controlSession.cookie,
+        "x-pantheon-csrf": controlSession.session.csrfToken,
+      },
+      body: "{}",
     },
-    body: "{}",
-  });
+    workingStartRequestTimeoutMs,
+  );
   const responseBody = await response.text();
   assert.equal(response.status, 200, responseBody);
   const result = JSON.parse(responseBody);
@@ -432,6 +471,7 @@ async function startWorkingFromControl(controlSession, workingPort) {
 
 async function cleanupWorkspace(root) {
   if (!root) return;
+  const cleanupFailures = [];
   const stopScript = path.join(root, "scripts", "stop-pantheon.ps1");
   if (fs.existsSync(stopScript)) {
     const stopped = await runPowerShell(
@@ -441,10 +481,19 @@ async function cleanupWorkspace(root) {
       true,
     ).catch((error) => ({ code: 1, stdout: "", stderr: error.message }));
     if (stopped.code !== 0) {
-      throw new Error(`launcher cleanup failed:\n${stopped.stdout}\n${stopped.stderr}`);
+      cleanupFailures.push(`launcher stop failed:\n${stopped.stdout}\n${stopped.stderr}`);
     }
   }
-  fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  if (!cleanupFailures.length) {
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    } catch (error) {
+      cleanupFailures.push(`launcher workspace removal failed:\n${error.message}`);
+    }
+  }
+  if (cleanupFailures.length) {
+    throw new Error(cleanupFailures.join("\n"));
+  }
 }
 
 test("Windows launchers are PowerShell 5.1 compatible, idempotent, and stop production plus rehearsal trees", {
@@ -596,21 +645,33 @@ async function runSupervisorCycleProof(context, name, crashFirstCycle) {
   const root = makeLauncherWorkspace(name);
   const controlPort = await freePort();
   const workingPort = await freePort();
+  if (crashFirstCycle) {
+    fs.appendFileSync(
+      path.join(root, "scripts", "pantheon-launcher-common.ps1"),
+      transientProcessSnapshotProbe,
+    );
+  }
   const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",
     windowsHide: true,
   });
   unrelated.unref();
 
+  let proofError = null;
+  let cleanupError = null;
   try {
     for (let cycle = 1; cycle <= 5; cycle += 1) {
       const cycleStartedAt = Date.now();
       const cycleLabel = `${name}, cycle ${cycle}`;
+      process.stderr.write(`[windows-lifecycle] ${cycleLabel} started.\n`);
       const controlSession = await startControlSession(
         root,
         controlPort,
         workingPort,
         `${name}-${cycle}`,
+        crashFirstCycle && cycle === 1
+          ? { PANTHEON_TEST_TRANSIENT_SNAPSHOT: "1" }
+          : {},
       );
       const controlMetadataPath = path.join(root, "tmp", `pantheon-server-${controlPort}.json`);
       const supervisorMetadataPath = path.join(root, "tmp", `pantheon-supervisor-${controlPort}.json`);
@@ -621,7 +682,7 @@ async function runSupervisorCycleProof(context, name, crashFirstCycle) {
       assert.ok(processAlive(controlMetadata.pid));
       assert.ok(processAlive(supervisorMetadata.pid));
 
-      const standbyHealth = await fetch(`${controlSession.origin}/api/health`).then(
+      const standbyHealth = await fetchWithDeadline(`${controlSession.origin}/api/health`).then(
         (response) => response.json(),
       );
       assert.ok(
@@ -689,15 +750,33 @@ async function runSupervisorCycleProof(context, name, crashFirstCycle) {
       assert.equal(fs.existsSync(workingMetadataPath), false);
       assert.equal(fs.existsSync(supervisorMetadataPath), false);
       assert.equal(processAlive(unrelated.pid), true);
+      const cycleDurationMs = Date.now() - cycleStartedAt;
+      process.stderr.write(
+        `[windows-lifecycle] ${cycleLabel} completed in ${cycleDurationMs} ms.\n`,
+      );
       context.diagnostic(
-        `${cycleLabel} completed in ${Date.now() - cycleStartedAt} ms `
+        `${cycleLabel} completed in ${cycleDurationMs} ms `
         + "without an owned process or port leak",
       );
     }
+  } catch (error) {
+    proofError = error;
   } finally {
     if (processAlive(unrelated.pid)) process.kill(unrelated.pid);
-    await cleanupWorkspace(root);
+    try {
+      await cleanupWorkspace(root);
+    } catch (error) {
+      cleanupError = error;
+    }
   }
+  if (proofError && cleanupError) {
+    throw new AggregateError(
+      [proofError, cleanupError],
+      "Windows supervisor proof and its accountable cleanup both failed.",
+    );
+  }
+  if (cleanupError) throw cleanupError;
+  if (proofError) throw proofError;
 }
 
 test("Windows supervisor contains the full runtime tree across five control cycles", {
@@ -766,7 +845,9 @@ test("Windows launcher recovers safely when a stale Pantheon PID has been reused
     const replacement = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
     assert.notEqual(replacement.instanceId, "stale-reused-pid");
     assert.notEqual(replacement.pid, unrelated.pid);
-    const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
+    const health = await fetchWithDeadline(
+      `http://127.0.0.1:${port}/api/health`,
+    ).then((response) => response.json());
     assert.equal(health.ok, true);
   } finally {
     if (processAlive(unrelated.pid)) process.kill(unrelated.pid);

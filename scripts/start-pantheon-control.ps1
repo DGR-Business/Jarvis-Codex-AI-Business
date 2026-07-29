@@ -147,7 +147,15 @@ try {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     if (-not $process.Start()) { throw "Pantheon Control could not start." }
-    $supervisorSnapshot = Get-PantheonProcessSnapshot -ProcessId $process.Id
+    $supervisorSnapshotDeadline = [DateTime]::UtcNow.AddMilliseconds(2000)
+    $supervisorSnapshot = $null
+    do {
+      $process.Refresh()
+      if ($process.HasExited) { break }
+      $supervisorSnapshot = Get-PantheonProcessSnapshot -ProcessId $process.Id
+      if ($supervisorSnapshot) { break }
+      Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $supervisorSnapshotDeadline)
     if (-not $supervisorSnapshot) {
       Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
       throw "Pantheon Control could not record its supervisor's exact Windows identity."
