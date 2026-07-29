@@ -15,6 +15,7 @@ const powershell = path.join(
   "powershell.exe",
 );
 const lifecyclePhase = process.env.PANTHEON_LIFECYCLE_PHASE || "all";
+const workingStartRequestTimeoutMs = 170_000;
 if (!["all", "containment", "repeat"].includes(lifecyclePhase)) {
   throw new Error(`Unsupported Windows lifecycle phase: ${lifecyclePhase}`);
 }
@@ -460,7 +461,7 @@ async function startWorkingFromControl(controlSession, workingPort) {
       },
       body: "{}",
     },
-    70_000,
+    workingStartRequestTimeoutMs,
   );
   const responseBody = await response.text();
   assert.equal(response.status, 200, responseBody);

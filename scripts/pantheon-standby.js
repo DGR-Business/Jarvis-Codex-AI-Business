@@ -12,6 +12,11 @@ const bootstrapSecret = String(process.env.PANTHEON_OPERATOR_BOOTSTRAP || "");
 const controlToken = String(process.env.PANTHEON_CONTROL_TOKEN || "");
 const metadataPath = String(process.env.PANTHEON_RUNTIME_METADATA_PATH || "");
 const useIsolatedWorkingRuntime = process.env.PANTHEON_CONTROL_JOURNEY_REHEARSAL === "1";
+// start-pantheon.ps1 has bounded launcher-lock, reachability, readiness, and
+// cleanup phases, plus local credential and source-integrity preflight. Give a
+// cold start material headroom while retaining one finite outer deadline.
+const workingStartTimeoutMs = 150_000;
+const powerShellTerminationTimeoutMs = 8_000;
 const powershell = path.join(
   process.env.SystemRoot || "C:\\Windows",
   "System32",
@@ -180,6 +185,10 @@ function runPowerShell(scriptName, args = [], extraEnvironment = {}, timeoutMs =
       child.stdout.destroy();
       child.stderr.destroy();
       if (timeoutError) {
+        timeoutError.message += (
+          ` Captured ${Buffer.byteLength(out)} stdout bytes and `
+          + `${Buffer.byteLength(err)} stderr bytes; their content was withheld.`
+        );
         reject(timeoutError);
         return;
       }
@@ -222,7 +231,7 @@ function runPowerShell(scriptName, args = [], extraEnvironment = {}, timeoutMs =
         killer.kill("SIGKILL");
         child.kill("SIGKILL");
         finish(timeoutError);
-      }, 8_000);
+      }, powerShellTerminationTimeoutMs);
       killerDeadline.unref();
       const killed = () => {
         clearTimeout(killerDeadline);
@@ -257,7 +266,7 @@ async function startWorking() {
           PANTHEON_STANDBY_URL: `http://127.0.0.1:${port}`,
           PANTHEON_STANDBY_HANDOFF_TOKEN: controlToken,
         },
-        60_000,
+        workingStartTimeoutMs,
       );
       const operatorUrl = fs.readFileSync(handoffPath, "utf8").trim();
       if (!operatorUrl.startsWith(`http://127.0.0.1:${workingPort}/`)) {

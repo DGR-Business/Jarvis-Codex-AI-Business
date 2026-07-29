@@ -37,6 +37,64 @@ test("the standby control shell does not claim that the working runtime is ready
   assert.doesNotMatch(standby, /workingReady:\s*Boolean\(health\?\.operationsReady\)/);
 });
 
+test("the standby working-start deadline covers the launcher's composed readiness windows", () => {
+  const standby = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "pantheon-standby.js"),
+    "utf8",
+  );
+  const launcher = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "start-pantheon.ps1"),
+    "utf8",
+  );
+  const launcherCommon = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "pantheon-launcher-common.ps1"),
+    "utf8",
+  );
+  const lifecycleProof = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "verify-runtime-cycles.ps1"),
+    "utf8",
+  );
+  const lifecycleTest = fs.readFileSync(
+    path.join(__dirname, "windows-launcher.test.js"),
+    "utf8",
+  );
+  const workingStartMatch = standby.match(/const workingStartTimeoutMs = ([\d_]+);/);
+  const terminationMatch = standby.match(/const powerShellTerminationTimeoutMs = ([\d_]+);/);
+  const launcherLockMatch = launcherCommon.match(/\[int\]\$TimeoutSeconds = (\d+)/);
+  const startupMatch = launcher.match(/\[int\]\$StartupTimeoutSeconds = (\d+)/);
+  const readinessMatch = launcher.match(/\[int\]\$ReadyTimeoutSeconds = (\d+)/);
+  const lifecycleMatch = lifecycleProof.match(/\[int\]\$CycleTimeoutSeconds = (\d+)/);
+  const lifecycleRequestMatch = lifecycleTest.match(
+    /const workingStartRequestTimeoutMs = ([\d_]+);/,
+  );
+
+  assert.ok(workingStartMatch);
+  assert.ok(terminationMatch);
+  assert.ok(launcherLockMatch);
+  assert.ok(startupMatch);
+  assert.ok(readinessMatch);
+  assert.ok(lifecycleMatch);
+  assert.ok(lifecycleRequestMatch);
+  const workingStartTimeoutMs = Number(workingStartMatch[1].replaceAll("_", ""));
+  const terminationTimeoutMs = Number(terminationMatch[1].replaceAll("_", ""));
+  const launcherLockTimeoutMs = Number(launcherLockMatch[1]) * 1000;
+  const composedLauncherTimeoutMs = (Number(startupMatch[1]) + Number(readinessMatch[1])) * 1000;
+  const lifecycleTimeoutMs = Number(lifecycleMatch[1]) * 1000;
+  const lifecycleRequestTimeoutMs = Number(lifecycleRequestMatch[1].replaceAll("_", ""));
+  assert.ok(
+    workingStartTimeoutMs
+      >= launcherLockTimeoutMs + composedLauncherTimeoutMs + 30_000,
+  );
+  assert.ok(
+    lifecycleRequestTimeoutMs
+      >= workingStartTimeoutMs + terminationTimeoutMs + 10_000,
+  );
+  assert.ok(
+    lifecycleTimeoutMs
+      >= workingStartTimeoutMs + terminationTimeoutMs + 15_000,
+  );
+});
+
 function makeRuntime(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `jarvis-startup-${name}-`));
   const db = openDatabase(path.join(root, "runtime.sqlite"));
