@@ -11,11 +11,11 @@ Product Builder, Quality Reviewer, and protected operator foundations have been
 implemented and release-proved. The Full Journey was a completed vertical
 engineering proof and is no longer the current execution contract.
 
-The active implementation contract is
+The succeeding implementation contract was
 `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`.
-It first revalidates compatibility, recovery, accounting, runtime truth, and the
-protected owner journey. It does not claim that current implementation work is
-already fixed or released.
+It revalidated compatibility, recovery, accounting, runtime truth, and the
+protected owner journey and is now complete in the released schema-26 baseline.
+That completion does not widen external-action authority.
 
 Decision 0009 defines the owner-absent destination. It does not grant present
 authority to call, email, message, publish, advertise, create accounts, accept

@@ -1,13 +1,14 @@
 # Pantheon Commercial Truth And Schema 26 Release Proof
 
 Date: 2026-07-29
-Status: local release candidate proved; push, pull request, hosted CI, and merge pending
+Last updated: 2026-08-01
+Status: canonical online schema-26 release and Windows hardening proved
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 
 ## Owner Summary
 
-Pantheon now has a locally proved baseline that reports commercial progress
+Pantheon now has a canonical online baseline that reports commercial progress
 only when it can tie the exact offer, channel, buyer evidence, and settled cash
 evidence back to one approved test. The owner dashboard, decisions, monitoring,
 and retained history agree on the same current position. Historical work can no
@@ -31,30 +32,57 @@ passphrase. They were retained rather than deleted. The two newly verified
 sets below are the usable recovery baseline, while the older sets remain an
 explicit recovery-history limitation.
 
-The next release steps are to commit this proof and the final documentation,
-push the branch, open its pull request, pass hosted GitHub CI, and merge it.
-Those steps are still pending and are not claimed here. A separate owner
-decision and approval will be required before Pantheon may activate, publish,
-contact anyone, create an account, complete identity checks, or spend money for
-the next low-touch digital-kit test.
+A separate owner decision and approval will be required before Pantheon may
+activate, publish, contact anyone, create an account, complete identity checks,
+or spend money for the next low-touch digital-kit test. The technical release
+does not grant any of those permissions.
 
-## Release Candidate Identity
+## Release Identity
 
 - Branch: `codex/commercial-truth-hardening`
-- Implementation candidate:
+- Implementation checkpoint:
   `d039d8bcbe53710a90df8cfa2adbfa8818ada578`
+- Checked release head:
+  `cc14ae64a65bf9e8fd4f096738a4a265f31d0889`
 - Released parent:
   `f61d7ebe77b36a49372b39d8541adf16f68834a4`
-- Candidate purpose: make the current release the canonical,
+- Pull request: #5,
+  `https://github.com/DGR-Business/Jarvis-Codex-AI-Business/pull/5`
+- Pull-request checks: all eight passed in GitHub Actions run
+  `30451251704`
+- Canonical merge commit:
+  `abf6f0d0e63ad5d23a65a5c34febadae68719b46`
+- Canonical merge time:
+  `2026-07-29 22:33:33 Australia/Brisbane`
+- Canonical `main` verification: all eight jobs passed in push-triggered GitHub
+  Actions run `30452100846` in 6 minutes 29 seconds
+- Initial closeout incident: documentation pull request #6 run `30453450023`
+  exposed a transient exact-identity race and a repeat-job outer-timeout mismatch
+- Windows hardening pull request: #7,
+  `https://github.com/DGR-Business/Jarvis-Codex-AI-Business/pull/7`
+- Checked Windows hardening head:
+  `61ebe53a82fc9c2ea360f2e5ca698d943595548e`
+- Windows hardening checks: all eight passed in run `30458483705`; repeat and
+  containment lifecycle jobs passed explicit reruns `90601012019` and
+  `90602926217`
+- Windows hardening merge:
+  `4985ef8139be9afd3512ea11b32fee00493fc549`
+- Windows hardening merge time:
+  `2026-07-30 00:22:51 Australia/Brisbane`
+- Hardened `main` verification: all eight jobs passed in run `30460577798` in
+  8 minutes 57 seconds
+- Release purpose: make the current release the canonical,
   compatibility-verified baseline; align reported state with provable state;
   establish one channel-consistent offer-to-buyer-and-cash evidence path; and
   prove the owner journey without enabling an external commercial action.
-- GitHub publication status: branch push, pull request, hosted CI, and merge
-  are pending.
+- GitHub publication status: schema-26 release and Windows hardening pushed,
+  reviewed, passed, and merged; documentation closeout records their evidence.
 
-The implementation candidate does not include this later proof record. The
-final documentation commit and its resulting release commit must therefore be
-recorded after publication rather than inferred in advance.
+Release head `cc14ae6` includes the implementation and the original dated proof
+record. Merge commit `abf6f0d` is the schema-26 commercial-truth release, and
+`4985ef8` is its current operationally hardened Windows runtime. This later
+closeout records facts that could only be known after publication; it does not
+alter the commercial contract, reconciled state, or external authority.
 
 ## Production Migration And Reconciliation
 
@@ -141,18 +169,32 @@ Additional checks:
 - `git diff --check`: passed;
 - final scoped release, recovery, security, and owner-truth audits: no remaining
   P0, P1, or P2 finding;
-- candidate diff secret inspection: no secret found; and
+- released diff secret inspection: no secret found; and
 - disposable clean installation from the exact lockfile: `npm ci`,
   dependency-tree validation, and audit all passed with zero known
   vulnerabilities.
 
 The clean-install workspace was
-`C:\tmp\pantheon-clean-install-20260729-proof`. The candidate did not change
-the package manifest or lockfile after that proof.
+`C:\tmp\pantheon-clean-install-20260729-proof`. The runtime implementation did
+not change the package manifest or lockfile after that proof.
 
 Windows lifecycle integration remains intentionally isolated to its disposable
-hosted CI jobs. Those hosted jobs have not yet run for this candidate; a local
-pass is not being used to claim the pending GitHub result.
+hosted CI jobs. Both lifecycle jobs passed for checked release head `cc14ae6`,
+alongside the verification job and all five ordinary test shards, in run
+`30451251704`. A later documentation-only run nevertheless exposed timing
+nondeterminism not exercised by those earlier passes: exact process identity
+could briefly be unavailable, and a repeat job's outer deadline could expire
+before its inner proof.
+
+Pull request #7 added a bounded two-second identity retry while the process
+remains alive, deterministic transient-miss proof, full-body request deadlines,
+preserved cleanup evidence, error aggregation, and nested limits of 150 seconds
+for startup, 170 seconds for the test request, 180 seconds for the manual
+lifecycle client, nine minutes for the inner wrapper, and twelve minutes for the
+hosted job. Checked head `61ebe53` passed all eight jobs in run `30458483705`.
+The repeat and containment lifecycle paths also passed explicit reruns
+`90601012019` and `90602926217`; post-merge `main` run `30460577798` passed all
+eight jobs.
 
 ## Real Owner-Journey Proof
 
@@ -268,18 +310,36 @@ Historical builds, model work, and retained commercial records remain visible
 as history. Their technical completion does not make them a current offer,
 active test, sale, or positive business result.
 
-## Remaining Release Gates
+## Online Release Evidence
 
-This record proves the local candidate only. The following remain pending and
-must be recorded from their real results:
+The release gate completed in this order:
 
-1. commit the completed proof and release documentation;
-2. push `codex/commercial-truth-hardening`;
-3. open the pull request;
-4. run and pass every hosted GitHub CI job, including the quarantined Windows
-   lifecycle jobs;
-5. merge only after the hosted checks pass; and
-6. record the final merged commit and CI evidence in the Master Plan, Build
-   Log, and release handover.
+1. implementation checkpoint `d039d8b` and documentation head `cc14ae6` were
+   committed on `codex/commercial-truth-hardening`;
+2. the exact branch head was pushed to the private GitHub repository;
+3. draft pull request #5 was opened against `main`;
+4. all eight hosted checks passed in run `30451251704`, including the two
+   quarantined Windows lifecycle jobs;
+5. the review was marked ready only after all eight checks passed; and
+6. GitHub merged the checked head to `main` as
+   `abf6f0d0e63ad5d23a65a5c34febadae68719b46`; and
+7. the immediate `main` push run `30452100846` independently passed the same
+   eight-job workflow in 6 minutes 29 seconds;
+8. initial documentation-closeout run `30453450023` exposed two Windows timing
+   weaknesses, so the closeout was held rather than reported as complete;
+9. pull request #7 corrected exact-identity observation and nested deadlines;
+10. checked hotfix head `61ebe53` passed all eight jobs in run `30458483705`;
+11. repeat and containment lifecycle jobs passed explicit reruns `90601012019`
+    and `90602926217`;
+12. pull request #7 merged as
+    `4985ef8139be9afd3512ea11b32fee00493fc549`; and
+13. post-merge `main` run `30460577798` passed all eight jobs in 8 minutes
+    57 seconds.
 
-No push, pull request, hosted CI result, or merge is claimed by this document.
+The failed initial closeout run made no release or commercial-success claim. The
+Windows hardening changed process supervision and test reliability only; it did
+not change schema 26, production commercial records, authority, buyer evidence,
+cash evidence, or the readiness result.
+
+No customer contact, publication, account action, legal acceptance, identity
+check, advertising, external action, or external spend was part of the release.

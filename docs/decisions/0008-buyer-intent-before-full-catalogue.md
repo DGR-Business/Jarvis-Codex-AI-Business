@@ -23,7 +23,7 @@ buyer, offer, channel, evidence, quality, economics, and stop-rule diligence.
 
 ### Schema-26 enforcement note
 
-The schema-26 release candidate preserves this attempt as immutable terminal
+The released schema-26 baseline preserves this attempt as immutable terminal
 history. Reconciliation keeps the stopped build, cancelled candidate and
 experiment, non-pass quality result, evidence, and cost records under terminal
 history, including the retained A$1.00 incurred estimate and released
