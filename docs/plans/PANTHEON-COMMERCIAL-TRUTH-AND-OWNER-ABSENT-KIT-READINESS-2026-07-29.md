@@ -1,6 +1,7 @@
 # Pantheon Commercial Truth And Owner-Absent Kit Readiness
 
 Date: 2026-07-29
+Last updated: 2026-08-01
 Status: complete; canonical schema-26 release, production migration, recovery,
 owner-browser proof, private CI, and no-action kit readiness recorded
 Owner: Daniel
@@ -74,6 +75,20 @@ checkpoint `d039d8b` and release documentation head `cc14ae6` were committed on
 checks in run `30451251704` and merged to canonical online `main` as
 `abf6f0d`. The immediate `main` push run `30452100846` independently passed
 the same eight-job workflow.
+
+### Post-release operational correction
+
+The initial documentation-closeout run `30453450023` later exposed a transient
+Windows exact-process-identity race and a repeat lifecycle job whose outer
+deadline could expire first. Closeout was held while pull request #7 added a
+bounded identity retry, deterministic transient-miss proof, full-response
+deadlines, preserved cleanup evidence, and correctly nested job limits. Hotfix
+head `61ebe53` passed all eight jobs in run `30458483705`; repeat and containment
+lifecycle jobs passed explicit reruns `90601012019` and `90602926217`. The fix
+merged as `4985ef8`, and post-merge `main` run `30460577798` passed all eight
+jobs. This corrected Windows operating reliability only. It changed no schema,
+commercial record, buyer evidence, cash evidence, readiness decision, external
+authority, contact, publication, or spend.
 
 The release completed these local outcomes before merge:
 
@@ -446,8 +461,10 @@ clean install, production schema-26 migration, Doctor, dual encrypted recovery,
 and real-browser gates passed with Pantheon in Standby. Release head `cc14ae6`
 then passed all eight private checks in run `30451251704` and pull request #5
 merged to canonical online `main` as `abf6f0d`. Push-triggered run
-`30452100846` then passed all eight jobs on the merge commit. No protected
-commercial action was taken.
+`30452100846` then passed all eight jobs on the merge commit. Windows hardening
+head `61ebe53` subsequently passed run `30458483705` and both explicit lifecycle
+reruns before pull request #7 merged as `4985ef8`; post-merge run `30460577798`
+also passed all eight jobs. No protected commercial action was taken.
 
 ## Completion Criteria
 
@@ -482,11 +499,15 @@ success.
 ### Completion disposition
 
 All technical and preparation criteria above are complete for release head
-`cc14ae6` and canonical merge `abf6f0d`. The legitimate commercial-readiness
-outcome is `research_more` / `revise`, so no v2 external-test contract, product
-build, live adapter, or external authority was created. External commercial
-spend remained A$0. The owner decisions below are future gates, not unfinished
-release work.
+`cc14ae6` and schema-26 commercial-truth merge `abf6f0d`. Follow-up runtime
+`4985ef8` was separately proved for the corrected Windows lifecycle behaviour
+and the full hosted workflow. Because that correction changed no schema,
+commercial contract, production state, or external authority, it did not reopen
+the plan or change its business result. The legitimate commercial-readiness
+outcome remains `research_more` / `revise`, so no v2 external-test contract,
+product build, live adapter, or external authority was created. External
+commercial spend remained A$0. The owner decisions below are future gates, not
+unfinished release work.
 
 ## Out Of Scope
 

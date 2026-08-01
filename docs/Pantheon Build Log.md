@@ -1,6 +1,6 @@
 # Pantheon Build Log
 
-Last updated: 2026-07-29
+Last updated: 2026-08-01
 
 Pantheon is the active product name from 2026-07-18. Earlier entries retain
 Jarvis-Codex or Jarvis where that was the product name at the time. Jarvis now
@@ -23,11 +23,15 @@ commercial move.
   zero. Historical records remain available without being presented as current
   work.
 - Release position: release head `cc14ae6` passed all eight private checks in
-  pull request #5, GitHub Actions run `30451251704`, and merged to online `main`
-  as `abf6f0d` on 2026-07-29. The immediate `main` push run `30452100846`
-  independently passed the same eight-job workflow in 6 minutes 29 seconds. The
-  documentation-only release closeout changes release records only; it does not
-  alter the proved runtime implementation.
+  pull request #5, run `30451251704`, and merged as schema-26 commercial-truth
+  release `abf6f0d` on 2026-07-29. Immediate `main` run `30452100846` passed all
+  eight jobs. Initial documentation-closeout run `30453450023` then exposed two
+  Windows timing weaknesses and correctly held the closeout. Pull request #7
+  fixed them; head `61ebe53` passed all eight jobs in run `30458483705`, both
+  lifecycle paths passed explicit reruns `90601012019` and `90602926217`, and
+  merge `4985ef8` passed all eight post-merge jobs in run `30460577798`. That
+  merge is the current operationally hardened runtime. No schema, commercial
+  record, external authority, buyer, cash, or spend state changed.
 - Product direction: with the exact release gate complete, first decide whether
   to add a narrow, auditable pre-venture research authority. If authorised,
   perform bounded diligence for the separate low-touch Social Media Manager
@@ -46,10 +50,11 @@ commercial move.
   Controller, and a registered non-universal `digital_product_v1` Venture Kit.
 - AI execution: OpenAI Agents SDK first, with lower-level Responses paths where
   direct control is useful.
-- Active engineering: commercial truth, exact lifecycle authority, owner
-  reporting, channel-neutral buyer-and-cash evidence, production migration,
-  recovery, owner journey, private CI, and online release are complete. The next
-  system gate is the bounded pre-venture research-authority decision.
+- Active engineering: commercial truth, exact lifecycle authority, Windows
+  startup reliability, owner reporting, channel-neutral buyer-and-cash evidence,
+  production migration, recovery, owner journey, private CI, and online release
+  are complete. The next system gate is the bounded pre-venture
+  research-authority decision.
 - Current commercial result: two bounded rounds retained ten hypotheses,
   performed comparable live demand and finance review on six finalists, and
   completed two Sol investment reviews. Pantheon selected no investment.
@@ -1938,11 +1943,36 @@ email, customer contact, listing, publication, advertisement, account or KYC
 action, legal acceptance, money movement, or external spend. It produced no
 buyer, order, revenue, refund, or commercial validation.
 
-The implementation is now the online release. Release head `cc14ae6` passed all
-eight private checks in pull request #5, GitHub Actions run `30451251704`, and
-merged to `main` as `abf6f0d`. This later documentation-only release closeout
-changes release records only and does not alter the proved runtime
-implementation.
+Pull request #5 made the implementation the online schema-26 release. Release
+head `cc14ae6` passed all eight private checks in GitHub Actions run
+`30451251704` and merged to `main` as `abf6f0d`. The immediate `main` run
+`30452100846` also passed all eight jobs. This documentation-only release
+closeout changes release records only and does not alter the proved
+commercial-truth implementation.
+
+### 2026-08-01 Windows lifecycle hardening and release closeout
+
+Initial closeout run `30453450023` did useful work by exposing two operational
+weaknesses rather than allowing a misleading final pass: the Windows supervisor
+could check exact process identity before it became observable, and the repeat
+lifecycle job's outer deadline could expire before its inner proof. Closeout was
+held while the runtime was corrected in pull request #7.
+
+Hotfix head `61ebe53` added a bounded two-second exact-identity retry while the
+process remains alive, deterministic transient-miss proof, full-body request
+deadlines, cleanup-evidence preservation, error aggregation, and nested
+150-second startup, 170-second test-request, 180-second manual-client,
+nine-minute inner-wrapper, and twelve-minute hosted-job limits. All eight jobs
+passed in run `30458483705`. The repeat lifecycle job passed explicit rerun
+`90601012019`, and containment passed explicit rerun `90602926217`. Pull request
+#7 merged as `4985ef8` at 2026-07-30 00:22:51 Australia/Brisbane; post-merge
+`main` run `30460577798` passed all eight jobs in 8 minutes 57 seconds.
+
+This was a Windows operating-reliability correction. It changed no schema-26
+commercial contract, production reconciliation, readiness result, external
+authority, buyer record, cash evidence, publication, customer contact, or
+spend. Merge `abf6f0d` remains the schema-26 commercial-truth release, while
+`4985ef8` is the current operationally hardened runtime.
 
 ### Technical proof
 
@@ -1979,6 +2009,12 @@ implementation.
   online `main` as `abf6f0d`. Push-triggered run `30452100846` independently
   passed the same eight-job workflow on that canonical merge in 6 minutes
   29 seconds.
+- Documentation-closeout run `30453450023` exposed a transient exact-identity
+  race and a mismatched repeat-job deadline. Pull request #7 corrected them.
+  Its checked head `61ebe53` passed all eight jobs in run `30458483705`; explicit
+  lifecycle reruns `90601012019` and `90602926217` also passed. The fix merged
+  as `4985ef8`, and post-merge `main` run `30460577798` passed all eight jobs in
+  8 minutes 57 seconds.
 
 ## Current Next Best Work
 

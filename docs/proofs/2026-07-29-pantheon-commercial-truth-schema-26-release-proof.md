@@ -1,7 +1,8 @@
 # Pantheon Commercial Truth And Schema 26 Release Proof
 
 Date: 2026-07-29
-Status: canonical online schema-26 release proved
+Last updated: 2026-08-01
+Status: canonical online schema-26 release and Windows hardening proved
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 
@@ -55,16 +56,33 @@ does not grant any of those permissions.
   `2026-07-29 22:33:33 Australia/Brisbane`
 - Canonical `main` verification: all eight jobs passed in push-triggered GitHub
   Actions run `30452100846` in 6 minutes 29 seconds
+- Initial closeout incident: documentation pull request #6 run `30453450023`
+  exposed a transient exact-identity race and a repeat-job outer-timeout mismatch
+- Windows hardening pull request: #7,
+  `https://github.com/DGR-Business/Jarvis-Codex-AI-Business/pull/7`
+- Checked Windows hardening head:
+  `61ebe53a82fc9c2ea360f2e5ca698d943595548e`
+- Windows hardening checks: all eight passed in run `30458483705`; repeat and
+  containment lifecycle jobs passed explicit reruns `90601012019` and
+  `90602926217`
+- Windows hardening merge:
+  `4985ef8139be9afd3512ea11b32fee00493fc549`
+- Windows hardening merge time:
+  `2026-07-30 00:22:51 Australia/Brisbane`
+- Hardened `main` verification: all eight jobs passed in run `30460577798` in
+  8 minutes 57 seconds
 - Release purpose: make the current release the canonical,
   compatibility-verified baseline; align reported state with provable state;
   establish one channel-consistent offer-to-buyer-and-cash evidence path; and
   prove the owner journey without enabling an external commercial action.
-- GitHub publication status: pushed, reviewed, passed, and merged.
+- GitHub publication status: schema-26 release and Windows hardening pushed,
+  reviewed, passed, and merged; documentation closeout records their evidence.
 
 Release head `cc14ae6` includes the implementation and the original dated proof
-record. Merge commit `abf6f0d` is the canonical online implementation baseline.
-This later closeout corrects the record with facts that could only be known
-after publication; it does not alter the proved runtime implementation.
+record. Merge commit `abf6f0d` is the schema-26 commercial-truth release, and
+`4985ef8` is its current operationally hardened Windows runtime. This later
+closeout records facts that could only be known after publication; it does not
+alter the commercial contract, reconciled state, or external authority.
 
 ## Production Migration And Reconciliation
 
@@ -161,9 +179,22 @@ The clean-install workspace was
 not change the package manifest or lockfile after that proof.
 
 Windows lifecycle integration remains intentionally isolated to its disposable
-hosted CI jobs. Both Windows lifecycle jobs passed for checked release head
-`cc14ae6`, alongside the verification job and all five ordinary test shards.
-All eight jobs passed in pull-request run `30451251704`.
+hosted CI jobs. Both lifecycle jobs passed for checked release head `cc14ae6`,
+alongside the verification job and all five ordinary test shards, in run
+`30451251704`. A later documentation-only run nevertheless exposed timing
+nondeterminism not exercised by those earlier passes: exact process identity
+could briefly be unavailable, and a repeat job's outer deadline could expire
+before its inner proof.
+
+Pull request #7 added a bounded two-second identity retry while the process
+remains alive, deterministic transient-miss proof, full-body request deadlines,
+preserved cleanup evidence, error aggregation, and nested limits of 150 seconds
+for startup, 170 seconds for the test request, 180 seconds for the manual
+lifecycle client, nine minutes for the inner wrapper, and twelve minutes for the
+hosted job. Checked head `61ebe53` passed all eight jobs in run `30458483705`.
+The repeat and containment lifecycle paths also passed explicit reruns
+`90601012019` and `90602926217`; post-merge `main` run `30460577798` passed all
+eight jobs.
 
 ## Real Owner-Journey Proof
 
@@ -293,7 +324,22 @@ The release gate completed in this order:
 6. GitHub merged the checked head to `main` as
    `abf6f0d0e63ad5d23a65a5c34febadae68719b46`; and
 7. the immediate `main` push run `30452100846` independently passed the same
-   eight-job workflow in 6 minutes 29 seconds.
+   eight-job workflow in 6 minutes 29 seconds;
+8. initial documentation-closeout run `30453450023` exposed two Windows timing
+   weaknesses, so the closeout was held rather than reported as complete;
+9. pull request #7 corrected exact-identity observation and nested deadlines;
+10. checked hotfix head `61ebe53` passed all eight jobs in run `30458483705`;
+11. repeat and containment lifecycle jobs passed explicit reruns `90601012019`
+    and `90602926217`;
+12. pull request #7 merged as
+    `4985ef8139be9afd3512ea11b32fee00493fc549`; and
+13. post-merge `main` run `30460577798` passed all eight jobs in 8 minutes
+    57 seconds.
+
+The failed initial closeout run made no release or commercial-success claim. The
+Windows hardening changed process supervision and test reliability only; it did
+not change schema 26, production commercial records, authority, buyer evidence,
+cash evidence, or the readiness result.
 
 No customer contact, publication, account action, legal acceptance, identity
 check, advertising, external action, or external spend was part of the release.

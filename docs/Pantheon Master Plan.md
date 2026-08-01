@@ -1,6 +1,6 @@
 # Pantheon Master Plan
 
-Last updated: 2026-07-29
+Last updated: 2026-08-01
 Status: active source of truth
 Owner: Daniel
 Technical steward: Jarvis (Codex)
@@ -107,6 +107,18 @@ GitHub Actions run `30451251704`, and merged to online `main` as `abf6f0d` on
 dependency checks, real-browser owner journey, Doctor, and two independent
 encrypted-recovery drills. The immediate `main` push run `30452100846`
 independently passed the same eight-job workflow.
+
+The first documentation-closeout run, `30453450023`, then exposed two Windows
+operating weaknesses: exact process identity could be checked before it became
+available, and the repeat lifecycle job's outer deadline could expire first.
+Pull request #7 corrected those controls without changing schema 26 or any
+commercial record. Checked hotfix head `61ebe53` passed all eight jobs in run
+`30458483705`; the repeat and containment lifecycle jobs also passed explicit
+reruns `90601012019` and `90602926217`. The fix merged as `4985ef8` on
+2026-07-30 at 00:22:51 Australia/Brisbane, and post-merge `main` run
+`30460577798` passed all eight jobs. Merge `abf6f0d` remains the schema-26
+commercial-truth release; `4985ef8` is its operationally hardened Windows
+runtime. No buyer, cash, authority, publication, contact, or spend state changed.
 
 The next owner gate is whether to add a narrow, auditable pre-venture research
 authority. If authorised, the next commercial work is bounded diligence for a
@@ -440,10 +452,13 @@ buyer-intent work closed. The current plan below supersedes it.
 
 ### Now
 
-- Preserve canonical schema-26 release `abf6f0d` and its pull-request proof:
-  release head `cc14ae6`, pull request #5, and eight successful private checks
-  in run `30451251704`. The follow-up closeout changes release records only, not
-  the proved runtime implementation.
+- Preserve schema-26 commercial-truth release `abf6f0d` and current operational
+  runtime `4985ef8`. Their proof consists of release head `cc14ae6`, pull request
+  #5 and run `30451251704`, plus Windows hardening pull request #7, full run
+  `30458483705`, repeat lifecycle job `90601012019`, containment lifecycle job
+  `90602926217`, and post-merge `main` run `30460577798`. This
+  documentation-only closeout changes release records only, not the proved
+  runtime or commercial position.
 - Retain the reconciled production truth: no active external test, verified
   current buyer, attributable current cash evidence, or settled net cash
   contribution. Historical work remains available in audit views but cannot
@@ -598,9 +613,14 @@ through a separately confirmed retention action.
 
 The schema-26 release is online. Release head `cc14ae6` passed all eight private
 pull-request checks in run `30451251704` before pull request #5 merged to `main`
-as `abf6f0d`. The immediate `main` push run `30452100846` also passed all eight
-jobs. The documentation-only release closeout records those external facts
-without altering the proved runtime implementation.
+as `abf6f0d`; immediate `main` run `30452100846` also passed all eight jobs. The
+initial documentation-closeout run `30453450023` then exposed a transient
+Windows identity race and an outer-timeout mismatch, so closeout was held.
+Windows hardening head `61ebe53` passed all eight jobs in run `30458483705`,
+both lifecycle paths passed explicit reruns `90601012019` and `90602926217`,
+pull request #7 merged as `4985ef8`, and post-merge `main` run `30460577798`
+passed all eight jobs. The closeout records those facts without changing the
+commercial-truth contract, state, or external authority.
 
 Foundation is releasable only when:
 
