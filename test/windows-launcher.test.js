@@ -930,6 +930,8 @@ test("standalone shutdown refuses an unsafe partial forced tree stop and succeed
       ["-Port", port, "-GracefulTimeoutSeconds", "1"],
       root,
       true,
+      {},
+      true,
     );
     assert.notEqual(refused.code, 0);
     assert.match(`${refused.stdout}\n${refused.stderr}`, /forced_tree_stop_requires_supervisor/);
@@ -980,6 +982,8 @@ test("reused root cleanup stops exact recorded children without touching the rep
       path.join(root, "scripts", "stop-pantheon.ps1"),
       ["-Port", port, "-GracefulTimeoutSeconds", "1"],
       root,
+      true,
+      {},
       true,
     );
     assert.notEqual(refused.code, 0);
