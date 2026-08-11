@@ -151,6 +151,11 @@ function Test-PantheonProcessOwnership {
 
   $actual = Get-PantheonProcessSnapshot -ProcessId ([int]$Metadata.pid)
   if (-not $actual) {
+    $unreadableProcess = Get-Process -Id ([int]$Metadata.pid) -ErrorAction SilentlyContinue
+    if ($unreadableProcess) {
+      if ($unreadableProcess -is [IDisposable]) { $unreadableProcess.Dispose() }
+      return [pscustomobject]@{ owned = $false; reason = "process_identity_unreadable"; process = $null }
+    }
     return [pscustomobject]@{ owned = $false; reason = "process_not_running"; process = $null }
   }
 
@@ -286,21 +291,313 @@ function Get-PantheonDescendantSnapshots {
   return @($snapshots)
 }
 
-function Stop-PantheonCapturedProcesses {
-  param([object[]]$Snapshots = @())
+function Initialize-PantheonNativeExactProcessStop {
+  if ("PantheonLauncher.NativeExactProcessStop" -as [type]) { return }
+  Add-Type -TypeDefinition @"
+using System;
+using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 
-  $remaining = @()
-  foreach ($expected in @($Snapshots) | Sort-Object { [int]$_.pid } -Descending) {
-    $actual = Get-PantheonProcessSnapshot -ProcessId ([int]$expected.pid)
-    if (-not $actual) { continue }
-    if (-not (Test-PantheonSnapshotMatches -Expected $expected -Actual $actual)) {
-      $remaining += [pscustomobject]@{ pid = [int]$expected.pid; reason = "process_identity_changed" }
-      continue
+namespace PantheonLauncher {
+  public sealed class ExactProcessStopResult {
+    public string State;
+    public string Reason;
+    public int Win32Error;
+
+    public ExactProcessStopResult(string state, string reason, int win32Error) {
+      State = state;
+      Reason = reason;
+      Win32Error = win32Error;
     }
-    try {
-      Stop-Process -Id ([int]$expected.pid) -Force -ErrorAction Stop
-    } catch {
-      $remaining += [pscustomobject]@{ pid = [int]$expected.pid; reason = $_.Exception.Message }
+  }
+
+  public static class NativeExactProcessStop {
+    private const uint PROCESS_TERMINATE = 0x00000001;
+    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x00001000;
+    private const uint SYNCHRONIZE = 0x00100000;
+    private const uint WAIT_OBJECT_0 = 0x00000000;
+    private const uint WAIT_FAILED = 0xFFFFFFFF;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FILETIME {
+      public uint Low;
+      public uint High;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint access, bool inheritHandle, int processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetProcessTimes(
+      IntPtr process,
+      out FILETIME creation,
+      out FILETIME exit,
+      out FILETIME kernel,
+      out FILETIME user
+    );
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageName(
+      IntPtr process,
+      int flags,
+      StringBuilder imagePath,
+      ref int size
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    private static ExactProcessStopResult Result(string state, string reason, int error) {
+      return new ExactProcessStopResult(state, reason, error);
+    }
+
+    private static bool HasExited(IntPtr process) {
+      return WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
+    }
+
+    private static long FileTimeValue(FILETIME value) {
+      ulong combined = ((ulong)value.High << 32) | value.Low;
+      return unchecked((long)combined);
+    }
+
+    public static ExactProcessStopResult RequestTermination(
+      int processId,
+      string expectedStartFileTimeUtc,
+      string expectedExecutablePath
+    ) {
+      long expectedStart;
+      string expectedPath;
+      if (
+        processId <= 0 ||
+        !long.TryParse(
+          expectedStartFileTimeUtc,
+          NumberStyles.Integer,
+          CultureInfo.InvariantCulture,
+          out expectedStart
+        ) ||
+        expectedStart <= 0 ||
+        String.IsNullOrWhiteSpace(expectedExecutablePath)
+      ) {
+        return Result("invalid_expected_identity", "invalid_expected_identity", 0);
+      }
+      try {
+        expectedPath = Path.GetFullPath(expectedExecutablePath);
+      } catch {
+        return Result("invalid_expected_identity", "invalid_expected_path", 0);
+      }
+
+      IntPtr process = OpenProcess(
+        PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+        false,
+        processId
+      );
+      if (process == IntPtr.Zero) {
+        int openError = Marshal.GetLastWin32Error();
+        return Result("identity_unreadable", "open_process_failed", openError);
+      }
+
+      try {
+        if (HasExited(process)) {
+          return Result("already_exited", "process_already_exited", 0);
+        }
+
+        FILETIME creation;
+        FILETIME exit;
+        FILETIME kernel;
+        FILETIME user;
+        if (!GetProcessTimes(process, out creation, out exit, out kernel, out user)) {
+          int timeError = Marshal.GetLastWin32Error();
+          if (HasExited(process)) {
+            return Result("already_exited", "process_exited_during_identity_check", timeError);
+          }
+          return Result("identity_unreadable", "creation_time_unreadable", timeError);
+        }
+        if (FileTimeValue(creation) != expectedStart) {
+          return Result("pid_reused", "creation_time_changed", 0);
+        }
+
+        StringBuilder imagePath = new StringBuilder(32768);
+        int imagePathSize = imagePath.Capacity;
+        if (!QueryFullProcessImageName(process, 0, imagePath, ref imagePathSize)) {
+          int pathError = Marshal.GetLastWin32Error();
+          if (HasExited(process)) {
+            return Result("already_exited", "process_exited_during_identity_check", pathError);
+          }
+          return Result("identity_unreadable", "executable_path_unreadable", pathError);
+        }
+        string actualPath;
+        try {
+          actualPath = Path.GetFullPath(imagePath.ToString());
+        } catch {
+          return Result("identity_unreadable", "executable_path_invalid", 0);
+        }
+        if (!String.Equals(expectedPath, actualPath, StringComparison.OrdinalIgnoreCase)) {
+          return Result("identity_mismatch", "executable_path_changed", 0);
+        }
+
+        if (HasExited(process)) {
+          return Result("already_exited", "process_exited_during_identity_check", 0);
+        }
+        if (!TerminateProcess(process, 1)) {
+          int terminateError = Marshal.GetLastWin32Error();
+          if (HasExited(process)) {
+            return Result("already_exited", "process_exited_during_termination", terminateError);
+          }
+          return Result("termination_failed", "terminate_process_failed", terminateError);
+        }
+        uint waitResult = WaitForSingleObject(process, 0);
+        if (waitResult == WAIT_FAILED) {
+          return Result("termination_failed", "post_termination_wait_failed", Marshal.GetLastWin32Error());
+        }
+        return Result("termination_requested", "exact_process_termination_requested", 0);
+      } finally {
+        CloseHandle(process);
+      }
+    }
+  }
+}
+"@
+}
+
+function Request-PantheonExactProcessTermination {
+  param([Parameter(Mandatory = $true)]$Expected)
+
+  Initialize-PantheonNativeExactProcessStop
+  $result = [PantheonLauncher.NativeExactProcessStop]::RequestTermination(
+    [int]$Expected.pid,
+    [string]$Expected.startFileTimeUtc,
+    [string]$Expected.executablePath
+  )
+  return [pscustomobject]@{
+    state = [string]$result.State
+    reason = [string]$result.Reason
+    win32Error = [int]$result.Win32Error
+  }
+}
+
+function Get-PantheonCapturedProcessState {
+  param([Parameter(Mandatory = $true)]$Expected)
+
+  $processId = [int]$Expected.pid
+  $actual = Get-PantheonProcessSnapshot -ProcessId $processId
+  if ($actual) {
+    if (Test-PantheonSnapshotMatches -Expected $Expected -Actual $actual) {
+      return [pscustomobject]@{ state = "exact"; process = $actual }
+    }
+    # The captured process exited and Windows reused its PID. Never stop the
+    # replacement, and do not report it as a surviving Pantheon child.
+    return [pscustomobject]@{ state = "replaced"; process = $actual }
+  }
+
+  # A null snapshot can mean either that the PID is gone or that Windows would
+  # not disclose the immutable start/path identity. Only absence proves exit.
+  if (Get-Process -Id $processId -ErrorAction SilentlyContinue) {
+    return [pscustomobject]@{ state = "unreadable"; process = $null }
+  }
+  return [pscustomobject]@{ state = "absent"; process = $null }
+}
+
+function Format-PantheonCapturedProcessFailures {
+  param([object[]]$Failures = @())
+
+  return (@($Failures) | ForEach-Object {
+    $win32 = if ([int]$_.win32Error -gt 0) { ", win32=$([int]$_.win32Error)" } else { "" }
+    "pid=$([int]$_.pid), state=$([string]$_.state), reason=$([string]$_.reason)$win32"
+  }) -join "; "
+}
+
+function Stop-PantheonCapturedProcesses {
+  param(
+    [object[]]$Snapshots = @(),
+    [ValidateRange(1, 30)][int]$TimeoutSeconds = 8
+  )
+
+  Initialize-PantheonNativeExactProcessStop
+  $remaining = @()
+  $pending = @()
+  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  $deadlineMilliseconds = $TimeoutSeconds * 1000
+  foreach ($expected in @($Snapshots) | Sort-Object { [int]$_.pid } -Descending) {
+    $request = Request-PantheonExactProcessTermination -Expected $expected
+    if ($request.state -eq "termination_requested") {
+      $pending += [pscustomobject]@{ expected = $expected; phase = "exit"; last = $request }
+    } elseif ($request.state -in @("already_exited", "pid_reused")) {
+      continue
+    } elseif ($request.state -eq "identity_unreadable") {
+      $pending += [pscustomobject]@{ expected = $expected; phase = "request"; last = $request }
+    } elseif ($request.state -eq "termination_failed") {
+      $pending += [pscustomobject]@{ expected = $expected; phase = "failed_exit"; last = $request }
+    } else {
+      $remaining += [pscustomobject]@{
+        pid = [int]$expected.pid
+        state = [string]$request.state
+        reason = [string]$request.reason
+        win32Error = [int]$request.win32Error
+      }
+    }
+  }
+
+  while ($pending.Count -gt 0 -and $stopwatch.ElapsedMilliseconds -lt $deadlineMilliseconds) {
+    $nextPending = @()
+    foreach ($item in $pending) {
+      if ($item.phase -eq "request") {
+        $state = Get-PantheonCapturedProcessState -Expected $item.expected
+        if ($state.state -in @("absent", "replaced")) { continue }
+        $request = Request-PantheonExactProcessTermination -Expected $item.expected
+        if ($request.state -eq "termination_requested") {
+          $nextPending += [pscustomobject]@{ expected = $item.expected; phase = "exit"; last = $request }
+        } elseif ($request.state -in @("already_exited", "pid_reused")) {
+          continue
+        } elseif ($request.state -eq "identity_unreadable") {
+          $nextPending += [pscustomobject]@{ expected = $item.expected; phase = "request"; last = $request }
+        } elseif ($request.state -eq "termination_failed") {
+          $nextPending += [pscustomobject]@{ expected = $item.expected; phase = "failed_exit"; last = $request }
+        } else {
+          $remaining += [pscustomobject]@{
+            pid = [int]$item.expected.pid
+            state = [string]$request.state
+            reason = [string]$request.reason
+            win32Error = [int]$request.win32Error
+          }
+        }
+        continue
+      }
+
+      $state = Get-PantheonCapturedProcessState -Expected $item.expected
+      if ($state.state -in @("absent", "replaced")) { continue }
+      $nextPending += $item
+    }
+    $pending = @($nextPending)
+    if ($pending.Count -gt 0 -and $stopwatch.ElapsedMilliseconds -lt $deadlineMilliseconds) {
+      Start-Sleep -Milliseconds 100
+    }
+  }
+
+  foreach ($item in $pending) {
+    $state = Get-PantheonCapturedProcessState -Expected $item.expected
+    if ($state.state -in @("absent", "replaced")) { continue }
+    $reason = if ($item.phase -eq "request") {
+      "process_identity_unreadable"
+    } elseif ($state.state -eq "unreadable") {
+      "process_exit_unverifiable"
+    } elseif ($item.phase -eq "failed_exit") {
+      [string]$item.last.reason
+    } else {
+      "process_did_not_exit"
+    }
+    $remaining += [pscustomobject]@{
+      pid = [int]$item.expected.pid
+      state = [string]$state.state
+      reason = $reason
+      win32Error = [int]$item.last.win32Error
     }
   }
   return @($remaining)
@@ -432,6 +729,11 @@ function Test-PantheonSupervisorOwnership {
 
   $actual = Get-PantheonProcessSnapshot -ProcessId ([int]$Metadata.pid)
   if (-not $actual) {
+    $unreadableProcess = Get-Process -Id ([int]$Metadata.pid) -ErrorAction SilentlyContinue
+    if ($unreadableProcess) {
+      if ($unreadableProcess -is [IDisposable]) { $unreadableProcess.Dispose() }
+      return [pscustomobject]@{ owned = $false; reason = "supervisor_identity_unreadable"; process = $null }
+    }
     return [pscustomobject]@{ owned = $false; reason = "supervisor_not_running"; process = $null }
   }
   $expected = [pscustomobject]@{
@@ -471,9 +773,15 @@ function Stop-PantheonSupervisor {
     throw "Pantheon refused to stop a supervisor whose Windows identity changed ($($ownership.reason))."
   }
 
-  Stop-Process -Id ([int]$metadata.pid) -Force -ErrorAction Stop
-  if (-not (Wait-PantheonProcessExit -ProcessId ([int]$metadata.pid) -TimeoutSeconds $TimeoutSeconds)) {
-    throw "Pantheon's exact Windows supervisor did not exit within $TimeoutSeconds seconds."
+  $expected = [pscustomobject]@{
+    pid = [int]$metadata.pid
+    executablePath = [string]$metadata.executablePath
+    startFileTimeUtc = [string]$metadata.processStartFileTimeUtc
+  }
+  $remaining = @(Stop-PantheonCapturedProcesses -Snapshots @($expected) -TimeoutSeconds $TimeoutSeconds)
+  if ($remaining.Count -gt 0) {
+    $details = Format-PantheonCapturedProcessFailures -Failures $remaining
+    throw "Pantheon could not verify its exact Windows supervisor stopped ($details)."
   }
   Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
 }

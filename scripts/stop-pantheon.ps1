@@ -28,40 +28,6 @@ function Get-RecordedDescendants($Metadata) {
   return @()
 }
 
-function Invoke-BoundedTaskkill {
-  param(
-    [Parameter(Mandatory = $true)][int]$ProcessId,
-    [ValidateRange(1, 30)][int]$TimeoutSeconds = 8
-  )
-
-  $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
-  $startInfo = [Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $taskkill
-  $startInfo.Arguments = "/PID $ProcessId /T /F"
-  $startInfo.UseShellExecute = $false
-  $startInfo.CreateNoWindow = $true
-  $startInfo.RedirectStandardOutput = $true
-  $startInfo.RedirectStandardError = $true
-  $process = [Diagnostics.Process]::new()
-  $process.StartInfo = $startInfo
-  try {
-    if (-not $process.Start()) {
-      throw "Windows could not start its bounded process-tree stop command."
-    }
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-      try { $process.Kill() } catch {}
-      throw "Windows did not finish its process-tree stop command within $TimeoutSeconds seconds."
-    }
-    return [pscustomobject]@{
-      ExitCode = [int]$process.ExitCode
-      Stdout = $process.StandardOutput.ReadToEnd()
-      Stderr = $process.StandardError.ReadToEnd()
-    }
-  } finally {
-    $process.Dispose()
-  }
-}
-
 function Stop-OnePantheon {
   param(
     [Parameter(Mandatory = $true)][int]$TargetPort,
@@ -118,36 +84,36 @@ function Stop-OnePantheon {
     $recordedDescendants = Get-RecordedDescendants -Metadata $metadata
 
     if (-not $ownership.owned) {
-      if (
-        $ownership.reason -eq "process_identity_changed" -and
-        -not $health -and
-        (Test-PantheonPortAvailable -Port $TargetPort)
-      ) {
-        Remove-Item -LiteralPath $runtimePath -Force
-        Write-Host "Pantheon on port $TargetPort was already stopped; Windows had reused its old process ID, so only the stale launcher record was removed."
-        return
-      }
-      if ($ownership.reason -ne "process_not_running") {
+      if ($ownership.reason -notin @("process_not_running", "process_identity_changed")) {
         throw "The saved Pantheon identity now points to a different Windows process ($($ownership.reason)). It was not stopped."
       }
       if ($health) {
         throw "Pantheon is responding on port $TargetPort, but its recorded process has exited. The live process was not stopped."
       }
 
-      $remainingRecorded = @(Stop-PantheonCapturedProcesses -Snapshots $recordedDescendants)
-      if ($remainingRecorded.Count -gt 0) {
-        throw "Pantheon's recorded server exited, but $($remainingRecorded.Count) exact child process(es) could not be stopped. Ownership data was retained for another attempt."
-      }
-      if (-not (Wait-PantheonPortAvailable -Port $TargetPort -TimeoutSeconds 5)) {
-        throw "Pantheon's recorded process has exited, but port $TargetPort is still occupied. The unknown process was not stopped."
-      }
-      Remove-Item -LiteralPath $runtimePath -Force
       Stop-PantheonSupervisor `
         -StateRoot $stateRoot `
         -Port $TargetPort `
         -WorkspaceRoot $root `
         -TimeoutSeconds $GracefulTimeoutSeconds
-      Write-Host "Pantheon on port $TargetPort was already stopped; stale ownership data was removed."
+      $remainingRecorded = @(Stop-PantheonCapturedProcesses -Snapshots $recordedDescendants)
+      if ($remainingRecorded.Count -gt 0) {
+        $details = Format-PantheonCapturedProcessFailures -Failures $remainingRecorded
+        throw "Pantheon's recorded server exited, but captured child shutdown could not be verified ($details). Ownership data was retained for another attempt."
+      }
+      if (Get-PantheonHealth -Port $TargetPort) {
+        throw "A live service appeared on Pantheon's port after recorded process cleanup. It was not stopped."
+      }
+      if (-not (Wait-PantheonPortAvailable -Port $TargetPort -TimeoutSeconds 5)) {
+        throw "Pantheon's recorded process has exited, but port $TargetPort is still occupied. The unknown process was not stopped."
+      }
+      Remove-Item -LiteralPath $runtimePath -Force
+      $settledDetail = if ($ownership.reason -eq "process_identity_changed") {
+        "Windows had reused its old process ID; the replacement was left untouched"
+      } else {
+        "the recorded process had already exited"
+      }
+      Write-Host "Pantheon on port $TargetPort was already stopped; $settledDetail, and exact recorded cleanup completed."
       return
     }
 
@@ -180,27 +146,58 @@ function Stop-OnePantheon {
       [void](Wait-PantheonProcessExit -ProcessId $serverPid -TimeoutSeconds $GracefulTimeoutSeconds)
     }
 
-    if (Get-Process -Id $serverPid -ErrorAction SilentlyContinue) {
-      $currentRoot = Get-PantheonProcessSnapshot -ProcessId $serverPid
-      if (-not (Test-PantheonSnapshotMatches -Expected $rootSnapshot -Actual $currentRoot)) {
-        throw "Pantheon's process identity changed during shutdown. The replacement process was not stopped."
+    $rootState = Get-PantheonCapturedProcessState -Expected $rootSnapshot
+    if ($rootState.state -eq "unreadable") {
+      throw "Pantheon could not read its recorded server identity after the graceful-stop window (process_exit_unverifiable). Ownership data was retained."
+    }
+    if ($rootState.state -eq "exact") {
+      $supervised = (
+        ($metadata.PSObject.Properties.Name -contains "metadataVersion") -and
+        [int]$metadata.metadataVersion -ge 3 -and
+        ($metadata.PSObject.Properties.Name -contains "supervised") -and
+        $metadata.supervised -eq $true
+      )
+      if (-not $supervised) {
+        throw "Pantheon refused a partial forced process-tree stop (forced_tree_stop_requires_supervisor). The standalone server and its ownership data were retained for a safe retry."
       }
-      $taskkillResult = Invoke-BoundedTaskkill -ProcessId $serverPid -TimeoutSeconds 8
-      if ($taskkillResult.ExitCode -ne 0 -and (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) {
-        throw "Windows could not terminate Pantheon's exact process tree. Try STOP PANTHEON.cmd from the same Windows permission level used to start it."
-      }
-      if (-not (Wait-PantheonProcessExit -ProcessId $serverPid -TimeoutSeconds 8)) {
-        throw "Pantheon's exact server process did not exit after Windows terminated its process tree."
+
+      Stop-PantheonSupervisor `
+        -StateRoot $stateRoot `
+        -Port $TargetPort `
+        -WorkspaceRoot $root `
+        -TimeoutSeconds 8
+
+      $rootExitWait = [Diagnostics.Stopwatch]::StartNew()
+      do {
+        $rootState = Get-PantheonCapturedProcessState -Expected $rootSnapshot
+        if ($rootState.state -in @("absent", "replaced")) { break }
+        if ($rootExitWait.ElapsedMilliseconds -ge 8000) { break }
+        Start-Sleep -Milliseconds 100
+      } while ($true)
+      if ($rootState.state -notin @("absent", "replaced")) {
+        $reason = if ($rootState.state -eq "unreadable") {
+          "process_exit_unverifiable"
+        } else {
+          "process_did_not_exit"
+        }
+        throw "Pantheon's supervised process tree did not reach a verified stop ($reason). Ownership data was retained."
       }
     }
 
     $remainingDescendants = @(Stop-PantheonCapturedProcesses -Snapshots $descendants)
     if ($remainingDescendants.Count -gt 0) {
-      throw "Pantheon's server stopped, but $($remainingDescendants.Count) exact child process(es) remain. Ownership data was retained so STOP PANTHEON.cmd can safely retry."
+      $details = Format-PantheonCapturedProcessFailures -Failures $remainingDescendants
+      throw "Pantheon's server stopped, but captured child shutdown could not be verified ($details). Ownership data was retained so STOP PANTHEON.cmd can safely retry."
     }
 
-    if (Get-Process -Id $serverPid -ErrorAction SilentlyContinue) {
-      throw "Pantheon's server process is still running after shutdown verification."
+    $rootState = Get-PantheonCapturedProcessState -Expected $rootSnapshot
+    if ($rootState.state -notin @("absent", "replaced")) {
+      $reason = if ($rootState.state -eq "unreadable") {
+        "process_exit_unverifiable"
+      } else {
+        "process_did_not_exit"
+      }
+      throw "Pantheon's recorded server did not reach a verified stop ($reason)."
     }
     Stop-PantheonSupervisor `
       -StateRoot $stateRoot `

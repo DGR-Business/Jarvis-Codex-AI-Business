@@ -235,6 +235,268 @@ function Get-PantheonProcessSnapshot {
 }
 `;
 
+const capturedProcessStopRaceProof = String.raw`
+$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "pantheon-launcher-common.ps1")
+
+$nativeChild = $null
+try {
+  $nativeChild = Start-Process -FilePath (Join-Path $PSHOME "powershell.exe") -ArgumentList @(
+    "-NoLogo",
+    "-NoProfile",
+    "-Command",
+    "Start-Sleep -Seconds 30"
+  ) -WindowStyle Hidden -PassThru
+  $nativeExpected = $null
+  $nativeDeadline = [DateTime]::UtcNow.AddSeconds(5)
+  do {
+    $nativeExpected = Get-PantheonProcessSnapshot -ProcessId ([int]$nativeChild.Id)
+    if ($nativeExpected) { break }
+    Start-Sleep -Milliseconds 50
+  } while ([DateTime]::UtcNow -lt $nativeDeadline)
+  if (-not $nativeExpected) { throw "The native exact-process test child identity was unavailable." }
+
+  $invalidExpected = [pscustomobject]@{
+    pid = [int]$nativeExpected.pid
+    executablePath = [string]$nativeExpected.executablePath
+    startFileTimeUtc = "0"
+  }
+  $invalidResult = Request-PantheonExactProcessTermination -Expected $invalidExpected
+  if ($invalidResult.state -ne "invalid_expected_identity" -or $nativeChild.HasExited) {
+    throw "An invalid captured creation time did not fail closed."
+  }
+
+  $wrongStart = [pscustomobject]@{
+    pid = [int]$nativeExpected.pid
+    executablePath = [string]$nativeExpected.executablePath
+    startFileTimeUtc = [string](([long]$nativeExpected.startFileTimeUtc) + 1)
+  }
+  $wrongStartResult = Request-PantheonExactProcessTermination -Expected $wrongStart
+  if ($wrongStartResult.state -ne "pid_reused" -or $nativeChild.HasExited) {
+    throw "A stale creation identity was not rejected without terminating the live replacement."
+  }
+
+  $wrongPath = [pscustomobject]@{
+    pid = [int]$nativeExpected.pid
+    executablePath = (Join-Path $env:SystemRoot "System32\cmd.exe")
+    startFileTimeUtc = [string]$nativeExpected.startFileTimeUtc
+  }
+  $wrongPathResult = Request-PantheonExactProcessTermination -Expected $wrongPath
+  if ($wrongPathResult.state -ne "identity_mismatch" -or $nativeChild.HasExited) {
+    throw "A changed executable identity was not rejected without terminating the live process."
+  }
+
+  $nativeStopResult = Request-PantheonExactProcessTermination -Expected $nativeExpected
+  if ($nativeStopResult.state -notin @("termination_requested", "already_exited")) {
+    throw "The native helper did not accept the exact captured process identity."
+  }
+  if (-not (Wait-PantheonProcessExit -ProcessId ([int]$nativeExpected.pid) -TimeoutSeconds 3)) {
+    throw "The native helper did not terminate its exact captured process."
+  }
+} finally {
+  if ($nativeChild -and -not $nativeChild.HasExited) {
+    Stop-Process -Id ([int]$nativeChild.Id) -Force -ErrorAction SilentlyContinue
+  }
+  if ($nativeChild) { $nativeChild.Dispose() }
+}
+
+$transientUnreadablePid = 991001
+$delayedExitPid = 991002
+$persistentPid = 991003
+$replacementAfterRequestPid = 991004
+$unreadablePid = 991005
+$secondPersistentPid = 991006
+$initialReusedPid = 991007
+$identityMismatchPid = 991008
+$terminationFailedPid = 991009
+$script:TransientPolls = 0
+$script:DelayedPolls = 0
+$script:RequestCalls = @{}
+
+function New-TestSnapshot([int]$ProcessId, [string]$StartFileTimeUtc = "100") {
+  return [pscustomobject]@{
+    pid = $ProcessId
+    executablePath = "C:\\Program Files\\nodejs\\node.exe"
+    startFileTimeUtc = $StartFileTimeUtc
+  }
+}
+
+$expectedTransientUnreadable = New-TestSnapshot -ProcessId $transientUnreadablePid
+$expectedDelayed = New-TestSnapshot -ProcessId $delayedExitPid
+$expectedPersistent = New-TestSnapshot -ProcessId $persistentPid
+$expectedReplacementAfterRequest = New-TestSnapshot -ProcessId $replacementAfterRequestPid
+$expectedUnreadable = New-TestSnapshot -ProcessId $unreadablePid
+$expectedSecondPersistent = New-TestSnapshot -ProcessId $secondPersistentPid
+$expectedInitialReused = New-TestSnapshot -ProcessId $initialReusedPid
+$expectedIdentityMismatch = New-TestSnapshot -ProcessId $identityMismatchPid
+$expectedTerminationFailed = New-TestSnapshot -ProcessId $terminationFailedPid
+
+function Get-PantheonProcessSnapshot {
+  param([Parameter(Mandatory = $true)][int]$ProcessId)
+  if ($ProcessId -eq $transientUnreadablePid) {
+    $script:TransientPolls += 1
+    return $null
+  }
+  if ($ProcessId -eq $delayedExitPid) {
+    $script:DelayedPolls += 1
+    if ($script:DelayedPolls -ge 4) { return $null }
+    return $expectedDelayed
+  }
+  if ($ProcessId -in @($persistentPid, $secondPersistentPid, $terminationFailedPid)) {
+    return New-TestSnapshot -ProcessId $ProcessId
+  }
+  if ($ProcessId -eq $replacementAfterRequestPid) {
+    return New-TestSnapshot -ProcessId $replacementAfterRequestPid -StartFileTimeUtc "200"
+  }
+  if ($ProcessId -eq $unreadablePid) { return $null }
+  return $null
+}
+
+function Get-Process {
+  [CmdletBinding()]
+  param([Parameter(Mandatory = $true)][int]$Id)
+  if ($Id -eq $unreadablePid) { return [pscustomobject]@{ Id = $Id } }
+  if ($Id -eq $transientUnreadablePid -and $script:TransientPolls -lt 3) {
+    return [pscustomobject]@{ Id = $Id }
+  }
+  return $null
+}
+
+function Request-PantheonExactProcessTermination {
+  param([Parameter(Mandatory = $true)]$Expected)
+  $processId = [int]$Expected.pid
+  $script:RequestCalls[$processId] = 1 + [int]$script:RequestCalls[$processId]
+  if ($processId -eq $initialReusedPid) {
+    return [pscustomobject]@{ state = "pid_reused"; reason = "creation_time_changed"; win32Error = 0 }
+  }
+  if ($processId -eq $identityMismatchPid) {
+    return [pscustomobject]@{ state = "identity_mismatch"; reason = "executable_path_changed"; win32Error = 0 }
+  }
+  if ($processId -eq $unreadablePid) {
+    return [pscustomobject]@{ state = "identity_unreadable"; reason = "open_process_failed"; win32Error = 5 }
+  }
+  if ($processId -eq $terminationFailedPid) {
+    return [pscustomobject]@{ state = "termination_failed"; reason = "terminate_process_failed"; win32Error = 5 }
+  }
+  return [pscustomobject]@{
+    state = "termination_requested"
+    reason = "exact_process_termination_requested"
+    win32Error = 0
+  }
+}
+
+$transientUnreadableRemaining = @(
+  Stop-PantheonCapturedProcesses -Snapshots @($expectedTransientUnreadable) -TimeoutSeconds 1
+)
+if ($transientUnreadableRemaining.Count -ne 0 -or $script:TransientPolls -lt 3) {
+  throw "Transient unreadable teardown state was falsely reported as a surviving child."
+}
+
+$delayedRemaining = @(
+  Stop-PantheonCapturedProcesses -Snapshots @($expectedDelayed) -TimeoutSeconds 1
+)
+if ($delayedRemaining.Count -ne 0 -or $script:DelayedPolls -lt 4) {
+  throw "A delayed exact-child exit was not observed within the bounded wait."
+}
+
+$persistentRemaining = @(
+  Stop-PantheonCapturedProcesses -Snapshots @($expectedPersistent) -TimeoutSeconds 1
+)
+if (
+  $persistentRemaining.Count -ne 1 -or
+  [string]$persistentRemaining[0].reason -ne "process_did_not_exit"
+) {
+  throw "A persistent exact child was not reported with its stable exit failure."
+}
+
+$replacementAfterRequestRemaining = @(
+  Stop-PantheonCapturedProcesses -Snapshots @($expectedReplacementAfterRequest) -TimeoutSeconds 1
+)
+if (
+  $replacementAfterRequestRemaining.Count -ne 0 -or
+  [int]$script:RequestCalls[$replacementAfterRequestPid] -ne 1
+) {
+  throw "A replacement observed after the exact stop request was targeted a second time."
+}
+
+$initialReusedRemaining = @(
+  Stop-PantheonCapturedProcesses -Snapshots @($expectedInitialReused) -TimeoutSeconds 1
+)
+if ($initialReusedRemaining.Count -ne 0 -or [int]$script:RequestCalls[$initialReusedPid] -ne 1) {
+  throw "A PID reused before handle-bound termination was not safely ignored."
+}
+
+$identityMismatchRemaining = @(
+  Stop-PantheonCapturedProcesses -Snapshots @($expectedIdentityMismatch) -TimeoutSeconds 1
+)
+if (
+  $identityMismatchRemaining.Count -ne 1 -or
+  [string]$identityMismatchRemaining[0].reason -ne "executable_path_changed"
+) {
+  throw "A same-creation executable mismatch did not fail closed."
+}
+
+$unreadableRemaining = @(
+  Stop-PantheonCapturedProcesses -Snapshots @($expectedUnreadable) -TimeoutSeconds 1
+)
+if (
+  $unreadableRemaining.Count -ne 1 -or
+  [string]$unreadableRemaining[0].reason -ne "process_identity_unreadable" -or
+  [int]$script:RequestCalls[$unreadablePid] -lt 2
+) {
+  throw "A live process with unreadable identity did not fail closed."
+}
+
+$batchStartedAt = [DateTime]::UtcNow
+$batchRemaining = @(
+  Stop-PantheonCapturedProcesses -Snapshots @(
+    $expectedPersistent,
+    $expectedSecondPersistent,
+    $expectedTerminationFailed
+  ) -TimeoutSeconds 1
+)
+$batchElapsedMilliseconds = ([DateTime]::UtcNow - $batchStartedAt).TotalMilliseconds
+if (
+  $batchRemaining.Count -ne 3 -or
+  $batchElapsedMilliseconds -gt 1800
+) {
+  throw "Captured children were not bounded by one shared shutdown deadline."
+}
+$terminationFailure = @($batchRemaining | Where-Object { [int]$_.pid -eq $terminationFailedPid })
+$formattedFailure = Format-PantheonCapturedProcessFailures -Failures $terminationFailure
+if (
+  $terminationFailure.Count -ne 1 -or
+  [string]$terminationFailure[0].reason -ne "terminate_process_failed" -or
+  $formattedFailure -notmatch "state=exact" -or
+  $formattedFailure -notmatch "reason=terminate_process_failed" -or
+  $formattedFailure -notmatch "win32=5"
+) {
+  throw "A persistent native termination failure did not retain actionable diagnostics."
+}
+
+$unreadableRootMetadata = [pscustomobject]@{
+  pid = $unreadablePid
+  processStartFileTimeUtc = "100"
+  executablePath = "C:\Program Files\nodejs\node.exe"
+}
+$unreadableRootOwnership = Test-PantheonProcessOwnership -Metadata $unreadableRootMetadata -Port 5051
+if ($unreadableRootOwnership.reason -ne "process_identity_unreadable") {
+  throw "A live root with unreadable identity was mistaken for an exited process."
+}
+
+$unreadableSupervisorMetadata = [pscustomobject]@{
+  pid = $unreadablePid
+  processStartFileTimeUtc = "100"
+  executablePath = "C:\Program Files\nodejs\node.exe"
+  controlPort = 5050
+  workspaceRoot = (Split-Path -Parent $PSScriptRoot)
+}
+$unreadableSupervisorOwnership = Test-PantheonSupervisorOwnership -Metadata $unreadableSupervisorMetadata -Port 5050 -WorkspaceRoot (Split-Path -Parent $PSScriptRoot)
+if ($unreadableSupervisorOwnership.reason -ne "supervisor_identity_unreadable") {
+  throw "A live supervisor with unreadable identity was mistaken for an exited process."
+}
+`;
+
 test("OpenAI credentials persist outside the repository and ignore unreadable legacy recovery fields", {
   skip: process.platform !== "win32",
   timeout: 60_000,
@@ -641,6 +903,136 @@ test("Windows stop refuses a changed process identity and succeeds after exact o
   }
 });
 
+test("standalone shutdown refuses an unsafe partial forced tree stop and succeeds on a graceful retry", {
+  skip: process.platform !== "win32",
+  timeout: 60_000,
+}, async () => {
+  const root = makeLauncherWorkspace("standalone-forced-stop");
+  const port = await freePort();
+  const hangPath = path.join(root, "tmp", `fake-hang-${port}`);
+  let metadata = null;
+  let childPid = null;
+  try {
+    const started = await runPowerShell(
+      path.join(root, "scripts", "start-pantheon.ps1"),
+      ["-Port", port, "-NoOpen", "-ReadyTimeoutSeconds", "5"],
+      root,
+      true,
+    );
+    assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+    const metadataPath = path.join(root, "tmp", `pantheon-server-${port}.json`);
+    metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+    childPid = Number(fs.readFileSync(path.join(root, "tmp", `fake-child-${port}.pid`), "utf8"));
+    fs.writeFileSync(hangPath, "hold graceful exit for forced-stop proof\n");
+
+    const refused = await runPowerShell(
+      path.join(root, "scripts", "stop-pantheon.ps1"),
+      ["-Port", port, "-GracefulTimeoutSeconds", "1"],
+      root,
+      true,
+    );
+    assert.notEqual(refused.code, 0);
+    assert.match(`${refused.stdout}\n${refused.stderr}`, /forced_tree_stop_requires_supervisor/);
+    assert.equal(processAlive(metadata.pid), true, "standalone root must remain owned after refusal");
+    assert.equal(processAlive(childPid), true, "standalone child must not be partially stopped");
+    assert.equal(fs.existsSync(metadataPath), true, "ownership metadata must remain for retry");
+
+    fs.rmSync(hangPath, { force: true });
+    const stopped = await runPowerShell(
+      path.join(root, "scripts", "stop-pantheon.ps1"),
+      ["-Port", port, "-GracefulTimeoutSeconds", "2"],
+      root,
+      true,
+    );
+    assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`);
+    assert.equal(await waitForExit(metadata.pid), true);
+    assert.equal(await waitForExit(childPid), true);
+  } finally {
+    fs.rmSync(hangPath, { force: true });
+    await cleanupWorkspace(root);
+  }
+});
+
+test("reused root cleanup stops exact recorded children without touching the replacement", {
+  skip: process.platform !== "win32",
+  timeout: 60_000,
+}, async () => {
+  const root = makeLauncherWorkspace("reused-root-recorded-child");
+  const port = await freePort();
+  const hangPath = path.join(root, "tmp", `fake-hang-${port}`);
+  const metadataPath = path.join(root, "tmp", `pantheon-server-${port}.json`);
+  let originalMetadata = null;
+  let childPid = null;
+  let replacement = null;
+  try {
+    const started = await runPowerShell(
+      path.join(root, "scripts", "start-pantheon.ps1"),
+      ["-Port", port, "-NoOpen", "-ReadyTimeoutSeconds", "5"],
+      root,
+      true,
+    );
+    assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+    originalMetadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+    childPid = Number(fs.readFileSync(path.join(root, "tmp", `fake-child-${port}.pid`), "utf8"));
+    fs.writeFileSync(hangPath, "retain process tree for retry proof\n");
+
+    const refused = await runPowerShell(
+      path.join(root, "scripts", "stop-pantheon.ps1"),
+      ["-Port", port, "-GracefulTimeoutSeconds", "1"],
+      root,
+      true,
+    );
+    assert.notEqual(refused.code, 0);
+    const retainedMetadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+    assert.ok(retainedMetadata.shutdownDescendants.some((item) => item.pid === childPid));
+
+    process.kill(originalMetadata.pid);
+    assert.equal(await waitForExit(originalMetadata.pid), true);
+    assert.equal(processAlive(childPid), true, "recorded child must survive until exact retry cleanup");
+    replacement = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    replacement.unref();
+    retainedMetadata.pid = replacement.pid;
+    retainedMetadata.executablePath = process.execPath;
+    retainedMetadata.processStartFileTimeUtc = "1";
+    fs.writeFileSync(metadataPath, JSON.stringify(retainedMetadata));
+    fs.rmSync(hangPath, { force: true });
+
+    const cleaned = await runPowerShell(
+      path.join(root, "scripts", "stop-pantheon.ps1"),
+      ["-Port", port, "-GracefulTimeoutSeconds", "2"],
+      root,
+      true,
+    );
+    assert.equal(cleaned.code, 0, `${cleaned.stdout}\n${cleaned.stderr}`);
+    assert.equal(await waitForExit(childPid), true, "exact recorded child was not cleaned up");
+    assert.equal(processAlive(replacement.pid), true, "reused-PID replacement must remain untouched");
+    assert.equal(fs.existsSync(metadataPath), false);
+  } finally {
+    fs.rmSync(hangPath, { force: true });
+    if (replacement && processAlive(replacement.pid)) process.kill(replacement.pid);
+    if (originalMetadata && processAlive(originalMetadata.pid)) process.kill(originalMetadata.pid);
+    await cleanupWorkspace(root);
+  }
+});
+
+test("captured child shutdown handles exit races without touching replacement processes", {
+  skip: process.platform !== "win32",
+  timeout: 15_000,
+}, async () => {
+  const root = makeLauncherWorkspace("captured-process-stop-race");
+  try {
+    const proofPath = path.join(root, "scripts", "captured-process-stop-race-proof.ps1");
+    fs.writeFileSync(proofPath, capturedProcessStopRaceProof);
+    const result = await runPowerShell(proofPath, [], root, true);
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+  } finally {
+    await cleanupWorkspace(root);
+  }
+});
+
 async function runSupervisorCycleProof(context, name, crashFirstCycle) {
   const root = makeLauncherWorkspace(name);
   const controlPort = await freePort();
@@ -649,6 +1041,21 @@ async function runSupervisorCycleProof(context, name, crashFirstCycle) {
     fs.appendFileSync(
       path.join(root, "scripts", "pantheon-launcher-common.ps1"),
       transientProcessSnapshotProbe,
+    );
+    const standbyPath = path.join(root, "scripts", "pantheon-standby.js");
+    const standbySource = fs.readFileSync(standbyPath, "utf8");
+    const shutdownLine = "    stopControlShell({ removeMetadata: false });";
+    assert.equal(standbySource.includes(shutdownLine), true);
+    fs.writeFileSync(
+      standbyPath,
+      standbySource.replace(
+        shutdownLine,
+        [
+          "    if (!fs.existsSync(path.join(stateRoot, `fake-control-hang-${port}`))) {",
+          "      stopControlShell({ removeMetadata: false });",
+          "    }",
+        ].join("\n"),
+      ),
     );
   }
   const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
@@ -697,11 +1104,20 @@ async function runSupervisorCycleProof(context, name, crashFirstCycle) {
         `${cycleLabel} did not create working ownership metadata`,
       );
       const workingMetadata = JSON.parse(fs.readFileSync(workingMetadataPath, "utf8"));
+      const workingChildPid = Number(
+        fs.readFileSync(path.join(root, "tmp", `fake-child-${workingPort}.pid`), "utf8"),
+      );
       assert.ok(processAlive(workingMetadata.pid));
+      assert.ok(processAlive(workingChildPid));
 
       if (crashFirstCycle && cycle === 1) {
         process.kill(supervisorMetadata.pid);
-        for (const pid of [supervisorMetadata.pid, controlMetadata.pid, workingMetadata.pid]) {
+        for (const pid of [
+          supervisorMetadata.pid,
+          controlMetadata.pid,
+          workingMetadata.pid,
+          workingChildPid,
+        ]) {
           assert.equal(
             await waitForExit(pid, 10_000),
             true,
@@ -717,6 +1133,32 @@ async function runSupervisorCycleProof(context, name, crashFirstCycle) {
           );
           assert.equal(cleaned.code, 0, `${cleaned.stdout}\n${cleaned.stderr}`);
         }
+      } else if (crashFirstCycle && cycle === 2) {
+        const hangPath = path.join(root, "tmp", `fake-control-hang-${controlPort}`);
+        fs.writeFileSync(hangPath, "hold control exit for supervised forced-stop proof\n");
+        const stoppedControl = await runPowerShell(
+          path.join(root, "scripts", "stop-pantheon.ps1"),
+          ["-Port", controlPort, "-GracefulTimeoutSeconds", "1"],
+          root,
+          true,
+        );
+        fs.rmSync(hangPath, { force: true });
+        assert.equal(stoppedControl.code, 0, `${stoppedControl.stdout}\n${stoppedControl.stderr}`);
+        for (const pid of [
+          supervisorMetadata.pid,
+          controlMetadata.pid,
+          workingMetadata.pid,
+          workingChildPid,
+        ]) {
+          assert.equal(await waitForExit(pid, 10_000), true, `supervised forced stop left ${pid} running`);
+        }
+        const cleanedWorking = await runPowerShell(
+          path.join(root, "scripts", "stop-pantheon.ps1"),
+          ["-Port", workingPort, "-GracefulTimeoutSeconds", "2"],
+          root,
+          true,
+        );
+        assert.equal(cleanedWorking.code, 0, `${cleanedWorking.stdout}\n${cleanedWorking.stderr}`);
       } else {
         const stoppedWorking = await runPowerShell(
           path.join(root, "scripts", "stop-pantheon.ps1"),
@@ -726,6 +1168,7 @@ async function runSupervisorCycleProof(context, name, crashFirstCycle) {
         );
         assert.equal(stoppedWorking.code, 0, `${stoppedWorking.stdout}\n${stoppedWorking.stderr}`);
         assert.equal(await waitForExit(workingMetadata.pid), true);
+        assert.equal(await waitForExit(workingChildPid), true);
         assert.equal(processAlive(controlMetadata.pid), true);
 
         const stoppedControl = await runPowerShell(
