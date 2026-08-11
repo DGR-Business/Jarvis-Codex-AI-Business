@@ -9,6 +9,18 @@ const {
 } = require("./agent-execution-evidence");
 const { verifyAgentContextSnapshot } = require("./agent-context");
 const { getCanonicalTerminalView } = require("./commercial-truth-reconciliation");
+const {
+  evaluatePreventureResearchReadiness,
+} = require("./preventure-research-readiness");
+const {
+  preventureResearchApprovalScopeHash,
+} = require("./preventure-research-contract");
+const {
+  validatePendingPreventureLifecycleApproval,
+} = require("./preventure-research-owner-state");
+const {
+  createPreventureResearchStore,
+} = require("./preventure-research-store");
 
 const ALWAYS_ACTIONABLE_SAFETY_CATEGORIES = new Set([
   "agent_context",
@@ -18,6 +30,8 @@ const ALWAYS_ACTIONABLE_SAFETY_CATEGORIES = new Set([
   "chief_assignment",
   "cost",
   "integrations",
+  "evidence_integrity",
+  "preventure_authority",
   "runtime_oversight",
   "unknown_outcome",
   "unsafe_retry",
@@ -586,6 +600,525 @@ function collectRuntimeOversightFindings(db, findings, options = {}) {
   }
 }
 
+function preventureResearchSchedulerFinding(job, dispatchableAuthorityCount) {
+  if (job?.status !== "enabled" || dispatchableAuthorityCount > 0) return null;
+  return {
+    severity: "error",
+    category: "preventure_authority",
+    entityType: "scheduler_job",
+    entityId: "job-preventure-research",
+    title: "The bounded research scheduler is enabled without runnable authority",
+    detail: "Disable the bounded research scheduler. A terminal, expired, proposed, accepted, frozen, or absent authority cannot permit provider-capable scheduled work.",
+    metadata: {
+      schedulerStatus: job.status,
+      dispatchableAuthorityCount,
+    },
+    fingerprintKey: "preventure_research_scheduler_without_dispatch_authority",
+  };
+}
+
+function shouldReportPreventureContraryEvidenceGap(ledger, readiness) {
+  return !ledger?.terminalStopRecord
+    && ledger?.decision?.completionMode !== "validated_early_stop"
+    && readiness?.execution?.completionMode !== "validated_early_stop"
+    && readiness?.execution?.complete === true
+    && Array.isArray(readiness?.evidence?.missingContraryQuestions)
+    && readiness.evidence.missingContraryQuestions.length > 0;
+}
+
+function terminalCustodyIndex() {
+  return {
+    assignmentHashes: new Set(),
+    attemptIds: new Set(),
+    costIds: new Set(),
+    receiptIds: new Set(),
+    reservationIds: new Set(),
+    runIds: new Set(),
+    taskIds: new Set(),
+  };
+}
+
+function indexVerifiedTerminalCustody(index, recovery) {
+  index.assignmentHashes.add(recovery.assignmentHash);
+  index.attemptIds.add(recovery.originalDispatch.taskAttemptId);
+  index.taskIds.add(recovery.taskId);
+  if (recovery.executionClosure?.agentRunId) {
+    index.runIds.add(recovery.executionClosure.agentRunId);
+  }
+  if (recovery.executionReceipt?.id) index.receiptIds.add(recovery.executionReceipt.id);
+  if (recovery.costSnapshot?.budgetReservationId) {
+    index.reservationIds.add(recovery.costSnapshot.budgetReservationId);
+  }
+  if (recovery.costSnapshot?.costId) index.costIds.add(recovery.costSnapshot.costId);
+}
+
+function collectPreventureResearchFindings(db, findings, options = {}) {
+  const custodyIndex = terminalCustodyIndex();
+  const schedulerJob = get(
+    db,
+    "SELECT id, status FROM scheduler_jobs WHERE id = 'job-preventure-research'",
+  );
+  const authorityRows = all(
+    db,
+    `SELECT authority_hash
+     FROM preventure_research_authorities
+     ORDER BY created_at, authority_hash`,
+  );
+  if (authorityRows.length === 0) {
+    const schedulerFinding = preventureResearchSchedulerFinding(schedulerJob, 0);
+    if (schedulerFinding) addFinding(findings, schedulerFinding);
+    return custodyIndex;
+  }
+
+  const injectedClock = typeof options.preventureResearchClock === "function"
+    ? options.preventureResearchClock
+    : null;
+  const observedAt = options.at || (injectedClock ? injectedClock() : now());
+  const storeClock = injectedClock || (() => observedAt);
+  let store;
+  let authorities;
+  try {
+    store = createPreventureResearchStore(db, {
+      clock: storeClock,
+      authorityRegistry: options.preventureResearchAuthorityRegistry,
+      retainedOutputStore: options.preventureResearchRetainedOutputStore,
+    });
+    const verification = store.verifyLedger();
+    if (!verification?.ok) throw new Error("The bounded-research ledger did not return a valid integrity result.");
+    authorities = store.listAuthorities();
+  } catch (error) {
+    addFinding(findings, {
+      severity: "error",
+      category: "preventure_authority",
+      entityType: "runtime",
+      entityId: "preventure_research_ledger",
+      title: "Bounded research record failed its integrity check",
+      detail: "Pantheon cannot trust this research authority, so no assignment should run until the ledger is repaired and verified.",
+      metadata: { reason: String(error?.code || error?.message || "ledger_verification_failed") },
+      fingerprintKey: "preventure_research_ledger_integrity",
+    });
+    const schedulerFinding = preventureResearchSchedulerFinding(schedulerJob, 0);
+    if (schedulerFinding) addFinding(findings, schedulerFinding);
+    return custodyIndex;
+  }
+
+  let currentAuthorityCount = 0;
+  let dispatchableAuthorityCount = 0;
+  for (const authority of authorities) {
+    let ledger;
+    let state;
+    let readiness;
+    try {
+      ledger = store.readLedger(authority.authorityHash);
+      state = store.readState(authority.authorityHash);
+      readiness = evaluatePreventureResearchReadiness(ledger, state, {
+        generatedAt: observedAt,
+      });
+    } catch (error) {
+      addFinding(findings, {
+        severity: "error",
+        category: "preventure_authority",
+        entityType: "preventure_research_authority",
+        entityId: authority.authorityHash,
+        title: "One bounded research authority cannot be verified",
+        detail: "Pantheon withheld this research round because its lifecycle, assignments, costs, receipts, or evidence no longer form one trusted record.",
+        metadata: { reason: String(error?.code || error?.message || "authority_verification_failed") },
+      });
+      continue;
+    }
+
+    const latestEvent = ledger.lifecycle.at(-1) || null;
+    const terminalRecoveries = Array.isArray(ledger.terminalRecoveries)
+      ? ledger.terminalRecoveries
+      : [];
+    terminalRecoveries.forEach((recovery) => {
+      indexVerifiedTerminalCustody(custodyIndex, recovery);
+      const ownerObservation = ledger.ownerBillingObservations?.find((item) => (
+        item.assignmentHash === recovery.assignmentHash
+        && item.predecessor?.kind === "terminal_recovery"
+        && item.predecessor?.hash === recovery.recoveryHash
+      )) || null;
+      addFinding(findings, {
+        severity: "warn",
+        category: "cost",
+        entityType: "preventure_research_assignment",
+        entityId: recovery.assignmentHash,
+        title: ownerObservation
+          ? "Terminal provider billing is owner-attested, not provider-settled"
+          : "Terminal provider custody is awaiting exact billing",
+        detail: ownerObservation
+          ? "The authenticated owner observation is retained with the sealed custody record. It is not a provider-settled receipt, cannot be used as commercial evidence, and authorises no retry or further network call."
+          : "The exact provider result is sealed for custody and billing only. It cannot be retried or used as commercial evidence, and no further network call or diligence decision is authorised.",
+        metadata: {
+          authorityHash: recovery.authorityHash,
+          assignmentHash: recovery.assignmentHash,
+          recoveryHash: recovery.recoveryHash,
+          receiptStatus: recovery.executionReceipt?.status || "not_available_before_custody",
+          costTruth: ownerObservation ? "owner_attested" : recovery.costSnapshot.costTruth,
+          exposureAudCents: ownerObservation
+            ? ownerObservation.billingObservation.amountAudCents
+            : recovery.costSnapshot.exposureAudCents,
+          assignmentCapAudCents: recovery.assignmentCapAudCents,
+          fullCapExposure:
+            recovery.costSnapshot.exposureAudCents === recovery.assignmentCapAudCents,
+          exactBillingPending: ownerObservation
+            ? false
+            : recovery.costSnapshot.exactBillingPending === true,
+          ownerBillingObservationHash: ownerObservation?.observationHash || null,
+          ownerBillingTruthStatus: ownerObservation?.truth?.status || null,
+          providerSettled: false,
+          decisionRecorded: Boolean(ledger.decision),
+          retryAuthorized: recovery.controls.retryAuthorized === true,
+          additionalNetworkCalls: recovery.controls.additionalNetworkCalls,
+        },
+        fingerprintKey: `preventure_terminal_custody_billing:${recovery.recoveryHash}`,
+      });
+    });
+    const persistedTerminal = new Set([
+      "completed",
+      "expired",
+      "revised",
+      "revoked",
+      "superseded",
+    ]).has(latestEvent?.eventType) || terminalRecoveries.length > 0;
+    if (!persistedTerminal) currentAuthorityCount += 1;
+    if (!persistedTerminal && state.dispatchAllowed === true) {
+      dispatchableAuthorityCount += 1;
+    }
+
+    if (state.expired && !persistedTerminal) {
+      addFinding(findings, {
+        severity: "error",
+        category: "preventure_authority",
+        entityType: "preventure_research_authority",
+        entityId: authority.authorityHash,
+        title: "Bounded research expired without a sealed stop record",
+        detail: "The fixed deadline passed. Dispatch is blocked, but Pantheon still needs to seal expiry in the immutable lifecycle before the round is operationally closed.",
+        metadata: { expiresAt: authority.expiresAt, latestEventType: latestEvent?.eventType || null },
+      });
+    }
+
+    if (
+      state.state === "activated"
+      && ledger.assignments.length !== authority.assignments.length
+    ) {
+      addFinding(findings, {
+        severity: "error",
+        category: "preventure_authority",
+        entityType: "preventure_research_authority",
+        entityId: authority.authorityHash,
+        title: "The activated research round is missing an exact assignment",
+        detail: "Pantheon must have all three accepted assignments, and no extras, before any dedicated research dispatch can be trusted.",
+        metadata: {
+          expectedAssignments: authority.assignments.length,
+          materializedAssignments: ledger.assignments.length,
+        },
+      });
+    }
+
+    const workRows = all(
+      db,
+      `SELECT assignments.assignment_hash, assignments.assignment_id,
+              tasks.id AS task_id, tasks.status AS task_status,
+              workflows.id AS workflow_id, workflows.status AS workflow_status,
+              COUNT(CASE WHEN attempts.status = 'running' THEN 1 END) AS running_attempts,
+              (SELECT COUNT(*) FROM model_calls
+               WHERE model_calls.task_id = assignments.task_id
+                 AND model_calls.status = 'dispatching') AS dispatching_model_calls,
+              (SELECT COUNT(*) FROM model_calls
+               WHERE model_calls.task_id = assignments.task_id
+                 AND model_calls.status IN ('prepared', 'dispatching', 'running')) AS active_model_calls,
+              (SELECT COUNT(*) FROM agent_runs
+               WHERE agent_runs.task_id = assignments.task_id
+                 AND agent_runs.status = 'running') AS active_agent_runs,
+              (SELECT COUNT(*) FROM agent_tool_invocations
+               WHERE agent_tool_invocations.task_id = assignments.task_id
+                 AND agent_tool_invocations.status = 'running') AS active_tool_invocations
+       FROM preventure_research_assignments AS assignments
+       LEFT JOIN tasks ON tasks.id = assignments.task_id
+       LEFT JOIN workflows ON workflows.id = assignments.workflow_id
+       LEFT JOIN task_attempts AS attempts ON attempts.task_id = assignments.task_id
+       WHERE assignments.authority_hash = ?
+       GROUP BY assignments.assignment_hash, assignments.assignment_id,
+                tasks.id, tasks.status, workflows.id, workflows.status`,
+      [authority.authorityHash],
+    );
+    const activeWork = workRows.filter((row) => (
+      row.task_status === "running"
+      || Number(row.running_attempts || 0) > 0
+      || Number(row.active_model_calls || 0) > 0
+      || Number(row.active_agent_runs || 0) > 0
+      || Number(row.active_tool_invocations || 0) > 0
+    ));
+    if ((persistedTerminal || state.expired || !state.dispatchAllowed) && activeWork.length > 0) {
+      addFinding(findings, {
+        severity: "error",
+        category: "preventure_authority",
+        entityType: "task",
+        entityId: activeWork[0].task_id,
+        title: "Research work is active outside its exact authority",
+        detail: "Stop provider-capable work and preserve its outcome and cost. This authority is expired, terminal, or otherwise frozen.",
+        metadata: {
+          authorityHash: authority.authorityHash,
+          activeTaskIds: activeWork.map((item) => item.task_id),
+          dispatchingModelCallCount: activeWork.reduce(
+            (count, item) => count + Number(item.dispatching_model_calls || 0),
+            0,
+          ),
+          activeModelCallCount: activeWork.reduce(
+            (count, item) => count + Number(item.active_model_calls || 0),
+            0,
+          ),
+          activeAgentRunCount: activeWork.reduce(
+            (count, item) => count + Number(item.active_agent_runs || 0),
+            0,
+          ),
+          activeToolInvocationCount: activeWork.reduce(
+            (count, item) => count + Number(item.active_tool_invocations || 0),
+            0,
+          ),
+          lifecycleState: state.state,
+        },
+      });
+    }
+
+    const expectedPendingEvent = state.state === "proposed"
+      ? "accepted"
+      : state.state === "accepted" ? "activated" : null;
+    const acceptanceScopeHash = preventureResearchApprovalScopeHash(authority, "accepted");
+    const activationScopeHash = preventureResearchApprovalScopeHash(authority, "activated");
+    const lifecycleApprovals = all(
+      db,
+      `SELECT id, venture_id, workflow_id, task_id, status, scope, title, risk_level,
+              scope_hash, payload, expires_at, requested_by, decided_by, decided_at,
+              consumed_at, expected_effects
+       FROM approvals
+       WHERE scope_hash IN (?, ?)
+          OR json_extract(
+            CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+            '$.preventureResearchApprovalScope.authority.hash'
+          ) = ?
+       ORDER BY requested_at, id`,
+      [acceptanceScopeHash, activationScopeHash, authority.authorityHash],
+    ).map((row) => ({ ...row, payload: fromJson(row.payload, {}) }));
+    const pendingLifecycle = lifecycleApprovals.filter((row) => row.status === "pending");
+    const exactScopeHash = expectedPendingEvent
+      ? preventureResearchApprovalScopeHash(authority, expectedPendingEvent)
+      : null;
+    const exactPending = pendingLifecycle.filter((row) => (
+      expectedPendingEvent
+      && validatePendingPreventureLifecycleApproval(
+        row,
+        authority,
+        expectedPendingEvent,
+      ).valid
+    ));
+    if (
+      (expectedPendingEvent && (pendingLifecycle.length !== 1 || exactPending.length !== 1))
+      || (!expectedPendingEvent && pendingLifecycle.length > 0)
+    ) {
+      addFinding(findings, {
+        severity: "error",
+        category: "approval_integrity",
+        entityType: "preventure_research_authority",
+        entityId: authority.authorityHash,
+        title: "The bounded research decision control is missing or ambiguous",
+        detail: "Pantheon withheld lifecycle controls because the current authority does not have exactly one matching owner decision, or a stale decision remains open.",
+        metadata: {
+          lifecycleState: state.state,
+          expectedPendingEvent,
+          expectedScopeHash: exactScopeHash,
+          pendingApprovalIds: pendingLifecycle.map((item) => item.id),
+        },
+      });
+    }
+
+    if (state.unknownProviderOutcomeCount > 0) {
+      addFinding(findings, {
+        severity: "error",
+        category: "unknown_outcome",
+        entityType: "preventure_research_authority",
+        entityId: authority.authorityHash,
+        title: "Bounded research has an unknown provider outcome",
+        detail: "Do not retry or start another assignment until the retained provider result is reconciled and the immutable receipt chain is complete.",
+        metadata: { unknownProviderOutcomeCount: state.unknownProviderOutcomeCount },
+      });
+    }
+    if (readiness.budget.unknownCostCount > terminalRecoveries.length) {
+      addFinding(findings, {
+        severity: "error",
+        category: "cost",
+        entityType: "preventure_research_authority",
+        entityId: authority.authorityHash,
+        title: "Bounded research has an unknown cost",
+        detail: "Pantheon froze further research until the possible charge is reconciled in both the authority ledger and the monthly budget ledger.",
+        metadata: {
+          unknownCostCount: readiness.budget.unknownCostCount,
+          terminalCustodyUnknownCostCount: terminalRecoveries.length,
+        },
+      });
+    }
+    if (
+      readiness.budget.exposureAudCents > readiness.budget.authorityCapAudCents
+      || readiness.budget.exposureAudCents > readiness.budget.assignedCapAudCents
+    ) {
+      addFinding(findings, {
+        severity: "error",
+        category: "cost",
+        entityType: "preventure_research_authority",
+        entityId: authority.authorityHash,
+        title: "Bounded research exposure exceeds its exact ceiling",
+        detail: "Stop further dispatch. The retained authority-scoped exposure is above the A$2 authority or the lower total assignment cap.",
+        metadata: readiness.budget,
+      });
+    }
+
+    const costHeads = new Map();
+    for (const event of ledger.costEvents) {
+      const key = `${event.assignmentHash}\u0000${event.costKey}`;
+      const prior = costHeads.get(key);
+      if (!prior || Number(event.sequence || 0) > Number(prior.sequence || 0)) {
+        costHeads.set(key, event);
+      }
+    }
+    for (const costEvent of costHeads.values()) {
+      const assignment = ledger.assignments.find(
+        (item) => item.assignmentHash === costEvent.assignmentHash,
+      );
+      const reservation = costEvent.budgetReservationId
+        ? get(db, "SELECT * FROM budget_reservations WHERE id = ?", [costEvent.budgetReservationId])
+        : null;
+      const settledCost = costEvent.costId
+        ? get(db, "SELECT * FROM costs WHERE id = ?", [costEvent.costId])
+        : null;
+      const positiveExposure = Number(costEvent.exposureAudCents || 0) > 0;
+      const costRowRequired = ["estimated", "incurred", "reconciled"].includes(
+        costEvent.eventType,
+      );
+      const missingGenericBinding = (
+        positiveExposure && !costEvent.budgetReservationId
+      ) || (
+        costRowRequired && !costEvent.costId
+      );
+      const reservationMismatch = costEvent.budgetReservationId && (
+        !reservation
+        || reservation.task_id !== assignment?.taskId
+        || reservation.workflow_id !== assignment?.workflowId
+        || reservation.venture_id !== null
+        || reservation.currency !== "AUD"
+        || (
+          ["reserved", "unknown"].includes(costEvent.eventType)
+          && Number(reservation.amount_cents) !== Number(costEvent.exposureAudCents)
+        )
+      );
+      const settledMismatch = costEvent.costId && (
+        !settledCost
+        || settledCost.task_id !== assignment?.taskId
+        || settledCost.workflow_id !== assignment?.workflowId
+        || settledCost.venture_id !== null
+        || settledCost.currency !== "AUD"
+        || (
+          costEvent.eventType === "reconciled"
+          && Number(settledCost.amount_cents) !== Number(costEvent.amountAudCents)
+        )
+      );
+      if (missingGenericBinding || reservationMismatch || settledMismatch) {
+        addFinding(findings, {
+          severity: "error",
+          category: "cost",
+          entityType: "preventure_research_assignment",
+          entityId: costEvent.assignmentHash,
+          title: "Bounded research cost disagrees with the monthly ledger",
+          detail: "The authority-scoped cost receipt no longer matches its unowned Pantheon reservation or settled-cost record. Further dispatch must remain frozen.",
+          metadata: {
+            budgetReservationId: costEvent.budgetReservationId || null,
+            costId: costEvent.costId || null,
+            eventType: costEvent.eventType,
+            exposureAudCents: costEvent.exposureAudCents,
+            missingGenericBinding,
+          },
+        });
+      }
+    }
+
+    for (const item of readiness.execution.items) {
+      if (custodyIndex.assignmentHashes.has(item.assignmentHash)) continue;
+      const taskStatus = workRows.find(
+        (row) => row.assignment_hash === item.assignmentHash,
+      )?.task_status || null;
+      const terminalWithoutReceipt = ["completed", "failed", "needs_attention"].includes(taskStatus)
+        && !item.complete;
+      const stoppedAttemptWithoutReceipt = item.providerAttemptCount > 0
+        && !item.complete
+        && item.unresolvedAttempt !== true
+        && item.unresolvedCall !== true;
+      if (terminalWithoutReceipt || stoppedAttemptWithoutReceipt) {
+        addFinding(findings, {
+          severity: "error",
+          category: "agent_receipts",
+          entityType: "task",
+          entityId: item.taskId,
+          title: "A bounded research assignment lacks a complete immutable receipt",
+          detail: "Pantheon cannot trust or reuse this assignment result until exactly one known terminal attempt is bound to a complete receipt and known cost.",
+          metadata: {
+            authorityHash: authority.authorityHash,
+            assignmentId: item.assignmentId,
+            taskStatus,
+            receiptCount: item.receiptCount,
+          },
+        });
+      }
+    }
+
+    if (readiness.evidence.orphanSourceCount || readiness.evidence.orphanEvidenceCount) {
+      addFinding(findings, {
+        severity: "error",
+        category: "evidence_integrity",
+        entityType: "preventure_research_authority",
+        entityId: authority.authorityHash,
+        title: "Bounded research contains evidence without a trusted assignment or source",
+        detail: "Pantheon must not use orphaned source or evidence records in the final diligence recommendation.",
+        metadata: {
+          orphanSourceCount: readiness.evidence.orphanSourceCount,
+          orphanEvidenceCount: readiness.evidence.orphanEvidenceCount,
+        },
+      });
+    }
+    if (shouldReportPreventureContraryEvidenceGap(ledger, readiness)) {
+      addFinding(findings, {
+        severity: "warn",
+        category: "evidence_integrity",
+        entityType: "preventure_research_authority",
+        entityId: authority.authorityHash,
+        title: "The disconfirming evidence pass is incomplete",
+        detail: "All assignments finished, but one or more approved questions still lack contrary evidence. Pantheon may close the round conservatively but cannot recommend a build.",
+        metadata: {
+          missingQuestionIds: readiness.evidence.missingContraryQuestions,
+        },
+      });
+    }
+  }
+
+  if (currentAuthorityCount > 1) {
+    addFinding(findings, {
+      severity: "error",
+      category: "preventure_authority",
+      entityType: "runtime",
+      entityId: "preventure_research_current_authority",
+      title: "More than one bounded research authority appears current",
+      detail: "Pantheon will not choose between competing preparation-only authorities. Reconcile and close the extra record before any dispatch.",
+      metadata: { currentAuthorityCount },
+      fingerprintKey: "preventure_research_current_authority_ambiguous",
+    });
+  }
+  const schedulerFinding = preventureResearchSchedulerFinding(
+    schedulerJob,
+    dispatchableAuthorityCount,
+  );
+  if (schedulerFinding) addFinding(findings, schedulerFinding);
+  return custodyIndex;
+}
+
 function collectFindings(db, options = {}) {
   const findings = [];
   const completedRetryPredecessors = supersededRetryTaskIds(db);
@@ -594,6 +1127,7 @@ function collectFindings(db, options = {}) {
   const staleQueuedCutoff = minutesAgo(Number(options.staleQueuedMinutes || 24 * 60));
 
   collectRuntimeOversightFindings(db, findings, options);
+  const verifiedTerminalCustody = collectPreventureResearchFindings(db, findings, options);
 
   const pendingApprovals = all(
     db,
@@ -821,7 +1355,7 @@ function collectFindings(db, options = {}) {
      LEFT JOIN tasks ON tasks.id = attempts.task_id
      WHERE attempts.outcome_status = 'unknown'
      ORDER BY attempts.completed_at DESC`,
-  );
+  ).filter((attempt) => !verifiedTerminalCustody.attemptIds.has(attempt.id));
   for (const attempt of unknownAttempts) {
     addFinding(findings, {
       severity: "error",
@@ -928,6 +1462,7 @@ function collectFindings(db, options = {}) {
      LIMIT 50`,
   );
   for (const receipt of incompleteReceipts) {
+    if (verifiedTerminalCustody.receiptIds.has(receipt.id)) continue;
     if (receipt.status === "needs_review" && completedRetryPredecessors.has(receipt.task_id)) continue;
     const missingFields = fromJson(receipt.missing_fields, []);
     const warnings = fromJson(receipt.warnings, []);
@@ -955,6 +1490,7 @@ function collectFindings(db, options = {}) {
      LIMIT 50`,
   );
   for (const agentRun of missingReceipts) {
+    if (verifiedTerminalCustody.runIds.has(agentRun.id)) continue;
     addFinding(findings, {
       severity: "error",
       category: "agent_receipts",
@@ -1011,14 +1547,14 @@ function collectFindings(db, options = {}) {
      FROM costs
      WHERE status = 'unknown'
      ORDER BY occurred_at ASC`,
-  );
+  ).filter((cost) => !verifiedTerminalCustody.costIds.has(cost.id));
   const unknownReservations = all(
     db,
     `SELECT id, task_id, workflow_id, amount_cents, currency, reserved_at
      FROM budget_reservations
      WHERE status = 'unknown'
      ORDER BY reserved_at ASC`,
-  );
+  ).filter((reservation) => !verifiedTerminalCustody.reservationIds.has(reservation.id));
   if (unknownCosts.length || unknownReservations.length) {
     addFinding(findings, {
       severity: "error",
@@ -1218,11 +1754,15 @@ function escalateCriticalFindings(db, runId, findings) {
 function runMonitorCycle(db, options = {}) {
   const startedAt = now();
   const runId = `monitor_${randomId()}`;
+  const persistedOptions = { ...options };
+  delete persistedOptions.preventureResearchAuthorityRegistry;
+  delete persistedOptions.preventureResearchClock;
+  delete persistedOptions.preventureResearchRetainedOutputStore;
   run(
     db,
     `INSERT INTO monitor_runs (id, status, severity, finding_count, started_at, metadata)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [runId, "running", "info", 0, startedAt, toJson({ options })],
+    [runId, "running", "info", 0, startedAt, toJson({ options: persistedOptions })],
   );
 
   const integrationResult = refreshIntegrationHealth(db);
@@ -1248,7 +1788,12 @@ function runMonitorCycle(db, options = {}) {
       severity,
       findings.length,
       completedAt,
-      toJson({ integrationResult, receiptAuditCount: receiptAudit.length, categoryCounts, options }),
+      toJson({
+        integrationResult,
+        receiptAuditCount: receiptAudit.length,
+        categoryCounts,
+        options: persistedOptions,
+      }),
       runId,
     ],
   );
@@ -1281,7 +1826,10 @@ function latestMonitorRun(db) {
 
 module.exports = {
   collectFindings,
+  collectPreventureResearchFindings,
   latestMonitorRun,
+  preventureResearchSchedulerFinding,
   runMonitorCycle,
+  shouldReportPreventureContraryEvidenceGap,
   supersededRetryTaskIds,
 };

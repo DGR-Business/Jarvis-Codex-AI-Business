@@ -22,6 +22,9 @@ const {
   hasCanonicalHistoricalTargets,
   reconcileCanonicalHistoricalTruth,
 } = require("../src/runtime/commercial-truth-reconciliation");
+const {
+  downgradeDatabaseToLegacySchema25,
+} = require("./support/released-schema-24-fixture");
 
 const VENTURE_ID = IDS.venture;
 const FIXTURE_AT = "2026-07-29T00:00:00.000Z";
@@ -730,13 +733,13 @@ test("a fresh database has no reconciliation target and receives no receipt", ()
   }
 });
 
-test("schema 26 migration applies canonical reconciliation before the database is accepted", () => {
+test("a supported schema 25 upgrade applies canonical reconciliation before the database is accepted", () => {
   const runtime = makeRuntime("migration-integration");
   try {
     seedCanonicalStaleHistory(runtime.db);
-    run(runtime.db, "DELETE FROM schema_migrations WHERE version = 26");
     runtime.db.close();
     runtime.db = null;
+    downgradeDatabaseToLegacySchema25(runtime.dbPath);
 
     runtime.db = openDatabase(runtime.dbPath);
 

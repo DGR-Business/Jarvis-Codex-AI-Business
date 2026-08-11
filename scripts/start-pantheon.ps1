@@ -72,7 +72,6 @@ function Set-RuntimeEnvironmentValue([hashtable]$Target, [string]$Name, [string]
 
 $runtimeNames = @(
   "OPENAI_API_KEY",
-  "OPENAI_RESPONSES_URL",
   "PANTHEON_ENABLE_LIVE_MODELS",
   "PANTHEON_ENABLE_LIVE_RESEARCH",
   "PANTHEON_ENABLE_IMAGE_GENERATION",

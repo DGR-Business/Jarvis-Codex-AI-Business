@@ -55,8 +55,17 @@ function monthlyBudgetExposure(db, options = {}) {
 
   const groups = new Map();
   function add(groupKey, entry) {
-    const group = groups.get(groupKey) || { key: groupKey, realizedCents: 0, unresolvedCents: 0, entries: [] };
-    if (entry.kind === "realized") group.realizedCents = Math.max(group.realizedCents, entry.amountCents);
+    const group = groups.get(groupKey) || {
+      key: groupKey,
+      hasRealized: false,
+      realizedCents: 0,
+      unresolvedCents: 0,
+      entries: [],
+    };
+    if (entry.kind === "realized") {
+      group.hasRealized = true;
+      group.realizedCents = Math.max(group.realizedCents, entry.amountCents);
+    }
     else group.unresolvedCents = Math.max(group.unresolvedCents, entry.amountCents);
     group.entries.push(entry);
     groups.set(groupKey, group);
@@ -113,15 +122,18 @@ function monthlyBudgetExposure(db, options = {}) {
 
   const exposureGroups = [...groups.values()].map((group) => ({
     ...group,
-    amountCents: group.realizedCents > 0 ? group.realizedCents : group.unresolvedCents,
-    countedAs: group.realizedCents > 0 ? "realized" : "unresolved",
+    amountCents: group.hasRealized ? group.realizedCents : group.unresolvedCents,
+    countedAs: group.hasRealized ? "realized" : "unresolved",
   }));
   return {
     month,
     currency: CONFIG.currency,
     totalCents: exposureGroups.reduce((sum, group) => sum + group.amountCents, 0),
     realizedCents: exposureGroups.reduce((sum, group) => sum + group.realizedCents, 0),
-    unresolvedCents: exposureGroups.reduce((sum, group) => sum + (group.realizedCents > 0 ? 0 : group.unresolvedCents), 0),
+    unresolvedCents: exposureGroups.reduce(
+      (sum, group) => sum + (group.hasRealized ? 0 : group.unresolvedCents),
+      0,
+    ),
     groups: exposureGroups,
   };
 }
@@ -242,6 +254,15 @@ function resolveReservation(db, taskId, status, options = {}) {
     [taskId],
   );
   if (!reservation) return null;
+  if (reservation.status === "unknown" && ["released", "incurred_estimate"].includes(status)) {
+    const error = new Error(
+      "An unknown provider reservation requires explicit reconciliation before it can be released or marked incurred.",
+    );
+    error.code = "reservation_reconciliation_required";
+    error.taskId = taskId;
+    error.reservationId = reservation.id;
+    throw error;
+  }
   const amount = options.amountCents === undefined ? reservation.amount_cents : Math.max(0, Number(options.amountCents));
   const resolvedAt = ["released", "reconciled"].includes(status) ? now() : null;
   run(

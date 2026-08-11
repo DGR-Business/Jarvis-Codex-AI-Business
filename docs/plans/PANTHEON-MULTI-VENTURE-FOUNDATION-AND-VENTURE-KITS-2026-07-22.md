@@ -1,10 +1,11 @@
 # Pantheon Multi-Venture Foundation And Venture Kits
 
 Date: 2026-07-22
-Last reviewed: 2026-07-29
-Status: active long-range roadmap; Portfolio Controller and the first registry
-boundary are implemented, while Venture Factory, Kit 2, and concurrent venture
-lanes remain gated
+Last reviewed: 2026-08-11
+Status: active long-range roadmap; live schema-27 recovery and locked
+operational proof are complete, and Portfolio Controller plus the first registry
+boundary are implemented; first-venture proof, Venture Factory, Kit 2, and up
+to three isolated concurrent venture lanes remain sequenced gates
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 
@@ -68,9 +69,10 @@ adapters must expose dry-run and health/status paths and record exact approvals,
 credentials, costs, receipts, attribution, timeouts, and unknown outcomes before
 live use.
 
-This operating destination does not widen current authority. Decision 0009 and
-the completed commercial-truth plan kept the schema-26 release session
-preparation-only with A$0 external spend.
+This operating destination does not widen current authority. The 2026-08-11
+schema-27 recovery restored operational readiness under locked external-action
+controls; it did not create v2 research authority, permit provider dispatch, or
+produce external spend or a commercial result.
 
 ## Honest Starting Position
 
@@ -80,7 +82,12 @@ approval, cost, receipt, monitoring, recovery, evidence, and security systems
 are not inherently tied to one sales model.
 
 The current execution layer is deliberately narrow and is not yet a
-multi-venture platform:
+multi-venture platform. Its one-active-venture limit is a temporary sequencing
+and risk-control gate while Pantheon finds, tests, and proves its first venture;
+it is not Pantheon's final form or a change to the multi-business mission. After
+the first venture reaches three independent paying buyers and positive actual
+net cash contribution, Daniel may approve expansion toward no more than three
+isolated parallel venture lanes:
 
 - the database permits one active venture;
 - the execution design permits at most one active Full Journey, while terminal
@@ -338,10 +345,43 @@ recovery and the owner journey, and retained a separate low-touch kit
 hypothesis at `research_more` / `revise`. Etsy, Gumroad, A$29, and the exact
 offer and test rules remain unproven.
 
-The next gate is whether to add narrow, auditable pre-venture research authority
-and, if authorised, complete bounded diligence. Venture Factory, Kit 2,
-concurrent lanes, customer contact, publication, advertising, account action,
-legal acceptance, and external spend remain separately gated.
+At that checkpoint, the next gate was whether to add narrow, auditable
+pre-venture research authority and, if authorised, complete bounded diligence.
+The 2026-08-11 checkpoint below supersedes that scheduling position. Venture
+Factory, Kit 2, concurrent lanes, customer contact, publication, advertising,
+account action, legal acceptance, and external spend remain separately gated.
+
+### 2026-08-11 Pre-Venture Authority And Live Recovery Checkpoint
+
+Pantheon implemented the bounded pre-venture research support controls,
+including terminal custody for a late provider response and immutable
+owner-attested billing tied to the exact original cost head. These controls do
+not turn a retained response or billing observation into commercial evidence,
+a diligence decision, a retry, or renewed authority.
+
+The original v1 authority expired on 2026-08-09 before any research dispatch.
+Its exact pinned acceptance-and-activation receipts remain readable only as
+historical evidence. New live approvals require v2 authenticated owner-session
+attestation; no v2 authority or approval exists.
+
+Daniel authorised the controlled recovery, and Pantheon replaced the incomplete
+production database with the exact verified lossless schema-27 candidate after
+creating and authenticating a fresh rollback backup. Post-replacement database,
+custody, authority, health, monitor, and owner-browser checks passed with
+external actions locked. Pantheon is operationally ready for its next separately
+approved first-venture step; recovery itself did not enable commercial work.
+
+The original v1 authority remains expired and terminal. No v2 authority was
+created, provider contact and dispatch remain disallowed, and no live provider
+or model work ran during recovery or operational proof.
+
+This checkpoint created zero provider calls, model costs, external spend,
+research artifacts, evidence records, diligence decisions, new approvals,
+buyers, sales, revenue, publication, customer contact, advertising, account
+action, or money movement. It is support infrastructure and recovery proof,
+not bounded diligence or commercial validation. The exact recovery identities
+and proof results are recorded in
+`docs/proofs/2026-08-11-preventure-research-schema27-offline-recovery-proof.md`.
 
 ### Phase 0 - Historical Vertical Proof (engineering complete; first buyer attempt closed without commercial proof)
 
@@ -463,17 +503,19 @@ Do not:
 
 ## Future Goal Statement
 
-Only after one operating venture reaches three independent paying buyers and
-positive actual net cash contribution in AUD, the current release remains
-compatibility-proved, and Daniel explicitly approves portfolio expansion should
-the next major implementation goal be:
+Pantheon is currently sequencing one active operating venture until it reaches
+three independent paying buyers and positive actual net cash contribution in
+AUD. That is a temporary first-buyer and cash-proof gate before portfolio
+expansion, not the product destination. Once the gate is met, the release
+remains compatibility-proved, and Daniel explicitly approves expansion, the
+next major implementation goal should be:
 
-> Build and prove Pantheon's Multi-Venture Foundation by extracting the current
-> digital-product journey into a validated `digital_product_v1` Venture Kit,
-> adding portfolio-level opportunity selection and a Venture Factory, proving a
-> structurally different second kit without kernel changes, then enabling three
-> isolated venture lanes with separate workflows, teams, tools, budgets, records,
-> schedules, artifacts, learning, monitoring, and protected actions.
+> Complete and prove Pantheon's Multi-Venture Foundation by adding Venture
+> Factory, proving a structurally different second kit without kernel changes,
+> then enabling up to three isolated venture lanes with separate workflows,
+> teams, tools, budgets, records, schedules, artifacts, learning, monitoring,
+> and protected actions under the implemented Portfolio Controller and Venture
+> Kit Registry boundaries.
 
 The goal is complete only when Pantheon can add and run a second business type
 without mass file duplication or business-specific changes to the commercial
@@ -486,17 +528,31 @@ published offer is completing its 14-day or 50-qualified-view market test. This
 uses waiting time productively without postponing real commercial evidence or
 allowing the first venture to define the permanent architecture by accident.
 
-## Current Scheduling Gate - 2026-07-29
+## Current Scheduling Gate - 2026-08-11 (Post-Recovery)
 
 Do not use the historical 14-day or 50-view instruction. The first attempt never
 reached a published market test, and its A$29.95, Etsy, 100-visit, and 30-day
 terms do not transfer to another offer.
 
-The commercial-truth and owner-absent kit-readiness plan is complete. Decide
-whether to add narrow, auditable pre-venture research authority and, if
-authorised, complete bounded diligence. Only if the new hypothesis later clears
-its commercial and system-readiness gates should Pantheon prepare one separate
-protected external-test proposal using current channel evidence, exact
-attribution, an approved cohort and deadline, actual AUD economics, and
-diagnose/revise/stop rules. Do not schedule Venture Factory, Kit 2, or
-concurrent lanes merely to fill a measurement window.
+The commercial-truth and owner-absent kit-readiness plan is complete, the exact
+verified schema-27 candidate is now the live database, and locked operational
+proof passed. The former database-replacement decision is closed. The original
+v1 authority remains expired and terminal, with provider contact and dispatch
+false; there is no v2 authority and no live provider work has occurred.
+
+The immediate commercial gate is to find and test Pantheon's first credible
+venture without confusing software readiness with market proof. Daniel may next
+decide whether to create and activate a fresh time-bounded v2 research authority
+for a defined opportunity-diligence round. A case that does not clear the buyer,
+problem, offer, channel, economics, evidence, risk, and supportability gates may
+end successfully at `no_investment` or return for revision.
+
+Only a case that later clears those gates should enter Venture Factory and lead
+to one separate protected external-test proposal using current channel evidence,
+exact attribution, an approved cohort and deadline, actual AUD economics, and
+diagnose/revise/stop rules. The one-active-venture limit remains a temporary
+sequencing gate through three independent paying buyers and positive actual net
+cash contribution. It exists to prove a complete venture lane safely before
+Daniel may approve up to three isolated ventures running in parallel; it is not
+Pantheon's final form. Do not schedule Kit 2 or concurrent lanes merely to fill
+a measurement window.

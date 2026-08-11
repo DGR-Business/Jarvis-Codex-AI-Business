@@ -541,6 +541,10 @@ function buildReceiptSnapshot(db, attemptId, explicitRunId) {
     || agentRun?.metadata?.liveWorkerResponseId
     || attemptRow.provider_request_id
     || null;
+  const providerResponseId = modelCall?.metadata?.providerResponseId
+    || agentRun?.metadata?.providerResponseId
+    || task.result?.providerResponseId
+    || null;
   const terminalTrace = traces.some((trace) => ["run_completed", "run_failed", "run_paused"].includes(trace.type));
   const contextSnapshot = task.payload?.contextSnapshot || null;
   const contextCheck = contextSnapshot ? verifyAgentContextSnapshot(contextSnapshot) : null;
@@ -623,6 +627,7 @@ function buildReceiptSnapshot(db, attemptId, explicitRunId) {
       mode: modelCall.mode,
       status: modelCall.status,
       providerRequestId,
+      providerResponseId,
       traceId,
       inputTokens: tokenUsage?.inputTokens ?? null,
       outputTokens: tokenUsage?.outputTokens ?? null,
@@ -692,8 +697,18 @@ function buildReceiptSnapshot(db, attemptId, explicitRunId) {
     if (!agentRun) missingFields.push("worker run");
     if (!attemptRow.provider_dispatched_at) missingFields.push("provider dispatch time");
     if (!modelCall) missingFields.push("model call");
-    if (
-      !providerRequestId
+    const completedKnownPreventure = task.kind === "preventure_research"
+      && attemptRow.status === "completed"
+      && attemptRow.outcome_status === "known";
+    const exactPreventureResponseId = completedKnownPreventure
+      && typeof modelCall?.metadata?.providerResponseId === "string"
+      && modelCall.metadata.providerResponseId.length > 0
+      && modelCall.metadata.providerResponseId === task.result?.providerResponseId;
+    if (completedKnownPreventure && !exactPreventureResponseId) {
+      missingFields.push("provider response ID");
+    } else if (
+      !completedKnownPreventure
+      && !providerRequestId
       && attemptRow.outcome_status !== "failed_before_effect"
       && !reconciledFailure
     ) {
@@ -746,7 +761,7 @@ function buildReceiptSnapshot(db, attemptId, explicitRunId) {
   };
 }
 
-function finalizeAgentExecutionReceipt(db, payload = {}) {
+function prepareAgentExecutionReceipt(db, payload = {}) {
   const built = buildReceiptSnapshot(db, payload.attemptId, payload.runId);
   const snapshotHash = sha256(built.snapshot);
   const existing = get(
@@ -754,7 +769,12 @@ function finalizeAgentExecutionReceipt(db, payload = {}) {
     "SELECT * FROM agent_run_receipts WHERE attempt_id = ? AND snapshot_hash = ?",
     [payload.attemptId, snapshotHash],
   );
-  if (existing) return parseRow(existing, ["missing_fields", "warnings", "receipt"]);
+  if (existing) {
+    return {
+      created: false,
+      row: parseRow(existing, ["missing_fields", "warnings", "receipt"]),
+    };
+  }
 
   const previous = get(
     db,
@@ -770,7 +790,35 @@ function finalizeAgentExecutionReceipt(db, payload = {}) {
     snapshotHash,
   });
   const id = `receipt_${randomId()}`;
-  const createdAt = now();
+  const createdAt = payload.createdAt && Number.isFinite(Date.parse(payload.createdAt))
+    ? new Date(Date.parse(payload.createdAt)).toISOString()
+    : now();
+  return {
+    created: true,
+    row: {
+      id,
+      attempt_id: payload.attemptId,
+      run_id: built.runId,
+      task_id: built.attemptRow.task_id,
+      sequence,
+      status: built.status,
+      outcome_status: built.attemptRow.outcome_status,
+      snapshot_hash: snapshotHash,
+      previous_hash: previous?.receipt_hash || null,
+      receipt_hash: receiptHash,
+      missing_fields: built.missingFields,
+      warnings: built.warnings,
+      receipt: built.snapshot,
+      created_at: createdAt,
+    },
+  };
+}
+
+function insertPreparedAgentExecutionReceipt(db, prepared) {
+  if (!prepared?.created || !prepared.row) {
+    throw new Error("A new prepared agent execution receipt is required.");
+  }
+  const row = prepared.row;
   run(
     db,
     `INSERT INTO agent_run_receipts
@@ -778,38 +826,29 @@ function finalizeAgentExecutionReceipt(db, payload = {}) {
       previous_hash, receipt_hash, missing_fields, warnings, receipt, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      id,
-      payload.attemptId,
-      built.runId,
-      built.attemptRow.task_id,
-      sequence,
-      built.status,
-      built.attemptRow.outcome_status,
-      snapshotHash,
-      previous?.receipt_hash || null,
-      receiptHash,
-      toJson(built.missingFields),
-      toJson(built.warnings),
-      canonicalJson(built.snapshot),
-      createdAt,
+      row.id,
+      row.attempt_id,
+      row.run_id,
+      row.task_id,
+      row.sequence,
+      row.status,
+      row.outcome_status,
+      row.snapshot_hash,
+      row.previous_hash,
+      row.receipt_hash,
+      toJson(row.missing_fields),
+      toJson(row.warnings),
+      canonicalJson(row.receipt),
+      row.created_at,
     ],
   );
-  return {
-    id,
-    attempt_id: payload.attemptId,
-    run_id: built.runId,
-    task_id: built.attemptRow.task_id,
-    sequence,
-    status: built.status,
-    outcome_status: built.attemptRow.outcome_status,
-    snapshot_hash: snapshotHash,
-    previous_hash: previous?.receipt_hash || null,
-    receipt_hash: receiptHash,
-    missing_fields: built.missingFields,
-    warnings: built.warnings,
-    receipt: built.snapshot,
-    created_at: createdAt,
-  };
+  return { ...row };
+}
+
+function finalizeAgentExecutionReceipt(db, payload = {}) {
+  const prepared = prepareAgentExecutionReceipt(db, payload);
+  if (!prepared.created) return prepared.row;
+  return insertPreparedAgentExecutionReceipt(db, prepared);
 }
 
 function latestAgentRunReceipt(db, runId) {
@@ -899,7 +938,9 @@ module.exports = {
   bindModelCallToAttempt,
   canonicalJson,
   finalizeAgentExecutionReceipt,
+  insertPreparedAgentExecutionReceipt,
   latestAgentRunReceipt,
+  prepareAgentExecutionReceipt,
   persistAgentsSdkResearchEvidence,
   sha256,
   verifyAgentRunReceiptChain,

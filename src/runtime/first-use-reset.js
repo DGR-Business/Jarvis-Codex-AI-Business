@@ -19,7 +19,7 @@ const { ensureAgentWorkbench } = require("./agent-workbench");
 const { ensureAgentTools } = require("./agent-tools");
 const { ensureAiTeam } = require("./ai-team");
 const { ensureCapabilityAutonomy } = require("./capability-autonomy");
-const { ensureSchedulerJobs } = require("./scheduler");
+const { DEFAULT_JOBS, ensureSchedulerJobs } = require("./scheduler");
 const { ensureActiveVentureCase } = require("./venture-case");
 
 const ACCOUNTING_SURVIVORS = Object.freeze({
@@ -67,7 +67,7 @@ const STATIC_COUNTS = Object.freeze({
   agent_tool_assignments: 38,
   agent_eval_datasets: 11,
   agent_eval_cases: 11,
-  scheduler_jobs: 4,
+  scheduler_jobs: DEFAULT_JOBS.length,
   integrations: 11,
   capability_autonomy: 2,
 });
@@ -99,6 +99,18 @@ const EMPTY_OPERATIONAL_TABLES = Object.freeze([
   "commercial_test_contracts",
   "commercial_evidence",
   "commercial_execution_packs",
+  "preventure_research_provider_billing_observations",
+  "preventure_research_terminal_recoveries",
+  "preventure_research_assignment_skips",
+  "preventure_research_evidence_records",
+  "preventure_research_source_snapshots",
+  "preventure_research_cost_events",
+  "preventure_research_lifecycle_events",
+  "preventure_research_decisions",
+  "preventure_research_terminal_stops",
+  "preventure_research_assignments",
+  "preventure_research_approval_decisions",
+  "preventure_research_authorities",
   "opportunity_rounds",
   "opportunities",
   "catalogue_plans",
@@ -384,6 +396,35 @@ function verifyFirstUseDatabase(db, options = {}) {
   }
   if (countRows(db, "capability_autonomy WHERE required_passes = 5 AND consecutive_passes = 0 AND status = 'supervised'") !== 2) {
     throw new Error("All first-use capabilities must start supervised at zero of five reviews.");
+  }
+  const schedulerJobIds = all(
+    db,
+    "SELECT id FROM scheduler_jobs ORDER BY id",
+  ).map((row) => row.id);
+  const expectedSchedulerJobIds = DEFAULT_JOBS.map((job) => job.id).sort();
+  if (JSON.stringify(schedulerJobIds) !== JSON.stringify(expectedSchedulerJobIds)) {
+    throw new Error("The first-use runtime must contain only the canonical scheduler controls.");
+  }
+  const preventureJob = get(
+    db,
+    `SELECT kind, status, metadata, next_run_at, last_run_at, locked_at, lock_owner
+     FROM scheduler_jobs
+     WHERE id = 'job-preventure-research'`,
+  );
+  const preventureJobMetadata = fromJson(preventureJob?.metadata, {});
+  if (
+    preventureJob?.kind !== "preventure_research"
+    || preventureJob.status !== "disabled"
+    || preventureJobMetadata.exactAuthorityOnly !== true
+    || preventureJobMetadata.externalCommercialEffectsAllowed !== false
+    || preventureJob.next_run_at !== null
+    || preventureJob.last_run_at !== null
+    || preventureJob.locked_at !== null
+    || preventureJob.lock_owner !== null
+  ) {
+    throw new Error(
+      "The first-use bounded-diligence scheduler must remain disabled, exact-authority-only, and unlocked.",
+    );
   }
   const activationCount = countRows(db, "data_retention_policy_activations");
   if (

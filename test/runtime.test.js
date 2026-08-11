@@ -1729,7 +1729,7 @@ test("agent workbench proof drill queues and runs a selected protected worker", 
     assert.equal(queued.task.kind, "workbench_proof");
 
     const completed = await runOnce(db, { workflowId: queued.workflow.id });
-    assert.equal(completed.status, "completed");
+    assert.equal(completed.status, "completed", completed.error || JSON.stringify(completed));
     assert.equal(completed.result.taskKind, "workbench_proof");
     assert.equal(completed.result.aiTeam.agentId, "demand_validator");
     assert.equal(completed.result.aiTeam.evalStatus, "passed");
@@ -3274,10 +3274,12 @@ test("scheduler seeds maintenance jobs and runs monitor job", async () => {
   let state = getDashboardState(db);
   const monitorJob = state.schedulerJobs.find((job) => job.id === "job-monitor-cycle");
   const supervisorJob = state.schedulerJobs.find((job) => job.id === "job-pantheon-supervisor");
+  const preventureJob = state.schedulerJobs.find((job) => job.id === "job-preventure-research");
   const safeWorkJob = state.schedulerJobs.find((job) => job.id === "job-safe-work-loop");
-  assert.equal(state.schedulerJobs.length, 4);
+  assert.equal(state.schedulerJobs.length, 5);
   assert.equal(monitorJob.status, "enabled");
   assert.equal(supervisorJob.status, "disabled");
+  assert.equal(preventureJob.status, "disabled");
   assert.equal(safeWorkJob.status, "disabled");
   assert.equal(state.metrics.scheduler.enabled, 2);
 
@@ -4430,7 +4432,7 @@ test("SDK tool interruption uses Jarvis approval and resumes the same serialized
   }
 });
 
-test("live AI worker provider failure records failed run and no-spend evidence", async () => {
+test("live AI worker ambiguous provider failure retains the full exposure pending review", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
   const previousDisabledAdapter = process.env.JARVIS_DISABLE_LIVE_AI_WORKER_ADAPTER;
@@ -4524,7 +4526,7 @@ test("live AI worker provider failure records failed run and no-spend evidence",
   }
 });
 
-test("Agents SDK definite HTTP rejection releases the reservation and records zero spend", async () => {
+test("Agents SDK definite HTTP rejection retains the full cap pending billing without retry", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveModels = process.env.PANTHEON_ENABLE_LIVE_MODELS;
   const previousLegacyLiveModels = process.env.JARVIS_ENABLE_LIVE_MODELS;
@@ -4579,7 +4581,7 @@ test("Agents SDK definite HTTP rejection releases the reservation and records ze
     decideApproval(db, requested.approval.id, "approved", "approve definite rejection proof");
     const failed = await runOnce(db, { workflowId });
 
-    assert.equal(failed.status, "failed");
+    assert.equal(failed.status, "needs_attention");
     assert.match(failed.error, /Missing required parameter/);
 
     const state = getDashboardState(db);
@@ -4588,6 +4590,7 @@ test("Agents SDK definite HTTP rejection releases the reservation and records ze
     const modelCall = state.modelCalls.find((call) => call.task_id === liveTask.id && call.mode === "live");
     const cost = state.costs.find((item) => item.id === `cost_spend_${liveTask.id}`);
     const attempt = get(db, "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY started_at DESC LIMIT 1", [liveTask.id]);
+    const reservation = get(db, "SELECT * FROM budget_reservations WHERE task_id = ? ORDER BY reserved_at DESC LIMIT 1", [liveTask.id]);
     const receipt = get(db, "SELECT * FROM agent_run_receipts WHERE attempt_id = ? ORDER BY sequence DESC LIMIT 1", [attempt.id]);
     const toolInvocation = get(
       db,
@@ -4595,25 +4598,36 @@ test("Agents SDK definite HTTP rejection releases the reservation and records ze
       [liveTask.id, attempt.id],
     );
 
-    assert.equal(liveTask.status, "failed");
+    assert.equal(liveTask.status, "needs_attention");
+    assert.equal(liveTask.outcome_status, "failed_before_effect");
     assert.equal(liveTask.cost_actual_cents, 0);
     assert.equal(liveRun.status, "failed");
     assert.equal(liveRun.actual_cost_cents, 0);
     assert.equal(modelCall.status, "failed");
     assert.equal(modelCall.outcome_status, "failed_before_effect");
-    assert.equal(modelCall.cost_status, "released");
+    assert.equal(modelCall.cost_status, "unknown");
     assert.equal(modelCall.error_kind, "provider_rejected");
     assert.equal(modelCall.provider_request_id, "req_definite_rejection");
     assert.equal(modelCall.estimated_cost_cents, 0);
     assert.equal(modelCall.reserved_cost_cents, 170);
     assert.equal(modelCall.metadata.outcomeUnknown, false);
     assert.equal(modelCall.metadata.definiteProviderRejection, true);
+    assert.equal(modelCall.metadata.billingOutcomeUnknown, true);
+    assert.equal(modelCall.metadata.exactBillingPending, true);
     assert.equal(modelCall.metadata.httpStatus, 400);
-    assert.equal(cost.status, "released");
-    assert.equal(cost.amount_cents, 0);
-    assert.equal(cost.metadata.noSpendOccurred, true);
+    assert.equal(cost.status, "unknown");
+    assert.equal(cost.amount_cents, 170);
+    assert.equal(cost.metadata.noSpendOccurred, null);
     assert.equal(cost.metadata.definiteProviderRejection, true);
+    assert.equal(cost.metadata.billingOutcomeUnknown, true);
+    assert.equal(cost.metadata.exactBillingPending, true);
+    assert.equal(cost.metadata.reservedExposureCents, 170);
+    assert.equal(reservation.status, "unknown");
+    assert.equal(reservation.amount_cents, 170);
+    assert.equal(JSON.parse(reservation.metadata).noSpendOccurred, null);
+    assert.equal(JSON.parse(reservation.metadata).exactBillingPending, true);
     assert.equal(attempt.outcome_status, "failed_before_effect");
+    assert.equal(get(db, "SELECT COUNT(*) AS count FROM model_calls WHERE task_id = ?", [liveTask.id]).count, 1);
     assert.equal(receipt.status, "needs_review");
     assert.deepEqual(JSON.parse(receipt.missing_fields), []);
     assert.equal(toolInvocation.status, "blocked");
@@ -5148,7 +5162,7 @@ test("approved live research uses provider adapter, records sources, cost, and s
   }
 });
 
-test("definite live research rejection releases the reservation and fails safely", async () => {
+test("ambiguous live research rate limit keeps the full reservation unknown for review", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousLiveResearch = process.env.JARVIS_ENABLE_LIVE_RESEARCH;
   const previousDisabledAdapter = process.env.JARVIS_DISABLE_LIVE_RESEARCH_ADAPTER;
@@ -5185,7 +5199,7 @@ test("definite live research rejection releases the reservation and fails safely
     run(db, "UPDATE tasks SET max_retries = 0 WHERE id = ?", [requested.task.id]);
 
     const failed = await runOnce(db, { workflowId });
-    assert.equal(failed.status, "failed");
+    assert.equal(failed.status, "needs_attention");
     assert.match(failed.error, /rate limit for test/);
 
     const state = getDashboardState(db);
@@ -5194,13 +5208,14 @@ test("definite live research rejection releases the reservation and fails safely
     const cost = state.costs.find((item) => item.id === `cost_spend_${task.id}`);
     const event = state.events.find((item) => item.type === "research.live_failed" && item.entity_id === failedRun.id);
 
-    assert.equal(task.status, "failed");
+    assert.equal(task.status, "needs_attention");
     assert.ok(failedRun);
     assert.equal(failedRun.actual_cents, 0);
-    assert.equal(failedRun.metadata.outcomeUnknown, false);
-    assert.equal(cost.status, "released");
-    assert.equal(cost.amount_cents, 0);
-    assert.equal(cost.metadata.noSpendOccurred, true);
+    assert.equal(failedRun.metadata.outcomeUnknown, true);
+    assert.equal(cost.status, "unknown");
+    assert.equal(cost.amount_cents, 210);
+    assert.equal(cost.metadata.noSpendOccurred, null);
+    assert.equal(cost.metadata.reservedExposureCents, 210);
     assert.ok(event);
   } finally {
     db.close();

@@ -360,6 +360,13 @@ function relativeToRootOrAbsolute(filePath) {
 }
 
 function generateApprovalPack(db, workflowId, options = {}) {
+  if (options.requireOutsideTransaction === true && db.isTransaction) {
+    const error = new Error(
+      "Approval-pack rendering must run outside a SQLite transaction so emergency control is never held behind file generation.",
+    );
+    error.code = "approval_pack_transaction_unsafe";
+    throw error;
+  }
   const workflowRow = get(db, "SELECT * FROM workflows WHERE id = ?", [workflowId]);
   if (!workflowRow) throw new Error(`Workflow not found: ${workflowId}`);
 
@@ -421,6 +428,15 @@ function generateApprovalPack(db, workflowId, options = {}) {
   }
   const stats = fs.statSync(outputPath);
   if (stats.size < 1000) throw new Error("Approval pack PDF render produced an unexpectedly small file.");
+
+  if (typeof options.prePersistValidation === "function") {
+    options.prePersistValidation({
+      workflowId,
+      taskId: options.taskId || null,
+      outputPath,
+      bytes: stats.size,
+    });
+  }
 
   const relPath = relativeToRootOrAbsolute(outputPath);
   const sourcePaths = deliverables.map((item) => item.file_path).filter(Boolean);

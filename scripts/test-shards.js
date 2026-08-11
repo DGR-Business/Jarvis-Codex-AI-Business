@@ -1,4 +1,27 @@
+const path = require("node:path");
+
 const LOCAL_ORDINARY_SHARD_COUNT = 5;
+const ORDINARY_TEST_WEIGHT_FLOORS = Object.freeze({
+  "pantheon-backup-recovery-set.test.js": 900_000,
+  "pantheon-backup-doctor.test.js": 450_000,
+  "preventure-research-terminal-retained-recovery.test.js": 300_000,
+  "runtime.test.js": 300_000,
+  "pantheon-production.test.js": 250_000,
+  "preventure-research-credential-persistence.test.js": 120_000,
+});
+
+function ordinaryTestWeight(file, fileSize) {
+  const measuredSize = Number(fileSize);
+  if (!Number.isFinite(measuredSize) || measuredSize < 0) {
+    throw new Error(`Pantheon received an invalid test-file size for ${file}.`);
+  }
+  // File size is a useful default proxy, but encrypted recovery, process-child,
+  // and exhaustive SQLite fault suites do substantially more work per byte.
+  // Static floors keep all five ordinary shards deterministic while preventing
+  // those known suites from sharing one four-minute process budget.
+  const runtimeFloor = ORDINARY_TEST_WEIGHT_FLOORS[path.basename(file)] || 0;
+  return Math.max(measuredSize, runtimeFloor);
+}
 
 function lexicalCompare(left, right) {
   if (left < right) return -1;
@@ -79,6 +102,8 @@ function planTestInvocations(files, options, weightForFile) {
 
 module.exports = {
   LOCAL_ORDINARY_SHARD_COUNT,
+  ORDINARY_TEST_WEIGHT_FLOORS,
+  ordinaryTestWeight,
   partitionTestFiles,
   planTestInvocations,
   selectTestShard,

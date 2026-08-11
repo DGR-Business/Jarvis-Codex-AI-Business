@@ -7,6 +7,7 @@ const { pipeline } = require("node:stream/promises");
 const { DatabaseSync, backup } = require("node:sqlite");
 const CONFIG = require("../config");
 const { LATEST_SCHEMA_VERSION, openDatabase, verifyDatabase } = require("../db");
+const { sha256: sha256Value } = require("./commercial-test-contract");
 
 const MAGIC = Buffer.from("JARVISBK1", "ascii");
 const AUTH_TAG_BYTES = 16;
@@ -17,13 +18,30 @@ const RECOVERY_SET_VERSION = 1;
 const RECOVERY_METADATA_DIR = ".pantheon-recovery";
 const RECOVERY_MANIFEST_PATH = `${RECOVERY_METADATA_DIR}/manifest.json`;
 const RECOVERY_VERIFICATION_PATH = `${RECOVERY_METADATA_DIR}/restore-verification.json`;
+const RECOVERY_HARD_LINK_KIND = "preventure_output_claim_v1";
+const PREVENTURE_OUTPUT_ARTIFACT_SCHEMA = "pantheon.preventure-provider-output.v1";
+const MAX_PREVENTURE_OUTPUT_MANIFEST_BYTES = 24 * 1024 * 1024;
+const CREDENTIAL_STORE_FILENAME = "runtime-credentials.json";
 const BACKUP_KINDS = new Set(["source", "database", "artifacts", "set", "file"]);
-const LAST_RELEASED_SCHEMA_VERSION = 24;
-const SUPPORTED_ARCHIVE_SCHEMA_VERSIONS = new Set([
-  LAST_RELEASED_SCHEMA_VERSION,
-  LATEST_SCHEMA_VERSION - 1,
-  LATEST_SCHEMA_VERSION,
-]);
+const LEGACY_SUPPORTED_SCHEMA_VERSIONS = Object.freeze([24, 25]);
+const LAST_RELEASED_SCHEMA_VERSION = 26;
+const CURRENT_ARCHIVE_SCHEMA_VERSION = 27;
+const ARCHIVE_SCHEMA_COMPATIBILITY_LABELS = Object.freeze({
+  24: "supported_legacy_24",
+  25: "supported_legacy_25",
+  [LAST_RELEASED_SCHEMA_VERSION]: "supported_last_release",
+  [CURRENT_ARCHIVE_SCHEMA_VERSION]: "current_ready",
+});
+const SUPPORTED_ARCHIVE_SCHEMA_VERSIONS = new Set(
+  Object.keys(ARCHIVE_SCHEMA_COMPATIBILITY_LABELS).map(Number),
+);
+
+if (LATEST_SCHEMA_VERSION !== CURRENT_ARCHIVE_SCHEMA_VERSION) {
+  throw new Error(
+    `Backup compatibility policy is defined through schema ${CURRENT_ARCHIVE_SCHEMA_VERSION}, `
+    + `but the runtime is schema ${LATEST_SCHEMA_VERSION}.`,
+  );
+}
 
 function preferredEnvironment(suffix) {
   const preferred = process.env[`PANTHEON_${suffix}`];
@@ -291,12 +309,19 @@ function createSourceArchive(sourceRoot, archivePath, options = {}) {
     ".git", "*/.git", "node_modules", "*/node_modules", ".playwright-cli",
     "tmp", "output", "backups", "data", "private", "*/private", RECOVERY_METADATA_DIR,
   ]);
-  for (const candidate of [options.artifactRoot, options.dbPath, options.backupDestination].filter(Boolean)) {
+  const managedPaths = [
+    { candidate: options.artifactRoot, sqlite: false },
+    { candidate: options.dbPath, sqlite: true },
+    { candidate: options.backupDestination, sqlite: false },
+    { candidate: options.approvalPackRoot, sqlite: false },
+    { candidate: options.privateOperatorRoot, sqlite: false },
+  ].filter((item) => item.candidate);
+  for (const { candidate, sqlite } of managedPaths) {
     const relative = relativePathWithin(root, candidate);
     if (!relative) continue;
     if (relative === ".") throw new Error("Source backup root overlaps a runtime or backup destination.");
     excludes.add(relative);
-    if (candidate === options.dbPath) {
+    if (sqlite) {
       excludes.add(`${relative}-wal`);
       excludes.add(`${relative}-shm`);
     }
@@ -319,6 +344,13 @@ function copyDirectoryContents(source, destination, options = {}) {
       dereference: false,
       force: false,
       errorOnExist: true,
+      filter: (sourcePath) => {
+        if (excludedNames.has(path.basename(sourcePath))) return false;
+        if (fs.lstatSync(sourcePath).isSymbolicLink()) {
+          throw new Error(`Managed backup data cannot contain symbolic links: ${sourcePath}`);
+        }
+        return true;
+      },
     });
   }
 }
@@ -341,12 +373,21 @@ function createArtifactArchive(sourceRoot, archivePath, options = {}) {
   const included = [];
   try {
     if (fs.existsSync(artifactRoot)) {
-      copyDirectoryContents(artifactRoot, path.join(stageRoot, "artifact-root"));
+      if (discoverPreventureOutputPairs(artifactRoot).length) {
+        throw new Error(
+          "Retained provider-output custody requires a full recovery-set backup with its database and hard-link map.",
+        );
+      }
+      copyDirectoryContents(artifactRoot, path.join(stageRoot, "artifact-root"), {
+        excludedNames: [CREDENTIAL_STORE_FILENAME],
+      });
       included.push("artifact-root");
     }
     const packsAreInsideArtifacts = relativePathWithin(artifactRoot, approvalPackRoot) !== null;
     if (fs.existsSync(approvalPackRoot) && !packsAreInsideArtifacts) {
-      copyDirectoryContents(approvalPackRoot, path.join(stageRoot, "approval-packs"));
+      copyDirectoryContents(approvalPackRoot, path.join(stageRoot, "approval-packs"), {
+        excludedNames: [CREDENTIAL_STORE_FILENAME],
+      });
       included.push("approval-packs");
     }
     if (!included.length) throw new Error("No managed runtime artifacts exist to back up.");
@@ -441,14 +482,14 @@ function validateSqliteDatabase(dbPath) {
         `Runtime schema ${schemaVersion} is not a supported archive schema (${supported}).`,
       );
     }
-    if (schemaVersion === LATEST_SCHEMA_VERSION) currentProof = verifyDatabase(db);
+    if (schemaVersion === CURRENT_ARCHIVE_SCHEMA_VERSION) currentProof = verifyDatabase(db);
   } catch (error) {
     throw new Error(`Database backup is not a valid, compatible Pantheon database: ${error.message}`);
   } finally {
     if (db) db.close();
   }
   try {
-    const migrationProof = schemaVersion < LATEST_SCHEMA_VERSION
+    const migrationProof = schemaVersion < CURRENT_ARCHIVE_SCHEMA_VERSION
       ? proveDisposableDatabaseMigration(sourcePath, schemaVersion, sourceSha256)
       : null;
     if (sha256File(sourcePath) !== sourceSha256) {
@@ -458,12 +499,8 @@ function validateSqliteDatabase(dbPath) {
       ...integrity,
       schemaVersion,
       archiveSchemaVersion: schemaVersion,
-      currentSchemaVersion: LATEST_SCHEMA_VERSION,
-      compatibility: currentProof
-        ? "current_ready"
-        : schemaVersion === LATEST_SCHEMA_VERSION - 1
-          ? "supported_n_minus_one"
-          : "supported_last_release",
+      currentSchemaVersion: CURRENT_ARCHIVE_SCHEMA_VERSION,
+      compatibility: ARCHIVE_SCHEMA_COMPATIBILITY_LABELS[schemaVersion],
       currentReady: Boolean(currentProof),
       migrationRequired: !currentProof,
       migrationProof,
@@ -708,6 +745,555 @@ function inventoryDirectory(root, options = {}) {
   return inventory.sort((left, right) => left.path.localeCompare(right.path));
 }
 
+function outputClaimPathParts(relativePath) {
+  const normalized = toArchivePath(relativePath);
+  if (!isSafeRelativeArchivePath(normalized)) return null;
+  const parts = normalized.split("/");
+  if (parts.length < 3 || parts.at(-3) !== "claims") return null;
+  const shard = parts.at(-2);
+  const match = /^([a-f0-9]{64})\.json$/.exec(parts.at(-1));
+  if (!match || shard !== match[1].slice(0, 2)) return null;
+  return {
+    storePrefix: parts.slice(0, -3).join("/"),
+    identityHex: match[1],
+  };
+}
+
+function outputContentPathParts(relativePath) {
+  const normalized = toArchivePath(relativePath);
+  if (!isSafeRelativeArchivePath(normalized)) return null;
+  const parts = normalized.split("/");
+  if (parts.length < 2 || parts.at(-3) === "claims") return null;
+  const shard = parts.at(-2);
+  const match = /^([a-f0-9]{64})\.json$/.exec(parts.at(-1));
+  if (!match || shard !== match[1].slice(0, 2)) return null;
+  return {
+    storePrefix: parts.slice(0, -2).join("/"),
+    artifactHex: match[1],
+  };
+}
+
+function safeRecoveryFile(root, relativePath, label) {
+  if (!isSafeRelativeArchivePath(relativePath)) {
+    throw new Error(`${label} has an unsafe relative path.`);
+  }
+  const base = path.resolve(root);
+  const filePath = path.resolve(base, ...toArchivePath(relativePath).split("/"));
+  const relative = path.relative(base, filePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`${label} escaped its recovery root.`);
+  }
+  const stats = fs.lstatSync(filePath);
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`${label} is not a regular non-symbolic file.`);
+  }
+  return { filePath, stats };
+}
+
+function readOutputArtifactRecord(filePath, label, optional = false) {
+  const stats = fs.lstatSync(filePath);
+  if (
+    !stats.isFile()
+    || stats.isSymbolicLink()
+    || stats.size < 2
+    || stats.size > MAX_PREVENTURE_OUTPUT_MANIFEST_BYTES
+  ) {
+    if (optional) return null;
+    throw new Error(`${label} has invalid retained-output manifest bytes.`);
+  }
+  try {
+    const value = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      if (optional) return null;
+      throw new Error("not an object");
+    }
+    return value;
+  } catch {
+    if (optional) return null;
+    throw new Error(`${label} is not a valid retained-output manifest.`);
+  }
+}
+
+function validateOutputArtifactRecord(record, expectedArtifactHex, expectedIdentityHex, label) {
+  const hashPattern = /^sha256:[a-f0-9]{64}$/;
+  if (
+    record.schema !== PREVENTURE_OUTPUT_ARTIFACT_SCHEMA
+    || !hashPattern.test(String(record.artifactHash || ""))
+    || !hashPattern.test(String(record.authorityHash || ""))
+    || !hashPattern.test(String(record.assignmentHash || ""))
+    || !hashPattern.test(String(record.descriptorHash || ""))
+    || !hashPattern.test(String(record.requestBodyHash || ""))
+    || record.retained !== true
+    || !Number.isFinite(Date.parse(record.retainedAt))
+    || new Date(record.retainedAt).toISOString() !== record.retainedAt
+  ) {
+    throw new Error(`${label} has invalid immutable retained-output identity.`);
+  }
+  const artifactHex = record.artifactHash.slice("sha256:".length);
+  const artifactRef = `preventure-output:${artifactHex}`;
+  if (
+    (expectedArtifactHex && artifactHex !== expectedArtifactHex)
+    || record.artifactRef !== artifactRef
+    || record.location !== artifactRef
+  ) {
+    throw new Error(`${label} changed its immutable retained-output reference.`);
+  }
+  const identityHash = sha256Value({
+    schema: PREVENTURE_OUTPUT_ARTIFACT_SCHEMA,
+    authorityHash: record.authorityHash,
+    assignmentHash: record.assignmentHash,
+    descriptorHash: record.descriptorHash,
+    requestBodyHash: record.requestBodyHash,
+  });
+  if (expectedIdentityHex && identityHash !== `sha256:${expectedIdentityHex}`) {
+    throw new Error(`${label} changed its canonical claim identity.`);
+  }
+  const {
+    artifactHash: _artifactHash,
+    artifactRef: _artifactRef,
+    location: _location,
+    retained: _retained,
+    retainedAt,
+    ...semantic
+  } = record;
+  if (record.artifactHash !== sha256Value({ ...semantic, retainedAt })) {
+    throw new Error(`${label} changed its immutable retained-output manifest hash.`);
+  }
+  let rawProviderBytes;
+  try {
+    rawProviderBytes = Buffer.from(String(record.rawProviderBodyBase64 || ""), "base64");
+  } catch {
+    throw new Error(`${label} has invalid raw provider bytes.`);
+  }
+  const rawProviderBody = rawProviderBytes.toString("utf8");
+  if (
+    rawProviderBytes.length !== record.rawProviderBodyByteLength
+    || rawProviderBytes.toString("base64") !== record.rawProviderBodyBase64
+    || !Buffer.from(rawProviderBody, "utf8").equals(rawProviderBytes)
+    || record.rawProviderBytesHash !== sha256Value(rawProviderBytes)
+    || record.rawProviderBodyHash !== sha256Value(rawProviderBody)
+    || record.providerResponseHash !== (
+      record.providerResponse === null ? null : sha256Value(record.providerResponse)
+    )
+    || record.outputHash !== sha256Value(record.output ?? null)
+    || record.groundedSourceSetHash !== sha256Value(record.groundedSources)
+    || record.billingHash !== sha256Value(record.billing)
+    || record.responseMetadataHash !== sha256Value(record.responseMetadata)
+    || !Number.isSafeInteger(record.assignmentMaxCostAudCents)
+    || record.assignmentMaxCostAudCents < 1
+  ) {
+    throw new Error(`${label} changed its exact raw, derived, or assignment-cap truth.`);
+  }
+  return {
+    artifactHex,
+    identityHex: identityHash.slice("sha256:".length),
+    assignmentHash: record.assignmentHash,
+    assignmentMaxCostAudCents: record.assignmentMaxCostAudCents,
+    authorityHash: record.authorityHash,
+    descriptorHash: record.descriptorHash,
+    rawProviderBytesHash: record.rawProviderBytesHash,
+  };
+}
+
+function discoverPreventureOutputPairs(artifactRoot) {
+  if (!fs.existsSync(artifactRoot)) return [];
+  const rootStats = fs.lstatSync(artifactRoot);
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+    throw new Error("The managed artifact root is linked or is not a directory.");
+  }
+  const inventory = inventoryDirectory(artifactRoot, { excludePrefixes: [] });
+  const byPath = new Map(inventory.map((item) => [item.path, item]));
+  const pairs = [];
+  const claimedContentPaths = new Set();
+
+  for (const claimEntry of inventory) {
+    const claimParts = outputClaimPathParts(claimEntry.path);
+    if (!claimParts) continue;
+    const claim = safeRecoveryFile(artifactRoot, claimEntry.path, "Retained-output claim");
+    const record = readOutputArtifactRecord(
+      claim.filePath,
+      `Retained-output claim ${claimEntry.path}`,
+    );
+    const identity = validateOutputArtifactRecord(
+      record,
+      null,
+      claimParts.identityHex,
+      `Retained-output claim ${claimEntry.path}`,
+    );
+    if (claimParts.storePrefix !== "preventure-research") {
+      throw new Error(`Retained-output claim ${claimEntry.path} is outside its canonical store root.`);
+    }
+    const contentRelativePath = [
+      claimParts.storePrefix,
+      identity.artifactHex.slice(0, 2),
+      `${identity.artifactHex}.json`,
+    ].filter(Boolean).join("/");
+    const contentEntry = byPath.get(contentRelativePath);
+    if (!contentEntry) {
+      throw new Error(`Retained-output claim ${claimEntry.path} is missing its exact content file.`);
+    }
+    const content = safeRecoveryFile(
+      artifactRoot,
+      contentRelativePath,
+      "Retained-output content",
+    );
+    const contentRecord = readOutputArtifactRecord(
+      content.filePath,
+      `Retained-output content ${contentRelativePath}`,
+    );
+    validateOutputArtifactRecord(
+      contentRecord,
+      identity.artifactHex,
+      claimParts.identityHex,
+      `Retained-output content ${contentRelativePath}`,
+    );
+    if (
+      contentEntry.bytes !== claimEntry.bytes
+      || contentEntry.sha256 !== claimEntry.sha256
+      || !fs.readFileSync(content.filePath).equals(fs.readFileSync(claim.filePath))
+      || JSON.stringify(contentRecord) !== JSON.stringify(record)
+    ) {
+      throw new Error(`Retained-output claim ${claimEntry.path} and its content bytes disagree.`);
+    }
+    if (claimedContentPaths.has(contentRelativePath)) {
+      throw new Error(`Retained-output content ${contentRelativePath} has more than one claim.`);
+    }
+    claimedContentPaths.add(contentRelativePath);
+    pairs.push({
+      contentRelativePath,
+      claimRelativePath: claimEntry.path,
+      record,
+      artifactHash: record.artifactHash,
+      identityHash: `sha256:${claimParts.identityHex}`,
+      assignmentHash: identity.assignmentHash,
+      assignmentMaxCostAudCents: identity.assignmentMaxCostAudCents,
+      authorityHash: identity.authorityHash,
+      descriptorHash: identity.descriptorHash,
+      rawProviderBytesHash: identity.rawProviderBytesHash,
+      bytes: contentEntry.bytes,
+      sha256: contentEntry.sha256,
+    });
+  }
+
+  for (const entry of inventory) {
+    const contentParts = outputContentPathParts(entry.path);
+    if (!contentParts) continue;
+    const file = safeRecoveryFile(artifactRoot, entry.path, "Retained-output content candidate");
+    const record = readOutputArtifactRecord(file.filePath, "Retained-output content candidate", true);
+    if (record?.schema !== PREVENTURE_OUTPUT_ARTIFACT_SCHEMA) continue;
+    const identity = validateOutputArtifactRecord(
+      record,
+      contentParts.artifactHex,
+      null,
+      `Retained-output content ${entry.path}`,
+    );
+    if (contentParts.storePrefix !== "preventure-research") {
+      throw new Error(`Retained-output content ${entry.path} is outside its canonical store root.`);
+    }
+    if (!claimedContentPaths.has(entry.path)) {
+      throw new Error(`Retained-output content ${entry.path} is missing its canonical claim.`);
+    }
+  }
+
+  return pairs.sort((left, right) => left.claimRelativePath.localeCompare(right.claimRelativePath));
+}
+
+function outputAssignmentCaps(dbPath, pairs) {
+  if (!pairs.length) return new Map();
+  let db;
+  try {
+    db = new DatabaseSync(path.resolve(dbPath), { readOnly: true });
+    const caps = new Map();
+    for (const pair of pairs) {
+      const row = db.prepare(
+        `SELECT authority_hash, max_cost_aud_cents
+         FROM preventure_research_assignments WHERE assignment_hash = ?`,
+      ).get(pair.assignmentHash);
+      if (
+        !row
+        || row.authority_hash !== pair.authorityHash
+        || row.max_cost_aud_cents !== pair.assignmentMaxCostAudCents
+      ) {
+        throw new Error(
+          `Retained-output artifact ${pair.artifactHash} changed its database assignment cap.`,
+        );
+      }
+      caps.set(pair.assignmentHash, row.max_cost_aud_cents);
+    }
+    return caps;
+  } finally {
+    if (db) db.close();
+  }
+}
+
+function validateTerminalRecoveryCustody(dbPath, pairs) {
+  let db;
+  try {
+    db = new DatabaseSync(path.resolve(dbPath), { readOnly: true });
+    const table = db.prepare(
+      `SELECT name FROM sqlite_master
+       WHERE type = 'table' AND name = 'preventure_research_terminal_recoveries'`,
+    ).get();
+    if (!table) return 0;
+    const rows = db.prepare(
+      `SELECT authority_hash, assignment_hash, assignment_cap_aud_cents,
+              descriptor_hash, request_body_hash, artifact_hash, artifact_ref,
+              artifact_kind, retained_at, provider_response_hash,
+              raw_provider_body_hash, raw_provider_bytes_hash, output_hash,
+              grounded_source_set_hash, billing_hash, response_metadata_hash
+       FROM preventure_research_terminal_recoveries ORDER BY recovery_hash`,
+    ).all();
+    const byArtifactHash = new Map(pairs.map((pair) => [pair.artifactHash, pair]));
+    for (const row of rows) {
+      const pair = byArtifactHash.get(row.artifact_hash);
+      const record = pair?.record;
+      if (
+        !pair
+        || !record
+        || row.artifact_ref !== `preventure-output:${row.artifact_hash.slice("sha256:".length)}`
+        || record.artifactRef !== row.artifact_ref
+        || record.authorityHash !== row.authority_hash
+        || record.assignmentHash !== row.assignment_hash
+        || record.assignmentMaxCostAudCents !== row.assignment_cap_aud_cents
+        || record.descriptorHash !== row.descriptor_hash
+        || record.requestBodyHash !== row.request_body_hash
+        || record.artifactKind !== row.artifact_kind
+        || record.retainedAt !== row.retained_at
+        || (record.providerResponseHash ?? null) !== row.provider_response_hash
+        || record.rawProviderBodyHash !== row.raw_provider_body_hash
+        || record.rawProviderBytesHash !== row.raw_provider_bytes_hash
+        || record.outputHash !== row.output_hash
+        || record.groundedSourceSetHash !== row.grounded_source_set_hash
+        || record.billingHash !== row.billing_hash
+        || record.responseMetadataHash !== row.response_metadata_hash
+      ) {
+        throw new Error(
+          `Terminal retained-output recovery ${row.artifact_hash} is missing or changed.`,
+        );
+      }
+    }
+    return rows.length;
+  } finally {
+    if (db) db.close();
+  }
+}
+
+function validateLinkedOutputStore(artifactRoot, dbPath, pairs) {
+  if (!pairs.length) return;
+  const caps = outputAssignmentCaps(dbPath, pairs);
+  const {
+    createPreventureResearchOutputStore,
+  } = require("./preventure-research-output-store");
+  const store = createPreventureResearchOutputStore({
+    artifactRoot: path.join(path.resolve(artifactRoot), "preventure-research"),
+    assignmentMaxCostAudCentsForHash(assignmentHash) {
+      if (!caps.has(assignmentHash)) {
+        throw new Error("The retained-output assignment cap is unavailable.");
+      }
+      return caps.get(assignmentHash);
+    },
+  });
+  for (const pair of pairs) {
+    const loaded = store.load({
+      retainedOutputHash: `preventure-output:${pair.artifactHash.slice("sha256:".length)}`,
+      authorityHash: pair.authorityHash,
+      assignmentHash: pair.assignmentHash,
+      descriptorHash: pair.descriptorHash,
+    });
+    if (
+      loaded.artifactHash !== pair.artifactHash
+      || loaded.rawProviderBytesHash !== pair.rawProviderBytesHash
+      || loaded.assignmentMaxCostAudCents !== pair.assignmentMaxCostAudCents
+    ) {
+      throw new Error(`Retained-output artifact ${pair.artifactHash} failed semantic reload.`);
+    }
+  }
+}
+
+function collectRecoveryHardLinks(artifactRoot, dbPath) {
+  const pairs = discoverPreventureOutputPairs(artifactRoot);
+  validateLinkedOutputStore(artifactRoot, dbPath, pairs);
+  validateTerminalRecoveryCustody(dbPath, pairs);
+  return pairs.map((pair) => {
+    const content = safeRecoveryFile(
+      artifactRoot,
+      pair.contentRelativePath,
+      "Retained-output content",
+    );
+    const claim = safeRecoveryFile(
+      artifactRoot,
+      pair.claimRelativePath,
+      "Retained-output claim",
+    );
+    if (
+      content.stats.dev !== claim.stats.dev
+      || content.stats.ino !== claim.stats.ino
+      || content.stats.nlink !== 2
+      || claim.stats.nlink !== 2
+    ) {
+      throw new Error(
+        `Retained-output claim ${pair.claimRelativePath} is not its one exact content hard link.`,
+      );
+    }
+    return {
+      kind: RECOVERY_HARD_LINK_KIND,
+      contentPath: `data/artifacts/${pair.contentRelativePath}`,
+      claimPath: `data/artifacts/${pair.claimRelativePath}`,
+      artifactHash: pair.artifactHash,
+      identityHash: pair.identityHash,
+      assignmentHash: pair.assignmentHash,
+      assignmentMaxCostAudCents: pair.assignmentMaxCostAudCents,
+      authorityHash: pair.authorityHash,
+      descriptorHash: pair.descriptorHash,
+      rawProviderBytesHash: pair.rawProviderBytesHash,
+      bytes: pair.bytes,
+      sha256: pair.sha256,
+    };
+  });
+}
+
+function syncRecoveryDirectory(directory) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(directory, fs.constants.O_RDONLY);
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    if (!["EPERM", "EINVAL", "EBADF", "ENOTSUP"].includes(error?.code)) throw error;
+  } finally {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch {}
+    }
+  }
+}
+
+function syncRecoveryFile(filePath) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(filePath, fs.constants.O_RDWR);
+    fs.fsyncSync(descriptor);
+  } finally {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch {}
+    }
+  }
+}
+
+function validateRecoveryHardLinks(root, manifest, actualInventory, options = {}) {
+  const records = manifest.hardLinks === undefined ? [] : manifest.hardLinks;
+  if (!Array.isArray(records) || records.length > 10_000) {
+    throw new Error("Recovery-set hard-link map is invalid.");
+  }
+  const artifactRoot = path.join(path.resolve(root), "data", "artifacts");
+  const discoveredPairs = discoverPreventureOutputPairs(artifactRoot);
+  const recoveredDbPath = path.join(path.resolve(root), "data", "runtime.sqlite");
+  outputAssignmentCaps(recoveredDbPath, discoveredPairs);
+  const terminalCustodyCount = validateTerminalRecoveryCustody(
+    recoveredDbPath,
+    discoveredPairs,
+  );
+  const discovered = discoveredPairs.map((pair) => ({
+    kind: RECOVERY_HARD_LINK_KIND,
+    contentPath: `data/artifacts/${pair.contentRelativePath}`,
+    claimPath: `data/artifacts/${pair.claimRelativePath}`,
+    artifactHash: pair.artifactHash,
+    identityHash: pair.identityHash,
+    assignmentHash: pair.assignmentHash,
+    assignmentMaxCostAudCents: pair.assignmentMaxCostAudCents,
+    authorityHash: pair.authorityHash,
+    descriptorHash: pair.descriptorHash,
+    rawProviderBytesHash: pair.rawProviderBytesHash,
+    bytes: pair.bytes,
+    sha256: pair.sha256,
+  }));
+  const expectedKeys = [
+    "artifactHash", "assignmentHash", "assignmentMaxCostAudCents", "authorityHash", "bytes",
+    "claimPath", "contentPath", "descriptorHash", "identityHash", "kind",
+    "rawProviderBytesHash", "sha256",
+  ].sort();
+  const seenPaths = new Set();
+  const inventoryByPath = new Map(actualInventory.map((item) => [item.path, item]));
+  for (const record of records) {
+    if (
+      !record
+      || typeof record !== "object"
+      || Array.isArray(record)
+      || JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(expectedKeys)
+      || record.kind !== RECOVERY_HARD_LINK_KIND
+      || !/^sha256:[a-f0-9]{64}$/.test(record.artifactHash)
+      || !/^sha256:[a-f0-9]{64}$/.test(record.assignmentHash)
+      || !Number.isSafeInteger(record.assignmentMaxCostAudCents)
+      || record.assignmentMaxCostAudCents < 1
+      || !/^sha256:[a-f0-9]{64}$/.test(record.authorityHash)
+      || !/^sha256:[a-f0-9]{64}$/.test(record.descriptorHash)
+      || !/^sha256:[a-f0-9]{64}$/.test(record.identityHash)
+      || !/^sha256:[a-f0-9]{64}$/.test(record.rawProviderBytesHash)
+      || !Number.isSafeInteger(record.bytes)
+      || record.bytes < 2
+      || !/^[a-f0-9]{64}$/.test(record.sha256)
+      || !isSafeRelativeArchivePath(record.contentPath)
+      || !isSafeRelativeArchivePath(record.claimPath)
+      || !record.contentPath.startsWith("data/artifacts/")
+      || !record.claimPath.startsWith("data/artifacts/")
+      || seenPaths.has(record.contentPath)
+      || seenPaths.has(record.claimPath)
+    ) {
+      throw new Error("Recovery-set hard-link map contains an invalid entry.");
+    }
+    seenPaths.add(record.contentPath);
+    seenPaths.add(record.claimPath);
+    for (const linkedPath of [record.contentPath, record.claimPath]) {
+      const inventory = inventoryByPath.get(linkedPath);
+      if (
+        !inventory
+        || inventory.bytes !== record.bytes
+        || inventory.sha256 !== record.sha256
+        || inventory.component !== "runtimeArtifacts"
+      ) {
+        throw new Error(`Recovery-set hard-link inventory changed: ${linkedPath}`);
+      }
+    }
+  }
+  const normalizedRecords = [...records]
+    .sort((left, right) => left.claimPath.localeCompare(right.claimPath));
+  if (JSON.stringify(normalizedRecords) !== JSON.stringify(discovered)) {
+    throw new Error("Recovery-set hard-link map does not match its retained-output claims.");
+  }
+
+  for (const record of normalizedRecords) {
+    const content = safeRecoveryFile(root, record.contentPath, "Recovery hard-link content");
+    const claim = safeRecoveryFile(root, record.claimPath, "Recovery hard-link claim");
+    const linked = content.stats.dev === claim.stats.dev
+      && content.stats.ino === claim.stats.ino
+      && content.stats.nlink === 2
+      && claim.stats.nlink === 2;
+    if (!linked && options.reconstruct !== true) {
+      if (options.allowIndependent === true) continue;
+      throw new Error(`Recovery-set retained-output claim is not linked: ${record.claimPath}`);
+    }
+    if (!linked) {
+      syncRecoveryFile(content.filePath);
+      fs.unlinkSync(claim.filePath);
+      fs.linkSync(content.filePath, claim.filePath);
+      syncRecoveryFile(content.filePath);
+      syncRecoveryDirectory(path.dirname(claim.filePath));
+    }
+    const finalContent = safeRecoveryFile(root, record.contentPath, "Recovery hard-link content");
+    const finalClaim = safeRecoveryFile(root, record.claimPath, "Recovery hard-link claim");
+    if (
+      finalContent.stats.dev !== finalClaim.stats.dev
+      || finalContent.stats.ino !== finalClaim.stats.ino
+      || finalContent.stats.nlink !== 2
+      || finalClaim.stats.nlink !== 2
+    ) {
+      throw new Error(`Recovery-set retained-output hard link failed verification: ${record.claimPath}`);
+    }
+  }
+  if (options.allowIndependent !== true) {
+    validateLinkedOutputStore(artifactRoot, recoveredDbPath, discoveredPairs);
+  }
+  return { records: normalizedRecords, terminalCustodyCount };
+}
+
 function summarizeInventory(inventory, component) {
   const records = inventory.filter((item) => item.component === component);
   const digest = crypto.createHash("sha256");
@@ -749,6 +1335,8 @@ async function createRecoverySetArchive(sourceRoot, archivePath, options = {}) {
       artifactRoot,
       dbPath,
       backupDestination: options.backupDestination,
+      approvalPackRoot,
+      privateOperatorRoot,
     });
     validateArchiveEntries(sourceArchive, "source");
     runTar(["-xf", sourceArchive, "-C", stageRoot]);
@@ -760,25 +1348,39 @@ async function createRecoverySetArchive(sourceRoot, archivePath, options = {}) {
     const restoredArtifactRoot = path.join(stageRoot, "data", "artifacts");
     fs.mkdirSync(restoredArtifactRoot, { recursive: true });
     const artifactsPresent = fs.existsSync(artifactRoot);
-    if (artifactsPresent) copyDirectoryContents(artifactRoot, restoredArtifactRoot);
+    const hardLinks = artifactsPresent
+      ? collectRecoveryHardLinks(artifactRoot, restoredDbPath)
+      : [];
+    if (artifactsPresent) {
+      copyDirectoryContents(artifactRoot, restoredArtifactRoot, {
+        excludedNames: [CREDENTIAL_STORE_FILENAME],
+      });
+    }
 
     const restoredPackRoot = path.join(stageRoot, "output", "pdf");
     fs.mkdirSync(restoredPackRoot, { recursive: true });
     const packsInsideArtifacts = pathsOverlap(artifactRoot, approvalPackRoot)
       && relativePathWithin(artifactRoot, approvalPackRoot) !== null;
     const approvalPacksPresent = fs.existsSync(approvalPackRoot) && !packsInsideArtifacts;
-    if (approvalPacksPresent) copyDirectoryContents(approvalPackRoot, restoredPackRoot);
+    if (approvalPacksPresent) {
+      copyDirectoryContents(approvalPackRoot, restoredPackRoot, {
+        excludedNames: [CREDENTIAL_STORE_FILENAME],
+      });
+    }
 
     const restoredPrivateRoot = path.join(stageRoot, "private");
     fs.mkdirSync(restoredPrivateRoot, { recursive: true });
     if (fs.existsSync(privateOperatorRoot)) {
       copyDirectoryContents(privateOperatorRoot, restoredPrivateRoot, {
-        excludedNames: ["runtime-credentials.json"],
+        excludedNames: [CREDENTIAL_STORE_FILENAME],
       });
     }
     const privateOperatorReferencesPresent = fs.readdirSync(restoredPrivateRoot).length > 0;
 
     const inventory = inventoryDirectory(stageRoot);
+    validateRecoveryHardLinks(stageRoot, { hardLinks }, inventory, {
+      allowIndependent: true,
+    });
     const components = {
       source: {
         required: true,
@@ -822,6 +1424,7 @@ async function createRecoverySetArchive(sourceRoot, archivePath, options = {}) {
       restoreLayout: "ready-workspace",
       components,
       inventory,
+      hardLinks,
     };
     const metadataRoot = path.join(stageRoot, RECOVERY_METADATA_DIR);
     fs.mkdirSync(metadataRoot, { recursive: true });
@@ -984,6 +1587,9 @@ function validateRecoverySetDirectory(restoredRoot, options = {}) {
     }
   }
   const sqlite = validateSqliteDatabase(path.join(root, "data", "runtime.sqlite"));
+  const hardLinkProof = validateRecoveryHardLinks(root, manifest, actualInventory, {
+    reconstruct: options.reconstructHardLinks === true,
+  });
   return {
     format: manifest.format,
     version: manifest.version,
@@ -992,6 +1598,8 @@ function validateRecoverySetDirectory(restoredRoot, options = {}) {
     fileCount: actualInventory.length,
     bytes: actualInventory.reduce((sum, item) => sum + item.bytes, 0),
     components: manifest.components,
+    hardLinkCount: hardLinkProof.records.length,
+    terminalCustodyCount: hardLinkProof.terminalCustodyCount,
     source: sourceContract,
     sqlite,
     manifest,
@@ -1073,6 +1681,8 @@ async function createBackup(options = {}) {
         artifactRoot,
         dbPath,
         backupDestination: destinationRoot,
+        approvalPackRoot: options.approvalPackRoot || preferredEnvironment("APPROVAL_PACK_DIR"),
+        privateOperatorRoot: options.privateOperatorRoot || preferredEnvironment("PRIVATE_OPERATOR_DIR"),
       });
     } else if (kind === "artifacts") {
       createArtifactArchive(sourceRoot, rawPath, {
@@ -1253,7 +1863,10 @@ async function restoreBackup(sourcePath, destinationPath, options = {}) {
     fs.mkdirSync(stagedPath, { recursive: false });
     runTar(["-xf", rawPath, "-C", stagedPath]);
     if (kind === "set") {
-      const verification = validateRecoverySetDirectory(stagedPath, { header: proof });
+      const verification = validateRecoverySetDirectory(stagedPath, {
+        header: proof,
+        reconstructHardLinks: true,
+      });
       const verificationRecord = {
         format: "pantheon-restore-verification",
         version: 1,
@@ -1264,6 +1877,8 @@ async function restoreBackup(sourcePath, destinationPath, options = {}) {
         payloadSha256: proof.payloadSha256,
         restoredFileCount: verification.fileCount,
         restoredBytes: verification.bytes,
+        restoredHardLinkCount: verification.hardLinkCount,
+        restoredTerminalCustodyCount: verification.terminalCustodyCount,
         sqlite: verification.sqlite,
       };
       fs.writeFileSync(
@@ -1315,7 +1930,10 @@ async function verifyBackup(sourcePath, options = {}) {
         ...proof,
         verified: true,
         archiveEntries: entries.length,
-        recoverySet: validateRecoverySetDirectory(extractedPath, { header: proof }),
+        recoverySet: validateRecoverySetDirectory(extractedPath, {
+          header: proof,
+          reconstructHardLinks: true,
+        }),
       };
     }
     inventoryDirectory(extractedPath, { excludePrefixes: [] });
@@ -1337,6 +1955,40 @@ function keepSidecarExists(filePath) {
   return fs.existsSync(`${filePath}.keep`) || fs.existsSync(filePath.replace(/\.jbackup$/i, ".keep"));
 }
 
+function verifyBackupForRetention(sourcePath, options = {}) {
+  const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-retention-verify-"));
+  const rawPath = path.join(workRoot, "payload");
+  const extractedPath = path.join(workRoot, "extracted");
+  try {
+    const proof = decryptPayload(path.resolve(sourcePath), {
+      passphrase: options.passphrase,
+      destinationPath: rawPath,
+    });
+    if (proof.kind === "database") {
+      validateSqliteDatabase(rawPath);
+      return proof;
+    }
+    if (proof.kind === "file") return proof;
+    if (!["source", "artifacts", "set"].includes(proof.kind)) {
+      throw new Error(`Unsupported backup kind: ${proof.kind}`);
+    }
+    validateArchiveEntries(rawPath, proof.kind);
+    fs.mkdirSync(extractedPath, { recursive: false });
+    runTar(["-xf", rawPath, "-C", extractedPath]);
+    if (proof.kind === "set") {
+      validateRecoverySetDirectory(extractedPath, {
+        header: proof,
+        reconstructHardLinks: true,
+      });
+    } else {
+      inventoryDirectory(extractedPath, { excludePrefixes: [] });
+    }
+    return proof;
+  } finally {
+    fs.rmSync(workRoot, { recursive: true, force: true });
+  }
+}
+
 function pruneBackups(destinationRoot = CONFIG.backupDestination, options = {}) {
   if (!fs.existsSync(destinationRoot)) return { kept: [], removed: [], pinned: [], invalid: [] };
   const dailyLimit = options.dailyLimit ?? 7;
@@ -1344,7 +1996,7 @@ function pruneBackups(destinationRoot = CONFIG.backupDestination, options = {}) 
   const candidates = fs.readdirSync(destinationRoot)
     .filter((name) => name.endsWith(".jbackup"))
     .map((name) => ({ filePath: path.join(destinationRoot, name), name }));
-  const authenticated = [];
+  const verified = [];
   const kept = [];
   const removed = [];
   const pinned = [];
@@ -1357,18 +2009,18 @@ function pruneBackups(destinationRoot = CONFIG.backupDestination, options = {}) 
       continue;
     }
     try {
-      const header = authenticateEncryptedBackup(file.filePath, { passphrase: options.passphrase });
-      authenticated.push({ ...file, header, createdAt: new Date(header.createdAt) });
+      const header = verifyBackupForRetention(file.filePath, { passphrase: options.passphrase });
+      verified.push({ ...file, header, createdAt: new Date(header.createdAt) });
     } catch (error) {
       kept.push(file.filePath);
       invalid.push({ filePath: file.filePath, error: error.message });
     }
   }
 
-  authenticated.sort((a, b) => b.createdAt - a.createdAt);
+  verified.sort((a, b) => b.createdAt - a.createdAt);
   const dailyKeys = new Map();
   const weeklyKeys = new Map();
-  for (const file of authenticated) {
+  for (const file of verified) {
     const kind = file.header.kind;
     const day = file.createdAt.toISOString().slice(0, 10);
     const week = weekKey(file.createdAt);
@@ -1391,6 +2043,9 @@ function pruneBackups(destinationRoot = CONFIG.backupDestination, options = {}) 
 }
 
 module.exports = {
+  ARCHIVE_SCHEMA_COMPATIBILITY_LABELS,
+  CURRENT_ARCHIVE_SCHEMA_VERSION,
+  LEGACY_SUPPORTED_SCHEMA_VERSIONS,
   LAST_RELEASED_SCHEMA_VERSION,
   assertRestoreDestinationIsInactive,
   authenticateEncryptedBackup,

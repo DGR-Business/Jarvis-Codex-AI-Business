@@ -1,6 +1,6 @@
 # Pantheon Master Plan
 
-Last updated: 2026-08-01
+Last updated: 2026-08-11
 Status: active source of truth
 Owner: Daniel
 Technical steward: Jarvis (Codex)
@@ -20,11 +20,13 @@ distribution, conversion, fulfilment, feedback, or unit economics.
 
 ## Current Commercial Gate
 
-Pantheon's destination is a dynamic multi-venture commercial operating system,
-not a digital-product or Gumroad application. One active operating venture
-remains the safety limit until Pantheon proves three independent paying buyers
-and positive net cash contribution, but opportunity selection now happens in a
-separate pre-venture Portfolio workspace.
+Pantheon's permanent destination is a dynamic multi-business operating machine,
+not a digital-product or Gumroad application. It will build and run multiple
+ventures through parallel, isolated venture lanes governed by one portfolio
+controller. The present limit of one active operating venture until Pantheon
+proves three independent paying buyers and positive net cash contribution is a
+sequencing and risk gate for the first proof, not the final architecture.
+Opportunity selection happens in a separate pre-venture Portfolio workspace.
 
 The most recently completed foundation directive is
 `docs/plans/PANTHEON-COMMERCIAL-INTELLIGENCE-FOUNDATION-2026-07-27.md`.
@@ -91,7 +93,8 @@ Its exact goal is:
 > next commercial test without contacting customers, publishing, or spending
 > money until separately approved.
 
-Schema 26 is now Pantheon's canonical online release baseline. Production state
+As recorded at that checkpoint, schema 26 became Pantheon's canonical online
+release baseline. Production state
 has been reconciled, and the owner screens report only the commercial position
 that durable evidence can support. Current records contain zero active external
 tests, zero verified buyers, zero attributable cash evidence, and zero settled
@@ -120,18 +123,92 @@ reruns `90601012019` and `90602926217`. The fix merged as `4985ef8` on
 commercial-truth release; `4985ef8` is its operationally hardened Windows
 runtime. No buyer, cash, authority, publication, contact, or spend state changed.
 
-The next owner gate is whether to add a narrow, auditable pre-venture research
-authority. If authorised, the next commercial work is bounded diligence for a
-distinct, low-touch Social Media Manager Client Approval & Scope Guard Kit at
-an initial A$29 price hypothesis. Etsy is the primary channel hypothesis and
-Gumroad is a fallback hypothesis. Neither channel, the price, the buyer, the
-offer, the format, nor the test rules are proved. Diligence may recommend
-`research_more`, `revise`, `reject`, or retaining cash; it does not itself
-create build, production, or external-test authority. The current versioned
-readiness record
-is `research_more`, with the offer marked `revise`; it grants no build or live
-test authority. This work does not reopen, revise, or rename the stopped Client
-Control and Profitability Workbook.
+With the database recovery gate now closed, schema-27 implementation and proof
+commit `4c26bfd` is retained on pushed branch
+`codex/preventure-research-authority-v1`. Draft pull request #8 was created from
+successor-plan head `9a2f5326b854f5afb84da47cadf3f9596e6d3e63`; private
+GitHub Actions run `31488222115` passed verification, all five ordinary test
+shards, and both disposable Windows lifecycle phases. The factual closeout
+record must pass the same checks on the final draft head. This is not yet the
+canonical online release: review, merge, and post-merge proof remain release
+gates. Daniel authorised the draft pull request and checks; merging it remains a
+separate owner decision.
+
+The old v1 research goal remains blocked and historical. Its support and
+recovery work is complete, but its commercial round expired unrun on
+2026-08-09 and cannot be continued or amended into fresh authority. The
+preparation-only successor is
+`docs/plans/PANTHEON-FIRST-VENTURE-DILIGENCE-V2-2026-08-11.md`. That document is
+a draft plan, not a live authority: it creates no v2 database record or
+approval, permits no provider call, and authorises no cost or spend. After
+release checks and refreshing the relevant provider, pricing, channel, and
+comparable facts at A$0, Daniel's next commercial gate is review of the exact
+proposed authority. If Daniel later approves and separately activates it, the
+bounded diligence would test the distinct, low-touch Social Media Manager Client
+Approval & Scope Guard Kit, initially hypothesised at A$29 with Etsy as the
+primary channel hypothesis and Gumroad as a fallback. Neither channel, the
+price, the buyer, the offer, the format, nor the test rules are proved. Diligence
+may recommend `build`, `research_more`, `revise`, `reject`, or retaining cash;
+`build` means only preparing a separately governed proposal. Diligence does not
+itself create build, production, or external-test authority. The current
+versioned readiness record is `research_more`, with the offer marked `revise`;
+it grants no build or live test authority. This work does not reopen, revise, or
+rename the stopped Client Control and Profitability Workbook.
+
+### 2026-08-11 Live Schema-27 Recovery Outcome
+
+Daniel approved the controlled technical recovery, and the exact verified
+schema-27 candidate was installed into the active local database by an atomic
+replacement under preserved rollback custody. A locked live proof on port 5051
+then passed. Pantheon's current local database is now compatible with current
+source; the earlier schema-26 release record above remains historical online
+release truth rather than the description of today's local database.
+
+The candidate-only recovery builder authenticated an encrypted source backup,
+corroborated its standalone source, rebuilt the incomplete schema-27 namespace,
+and emitted a new database plus immutable manifest without exposing a live
+replacement path. Exact custody records are:
+
+- standalone source SHA-256
+  `668573b8aa5c4086e5eb36431eda2088030ef15bc4efe07a4a8f21c612e722f1`;
+- encrypted source-backup SHA-256
+  `8fbbea99edffeb296c49fb173a55effcddcfecb027e2f8a6be78a112efa01166`;
+- recovered candidate SHA-256
+  `70ea216b1e16dc7756765a6ee075d53a32318953e4e59669b2c405992c1da6db`;
+- durable encrypted candidate-archive SHA-256
+  `f93afb102d1a716db6789b7e451493fba445a793bc4addd7523fb8817041eb22`;
+- recovery-manifest file SHA-256
+  `dad88ad19c3c0ccf8e5416b5780bdb8b92c1dc01a25ac0ffeb50a775fb2c9a16`;
+  and
+- recovery-manifest SHA-256
+  `8e8fb0f324930ddc9c54c947532c0e549cd0a479a50b4f708e54617e66ea527b`.
+
+The encrypted source, encrypted candidate, and manifest are retained together
+under Pantheon's configured private recovery destination in
+`schema27-recovery-20260811`. After the live installation, a fresh recovery set
+protected by the active key was also verified and restored successfully.
+
+The recovered live database retains the expired historical v1 authority and its
+exact two approval receipts as immutable history. It does not convert them into
+current authority. No v2 authority exists. All three assignments were cancelled
+unattempted during the locked proof, and no live provider call may exist without
+Daniel's fresh, explicit seven-day approval.
+
+Recovery, historical-compatibility, migration, and owner-integrity tests passed
+35 of 35 together. Lint and diff checks passed, and the independent adversarial
+review found no remaining recovery-boundary defect. The complete five-shard
+ordinary test run also passed on the final source. After the atomic install, the
+locked live server passed health and owner-state proof on port 5051. Protected
+Doctor reported operational readiness. The monitor completed with the expected
+scheduler-disabled and connections warnings. Real-browser proof at widths
+1440, 1280, 1024, and 390 found no horizontal overflow and zero console errors.
+
+This is support-infrastructure progress only. Before-and-after proof recorded no
+provider or model call, cost, retained provider artifact, commercial evidence,
+decision, approval, or outbound-action delta. It produced zero buyers, revenue,
+publishing, customer contact, external action, or spend. The database-recovery
+gate is closed; production research remains closed until Daniel separately
+issues a fresh, explicit v2 authority.
 
 `digital_product_v1` is one registered, non-universal kit. Generic commercial
 logic has no Gumroad-first or digital-product-first channel assumption. The
@@ -139,7 +216,8 @@ approved multi-venture roadmap remains
 `docs/plans/PANTHEON-MULTI-VENTURE-FOUNDATION-AND-VENTURE-KITS-2026-07-22.md`;
 Portfolio Controller and the first registry boundary are now implemented, while
 Venture Factory, a structurally different second kit, and concurrent isolated
-venture lanes remain future gates.
+venture lanes remain future implementation gates and Pantheon's permanent
+destination.
 
 ## Operating Model
 
@@ -452,10 +530,39 @@ buyer-intent work closed. The current plan below supersedes it.
 
 ### Now
 
-- Preserve schema-26 commercial-truth release `abf6f0d` and current operational
-  runtime `4985ef8`. Their proof consists of release head `cc14ae6`, pull request
-  #5 and run `30451251704`, plus Windows hardening pull request #7, full run
-  `30458483705`, repeat lifecycle job `90601012019`, containment lifecycle job
+- Operate from the recovered schema-27 local database. Its exact atomic install,
+  locked live proof, protected Doctor result, browser proof, and fresh restored
+  recovery set close the database-recovery gate.
+- Treat schema-27 implementation/proof commit `4c26bfd`, successor-plan head
+  `9a2f5326b854f5afb84da47cadf3f9596e6d3e63`, draft pull request #8, and
+  initial all-green private run `31488222115` as the release candidate, not a
+  canonical online release. The factual closeout head must pass the same eight
+  checks. Review, merge, and post-merge proof remain open release gates. Draft
+  pull-request creation and checks are authorised; merge is not.
+- Keep production research closed. The v1 research goal remains blocked and
+  historical: its support and recovery work is complete, but the commercial
+  round expired unrun on 2026-08-09. Its two receipts remain immutable history,
+  all three assignments are cancelled unattempted, and there is no v2 authority
+  or permitted live provider call.
+- Maintain
+  `docs/plans/PANTHEON-FIRST-VENTURE-DILIGENCE-V2-2026-08-11.md` only as a
+  preparation draft. Drafting it creates no v2 database record or authority,
+  does not activate anything, and authorises no provider call, cost, or spend.
+- Treat schema-27 release checks and successor-plan drafting as support work,
+  not commercial progress. They produce no research result, registered venture,
+  buyer, revenue, or actual net cash contribution. “Scope Guard Kit” names an
+  offer hypothesis; it is not a registered Venture Kit.
+- Defer Google Password Manager recovery-key custody until Daniel returns to the
+  host PC. The verified active-key recovery set keeps this residual human-custody
+  item non-blocking for current Standby operation; do not weaken the human-only
+  secret boundary to complete it remotely.
+- Treat the remaining bullets in this subsection as the prior released
+  commercial baseline. They remain relevant history, while the recovered local
+  runtime is now the current operating state.
+- Preserve schema-26 commercial-truth release `abf6f0d` and prior operationally
+  hardened release `4985ef8`. Their proof consists of release head `cc14ae6`,
+  pull request #5 and run `30451251704`, plus Windows hardening pull request #7,
+  full run `30458483705`, repeat lifecycle job `90601012019`, containment lifecycle job
   `90602926217`, and post-merge `main` run `30460577798`. This
   documentation-only closeout changes release records only, not the proved
   runtime or commercial position.
@@ -466,18 +573,26 @@ buyer-intent work closed. The current plan below supersedes it.
 - Use the implemented platform-import and manual receipt-backed routes for future
   attributable buyer-and-cash evidence. Keep estimates, cash paid, provider
   costs, revenue, refunds, and actual net cash contribution distinct.
-- Decide whether Pantheon should add a narrow, auditable pre-venture research
-  authority. If authorised, scope the next commercial work to bounded
-  pre-venture diligence for the new Social Media Manager Client Approval &
-  Scope Guard Kit. Revalidate the buyer,
-  problem, low-touch offer, format, A$29 price, Etsy-primary route, Gumroad
-  fallback, attribution, reach, duration, economics, and revise or stop rules.
-- Keep this work preparation-only at A$0 external spend. No customer contact,
-  calls, emails, messages, publication, advertising, account action, KYC, OAuth,
-  MFA, legal acceptance, or money movement is authorised.
+- Complete release checks and refresh the draft plan's provider, pricing,
+  channel, and comparable facts at A$0 before asking Daniel to review any exact
+  seven-day v2 authority. If later approved and separately activated, scope the
+  commercial work to bounded pre-venture diligence for the new Social Media
+  Manager Client Approval & Scope Guard Kit. Revalidate the buyer, problem,
+  low-touch offer, format, A$29 price, Etsy-primary route, Gumroad fallback,
+  attribution, reach, duration, economics, and revise or stop rules.
+- Keep all current work preparation-only at A$0. No provider call, customer
+  contact, publication, advertising, account action, KYC, OAuth, MFA, legal
+  acceptance, or money movement is authorised.
 
 ### Next
 
+- Review schema-27 draft pull request #8 after the factual closeout head passes
+  the same private hosted release checks. Do not merge without a separate owner
+  decision; an all-green draft is still not a canonical release.
+- After those checks and A$0 fact refresh, present Daniel with the exact draft
+  seven-day v2 authority for review. Require fresh explicit acceptance and
+  separate activation before any successor pre-venture authority, provider
+  call, or provider cost. The expired v1 receipts are historical evidence only.
 - Record the new kit's evidence-backed readiness outcome as build, research more,
   revise, reject, or retain cash. Do not force production to make the system look
   active.
@@ -509,6 +624,9 @@ buyer-intent work closed. The current plan below supersedes it.
   then replace the one-active-venture safety constraint with three tested,
   isolated venture lanes. Do not copy the runtime or hard-code every business
   into the current journey.
+- Only after the first operating venture reaches three independent paying buyers
+  and positive actual net cash contribution in AUD may Pantheon propose, and
+  Daniel approve, up to three concurrent isolated venture lanes.
 - Promote only exact capabilities that earn five reviewed successes.
 - Use image generation, Code Interpreter, video, audio, external production
   services, or paid media when the accepted venture and quality standard
@@ -574,8 +692,8 @@ contention. The lifecycle CI runner explicitly sets Node test concurrency to
 one so ordering is enforced rather than inferred from source order. Hosted CI
 dispatches the containment and repeat phases to separate disposable Windows
 runners; they cannot contend because they do not share a machine. Each phase
-has a seven-minute test ceiling inside a nine-minute wrapper and ten-minute CI
-job. The two cases completed locally in 81.8 and 85.2 seconds, and the complete
+has a nine-minute test-wrapper deadline inside a twelve-minute hosted CI job.
+The two cases completed locally in 81.8 and 85.2 seconds, and the complete
 Windows suite passed in 234.9 seconds, with per-cycle progress.
 Exact local evidence is retained in
 `docs/proofs/2026-07-28-windows-supervisor-local-proof.md`.
@@ -621,6 +739,23 @@ both lifecycle paths passed explicit reruns `90601012019` and `90602926217`,
 pull request #7 merged as `4985ef8`, and post-merge `main` run `30460577798`
 passed all eight jobs. The closeout records those facts without changing the
 commercial-truth contract, state, or external authority.
+
+The 2026-08-11 schema-27 recovery gate is closed for the active local runtime.
+The exact candidate was installed atomically under rollback custody; the locked
+live runtime, protected Doctor, monitor, responsive owner browser, and a fresh
+active-key recovery-set restore all passed. The expected scheduler-disabled and
+connections warnings did not indicate provider activity. There was no
+provider, model, cost, artifact, evidence, decision, approval, or outbound delta.
+The expired v1 authority remains immutable, all three assignments are cancelled
+unattempted, and no v2 exists. A fresh explicit seven-day v2 approval remains a
+separate prerequisite for any live research call.
+
+Schema-27 draft pull request #8 was opened from exact head
+`9a2f5326b854f5afb84da47cadf3f9596e6d3e63`. Private GitHub Actions run
+`31488222115` passed all eight release jobs: verification, five isolated
+ordinary test shards, and the containment and repeat Windows lifecycle phases.
+This evidence authorises review only. The factual closeout head must pass the
+same matrix; merge and post-merge proof remain separate gates.
 
 Foundation is releasable only when:
 

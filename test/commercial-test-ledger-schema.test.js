@@ -4,7 +4,6 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { DatabaseSync } = require("node:sqlite");
 const test = require("node:test");
 
 const {
@@ -31,6 +30,9 @@ const {
 const {
   ventureKitContentHash,
 } = require("../src/runtime/venture-kit-definition");
+const {
+  downgradeDatabaseToLegacySchema24,
+} = require("./support/released-schema-24-fixture");
 
 const PERIOD = Object.freeze({
   startsAt: "2026-08-01T00:00:00.000Z",
@@ -546,7 +548,7 @@ test("fresh migration creates the exact immutable commercial ledger and kit hash
   }
 });
 
-test("migration upgrades an N-1 runtime and deterministically backfills kit hashes", () => {
+test("migration upgrades a supported schema 24 runtime and deterministically backfills kit hashes", () => {
   const runtime = createRuntime("n-minus-one");
   const expectedKitHash = getVentureKit(
     runtime.db,
@@ -556,28 +558,13 @@ test("migration upgrades an N-1 runtime and deterministically backfills kit hash
   runtime.db.close();
   runtime.db = null;
 
-  const raw = new DatabaseSync(runtime.dbPath);
-  raw.exec("PRAGMA foreign_keys = OFF");
-  raw.exec(`
-    DROP TABLE commercial_test_proof_evaluations;
-    DROP TABLE commercial_test_evidence_records;
-    DROP TABLE commercial_test_evidence_receipts;
-    DROP TABLE commercial_test_lifecycle_events;
-    DROP TABLE commercial_test_contracts;
-    DROP TRIGGER trg_venture_kits_content_hash_insert;
-    DROP TRIGGER trg_venture_kits_definition_immutable_update;
-    DROP TRIGGER trg_venture_kits_definition_immutable_delete;
-    DROP INDEX idx_venture_kits_content_identity;
-    ALTER TABLE venture_kits DROP COLUMN content_hash;
-    DELETE FROM schema_migrations WHERE version IN (25, 26);
-  `);
-  raw.close();
+  downgradeDatabaseToLegacySchema24(runtime.dbPath);
 
   try {
     runtime.db = openDatabase(runtime.dbPath);
     assert.equal(
       get(runtime.db, "SELECT MAX(version) AS version FROM schema_migrations").version,
-      26,
+      LATEST_SCHEMA_VERSION,
     );
     assert.equal(
       get(
@@ -589,7 +576,7 @@ test("migration upgrades an N-1 runtime and deterministically backfills kit hash
     assert.deepEqual(verifyDatabase(runtime.db), {
       quickCheck: "ok",
       foreignKeyFailures: 0,
-      schemaVersion: 26,
+      schemaVersion: LATEST_SCHEMA_VERSION,
     });
   } finally {
     closeRuntime(runtime);

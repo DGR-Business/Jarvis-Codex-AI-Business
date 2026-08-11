@@ -6,7 +6,11 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { DatabaseSync } = require("node:sqlite");
 const { LATEST_SCHEMA_VERSION, openDatabase, seedDatabase } = require("../src/db");
-const { createBackup } = require("../src/runtime/backup");
+const {
+  ARCHIVE_SCHEMA_COMPATIBILITY_LABELS,
+  LAST_RELEASED_SCHEMA_VERSION,
+  createBackup,
+} = require("../src/runtime/backup");
 const {
   assessOperationsReady,
   checkBackupConfiguration,
@@ -19,8 +23,9 @@ const {
   restoredHealthReady,
 } = require("../scripts/doctor");
 const {
-  RELEASED_SCHEMA_VERSION,
-  downgradeDatabaseToReleasedSchema24,
+  LEGACY_SCHEMA_VERSION,
+  downgradeDatabaseToLastReleasedSchema26,
+  downgradeDatabaseToLegacySchema24,
 } = require("./support/released-schema-24-fixture");
 
 const PASSPHRASE = "pantheon-doctor-passphrase-32-characters";
@@ -343,14 +348,10 @@ test("doctor passes a recent fully verified recovery set and warns when it becom
   }
 });
 
-test("Doctor accepts a supported N-1 archive only after disposable migration and restored boot proof", async () => {
-  const fixture = fixtureRoot("n-minus-one");
+test("Doctor accepts the last released schema 26 only after disposable migration and restored boot proof", async () => {
+  const fixture = fixtureRoot("last-released-schema-26");
   try {
-    const archived = new DatabaseSync(fixture.dbPath);
-    archived.prepare("DELETE FROM schema_migrations WHERE version = ?").run(LATEST_SCHEMA_VERSION);
-    archived.exec("PRAGMA wal_checkpoint(TRUNCATE);");
-    archived.prepare("PRAGMA journal_mode = DELETE").get();
-    archived.close();
+    downgradeDatabaseToLastReleasedSchema26(fixture.dbPath);
     const sourceBefore = fs.readFileSync(fixture.dbPath);
     const currentRuntimeCheck = checkRuntimeDatabase({ dbPath: fixture.dbPath });
     assert.equal(currentRuntimeCheck.status, "fail");
@@ -363,13 +364,16 @@ test("Doctor accepts a supported N-1 archive only after disposable migration and
       maxAgeHours: 36,
     });
     assert.equal(report.status, "pass", report.message);
-    assert.equal(report.details.sqlite.schemaVersion, LATEST_SCHEMA_VERSION - 1);
-    assert.equal(report.details.sqlite.compatibility, "supported_n_minus_one");
+    assert.equal(report.details.sqlite.schemaVersion, LAST_RELEASED_SCHEMA_VERSION);
+    assert.equal(
+      report.details.sqlite.compatibility,
+      ARCHIVE_SCHEMA_COMPATIBILITY_LABELS[LAST_RELEASED_SCHEMA_VERSION],
+    );
     assert.equal(report.details.sqlite.currentReady, false);
     assert.deepEqual(report.details.sqlite.migrationProof, {
       completed: true,
       sourceUnchanged: true,
-      fromSchemaVersion: LATEST_SCHEMA_VERSION - 1,
+      fromSchemaVersion: LAST_RELEASED_SCHEMA_VERSION,
       toSchemaVersion: LATEST_SCHEMA_VERSION,
       openedWith: "openDatabase",
     });
@@ -379,7 +383,7 @@ test("Doctor accepts a supported N-1 archive only after disposable migration and
     const unchanged = new DatabaseSync(fixture.dbPath, { readOnly: true });
     assert.equal(
       unchanged.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,
-      LATEST_SCHEMA_VERSION - 1,
+      LAST_RELEASED_SCHEMA_VERSION,
     );
     unchanged.close();
   } finally {
@@ -387,10 +391,10 @@ test("Doctor accepts a supported N-1 archive only after disposable migration and
   }
 });
 
-test("Doctor restores and starts the released schema 24 without changing its archived bytes", async () => {
-  const fixture = fixtureRoot("released-schema-24");
+test("Doctor restores and starts legacy schema 24 without changing its archived bytes", async () => {
+  const fixture = fixtureRoot("legacy-schema-24");
   try {
-    downgradeDatabaseToReleasedSchema24(fixture.dbPath);
+    downgradeDatabaseToLegacySchema24(fixture.dbPath);
     const sourceBefore = fs.readFileSync(fixture.dbPath);
     await addSet(fixture, "2026-07-18T02:00:00.000Z");
     const report = await checkRecoverySet({
@@ -400,12 +404,15 @@ test("Doctor restores and starts the released schema 24 without changing its arc
       maxAgeHours: 36,
     });
     assert.equal(report.status, "pass", report.message);
-    assert.equal(report.details.sqlite.schemaVersion, RELEASED_SCHEMA_VERSION);
-    assert.equal(report.details.sqlite.compatibility, "supported_last_release");
+    assert.equal(report.details.sqlite.schemaVersion, LEGACY_SCHEMA_VERSION);
+    assert.equal(
+      report.details.sqlite.compatibility,
+      ARCHIVE_SCHEMA_COMPATIBILITY_LABELS[LEGACY_SCHEMA_VERSION],
+    );
     assert.deepEqual(report.details.sqlite.migrationProof, {
       completed: true,
       sourceUnchanged: true,
-      fromSchemaVersion: RELEASED_SCHEMA_VERSION,
+      fromSchemaVersion: LEGACY_SCHEMA_VERSION,
       toSchemaVersion: LATEST_SCHEMA_VERSION,
       openedWith: "openDatabase",
     });
@@ -531,7 +538,7 @@ test("doctor does not treat a corrupt newer file as the latest usable recovery p
       now: "2026-07-18T04:00:00.000Z",
       maxAgeHours: 36,
     });
-    assert.equal(report.status, "warn");
+    assert.equal(report.status, "warn", report.message);
     assert.match(report.message, /newer backup file failed verification/);
     assert.equal(report.details.createdAt, "2026-07-18T02:00:00.000Z");
     assert.equal(report.details.invalidCount, 1);
@@ -628,7 +635,7 @@ test("doctor operations-ready CLI passes against a complete local recovery fixtu
         timeout: 60_000,
       },
     );
-    assert.equal(run.status, 0, run.stderr || run.stdout);
+    assert.equal(run.status, 0, `${run.stderr}\n${run.stdout}`);
     const report = JSON.parse(run.stdout);
     assert.equal(report.ok, true);
     assert.equal(report.installationReady, true);
