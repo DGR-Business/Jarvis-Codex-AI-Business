@@ -918,6 +918,8 @@ test("standalone shutdown refuses an unsafe partial forced tree stop and succeed
       ["-Port", port, "-NoOpen", "-ReadyTimeoutSeconds", "5"],
       root,
       true,
+      {},
+      true,
     );
     assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
     const metadataPath = path.join(root, "tmp", `pantheon-server-${port}.json`);
@@ -929,8 +931,6 @@ test("standalone shutdown refuses an unsafe partial forced tree stop and succeed
       path.join(root, "scripts", "stop-pantheon.ps1"),
       ["-Port", port, "-GracefulTimeoutSeconds", "1"],
       root,
-      true,
-      {},
       true,
     );
     assert.notEqual(refused.code, 0);
@@ -972,6 +972,8 @@ test("reused root cleanup stops exact recorded children without touching the rep
       ["-Port", port, "-NoOpen", "-ReadyTimeoutSeconds", "5"],
       root,
       true,
+      {},
+      true,
     );
     assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
     originalMetadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
@@ -982,8 +984,6 @@ test("reused root cleanup stops exact recorded children without touching the rep
       path.join(root, "scripts", "stop-pantheon.ps1"),
       ["-Port", port, "-GracefulTimeoutSeconds", "1"],
       root,
-      true,
-      {},
       true,
     );
     assert.notEqual(refused.code, 0);
