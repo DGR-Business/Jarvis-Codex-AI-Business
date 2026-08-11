@@ -125,11 +125,14 @@ runtime. No buyer, cash, authority, publication, contact, or spend state changed
 
 With the database recovery gate now closed, schema-27 implementation and proof
 commit `4c26bfd` is retained on pushed branch
-`codex/preventure-research-authority-v1`. The exact draft-PR head, including
-this successor-plan record, must be recorded when the pull request is created.
-It is not yet the canonical online release: hosted CI, review, merge, and
-post-merge proof remain release gates. Daniel authorised creating the draft pull
-request and running its checks; merging it remains a separate owner decision.
+`codex/preventure-research-authority-v1`. Draft pull request #8 was created from
+successor-plan head `9a2f5326b854f5afb84da47cadf3f9596e6d3e63`; private
+GitHub Actions run `31488222115` passed verification, all five ordinary test
+shards, and both disposable Windows lifecycle phases. The factual closeout
+record must pass the same checks on the final draft head. This is not yet the
+canonical online release: review, merge, and post-merge proof remain release
+gates. Daniel authorised the draft pull request and checks; merging it remains a
+separate owner decision.
 
 The old v1 research goal remains blocked and historical. Its support and
 recovery work is complete, but its commercial round expired unrun on
@@ -530,12 +533,12 @@ buyer-intent work closed. The current plan below supersedes it.
 - Operate from the recovered schema-27 local database. Its exact atomic install,
   locked live proof, protected Doctor result, browser proof, and fresh restored
   recovery set close the database-recovery gate.
-- Treat schema-27 implementation/proof commit `4c26bfd` and its successor-plan
-  documentation on branch `codex/preventure-research-authority-v1` as the
-  release candidate, not a canonical online release. Record the exact head when
-  the draft pull request is created. Hosted CI, review, merge, and post-merge
-  proof remain open release gates. Draft pull-request creation and checks are
-  authorised; merge is not.
+- Treat schema-27 implementation/proof commit `4c26bfd`, successor-plan head
+  `9a2f5326b854f5afb84da47cadf3f9596e6d3e63`, draft pull request #8, and
+  initial all-green private run `31488222115` as the release candidate, not a
+  canonical online release. The factual closeout head must pass the same eight
+  checks. Review, merge, and post-merge proof remain open release gates. Draft
+  pull-request creation and checks are authorised; merge is not.
 - Keep production research closed. The v1 research goal remains blocked and
   historical: its support and recovery work is complete, but the commercial
   round expired unrun on 2026-08-09. Its two receipts remain immutable history,
@@ -583,10 +586,9 @@ buyer-intent work closed. The current plan below supersedes it.
 
 ### Next
 
-- Create the schema-27 draft pull request through the approved GitHub workflow,
-  run the private hosted release checks, and review the result. Do not merge
-  without a separate owner decision; a pushed branch alone is not a canonical
-  release.
+- Review schema-27 draft pull request #8 after the factual closeout head passes
+  the same private hosted release checks. Do not merge without a separate owner
+  decision; an all-green draft is still not a canonical release.
 - After those checks and A$0 fact refresh, present Daniel with the exact draft
   seven-day v2 authority for review. Require fresh explicit acceptance and
   separate activation before any successor pre-venture authority, provider
@@ -747,6 +749,13 @@ provider, model, cost, artifact, evidence, decision, approval, or outbound delta
 The expired v1 authority remains immutable, all three assignments are cancelled
 unattempted, and no v2 exists. A fresh explicit seven-day v2 approval remains a
 separate prerequisite for any live research call.
+
+Schema-27 draft pull request #8 was opened from exact head
+`9a2f5326b854f5afb84da47cadf3f9596e6d3e63`. Private GitHub Actions run
+`31488222115` passed all eight release jobs: verification, five isolated
+ordinary test shards, and the containment and repeat Windows lifecycle phases.
+This evidence authorises review only. The factual closeout head must pass the
+same matrix; merge and post-merge proof remain separate gates.
 
 Foundation is releasable only when:
 

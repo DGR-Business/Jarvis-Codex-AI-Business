@@ -44,12 +44,13 @@ The release-oriented bullets below retain the prior schema-26 online baseline.
 The recovered schema-27 database and current source are now the active local
 operating state; that fact does not rewrite the historical release record.
 
-- Schema-27 release candidate: implementation/proof commit `4c26bfd` is retained
-  on pushed branch `codex/preventure-research-authority-v1`. Record the exact
-  successor-plan head when the draft pull request is created. It remains
-  unreleased pending hosted CI, review, merge, and post-merge proof. Daniel
-  authorised the draft pull request and checks; merge remains a separate owner
-  decision.
+- Schema-27 release candidate: implementation/proof commit `4c26bfd` and
+  successor-plan head `9a2f5326b854f5afb84da47cadf3f9596e6d3e63` are retained
+  on pushed branch `codex/preventure-research-authority-v1`. Draft pull request
+  #8 is open, and private run `31488222115` passed all eight release jobs. The
+  factual closeout head must pass the same matrix. It remains unreleased pending
+  review, merge, and post-merge proof. Daniel authorised the draft pull request
+  and checks; merge remains a separate owner decision.
 - Successor-plan status: the old v1 research goal remains blocked and historical
   because its commercial round expired unrun. Support and recovery are complete.
   `docs/plans/PANTHEON-FIRST-VENTURE-DILIGENCE-V2-2026-08-11.md` is a draft
@@ -2086,11 +2087,10 @@ registered Venture Kit.
 
 The ordered next work is:
 
-1. complete the schema-27 release path from pushed branch
-   `codex/preventure-research-authority-v1`, based on implementation/proof commit
-   `4c26bfd`: create a draft pull request, record its exact successor-plan head,
-   run hosted CI, and review the result; do not merge without a separate owner
-   decision;
+1. review schema-27 draft pull request #8 after its factual closeout head passes
+   the same eight private release jobs already passed by successor-plan head
+   `9a2f5326b854f5afb84da47cadf3f9596e6d3e63` in run `31488222115`; do not
+   merge without a separate owner decision;
 2. refresh the draft authority's provider, model, pricing, channel, comparable,
    and economics facts at A$0 without making a provider call or activating v2;
 3. only after release checks and that fact refresh, present Daniel with the exact
@@ -2215,6 +2215,12 @@ attestation.
 - A fresh active-key recovery set verified and restored. Before-and-after checks
   recorded no provider or model call, cost, retained provider artifact,
   commercial evidence, decision, approval, or outbound-action delta.
+- Draft pull request #8 opened from exact successor-plan head
+  `9a2f5326b854f5afb84da47cadf3f9596e6d3e63`. Private GitHub Actions run
+  `31488222115` passed verification, all five ordinary test shards, and both
+  disposable Windows lifecycle phases. This is review evidence only; the
+  factual closeout head must pass the same matrix before owner review, and merge
+  remains separately governed.
 
 ### Authority and next gate
 
