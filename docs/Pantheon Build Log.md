@@ -44,6 +44,21 @@ The release-oriented bullets below retain the prior schema-26 online baseline.
 The recovered schema-27 database and current source are now the active local
 operating state; that fact does not rewrite the historical release record.
 
+- Schema-27 release candidate: implementation/proof commit `4c26bfd` is retained
+  on pushed branch `codex/preventure-research-authority-v1`. Record the exact
+  successor-plan head when the draft pull request is created. It remains
+  unreleased pending hosted CI, review, merge, and post-merge proof. Daniel
+  authorised the draft pull request and checks; merge remains a separate owner
+  decision.
+- Successor-plan status: the old v1 research goal remains blocked and historical
+  because its commercial round expired unrun. Support and recovery are complete.
+  `docs/plans/PANTHEON-FIRST-VENTURE-DILIGENCE-V2-2026-08-11.md` is a draft
+  successor only. It creates no v2 database record or authority, permits no
+  provider call, and authorises no provider cost or spend.
+- Recovery-key custody: Google Password Manager human custody is deferred until
+  Daniel returns to the host PC. The fresh active-key recovery set is verified,
+  so the deferral is non-blocking for current Standby operation. Do not create a
+  weaker remote secret path.
 - Owner position: the schema-26 commercial-truth implementation is the
   canonical online release. Production state and the owner screens now agree:
   current records contain no active external test, verified current buyer,
@@ -2053,34 +2068,44 @@ spend. Merge `abf6f0d` remains the schema-26 commercial-truth release, while
 
 ## Current Next Best Work
 
-> Make Pantheon’s current release the canonical, compatibility-verified
-> baseline; align what the system reports with what it can actually prove;
-> establish one channel-consistent path from a selected offer to attributable
-> buyer and cash evidence; prove the owner journey end to end; and prepare the
-> next commercial test without contacting customers, publishing, or spending
-> money until separately approved.
+The old v1 research goal remains honestly blocked and historical. Its technical
+support, database recovery, and no-action proof are complete, but the authorised
+commercial round expired before any assignment ran. It must not be continued,
+amended, or reinterpreted as current authority.
 
-The release, commercial-truth, evidence-path, owner-journey, no-action
-preparation, and live schema-27 recovery portions of this goal are complete. The
-next separately gated work is:
+The current preparation-only successor is
+`docs/plans/PANTHEON-FIRST-VENTURE-DILIGENCE-V2-2026-08-11.md`. It is a draft
+proposal, not an approval receipt or activation. It creates no v2 database
+record or authority. No provider call, provider cost, external spend, research
+run, or commercial action is permitted by drafting it.
 
-1. decide whether Pantheon should issue a fresh, explicit seven-day v2
-   pre-venture research authority rather than reviving the retired broad
-   discovery routes;
-2. if authorised, perform bounded pre-venture diligence for the low-touch
-   Social Media Manager Client Approval & Scope Guard Kit, testing the exact
-   buyer, problem, offer,
-   format, A$29 price, Etsy-primary and Gumroad-fallback channels, attribution,
-   reach, duration, economics, and revise or stop rules;
-3. record a versioned readiness result of build, research more, revise, reject,
-   or retain cash without forcing production;
-4. if readiness passes, present one exact external-test proposal as its own
-   protected decision with exact cohort, attribution, expected cost and
-   contribution, adapter health, and diagnose, revise, or stop rules;
-5. require a separate exact owner acceptance and then a separate exact
-   activation of that proposal; and
-6. begin contract-bound work only after activation and only within the recorded
-   authority and healthy adapter path.
+The draft plan and schema-27 release checks are support work only. They create
+no research result, registered venture, buyer, order, revenue, or actual net
+cash contribution. “Scope Guard Kit” is an offer-hypothesis label, not a
+registered Venture Kit.
+
+The ordered next work is:
+
+1. complete the schema-27 release path from pushed branch
+   `codex/preventure-research-authority-v1`, based on implementation/proof commit
+   `4c26bfd`: create a draft pull request, record its exact successor-plan head,
+   run hosted CI, and review the result; do not merge without a separate owner
+   decision;
+2. refresh the draft authority's provider, model, pricing, channel, comparable,
+   and economics facts at A$0 without making a provider call or activating v2;
+3. only after release checks and that fact refresh, present Daniel with the exact
+   seven-day authority text for review; fresh acceptance and separate activation
+   are required before any bounded diligence or provider cost;
+4. if later approved and activated, test the low-touch Social Media Manager
+   Client Approval & Scope Guard Kit's buyer, problem, offer, format, A$29 price,
+   Etsy-primary and Gumroad-fallback channel hypotheses, attribution, reach,
+   duration, economics, evidence standard, and revise or stop rules;
+5. record a versioned readiness result of build, research more, revise, reject,
+   or retain cash without forcing production; and
+6. only if readiness passes, present one exact external-test proposal under its
+   own later acceptance and activation gates. Diligence cannot authorise a build,
+   publishing, customer contact, advertising, account action, legal acceptance,
+   or spend.
 
 Etsy setup is a future protected gate, not an implementation assumption. If
 diligence selects Etsy, Daniel must decide whether to complete its lawful
@@ -2093,6 +2118,16 @@ separately approved. Do not begin Venture Factory, a second Venture Kit,
 concurrent venture lanes, or broad capability expansion during this first-proof
 stage. Those isolated parallel lanes remain Pantheon's intended multi-business
 destination after the sequencing and proof gates are earned.
+
+Only after the first operating venture reaches three independent paying buyers
+and positive actual net cash contribution in AUD may Pantheon propose, and
+Daniel approve, up to three concurrent isolated venture lanes. Venture Factory,
+a structurally different second Venture Kit, and concurrency remain outside v2.
+
+Google Password Manager recovery-key custody remains tabled until Daniel returns
+to the host PC. The fresh active-key recovery set is already verified, making
+this a non-blocking human-custody follow-up rather than a reason to weaken the
+secret boundary or delay the release checks.
 
 ## 2026-08-11 Schema-27 Recovery: Offline Candidate to Live Runtime
 

@@ -123,19 +123,34 @@ reruns `90601012019` and `90602926217`. The fix merged as `4985ef8` on
 commercial-truth release; `4985ef8` is its operationally hardened Windows
 runtime. No buyer, cash, authority, publication, contact, or spend state changed.
 
-With the database recovery gate now closed, the next owner gate is whether to
-issue a fresh, narrow, auditable seven-day v2 pre-venture research authority. If
-authorised, the next commercial work is bounded diligence for a
-distinct, low-touch Social Media Manager Client Approval & Scope Guard Kit at
-an initial A$29 price hypothesis. Etsy is the primary channel hypothesis and
-Gumroad is a fallback hypothesis. Neither channel, the price, the buyer, the
-offer, the format, nor the test rules are proved. Diligence may recommend
-`research_more`, `revise`, `reject`, or retaining cash; it does not itself
-create build, production, or external-test authority. The current versioned
-readiness record
-is `research_more`, with the offer marked `revise`; it grants no build or live
-test authority. This work does not reopen, revise, or rename the stopped Client
-Control and Profitability Workbook.
+With the database recovery gate now closed, schema-27 implementation and proof
+commit `4c26bfd` is retained on pushed branch
+`codex/preventure-research-authority-v1`. The exact draft-PR head, including
+this successor-plan record, must be recorded when the pull request is created.
+It is not yet the canonical online release: hosted CI, review, merge, and
+post-merge proof remain release gates. Daniel authorised creating the draft pull
+request and running its checks; merging it remains a separate owner decision.
+
+The old v1 research goal remains blocked and historical. Its support and
+recovery work is complete, but its commercial round expired unrun on
+2026-08-09 and cannot be continued or amended into fresh authority. The
+preparation-only successor is
+`docs/plans/PANTHEON-FIRST-VENTURE-DILIGENCE-V2-2026-08-11.md`. That document is
+a draft plan, not a live authority: it creates no v2 database record or
+approval, permits no provider call, and authorises no cost or spend. After
+release checks and refreshing the relevant provider, pricing, channel, and
+comparable facts at A$0, Daniel's next commercial gate is review of the exact
+proposed authority. If Daniel later approves and separately activates it, the
+bounded diligence would test the distinct, low-touch Social Media Manager Client
+Approval & Scope Guard Kit, initially hypothesised at A$29 with Etsy as the
+primary channel hypothesis and Gumroad as a fallback. Neither channel, the
+price, the buyer, the offer, the format, nor the test rules are proved. Diligence
+may recommend `build`, `research_more`, `revise`, `reject`, or retaining cash;
+`build` means only preparing a separately governed proposal. Diligence does not
+itself create build, production, or external-test authority. The current
+versioned readiness record is `research_more`, with the offer marked `revise`;
+it grants no build or live test authority. This work does not reopen, revise, or
+rename the stopped Client Control and Profitability Workbook.
 
 ### 2026-08-11 Live Schema-27 Recovery Outcome
 
@@ -515,9 +530,29 @@ buyer-intent work closed. The current plan below supersedes it.
 - Operate from the recovered schema-27 local database. Its exact atomic install,
   locked live proof, protected Doctor result, browser proof, and fresh restored
   recovery set close the database-recovery gate.
-- Keep production research closed. The v1 authority expired on 2026-08-09;
-  it remains immutable history, all three assignments are cancelled
-  unattempted, and there is no v2 authority or permitted live provider call.
+- Treat schema-27 implementation/proof commit `4c26bfd` and its successor-plan
+  documentation on branch `codex/preventure-research-authority-v1` as the
+  release candidate, not a canonical online release. Record the exact head when
+  the draft pull request is created. Hosted CI, review, merge, and post-merge
+  proof remain open release gates. Draft pull-request creation and checks are
+  authorised; merge is not.
+- Keep production research closed. The v1 research goal remains blocked and
+  historical: its support and recovery work is complete, but the commercial
+  round expired unrun on 2026-08-09. Its two receipts remain immutable history,
+  all three assignments are cancelled unattempted, and there is no v2 authority
+  or permitted live provider call.
+- Maintain
+  `docs/plans/PANTHEON-FIRST-VENTURE-DILIGENCE-V2-2026-08-11.md` only as a
+  preparation draft. Drafting it creates no v2 database record or authority,
+  does not activate anything, and authorises no provider call, cost, or spend.
+- Treat schema-27 release checks and successor-plan drafting as support work,
+  not commercial progress. They produce no research result, registered venture,
+  buyer, revenue, or actual net cash contribution. “Scope Guard Kit” names an
+  offer hypothesis; it is not a registered Venture Kit.
+- Defer Google Password Manager recovery-key custody until Daniel returns to the
+  host PC. The verified active-key recovery set keeps this residual human-custody
+  item non-blocking for current Standby operation; do not weaken the human-only
+  secret boundary to complete it remotely.
 - Treat the remaining bullets in this subsection as the prior released
   commercial baseline. They remain relevant history, while the recovered local
   runtime is now the current operating state.
@@ -535,21 +570,27 @@ buyer-intent work closed. The current plan below supersedes it.
 - Use the implemented platform-import and manual receipt-backed routes for future
   attributable buyer-and-cash evidence. Keep estimates, cash paid, provider
   costs, revenue, refunds, and actual net cash contribution distinct.
-- Separately decide whether Pantheon should issue a fresh, narrow, auditable v2
-  pre-venture research authority. If authorised, scope the next commercial work
-  to bounded pre-venture diligence for the new Social Media Manager Client
-  Approval & Scope Guard Kit. Revalidate the buyer,
-  problem, low-touch offer, format, A$29 price, Etsy-primary route, Gumroad
-  fallback, attribution, reach, duration, economics, and revise or stop rules.
-- Keep this work preparation-only at A$0 external spend. No customer contact,
-  calls, emails, messages, publication, advertising, account action, KYC, OAuth,
-  MFA, legal acceptance, or money movement is authorised.
+- Complete release checks and refresh the draft plan's provider, pricing,
+  channel, and comparable facts at A$0 before asking Daniel to review any exact
+  seven-day v2 authority. If later approved and separately activated, scope the
+  commercial work to bounded pre-venture diligence for the new Social Media
+  Manager Client Approval & Scope Guard Kit. Revalidate the buyer, problem,
+  low-touch offer, format, A$29 price, Etsy-primary route, Gumroad fallback,
+  attribution, reach, duration, economics, and revise or stop rules.
+- Keep all current work preparation-only at A$0. No provider call, customer
+  contact, publication, advertising, account action, KYC, OAuth, MFA, legal
+  acceptance, or money movement is authorised.
 
 ### Next
 
-- Require a fresh explicit seven-day v2 approval before any successor
-  pre-venture authority or live provider call. The expired v1 receipts are
-  historical evidence only.
+- Create the schema-27 draft pull request through the approved GitHub workflow,
+  run the private hosted release checks, and review the result. Do not merge
+  without a separate owner decision; a pushed branch alone is not a canonical
+  release.
+- After those checks and A$0 fact refresh, present Daniel with the exact draft
+  seven-day v2 authority for review. Require fresh explicit acceptance and
+  separate activation before any successor pre-venture authority, provider
+  call, or provider cost. The expired v1 receipts are historical evidence only.
 - Record the new kit's evidence-backed readiness outcome as build, research more,
   revise, reject, or retain cash. Do not force production to make the system look
   active.
@@ -581,6 +622,9 @@ buyer-intent work closed. The current plan below supersedes it.
   then replace the one-active-venture safety constraint with three tested,
   isolated venture lanes. Do not copy the runtime or hard-code every business
   into the current journey.
+- Only after the first operating venture reaches three independent paying buyers
+  and positive actual net cash contribution in AUD may Pantheon propose, and
+  Daniel approve, up to three concurrent isolated venture lanes.
 - Promote only exact capabilities that earn five reviewed successes.
 - Use image generation, Code Interpreter, video, audio, external production
   services, or paid media when the accepted venture and quality standard
