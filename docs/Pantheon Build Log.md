@@ -1,6 +1,6 @@
 # Pantheon Build Log
 
-Last updated: 2026-08-11
+Last updated: 2026-08-12
 
 Pantheon is the active product name from 2026-07-18. Earlier entries retain
 Jarvis-Codex or Jarvis where that was the product name at the time. Jarvis now
@@ -40,17 +40,15 @@ build and run multiple ventures through parallel, isolated lanes. Proving the
 first venture under a one-active-venture limit is a sequencing and risk gate,
 not the final architecture.
 
-The release-oriented bullets below retain the prior schema-26 online baseline.
-The recovered schema-27 database and current source are now the active local
-operating state; that fact does not rewrite the historical release record.
+The release-oriented bullets below preserve schema 26 as a historical online
+baseline. The recovered schema-27 database and current source are now canonical
+locally and online; that current truth does not erase the historical record.
 
-- Schema-27 release candidate: implementation/proof commit `4c26bfd` and
-  successor-plan head `9a2f5326b854f5afb84da47cadf3f9596e6d3e63` are retained
-  on pushed branch `codex/preventure-research-authority-v1`. Draft pull request
-  #8 is open, and private run `31488222115` passed all eight release jobs. The
-  factual closeout head must pass the same matrix. It remains unreleased pending
-  review, merge, and post-merge proof. Daniel authorised the draft pull request
-  and checks; merge remains a separate owner decision.
+- Schema-27 canonical release: pull request #10 head
+  `50dba5905df47bb4430a5929d3d0dda7c0690388` passed all eight private jobs in
+  run `31516719014`, merged as
+  `fcda9d472b0dcd6dceb53b0afd3b8cd4241fe017`, and passed all eight post-merge
+  `main` jobs in run `31517691274`. Schema 27 is canonical locally and online.
 - Successor-plan status: the old v1 research goal remains blocked and historical
   because its commercial round expired unrun. Support and recovery are complete.
   `docs/plans/PANTHEON-FIRST-VENTURE-DILIGENCE-V2-2026-08-11.md` is a draft
@@ -60,8 +58,9 @@ operating state; that fact does not rewrite the historical release record.
   Daniel returns to the host PC. The fresh active-key recovery set is verified,
   so the deferral is non-blocking for current Standby operation. Do not create a
   weaker remote secret path.
-- Owner position: the schema-26 commercial-truth implementation is the
-  canonical online release. Production state and the owner screens now agree:
+- Owner position: schema 27 is the canonical local and online release. The prior
+  schema-26 commercial-truth release remains historical. Production state and
+  the owner screens agree:
   current records contain no active external test, verified current buyer,
   attributable current cash evidence, or settled net cash contribution. The
   owner result is withheld rather than presenting empty records as a tested
@@ -109,9 +108,9 @@ operating state; that fact does not rewrite the historical release record.
   its one manually approved Terra evidence recheck. The `revise`, score-78
   result permanently stopped that build. Its exact release passed locally, in
   Chrome, and in all seven private CI jobs at commit `c5c2436`.
-- Current truth status: the canonical online release migrated production from
-  schema 24 to schema 26 and completed reconciliation; the active local database
-  is now recovered at schema 27. The active commercial position is zero
+- Current truth status: the canonical schema-27 release retains the earlier
+  schema-24-to-26 production migration and reconciliation, while matching the
+  recovered active local database. The active commercial position is zero
   external commercial tests, verified buyers, attributable cash evidence, and
   settled net cash contribution; older Portfolio and journey records remain
   read-only history.
@@ -2087,13 +2086,12 @@ registered Venture Kit.
 
 The ordered next work is:
 
-1. review schema-27 draft pull request #8 after its factual closeout head passes
-   the same eight private release jobs already passed by successor-plan head
-   `9a2f5326b854f5afb84da47cadf3f9596e6d3e63` in run `31488222115`; do not
-   merge without a separate owner decision;
+1. apply and prove a small support hotfix for the retained legacy-key fallback
+   in `restore-pantheon.ps1`; do not disturb or overstate the already proved
+   active-key recovery path;
 2. refresh the draft authority's provider, model, pricing, channel, comparable,
    and economics facts at A$0 without making a provider call or activating v2;
-3. only after release checks and that fact refresh, present Daniel with the exact
+3. after fallback proof and the A$0 fact refresh, present Daniel with the exact
    seven-day authority text for review; fresh acceptance and separate activation
    are required before any bounded diligence or provider cost;
 4. if later approved and activated, test the low-touch Social Media Manager
@@ -2127,7 +2125,7 @@ a structurally different second Venture Kit, and concurrency remain outside v2.
 Google Password Manager recovery-key custody remains tabled until Daniel returns
 to the host PC. The fresh active-key recovery set is already verified, making
 this a non-blocking human-custody follow-up rather than a reason to weaken the
-secret boundary or delay the release checks.
+secret boundary or delay the support hotfix or v2 preparation.
 
 ## 2026-08-11 Schema-27 Recovery: Offline Candidate to Live Runtime
 
@@ -2215,13 +2213,6 @@ attestation.
 - A fresh active-key recovery set verified and restored. Before-and-after checks
   recorded no provider or model call, cost, retained provider artifact,
   commercial evidence, decision, approval, or outbound-action delta.
-- Draft pull request #8 opened from exact successor-plan head
-  `9a2f5326b854f5afb84da47cadf3f9596e6d3e63`. Private GitHub Actions run
-  `31488222115` passed verification, all five ordinary test shards, and both
-  disposable Windows lifecycle phases. This is review evidence only; the
-  factual closeout head must pass the same matrix before owner review, and merge
-  remains separately governed.
-
 ### Authority and next gate
 
 Production v1 expired on 2026-08-09. Neither its authority row, its two receipts,
@@ -2234,3 +2225,72 @@ owner decision on whether to issue a fresh, narrow seven-day v2 authority for
 bounded pre-venture diligence. Recovery did not make that decision, and no
 research, provider use, publishing, customer contact, or spend is authorised by
 this technical result.
+
+## 2026-08-12 Canonical Schema-27 Release Closeout
+
+### Owner summary
+
+Schema 27 is now canonical locally and online. Pull request #10 exact head
+`50dba5905df47bb4430a5929d3d0dda7c0690388` passed all eight private jobs in
+run `31516719014`, merged as
+`fcda9d472b0dcd6dceb53b0afd3b8cd4241fe017`, and passed all eight post-merge
+`main` jobs in run `31517691274`.
+
+The actual release sequence was:
+
+- pull request #8 final-head run `31489455600` passed, merge
+  `c090fa932b198997f2809ddd53592db9c8786f52` landed, and post-merge `main` run
+  `31491486655` exposed a containment stop-observation race;
+- pull request #9 head `af1519d28d6aa15ffc7d1741e3d1bd4b33e445bb` passed run
+  `31499587511`, merged as
+  `c79b8a4ff9407534cb2cdd92e692dbb32ea7db2b`, and post-merge `main` run
+  `31501123571` passed; and
+- release proof then found opportunity timestamp churn, which the pull request
+  #10 chain above corrected without any commercial or provider effect.
+
+This completed support and release work, not commercial work. V1 remains
+expired and terminal, the v2 successor plan remains inactive, and the closeout
+created no provider or model call, cost, buyer contact, publishing, account
+action, spend, commercial decision, new approval, or outbound action.
+
+### Verification and no-action proof
+
+- On exact content commit `50dba5905df47bb4430a5929d3d0dda7c0690388`,
+  local lint, the focused proof (1 of 1), the Commercial Intelligence pack
+  (13 of 13), and the complete five-shard ordinary suite passed.
+- Supported owner-context Doctor passed every check, including the current
+  active-key recovery set and its authenticated disposable restore.
+- A signed Start-to-one-system-check-to-Standby path showed Decisions empty, no
+  commercial test, an empty queue, and zero Pantheon-origin browser console
+  entries. Pantheon Control finished in Standby and the working runtime on port
+  5051 was stopped.
+- Pre-state snapshot SHA-256 was
+  `1a525d6f5f577d206f33c7e2399a7e052df011786b129d6348b4bd9301238337`;
+  post-state snapshot SHA-256 was
+  `2835628f014c0c5667cd021641351152666751b72260f2945e1647093c428715`;
+  collector SHA-256 was
+  `49fe9d844f9e5a9e5a4054ac57508342864cd41e62a9d9fefe9e78091b10be7d`.
+- All protected commercial records, including opportunity, cost, evidence,
+  authority, provider-execution, and billing records, and all artifacts remained
+  exact. Eight source-backed registry sets received timestamp-only readiness
+  refreshes, and all 11 existing integration records received timestamp-only
+  `last_checked_at` and `updated_at` observation refreshes while status, mode,
+  and health remained unchanged. Physical FTS storage rebuilt or
+  churned while logical and exhaustive FTS truth remained exact. The other
+  bounded deltas were two zero-finding monitor runs, one scheduler run, and three
+  events.
+
+### Remaining support item and next gate
+
+One P2 remains. `restore-pantheon.ps1` has not yet proved its retained
+legacy-key fallback because native stderr can interact with
+`$ErrorActionPreference = "Stop"` before its candidate loop evaluates the native
+exit code. Do not claim the legacy wrapper path. The current active-key recovery
+restore is proved and healthy, so this P2 is not a canonical-release or Standby
+blocker.
+
+Next, apply and prove the small fallback hotfix, refresh the provider, model,
+pricing, channel, comparable, and economics facts at A$0, and present the exact
+v2 authority to Daniel for fresh approval and separate activation. Neither this
+release nor the draft plan activates v2. Google Password Manager custody remains
+deferred and non-blocking until Daniel returns to the host PC.

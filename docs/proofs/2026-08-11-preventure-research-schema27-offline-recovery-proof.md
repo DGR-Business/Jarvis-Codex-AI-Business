@@ -1,7 +1,7 @@
 # Pantheon Pre-Venture Research Schema-27 Recovery Proof
 
 Date: 2026-08-11
-Status: approved live recovery complete; schema 27 current and operations-ready; any v2 research authority remains a separate owner decision
+Status: approved live recovery and canonical schema-27 release complete; any v2 research authority remains a separate owner decision
 Owner: Daniel
 Technical steward: Jarvis (Codex)
 
@@ -153,10 +153,91 @@ occurred.
   Daniel must later confirm masked presence of the recovery entry from a second
   trusted device or browser profile; no secret should be disclosed to Jarvis or
   recorded in the repository.
-- This proof does not satisfy the plan's diligence-round, readiness-decision,
-  live release, hosted-release, or commercial-result gates.
+- The original recovery checkpoint did not itself satisfy the plan's
+  diligence-round, readiness-decision, hosted-release, or commercial-result
+  gates. The canonical-release addendum below closes only the release gate.
 
-The technical recovery gate is closed. The safe next step is a separate owner
-decision on whether to create and activate a fresh, exact, time-bounded v2
-research authority for the first-venture diligence round. Recovery itself does
-not grant that authority.
+The technical recovery gate is closed. Recovery itself does not grant a v2
+authority.
+
+## Canonical Schema-27 Release Addendum
+
+Date: 2026-08-12
+
+### Release identity
+
+Schema 27 is now canonical locally and online. Pull request #10 exact head
+`50dba5905df47bb4430a5929d3d0dda7c0690388` passed all eight private release
+jobs in GitHub Actions run `31516719014`. It merged through exact merge commit
+`fcda9d472b0dcd6dceb53b0afd3b8cd4241fe017`; post-merge `main` run
+`31517691274` passed the same eight jobs.
+
+The complete release sequence was:
+
+- pull request #8 final-head run `31489455600` passed, merge
+  `c090fa932b198997f2809ddd53592db9c8786f52` landed, and post-merge `main` run
+  `31491486655` exposed a containment stop-observation race;
+- pull request #9 head `af1519d28d6aa15ffc7d1741e3d1bd4b33e445bb` passed run
+  `31499587511`, merged as
+  `c79b8a4ff9407534cb2cdd92e692dbb32ea7db2b`, and post-merge `main` run
+  `31501123571` passed; and
+- release proof then found opportunity timestamp churn, which the pull request
+  #10 chain corrected without a commercial or provider effect.
+
+On the exact content commit, local lint, the focused proof (1 of 1), the
+Commercial Intelligence pack (13 of 13), and the full five-shard ordinary suite
+passed. Supported owner-context Doctor was fully green, including the current
+active-key recovery set and its authenticated disposable restore.
+
+### Signed owner path and exact state boundary
+
+The signed owner proof completed Start, one system check, and return to Standby.
+Decisions was empty, no commercial test existed, the work queue was empty, and
+there were zero Pantheon-origin browser console entries. Pantheon Control
+finished in Standby; the working runtime on port 5051 was stopped.
+
+The immutable proof identities are:
+
+- pre-state snapshot SHA-256:
+  `1a525d6f5f577d206f33c7e2399a7e052df011786b129d6348b4bd9301238337`;
+- post-state snapshot SHA-256:
+  `2835628f014c0c5667cd021641351152666751b72260f2945e1647093c428715`;
+  and
+- snapshot-collector SHA-256:
+  `49fe9d844f9e5a9e5a4054ac57508342864cd41e62a9d9fefe9e78091b10be7d`.
+
+All protected commercial records, including opportunity, cost, evidence,
+authority, provider-execution, and billing records, and all artifacts remained
+exact. Eight source-backed registry sets received timestamp-only readiness
+refreshes, and all 11 existing integration records received timestamp-only
+`last_checked_at` and `updated_at` observation refreshes while status, mode, and
+health remained unchanged. Physical FTS storage rebuilt or
+churned while logical and exhaustive FTS truth remained exact. The other bounded
+operational changes were two zero-finding monitor runs, one scheduler run, and
+three events. They created no provider or model call, cost, buyer contact,
+publishing, account action, spend, commercial decision, new approval, or
+outbound action.
+
+### Commercial truth and remaining support item
+
+This closes support and release gates only. V1 remains expired and terminal;
+its assignments remain cancelled and unattempted. The v2 successor plan remains
+an inactive draft and creates no authority, task, provider permission, cost, or
+commercial action. There was no buyer, order, revenue, external test, or actual
+net cash contribution.
+
+One P2 support item remains. The retained legacy-key fallback in
+`restore-pantheon.ps1` is not yet proved because native stderr can interact with
+`$ErrorActionPreference = "Stop"` before the wrapper's candidate loop evaluates
+the native exit code. This addendum does not claim that legacy wrapper path. The
+current active-key recovery restore is proved and healthy, so the P2 is not a
+canonical-release or Standby blocker.
+
+Next, Pantheon should apply and prove the small fallback hotfix, refresh the
+provider, model, pricing, channel, comparable, and economics facts at A$0, and
+then present the exact v2 authority to Daniel for fresh approval and separate
+activation. Google Password Manager custody remains deferred and non-blocking
+until Daniel returns to the host PC. Pantheon's permanent destination remains a
+portfolio-controlled multi-business machine; the first-venture gate still
+requires three independent paying buyers and positive actual AUD net cash
+contribution before Pantheon may propose up to three isolated venture lanes.

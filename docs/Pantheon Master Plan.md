@@ -1,6 +1,6 @@
 # Pantheon Master Plan
 
-Last updated: 2026-08-11
+Last updated: 2026-08-12
 Status: active source of truth
 Owner: Daniel
 Technical steward: Jarvis (Codex)
@@ -123,16 +123,16 @@ reruns `90601012019` and `90602926217`. The fix merged as `4985ef8` on
 commercial-truth release; `4985ef8` is its operationally hardened Windows
 runtime. No buyer, cash, authority, publication, contact, or spend state changed.
 
-With the database recovery gate now closed, schema-27 implementation and proof
-commit `4c26bfd` is retained on pushed branch
-`codex/preventure-research-authority-v1`. Draft pull request #8 was created from
-successor-plan head `9a2f5326b854f5afb84da47cadf3f9596e6d3e63`; private
-GitHub Actions run `31488222115` passed verification, all five ordinary test
-shards, and both disposable Windows lifecycle phases. The factual closeout
-record must pass the same checks on the final draft head. This is not yet the
-canonical online release: review, merge, and post-merge proof remain release
-gates. Daniel authorised the draft pull request and checks; merging it remains a
-separate owner decision.
+The database recovery and schema-27 release gates are now closed. Pull request
+#10 head `50dba5905df47bb4430a5929d3d0dda7c0690388` passed all eight private
+checks in run `31516719014`, merged as
+`fcda9d472b0dcd6dceb53b0afd3b8cd4241fe017`, and passed all eight post-merge
+`main` checks in run `31517691274`. Schema 27 is now canonical locally and
+online. These are support and release results only; they created no commercial
+authority, research result, buyer, revenue, publication, contact, or spend.
+The release sequence first corrected a post-PR-#8 containment stop-observation
+race through green PR #9, then corrected release-proof opportunity timestamp
+churn through the green PR #10 chain recorded above.
 
 The old v1 research goal remains blocked and historical. Its support and
 recovery work is complete, but its commercial round expired unrun on
@@ -141,8 +141,8 @@ preparation-only successor is
 `docs/plans/PANTHEON-FIRST-VENTURE-DILIGENCE-V2-2026-08-11.md`. That document is
 a draft plan, not a live authority: it creates no v2 database record or
 approval, permits no provider call, and authorises no cost or spend. After
-release checks and refreshing the relevant provider, pricing, channel, and
-comparable facts at A$0, Daniel's next commercial gate is review of the exact
+fallback proof and an A$0 refresh of the relevant provider, pricing, channel,
+and comparable facts, Daniel's next commercial gate is review of the exact
 proposed authority. If Daniel later approves and separately activates it, the
 bounded diligence would test the distinct, low-touch Social Media Manager Client
 Approval & Scope Guard Kit, initially hypothesised at A$29 with Etsy as the
@@ -160,9 +160,9 @@ rename the stopped Client Control and Profitability Workbook.
 Daniel approved the controlled technical recovery, and the exact verified
 schema-27 candidate was installed into the active local database by an atomic
 replacement under preserved rollback custody. A locked live proof on port 5051
-then passed. Pantheon's current local database is now compatible with current
-source; the earlier schema-26 release record above remains historical online
-release truth rather than the description of today's local database.
+then passed. Pantheon's current local database is compatible with current
+source; the earlier schema-26 release record above is historical release truth,
+and the canonical schema-27 online release is recorded below.
 
 The candidate-only recovery builder authenticated an encrypted source backup,
 corroborated its standalone source, rebuilt the incomplete schema-27 namespace,
@@ -474,7 +474,7 @@ an instruction to reopen the terminal build.
 - Treat explicit human-approval markers as stronger than internal mandates.
   The one permitted recheck used its own exact, single-use dashboard approval.
 - Use the operations-ready native Windows supervisor and leave Pantheon in
-  Standby after the remaining release work unless Daniel is actively testing.
+  Standby after release work unless Daniel is actively testing.
 - Keep the Portfolio result at `No investment selected`. Two bounded rounds
   compared ten hypotheses and six finalists, and one targeted diligence round
   re-tested the strongest named gap. No case cleared every mandatory demand,
@@ -530,15 +530,11 @@ buyer-intent work closed. The current plan below supersedes it.
 
 ### Now
 
-- Operate from the recovered schema-27 local database. Its exact atomic install,
-  locked live proof, protected Doctor result, browser proof, and fresh restored
-  recovery set close the database-recovery gate.
-- Treat schema-27 implementation/proof commit `4c26bfd`, successor-plan head
-  `9a2f5326b854f5afb84da47cadf3f9596e6d3e63`, draft pull request #8, and
-  initial all-green private run `31488222115` as the release candidate, not a
-  canonical online release. The factual closeout head must pass the same eight
-  checks. Review, merge, and post-merge proof remain open release gates. Draft
-  pull-request creation and checks are authorised; merge is not.
+- Operate from canonical schema 27 locally and online. Its atomic recovery,
+  active-key restore, owner-context Doctor, pull request #10, eight-job PR run
+  `31516719014`, merge `fcda9d472b0dcd6dceb53b0afd3b8cd4241fe017`, and
+  eight-job post-merge run `31517691274` close the release gate.
+- Keep Pantheon Control in Standby; the working runtime on port 5051 is stopped.
 - Keep production research closed. The v1 research goal remains blocked and
   historical: its support and recovery work is complete, but the commercial
   round expired unrun on 2026-08-09. Its two receipts remain immutable history,
@@ -573,9 +569,10 @@ buyer-intent work closed. The current plan below supersedes it.
 - Use the implemented platform-import and manual receipt-backed routes for future
   attributable buyer-and-cash evidence. Keep estimates, cash paid, provider
   costs, revenue, refunds, and actual net cash contribution distinct.
-- Complete release checks and refresh the draft plan's provider, pricing,
-  channel, and comparable facts at A$0 before asking Daniel to review any exact
-  seven-day v2 authority. If later approved and separately activated, scope the
+- Apply a small support hotfix to prove the `restore-pantheon.ps1` retained
+  legacy-key fallback, then refresh the draft plan's provider, pricing, channel,
+  and comparable facts at A$0 before asking Daniel to review any exact seven-day
+  v2 authority. If later approved and separately activated, scope the
   commercial work to bounded pre-venture diligence for the new Social Media
   Manager Client Approval & Scope Guard Kit. Revalidate the buyer, problem,
   low-touch offer, format, A$29 price, Etsy-primary route, Gumroad fallback,
@@ -586,10 +583,10 @@ buyer-intent work closed. The current plan below supersedes it.
 
 ### Next
 
-- Review schema-27 draft pull request #8 after the factual closeout head passes
-  the same private hosted release checks. Do not merge without a separate owner
-  decision; an all-green draft is still not a canonical release.
-- After those checks and A$0 fact refresh, present Daniel with the exact draft
+- Repair and prove the P2 legacy-key fallback without weakening the already
+  proved active-key recovery path. The current active-key recovery set and
+  authenticated restore remain healthy.
+- After the A$0 fact refresh, present Daniel with the exact draft
   seven-day v2 authority for review. Require fresh explicit acceptance and
   separate activation before any successor pre-venture authority, provider
   call, or provider cost. The expired v1 receipts are historical evidence only.
@@ -750,12 +747,41 @@ The expired v1 authority remains immutable, all three assignments are cancelled
 unattempted, and no v2 exists. A fresh explicit seven-day v2 approval remains a
 separate prerequisite for any live research call.
 
-Schema-27 draft pull request #8 was opened from exact head
-`9a2f5326b854f5afb84da47cadf3f9596e6d3e63`. Private GitHub Actions run
-`31488222115` passed all eight release jobs: verification, five isolated
-ordinary test shards, and the containment and repeat Windows lifecycle phases.
-This evidence authorises review only. The factual closeout head must pass the
-same matrix; merge and post-merge proof remain separate gates.
+Schema 27 is now canonical locally and online. Pull request #10 exact head
+`50dba5905df47bb4430a5929d3d0dda7c0690388` passed all eight private release
+jobs in run `31516719014`, merged as
+`fcda9d472b0dcd6dceb53b0afd3b8cd4241fe017`, and passed all eight post-merge
+`main` jobs in run `31517691274`. On the exact content commit, local lint, the
+focused proof (1 of 1), the Commercial Intelligence pack (13 of 13), and the
+complete five-shard ordinary suite passed. Supported owner-context Doctor was
+fully green, including the current active-key recovery set and authenticated
+restore.
+
+The signed Start-to-one-system-check-to-Standby proof left Decisions empty, no
+commercial test, an empty queue, and zero Pantheon-origin browser console
+entries. Pre-state
+snapshot SHA-256 was
+`1a525d6f5f577d206f33c7e2399a7e052df011786b129d6348b4bd9301238337`;
+post-state SHA-256 was
+`2835628f014c0c5667cd021641351152666751b72260f2945e1647093c428715`;
+collector SHA-256 was
+`49fe9d844f9e5a9e5a4054ac57508342864cd41e62a9d9fefe9e78091b10be7d`.
+All protected commercial records, including opportunity, cost, evidence,
+authority, provider-execution, and billing records, and all artifacts remained
+exact. Eight source-backed registry sets received timestamp-only readiness
+refreshes, and all 11 existing integration records received timestamp-only
+`last_checked_at` and `updated_at` observation refreshes while status, mode, and
+health remained unchanged. Physical FTS storage rebuilt or
+churned while logical and exhaustive FTS truth remained exact. The other bounded
+deltas were two zero-finding monitor runs, one scheduler run, and three events.
+No provider or model call, cost, buyer contact, publishing, account action, new
+approval, decision, outbound action, or spend occurred.
+
+One P2 support item remains: `restore-pantheon.ps1` has not yet proved its
+retained legacy-key fallback because native stderr can interact with
+`$ErrorActionPreference = "Stop"` before the candidate loop evaluates the exit
+code. Do not claim that wrapper path. The current active-key recovery restore is
+proved and healthy, so this does not reopen the release gate.
 
 Foundation is releasable only when:
 
