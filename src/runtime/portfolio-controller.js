@@ -86,7 +86,8 @@ function normalizePortfolioRecords(db) {
        WHERE id IN (
          SELECT opportunity_id FROM commercial_decision_cases
          WHERE round_id = ? AND recommendation <> 'advance'
-       )`,
+       )
+         AND status <> 'parked'`,
       [timestamp, round.id],
     );
   }
