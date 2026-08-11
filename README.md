@@ -4,6 +4,13 @@ Pantheon is Daniel's local, desktop-first AI business operating system. Jarvis
 is the Codex-based developer and IT engineer responsible for building,
 monitoring, maintaining, and improving Pantheon.
 
+Pantheon's destination is a governed operating machine that can build and run
+multiple business ventures in parallel. Its current stage is deliberately
+narrower: find and prove the first venture, including three independent paying
+buyers and positive net cash contribution, before opening concurrent venture
+lanes. That sequencing is a risk gate, not a reduction of the long-term
+mission.
+
 ## Start Pantheon
 
 Double-click `START PANTHEON.cmd` in this folder.
@@ -55,9 +62,17 @@ and storefront rendering use the pinned Python packages in
 `requirements-runtime.txt`. Doctor verifies the complete renderer rather than
 assuming a Python installation is usable.
 
+As of 2026-08-11, the owner-approved technical recovery is complete: the live
+database is current schema 27, the locked runtime and owner dashboard proof
+passed, and active-key recovery set
+`bdfab6e4-e765-47d0-830d-bfbef0532fe7` passed verification, disposable
+restore, and Doctor. Pre-Venture Research Authority v1 is expired. Recovery did
+not create v2 authority or permit provider use; any live research still needs a
+new exact, time-bounded owner approval and authenticated attestation.
+
 ## Project Direction
 
 The living roadmap is in `docs/Pantheon Master Plan.md`. Meaningful build
 history and proof results are in `docs/Pantheon Build Log.md`. The current
 release evidence and honest capability limits are in
-`docs/proofs/2026-07-27-commercial-intelligence-foundation-proof.md`.
+`docs/proofs/2026-08-11-preventure-research-schema27-offline-recovery-proof.md`.

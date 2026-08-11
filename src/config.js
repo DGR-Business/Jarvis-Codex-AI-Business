@@ -1,4 +1,5 @@
 const path = require("node:path");
+const { OFFICIAL_OPENAI_RESPONSES_URL } = require("./adapters/openai-egress-policy");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const ENV_SUFFIXES = [
@@ -104,7 +105,7 @@ const CONFIG = {
   liveResearchDefaultBudgetCents: Math.round(numberFromEnv("PANTHEON_LIVE_RESEARCH_BUDGET_AUD", 2) * 100),
   liveResearchProvider: envValue("PANTHEON_LIVE_RESEARCH_PROVIDER", "openai-web-search"),
   liveResearchModel: envValue("PANTHEON_LIVE_RESEARCH_MODEL", "gpt-5.5"),
-  openaiResponsesUrl: process.env.OPENAI_RESPONSES_URL || "https://api.openai.com/v1/responses",
+  openaiResponsesUrl: OFFICIAL_OPENAI_RESPONSES_URL,
   liveResearchMaxInputTokens: Math.max(8000, numberFromEnv("PANTHEON_LIVE_RESEARCH_MAX_INPUT_TOKENS", 32000)),
   liveResearchMaxOutputTokens: Math.max(800, numberFromEnv("PANTHEON_LIVE_RESEARCH_MAX_OUTPUT_TOKENS", 2400)),
   liveModelDefaultBudgetCents: Math.round(numberFromEnv("PANTHEON_LIVE_MODEL_BUDGET_AUD", 1) * 100),

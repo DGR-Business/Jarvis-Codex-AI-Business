@@ -7,6 +7,7 @@ const {
   environmentEnabled,
   preferredEnvironmentName,
 } = require("../adapters/pantheon-environment");
+const { inspectOpenAiEgressPolicy } = require("../adapters/openai-egress-policy");
 
 function parseRows(rows, fields = ["metadata", "payload", "result"]) {
   return rows.map((row) => {
@@ -53,7 +54,6 @@ function getLiveAiWorkerReadiness(db) {
   const budgetExposure = monthlyBudgetExposure(db);
   const monthlySpendCents = budgetExposure.totalCents;
   const remainingBudgetCents = Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents) - budgetExposure.totalCents;
-  const openaiIntegration = integrations.find((integration) => integration.id === "openai");
   const aiWorkerIntegration = integrations.find((integration) => integration.id === "ai_workers");
   const imageTool = get(
     db,
@@ -85,17 +85,25 @@ function getLiveAiWorkerReadiness(db) {
     "SELECT COUNT(*) AS count FROM agent_runs WHERE mode IN ('live-ai-worker', 'openai-agents-sdk', 'live-agent') AND status = 'failed'",
   )[0]?.count || 0;
 
-  const credentialsConfigured = Boolean(process.env.OPENAI_API_KEY) && openaiIntegration?.health === "ok";
+  const credentialsConfigured = Boolean(process.env.OPENAI_API_KEY);
+  const egressPolicy = inspectOpenAiEgressPolicy();
+  const egressReady = egressPolicy.ready;
   const adapterReady = agentRuntime.ready;
   const pricingReady = Boolean(modelPricing(CONFIG.liveModel));
   const budgetReady = remainingBudgetCents >= Number(CONFIG.liveModelDefaultBudgetCents || 0);
-  const ready = credentialsConfigured && liveFlagEnabled && adapterReady && pricingReady && budgetReady;
+  const ready = credentialsConfigured
+    && egressReady
+    && liveFlagEnabled
+    && adapterReady
+    && pricingReady
+    && budgetReady;
   const imageToolReady = imageTool?.status === "pilot_ready"
     && imageTool?.permission === "requires_approval"
     && Number(imageTool?.requires_approval) === 1;
   const imageGenerationReady = ready && imageGenerationEnabled && imageToolReady;
   const imageGenerationBlockers = [];
   if (!credentialsConfigured) imageGenerationBlockers.push("The OpenAI connection is not available.");
+  if (!egressReady) imageGenerationBlockers.push("The OpenAI network destination is not secure.");
   if (!liveFlagEnabled) imageGenerationBlockers.push("AI workers are not enabled.");
   if (!imageGenerationEnabled) imageGenerationBlockers.push("Product visual generation is not enabled for this runtime.");
   if (!adapterReady) imageGenerationBlockers.push("The Agents SDK runner is not ready.");
@@ -103,6 +111,7 @@ function getLiveAiWorkerReadiness(db) {
 
   const blockers = [];
   if (!credentialsConfigured) blockers.push("Pantheon is not connected to an OpenAI API key in this running session.");
+  if (!egressReady) blockers.push("The OpenAI network destination or TLS policy is not the approved secure configuration.");
   if (!liveFlagEnabled) blockers.push("Live AI workers are turned off for this Pantheon runtime.");
   if (!adapterReady) blockers.push(...agentRuntime.blockers);
   if (!pricingReady) blockers.push("The selected model has no registered AUD safety pricing.");
@@ -120,6 +129,8 @@ function getLiveAiWorkerReadiness(db) {
     budgetExposure,
     remainingBudgetCents,
     credentialsConfigured,
+    egressReady,
+    egressPolicy,
     liveFlagEnabled,
     adapterReady,
     pricingReady,
@@ -158,6 +169,15 @@ function getLiveAiWorkerReadiness(db) {
         credentialsConfigured,
         credentialsConfigured ? "Pantheon can authenticate with OpenAI." : "Pantheon has no OpenAI API key in this running session.",
         "Connect OPENAI_API_KEY outside the repository, then restart Pantheon.",
+      ),
+      checklistItem(
+        "openai_egress",
+        "Secure OpenAI destination",
+        egressReady,
+        egressReady
+          ? "Pantheon will send approved work only to the exact official OpenAI endpoint and will refuse redirects."
+          : "Pantheon detected a changed OpenAI destination or disabled TLS certificate checking.",
+        "Remove OpenAI endpoint overrides and restore normal TLS certificate verification, then restart Pantheon.",
       ),
       checklistItem(
         "live_model_flag",

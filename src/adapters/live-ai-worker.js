@@ -16,7 +16,18 @@ const {
 } = require("../runtime/agent-model-contracts");
 const { bindModelCallToAttempt } = require("../runtime/agent-execution-evidence");
 const { spendCostId } = require("../runtime/stable-id");
-const { markTaskAttemptProviderDispatched } = require("../runtime/task-claims");
+const {
+  assertTaskClaimActive,
+  isTaskClaimLostError,
+  markTaskAttemptProviderDispatched,
+} = require("../runtime/task-claims");
+const {
+  assertOpenAiResponsesEgress,
+  isDefinitePreEffectHttpStatus,
+  providerRequestIdFromResponse,
+  readBoundedJsonResponse,
+  safeProviderErrorMessage,
+} = require("./openai-egress-policy");
 
 const LIVE_AI_WORKER_PROVIDER = "openai-responses-live-worker";
 const DEFAULT_PROVIDER_DEADLINE_MS = 60_000;
@@ -38,8 +49,18 @@ function providerError(error, state, extras = {}) {
   wrapped.providerCallOccurred = state !== "not_dispatched";
   wrapped.outcomeUnknown = state === "outcome_unknown";
   wrapped.definiteProviderRejection = state === "definite_rejection";
+  wrapped.billingOutcomeUnknown = state === "outcome_unknown" || state === "definite_rejection";
+  wrapped.exactBillingPending = wrapped.billingOutcomeUnknown;
   Object.assign(wrapped, extras);
   return wrapped;
+}
+
+function emergencyProtectedModelCallError(task, callId) {
+  const error = new Error(`Task claim was lost before late provider result finalization: ${task.id}`);
+  error.code = "task_claim_lost";
+  error.taskId = task.id;
+  error.modelCallId = callId;
+  return error;
 }
 
 function compactText(value, max = 1000) {
@@ -105,6 +126,14 @@ function costIdForTask(task) {
 function approvedEstimateCents(task) {
   const request = task.payload?.liveSpendRequest || {};
   return Math.max(1, Number(request.estimatedCostCents || request.maxCostCents || task.cost_budget_cents || CONFIG.liveModelDefaultBudgetCents || 1));
+}
+
+function approvedExposureCents(task) {
+  const request = task.payload?.liveSpendRequest || {};
+  return Math.max(
+    1,
+    Number(request.maxCostCents || request.estimatedCostCents || task.cost_budget_cents || CONFIG.liveModelDefaultBudgetCents || 1),
+  );
 }
 
 function liveWorkerCostEstimateCents(task) {
@@ -419,23 +448,6 @@ function buildOpenAIRequest(db, task, agentDefinition, policy) {
   };
 }
 
-async function readJsonResponse(response) {
-  if (typeof response.json === "function") {
-    try {
-      return await response.json();
-    } catch {
-      // Fall through to text parsing below.
-    }
-  }
-  const body = typeof response.text === "function" ? await response.text() : "";
-  if (!body) return {};
-  try {
-    return JSON.parse(body);
-  } catch {
-    return { raw: body };
-  }
-}
-
 async function callOpenAIResponses(body, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") {
@@ -443,11 +455,13 @@ async function callOpenAIResponses(body, options = {}) {
   }
   const apiKey = options.apiKey || process.env.OPENAI_API_KEY;
   if (!apiKey) throw providerError(new Error("OPENAI_API_KEY is required for live AI worker execution."), "not_dispatched");
+  const responsesUrl = assertOpenAiResponsesEgress({ responsesUrl: options.responsesUrl });
 
   let response;
   try {
-    response = await fetchImpl(options.responsesUrl || CONFIG.openaiResponsesUrl, {
+    response = await fetchImpl(responsesUrl, {
       method: "POST",
+      redirect: "error",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${apiKey}`,
@@ -456,14 +470,51 @@ async function callOpenAIResponses(body, options = {}) {
       signal: requestSignal(Number(options.deadlineMs || DEFAULT_PROVIDER_DEADLINE_MS), options.signal),
     });
   } catch (error) {
-    throw providerError(error, "outcome_unknown", { providerRequestStarted: true });
+    const message = safeProviderErrorMessage(
+      { message: error?.message },
+      null,
+      { secrets: [apiKey], fallback: "Network request failed." },
+    );
+    throw providerError(
+      new Error(`OpenAI live worker request failed before a confirmed response: ${message}`),
+      "outcome_unknown",
+      { providerRequestStarted: true, providerResponseReceived: false },
+    );
   }
-  const json = await readJsonResponse(response);
+  const providerRequestId = providerRequestIdFromResponse(response);
+  let json;
+  try {
+    json = await readBoundedJsonResponse(response);
+  } catch (error) {
+    const message = safeProviderErrorMessage(
+      { message: error?.message },
+      response.status,
+      { secrets: [apiKey], fallback: "Provider response could not be safely read." },
+    );
+    const state = !response.ok && isDefinitePreEffectHttpStatus(response.status)
+      ? "definite_rejection"
+      : "outcome_unknown";
+    throw providerError(
+      new Error(`OpenAI live worker response could not be accepted: ${message}`),
+      state,
+      {
+        httpStatus: response.status,
+        providerRequestStarted: true,
+        providerResponseReceived: true,
+        providerRequestId,
+      },
+    );
+  }
   if (!response.ok) {
-    const message = json.error?.message || json.message || json.raw || `HTTP ${response.status}`;
-    throw providerError(new Error(`OpenAI live worker request failed: ${message}`), "definite_rejection", {
+    const message = safeProviderErrorMessage(json, response.status, { secrets: [apiKey] });
+    const state = isDefinitePreEffectHttpStatus(response.status)
+      ? "definite_rejection"
+      : "outcome_unknown";
+    throw providerError(new Error(`OpenAI live worker request failed: ${message}`), state, {
       httpStatus: response.status,
       providerRequestStarted: true,
+      providerResponseReceived: true,
+      providerRequestId: providerRequestIdFromResponse(response, json),
     });
   }
   return json;
@@ -475,13 +526,22 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
   const callId = metadata.modelCallId || `model_${randomId()}`;
   const providerResponseReceived = metadata.providerResponseReceived === true;
   const definiteProviderRejection = metadata.definiteProviderRejection === true;
-  const providerCompleted = !definiteProviderRejection && (
+  const outcomeUnknown = metadata.outcomeUnknown === true;
+  const billingOutcomeUnknown = metadata.billingOutcomeUnknown === true
+    || outcomeUnknown
+    || definiteProviderRejection;
+  const providerCompleted = !definiteProviderRejection && !outcomeUnknown && (
     providerResponseReceived
     || ["completed", "provider_completed", "waiting_approval", "needs_attention"].includes(status)
   );
-  const outcomeUnknown = metadata.outcomeUnknown === true;
   const dispatching = status === "dispatching";
-  const costStatus = providerCompleted ? "incurred_estimate" : outcomeUnknown ? "unknown" : dispatching ? "reserved" : "released";
+  const costStatus = providerCompleted
+    ? "incurred_estimate"
+    : billingOutcomeUnknown
+      ? "unknown"
+      : dispatching
+        ? "reserved"
+        : "released";
   const outcomeStatus = definiteProviderRejection
     ? "failed_before_effect"
     : providerCompleted
@@ -496,7 +556,7 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
   const providerRequestId = response?.id || metadata.providerRequestId || null;
   const callTimestamp = now();
   const completedAt = dispatching ? null : callTimestamp;
-  run(
+  const write = run(
     db,
     `INSERT INTO model_calls (id, workflow_id, task_id, venture_id, provider, model_class, selected_model, mode, status,
       input_tokens, output_tokens, estimated_cost_cents, actual_cost_cents, approval_required, metadata, created_at,
@@ -515,7 +575,15 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
        incurred_estimate_cents = excluded.incurred_estimate_cents,
        outcome_status = excluded.outcome_status,
        error_kind = excluded.error_kind,
-       completed_at = COALESCE(excluded.completed_at, model_calls.completed_at)`,
+       completed_at = COALESCE(excluded.completed_at, model_calls.completed_at)
+     WHERE COALESCE(model_calls.error_kind, '') <> 'operator_emergency_stop'
+       AND COALESCE(
+         json_extract(
+           CASE WHEN json_valid(model_calls.metadata) THEN model_calls.metadata ELSE '{}' END,
+           '$.emergencyStop'
+         ),
+         0
+       ) <> 1`,
     [
       callId,
       task.workflow_id,
@@ -536,8 +604,9 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
         responseId: response?.id || null,
         totalTokens: usage.evidence.totalTokens,
         tokenUsage: usage.evidence,
-        exactBillingPending: providerCompleted,
         ...metadata,
+        billingOutcomeUnknown,
+        exactBillingPending: providerCompleted || billingOutcomeUnknown,
         modelCallId: undefined,
       }),
       callTimestamp,
@@ -551,6 +620,14 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
       completedAt,
     ],
   );
+  if (write.changes !== 1) {
+    const existing = get(db, "SELECT error_kind, metadata FROM model_calls WHERE id = ?", [callId]);
+    const existingMetadata = fromJson(existing?.metadata, {});
+    if (existing?.error_kind === "operator_emergency_stop" || existingMetadata.emergencyStop === true) {
+      throw emergencyProtectedModelCallError(task, callId);
+    }
+    throw new Error(`Pantheon could not persist model call ${callId}.`);
+  }
   if (metadata.taskAttemptId) bindModelCallToAttempt(db, metadata.taskAttemptId, callId);
 
   return {
@@ -568,7 +645,8 @@ function recordLiveWorkerModelCall(db, task, response, estimateCents, model, sta
     incurredEstimateCents: providerCompleted ? estimateCents : 0,
     costStatus,
     currency: CONFIG.currency,
-    exactBillingPending: providerCompleted,
+    billingOutcomeUnknown,
+    exactBillingPending: providerCompleted || billingOutcomeUnknown,
   };
 }
 
@@ -633,12 +711,22 @@ function recordLiveWorkerCost(db, task, estimateCents, response, metadata = {}) 
 function recordLiveWorkerFailureCost(db, task, error) {
   const ts = now();
   const costId = costIdForTask(task);
-  const existing = get(db, "SELECT metadata FROM costs WHERE id = ?", [costId]);
+  const existing = get(db, "SELECT amount_cents, metadata FROM costs WHERE id = ?", [costId]);
+  const unknownExposureCents = Math.max(
+    approvedExposureCents(task),
+    Number(existing?.amount_cents || 0),
+  );
   const boundAttempt = error.taskAttemptId
     ? get(db, "SELECT agent_run_id FROM task_attempts WHERE id = ? AND task_id = ?", [error.taskAttemptId, task.id])
     : null;
   const agentRunId = error.agentRunId || boundAttempt?.agent_run_id || null;
   const modelCallId = error.modelCallId || null;
+  const billingOutcomeUnknown = error.providerCallOccurred === true
+    && (
+      error.billingOutcomeUnknown === true
+      || error.outcomeUnknown === true
+      || error.definiteProviderRejection === true
+    );
   if (
     error.providerResponseReceived === true
     && error.outcomeUnknown !== true
@@ -656,6 +744,7 @@ function recordLiveWorkerFailureCost(db, task, error) {
       providerFailed: true,
       outcomeUnknown: false,
       providerResponseReceived: true,
+      billingOutcomeUnknown: false,
       exactBillingPending: true,
       providerDispatchStatus: error.providerDispatchStatus || "response_received_invalid_output",
       error: error.message,
@@ -693,38 +782,7 @@ function recordLiveWorkerFailureCost(db, task, error) {
     }
     return;
   }
-  if (error.outcomeUnknown !== true) {
-    if (existing) {
-      run(
-        db,
-        `UPDATE costs
-         SET status = 'released', amount_cents = 0, occurred_at = ?, metadata = ?,
-             run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
-             model_call_id = COALESCE(?, model_call_id)
-         WHERE id = ?`,
-        [
-          ts,
-          toJson({
-            ...fromJson(existing.metadata, {}),
-            noSpendOccurred: true,
-            providerFailed: true,
-            outcomeUnknown: false,
-            definiteProviderRejection: error.definiteProviderRejection === true,
-            httpStatus: error.httpStatus || error.status || null,
-            providerRequestId: error.providerRequestId || error.requestID || null,
-            providerDispatchStatus: error.providerDispatchStatus || "not_dispatched",
-            error: error.message,
-          }),
-          agentRunId,
-          task.id,
-          modelCallId,
-          costId,
-        ],
-      );
-    }
-    return;
-  }
-  if (!existing) {
+  if (billingOutcomeUnknown && !existing) {
     run(
       db,
       `INSERT INTO costs
@@ -739,39 +797,97 @@ function recordLiveWorkerFailureCost(db, task, error) {
         task.id,
         modelCallId,
         LIVE_AI_WORKER_PROVIDER,
-        approvedEstimateCents(task),
+        unknownExposureCents,
         CONFIG.currency,
         ts,
-        toJson({ taskId: task.id, noSpendOccurred: null, providerFailed: true, outcomeUnknown: true, error: error.message }),
+        toJson({
+          taskId: task.id,
+          noSpendOccurred: null,
+          providerFailed: true,
+          outcomeUnknown: error.outcomeUnknown === true,
+          definiteProviderRejection: error.definiteProviderRejection === true,
+          billingOutcomeUnknown: true,
+          exactBillingPending: true,
+          estimatedCostCents: error.definiteProviderRejection === true
+            ? 0
+            : Math.max(0, Number(error.incurredEstimateCents || 0)),
+          providerDispatchStatus: error.providerDispatchStatus || null,
+          providerRequestId: error.providerRequestId || error.requestID || null,
+          httpStatus: error.httpStatus || error.status || null,
+          reservedExposureCents: unknownExposureCents,
+          error: error.message,
+        }),
       ],
     );
     return;
   }
-  run(
-    db,
-    `UPDATE costs
-     SET status = ?, amount_cents = ?, occurred_at = ?, metadata = ?,
-         run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
-         model_call_id = COALESCE(?, model_call_id)
-     WHERE id = ?`,
-    [
-      "unknown",
-      approvedEstimateCents(task),
-      ts,
-      toJson({
-        ...fromJson(existing.metadata, {}),
-        noSpendOccurred: null,
-        providerFailed: true,
-        outcomeUnknown: error.outcomeUnknown === true,
-        providerDispatchStatus: error.providerDispatchStatus || null,
-        error: error.message,
-      }),
-      agentRunId,
-      task.id,
-      modelCallId,
-      costId,
-    ],
-  );
+  if (billingOutcomeUnknown) {
+    run(
+      db,
+      `UPDATE costs
+       SET status = ?, amount_cents = ?, occurred_at = ?, metadata = ?,
+           run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
+           model_call_id = COALESCE(?, model_call_id)
+       WHERE id = ?`,
+      [
+        "unknown",
+        unknownExposureCents,
+        ts,
+        toJson({
+          ...fromJson(existing.metadata, {}),
+          noSpendOccurred: null,
+          providerFailed: true,
+          outcomeUnknown: error.outcomeUnknown === true,
+          definiteProviderRejection: error.definiteProviderRejection === true,
+          billingOutcomeUnknown: true,
+          exactBillingPending: true,
+          estimatedCostCents: error.definiteProviderRejection === true
+            ? 0
+            : Math.max(0, Number(error.incurredEstimateCents || 0)),
+          providerDispatchStatus: error.providerDispatchStatus || null,
+          providerRequestId: error.providerRequestId || error.requestID || null,
+          httpStatus: error.httpStatus || error.status || null,
+          reservedExposureCents: unknownExposureCents,
+          error: error.message,
+        }),
+        agentRunId,
+        task.id,
+        modelCallId,
+        costId,
+      ],
+    );
+    return;
+  }
+  if (existing) {
+    run(
+      db,
+      `UPDATE costs
+       SET status = 'released', amount_cents = 0, occurred_at = ?, metadata = ?,
+           run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id),
+           model_call_id = COALESCE(?, model_call_id)
+       WHERE id = ?`,
+      [
+        ts,
+        toJson({
+          ...fromJson(existing.metadata, {}),
+          noSpendOccurred: true,
+          providerFailed: true,
+          outcomeUnknown: false,
+          definiteProviderRejection: false,
+          billingOutcomeUnknown: false,
+          exactBillingPending: false,
+          httpStatus: error.httpStatus || error.status || null,
+          providerRequestId: error.providerRequestId || error.requestID || null,
+          providerDispatchStatus: error.providerDispatchStatus || "not_dispatched",
+          error: error.message,
+        }),
+        agentRunId,
+        task.id,
+        modelCallId,
+        costId,
+      ],
+    );
+  }
 }
 
 function normalizeOutput(parsed, rawText) {
@@ -835,12 +951,14 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
   if (environmentDisabled("disableLiveAiWorkerAdapter")) {
     throw new Error("Pantheon's OpenAI worker connection is disabled in the runtime configuration.");
   }
+  const responsesUrl = assertOpenAiResponsesEgress({ responsesUrl: options.responsesUrl });
 
   const requestBody = buildOpenAIRequest(db, task, agentDefinition, policy);
   const estimateCents = liveWorkerCostEstimateCents(task);
+  const reservedExposureCents = approvedExposureCents(task);
   const deadlineMs = approvedDeadlineMs(task, options);
   const dispatchCall = recordLiveWorkerModelCall(db, task, null, estimateCents, requestBody.model, "dispatching", {
-    reservedCostCents: estimateCents,
+    reservedCostCents: reservedExposureCents,
     agentRunId: options.agentRunId || null,
     taskAttemptId: options.taskClaim?.attemptId || null,
     dispatchIntent: { status: "dispatched", recordedAt: now(), deadlineMs },
@@ -854,8 +972,19 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
   }
   let response;
   try {
-    response = await callOpenAIResponses(requestBody, { ...options, deadlineMs });
+    response = await callOpenAIResponses(requestBody, {
+      ...options,
+      responsesUrl,
+      deadlineMs,
+    });
+    if (options.taskClaim) {
+      assertTaskClaimActive(db, options.taskClaim, "late provider response finalization");
+    }
   } catch (error) {
+    if (isTaskClaimLostError(error)) throw error;
+    if (options.taskClaim) {
+      assertTaskClaimActive(db, options.taskClaim, "late provider failure finalization");
+    }
     let failure = error;
     if (!failure.providerDispatchStatus) {
       failure = providerError(failure, "outcome_unknown", { providerRequestStarted: true });
@@ -863,26 +992,46 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
     failure.agentRunId = options.agentRunId || null;
     failure.taskAttemptId = options.taskClaim?.attemptId || null;
     failure.modelCallId = dispatchCall.id;
-    recordLiveWorkerFailureCost(db, task, failure);
-    const failedCall = recordLiveWorkerModelCall(db, task, null, estimateCents, requestBody.model, "failed", {
+    const billingOutcomeUnknown = failure.providerCallOccurred === true
+      && (failure.outcomeUnknown === true || failure.definiteProviderRejection === true);
+    const failureEstimateCents = failure.definiteProviderRejection === true ? 0 : estimateCents;
+    failure.billingOutcomeUnknown = billingOutcomeUnknown;
+    failure.exactBillingPending = billingOutcomeUnknown;
+    failure.reservedExposureCents = billingOutcomeUnknown ? reservedExposureCents : 0;
+    const failedCall = recordLiveWorkerModelCall(db, task, null, failureEstimateCents, requestBody.model, "failed", {
       modelCallId: dispatchCall.id,
       agentRunId: options.agentRunId || null,
       taskAttemptId: options.taskClaim?.attemptId || null,
+      reservedCostCents: reservedExposureCents,
       error: failure.message,
       outcomeUnknown: failure.outcomeUnknown === true,
+      definiteProviderRejection: failure.definiteProviderRejection === true,
+      billingOutcomeUnknown,
+      providerResponseReceived: failure.providerResponseReceived === true,
+      providerRequestId: failure.providerRequestId || null,
       errorKind: failure.outcomeUnknown === true ? "provider_outcome_unknown" : "provider_rejected",
       providerDispatchStatus: failure.providerDispatchStatus,
       httpStatus: failure.httpStatus || null,
     });
     failure.modelCallId = failedCall.id;
+    recordLiveWorkerFailureCost(db, task, failure);
     failure.providerReceipt = {
       modelCallId: failedCall.id,
-      providerRequestId: null,
+      providerRequestId: failure.providerRequestId || null,
       provider: LIVE_AI_WORKER_PROVIDER,
       status: failure.providerDispatchStatus,
       deadlineMs,
+      billingOutcomeUnknown,
+      exactBillingPending: billingOutcomeUnknown,
+      reservedExposureCents: billingOutcomeUnknown ? reservedExposureCents : 0,
     };
     failure.incurredEstimateCents = 0;
+    failure.reservedExposureCents = billingOutcomeUnknown
+      ? Math.max(
+        reservedExposureCents,
+        Number(get(db, "SELECT amount_cents FROM costs WHERE id = ?", [costIdForTask(task)])?.amount_cents || 0),
+      )
+      : 0;
     insertEvent(db, {
       level: "error",
       actor: "ai-worker-adapter",
@@ -895,7 +1044,13 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
         taskId: task.id,
         modelCallId: failedCall.id,
         outcomeUnknown: failure.outcomeUnknown === true,
+        definiteProviderRejection: failure.definiteProviderRejection === true,
+        billingOutcomeUnknown,
+        exactBillingPending: billingOutcomeUnknown,
         providerDispatchStatus: failure.providerDispatchStatus,
+        providerRequestId: failure.providerRequestId || null,
+        httpStatus: failure.httpStatus || null,
+        reservedExposureCents: failure.reservedExposureCents,
       },
     });
     throw failure;
@@ -1044,6 +1199,7 @@ async function runLiveAiWorkerTask(db, task, agentDefinition, policy, options = 
 
 module.exports = {
   LIVE_AI_WORKER_PROVIDER,
+  approvedExposureCents,
   buildOpenAIRequest,
   buildStableWorkerPrompt,
   buildWorkerTaskInstruction,

@@ -419,7 +419,21 @@ test("maintenance, venture switching, and commercial search controls match their
     "\n  if (action === \"prepare-retention-decision\")",
   );
   assert.match(maintenance, /postJson\("\/api\/system\/maintenance\/run-due", \{\}\)/);
-  assert.doesNotMatch(maintenance, /\/api\/monitor\/run|Maintenance completed/);
+  assert.match(maintenance, /postJson\("\/api\/monitor\/run", \{\}\)/);
+  assert.doesNotMatch(maintenance, /Maintenance completed/);
+  const maintenanceAction = sourceBetween(
+    appSource,
+    "if (action === \"maintenance\")",
+    "\n  if (action === \"run-monitor\")",
+  );
+  const monitorAction = sourceBetween(
+    appSource,
+    "if (action === \"run-monitor\")",
+    "\n  if (action === \"prepare-retention-decision\")",
+  );
+  assert.doesNotMatch(maintenanceAction, /\/api\/monitor\/run|preventure-research\/assignments/);
+  assert.match(monitorAction, /\/api\/monitor\/run/);
+  assert.match(appSource, /Maintenance paused for bounded research/);
 
   const summarize = maintenanceSummaryRenderer();
   assert.equal(

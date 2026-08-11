@@ -4,9 +4,1752 @@ const { createHash, randomUUID } = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("./config");
 const { spendCostId } = require("./runtime/stable-id");
+const {
+  HISTORICAL_PREVENTURE_APPROVAL_DECISIONS,
+} = require("./runtime/preventure-research-historical-approval-manifest");
 
-const LATEST_SCHEMA_VERSION = 26;
+const LATEST_SCHEMA_VERSION = 27;
 let canonicalRecoverySchemaContractCache = null;
+const preventureOwnerApprovalCapabilities = new WeakMap();
+const preventureValidatedEarlyStopCapabilities = new WeakMap();
+const preventureProviderCostReconciliationCapabilities = new WeakMap();
+const RETIRED_PROVIDER_COST_RECONCILIATION_SENTINEL = Object.freeze(
+  Object.create(null),
+);
+const preventureOwnerBillingObservationCapabilities = new WeakMap();
+const preventureTerminalRetainedRecoveryCapabilities = new WeakMap();
+const preventureTerminalReceiptCapabilities = new WeakMap();
+const preventureEmergencyCostSafetyCapabilities = new WeakMap();
+const SHA256_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const PREVENTURE_RESEARCH_COST_EVENT_SCHEMA = "pantheon.preventure-research-cost-event.v1";
+const PREVENTURE_RESEARCH_EMERGENCY_COST_TRANSITION_SCHEMA =
+  "pantheon.preventure-research-emergency-cost-transition.v1";
+
+function sqliteTextLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+const HISTORICAL_PREVENTURE_APPROVAL_DECISION_SQL =
+  HISTORICAL_PREVENTURE_APPROVAL_DECISIONS.map((entry) => `(
+    decision_receipt_hash = ${sqliteTextLiteral(entry.receiptHash)}
+    AND approval_id = ${sqliteTextLiteral(entry.approvalId)}
+    AND authority_hash = ${sqliteTextLiteral(entry.authorityHash)}
+    AND event_type = ${sqliteTextLiteral(entry.eventType)}
+    AND scope_hash = ${sqliteTextLiteral(entry.scopeHash)}
+    AND requested_by = ${sqliteTextLiteral(entry.requestedBy)}
+    AND requested_at = ${sqliteTextLiteral(entry.requestedAt)}
+    AND decided_by = ${sqliteTextLiteral(entry.decidedBy)}
+    AND decision_source = ${sqliteTextLiteral(entry.decisionSource)}
+    AND decision_status = ${sqliteTextLiteral(entry.decisionStatus)}
+    AND decided_at = ${sqliteTextLiteral(entry.decidedAt)}
+    AND created_at = ${sqliteTextLiteral(entry.createdAt)}
+  )`).join(" OR ");
+
+function canonicalCapabilityValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalCapabilityValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalCapabilityValue(value[key])]),
+    );
+  }
+  return value ?? null;
+}
+
+function canonicalCapabilityJson(value) {
+  return JSON.stringify(canonicalCapabilityValue(value));
+}
+
+function canonicalCapabilityHash(value) {
+  return `sha256:${createHash("sha256")
+    .update(Buffer.from(canonicalCapabilityJson(value), "utf8"))
+    .digest("hex")}`;
+}
+
+function normalizePreventureOwnerApprovalCapability(binding) {
+  const exactKeys = [
+    "approvalId",
+    "authorityHash",
+    "eventType",
+    "scopeHash",
+    "decisionStatus",
+    "decidedAt",
+    "receiptHash",
+  ];
+  if (
+    !binding
+    || typeof binding !== "object"
+    || Array.isArray(binding)
+    || JSON.stringify(Object.keys(binding).sort()) !== JSON.stringify([...exactKeys].sort())
+    || typeof binding.approvalId !== "string"
+    || binding.approvalId.length < 1
+    || binding.approvalId.length > 256
+    || !SHA256_DIGEST_PATTERN.test(String(binding.authorityHash || ""))
+    || !["accepted", "activated"].includes(binding.eventType)
+    || !SHA256_DIGEST_PATTERN.test(String(binding.scopeHash || ""))
+    || !["approved", "needs_changes", "rejected"].includes(binding.decisionStatus)
+    || !Number.isFinite(Date.parse(binding.decidedAt))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.receiptHash || ""))
+  ) {
+    throw new Error("The pre-venture owner-session attestation capability binding is invalid.");
+  }
+  return Object.freeze({ ...binding });
+}
+
+function registerPreventureOwnerApprovalCapabilityFunction(db) {
+  db.function("pantheon_preventure_owner_attestation_capability", (
+    phaseValue,
+    approvalIdValue,
+    authorityHashValue,
+    eventTypeValue,
+    scopeHashValue,
+    decisionStatusValue,
+    decidedAtValue,
+    receiptHashValue,
+  ) => {
+    const [
+      phase,
+      approvalId,
+      authorityHash,
+      eventType,
+      scopeHash,
+      decisionStatus,
+      decidedAt,
+      receiptHash,
+    ] = [
+      phaseValue,
+      approvalIdValue,
+      authorityHashValue,
+      eventTypeValue,
+      scopeHashValue,
+      decisionStatusValue,
+      decidedAtValue,
+      receiptHashValue,
+    ].map((value) => value === null || value === undefined ? null : String(value));
+    const state = preventureOwnerApprovalCapabilities.get(db);
+    if (!state) return 0;
+    const expected = state.binding;
+    if (
+      approvalId !== expected.approvalId
+      || authorityHash !== expected.authorityHash
+      || eventType !== expected.eventType
+      || scopeHash !== expected.scopeHash
+      || decisionStatus !== expected.decisionStatus
+      || decidedAt !== expected.decidedAt
+    ) return 0;
+    if (phase === "approval_update" && state.phase === "armed" && receiptHash === null) {
+      state.phase = "approval_updated";
+      return 1;
+    }
+    if (
+      phase === "receipt_insert"
+      && state.phase === "approval_updated"
+      && receiptHash === expected.receiptHash
+    ) {
+      state.phase = "consumed";
+      return 1;
+    }
+    return 0;
+  });
+}
+
+function withPreventureOwnerApprovalCapability(db, binding, action) {
+  if (!db || typeof db.prepare !== "function" || typeof action !== "function") {
+    throw new Error("The pre-venture owner-session attestation requires one database action.");
+  }
+  if (preventureOwnerApprovalCapabilities.has(db)) {
+    throw new Error("A pre-venture owner-session attestation is already in progress.");
+  }
+  const exactBinding = normalizePreventureOwnerApprovalCapability(binding);
+  beginAtomic(db);
+  preventureOwnerApprovalCapabilities.set(db, {
+    binding: exactBinding,
+    phase: "armed",
+  });
+  try {
+    const result = action();
+    if (result && typeof result.then === "function") {
+      throw new Error("The pre-venture owner-session attestation action must be synchronous.");
+    }
+    const state = preventureOwnerApprovalCapabilities.get(db);
+    if (!state || state.phase !== "consumed") {
+      throw new Error(
+        "The pre-venture owner-session attestation did not complete its exact approval and receipt pair.",
+      );
+    }
+    preventureOwnerApprovalCapabilities.delete(db);
+    commitAtomic(db);
+    return result;
+  } catch (error) {
+    preventureOwnerApprovalCapabilities.delete(db);
+    rollbackAtomic(db);
+    throw error;
+  } finally {
+    preventureOwnerApprovalCapabilities.delete(db);
+  }
+}
+
+function normalizePreventureValidatedEarlyStopCapability(binding) {
+  const exactKeys = [
+    "authorityHash",
+    "earlyStopRecordHash",
+    "decisionId",
+    "completionEventId",
+    "skippedAssignmentCount",
+  ];
+  if (
+    !binding
+    || typeof binding !== "object"
+    || Array.isArray(binding)
+    || JSON.stringify(Object.keys(binding).sort()) !== JSON.stringify([...exactKeys].sort())
+    || !SHA256_DIGEST_PATTERN.test(String(binding.authorityHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.earlyStopRecordHash || ""))
+    || typeof binding.decisionId !== "string"
+    || binding.decisionId.length < 1
+    || binding.decisionId.length > 256
+    || typeof binding.completionEventId !== "string"
+    || binding.completionEventId.length < 1
+    || binding.completionEventId.length > 256
+    || !Number.isSafeInteger(binding.skippedAssignmentCount)
+    || binding.skippedAssignmentCount < 0
+    || binding.skippedAssignmentCount > 2
+  ) {
+    throw new Error("The validated early-stop database capability binding is invalid.");
+  }
+  return Object.freeze({ ...binding });
+}
+
+function registerPreventureValidatedEarlyStopCapabilityFunction(db) {
+  db.function("pantheon_preventure_validated_early_stop_capability", (
+    authorityHashValue,
+    earlyStopRecordHashValue,
+    decisionIdValue,
+    completionEventIdValue,
+    skippedAssignmentCountValue,
+  ) => {
+    const state = preventureValidatedEarlyStopCapabilities.get(db);
+    if (!state || state.phase !== "armed") return 0;
+    const actual = {
+      authorityHash: String(authorityHashValue ?? ""),
+      earlyStopRecordHash: String(earlyStopRecordHashValue ?? ""),
+      decisionId: String(decisionIdValue ?? ""),
+      completionEventId: String(completionEventIdValue ?? ""),
+      skippedAssignmentCount: Number(skippedAssignmentCountValue),
+    };
+    if (
+      actual.authorityHash !== state.binding.authorityHash
+      || actual.earlyStopRecordHash !== state.binding.earlyStopRecordHash
+      || actual.decisionId !== state.binding.decisionId
+      || actual.completionEventId !== state.binding.completionEventId
+      || actual.skippedAssignmentCount !== state.binding.skippedAssignmentCount
+    ) return 0;
+    state.phase = "consumed";
+    return 1;
+  });
+}
+
+function withPreventureValidatedEarlyStopCapability(db, binding, action) {
+  if (!db || typeof db.prepare !== "function" || typeof action !== "function") {
+    throw new Error("A validated early stop requires one exact synchronous database action.");
+  }
+  if (preventureValidatedEarlyStopCapabilities.has(db)) {
+    throw new Error("A validated early-stop database action is already in progress.");
+  }
+  const exactBinding = normalizePreventureValidatedEarlyStopCapability(binding);
+  beginAtomic(db);
+  preventureValidatedEarlyStopCapabilities.set(db, {
+    binding: exactBinding,
+    phase: "armed",
+  });
+  try {
+    const result = action();
+    if (result && typeof result.then === "function") {
+      throw new Error("The validated early-stop database action must be synchronous.");
+    }
+    const state = preventureValidatedEarlyStopCapabilities.get(db);
+    const stop = db.prepare(
+      `SELECT expected_decision_id, expected_completion_event_id
+       FROM preventure_research_terminal_stops
+       WHERE authority_hash = ? AND early_stop_record_hash = ?`,
+    ).get(exactBinding.authorityHash, exactBinding.earlyStopRecordHash);
+    const decision = db.prepare(
+      `SELECT completion_mode, early_stop_record_hash
+       FROM preventure_research_decisions
+       WHERE authority_hash = ? AND decision_id = ?`,
+    ).get(exactBinding.authorityHash, exactBinding.decisionId);
+    const completion = db.prepare(
+      `SELECT event_type FROM preventure_research_lifecycle_events
+       WHERE authority_hash = ? AND id = ?`,
+    ).get(exactBinding.authorityHash, exactBinding.completionEventId);
+    const skippedCount = Number(db.prepare(
+      `SELECT COUNT(*) AS count FROM preventure_research_assignment_skips
+       WHERE authority_hash = ?`,
+    ).get(exactBinding.authorityHash).count);
+    if (
+      !state
+      || state.phase !== "consumed"
+      || stop?.expected_decision_id !== exactBinding.decisionId
+      || stop?.expected_completion_event_id !== exactBinding.completionEventId
+      || decision?.completion_mode !== "validated_early_stop"
+      || decision?.early_stop_record_hash !== exactBinding.earlyStopRecordHash
+      || completion?.event_type !== "completed"
+      || skippedCount !== exactBinding.skippedAssignmentCount
+    ) {
+      throw new Error(
+        "The validated early stop did not atomically persist its exact stop, suffix, decision, and completion.",
+      );
+    }
+    preventureValidatedEarlyStopCapabilities.delete(db);
+    commitAtomic(db);
+    return result;
+  } catch (error) {
+    preventureValidatedEarlyStopCapabilities.delete(db);
+    rollbackAtomic(db);
+    throw error;
+  } finally {
+    preventureValidatedEarlyStopCapabilities.delete(db);
+  }
+}
+
+function normalizePreventureProviderCostReconciliationCapability(binding) {
+  const exactKeys = [
+    "authorityHash",
+    "assignmentHash",
+    "decisionHash",
+    "costKey",
+    "expectedPreviousReceiptHash",
+    "reconciledReceiptHash",
+    "taskAttemptId",
+    "modelCallId",
+    "agentRunReceiptId",
+    "budgetReservationId",
+    "costId",
+    "amountAudCents",
+    "occurredAt",
+  ];
+  const safeId = (value, maximum = 256) => (
+    typeof value === "string"
+    && value.length >= 1
+    && value.length <= maximum
+    && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  );
+  if (
+    !binding
+    || typeof binding !== "object"
+    || Array.isArray(binding)
+    || JSON.stringify(Object.keys(binding).sort()) !== JSON.stringify([...exactKeys].sort())
+    || !SHA256_DIGEST_PATTERN.test(String(binding.authorityHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.assignmentHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.decisionHash || ""))
+    || !safeId(binding.costKey, 128)
+    || !SHA256_DIGEST_PATTERN.test(String(binding.expectedPreviousReceiptHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.reconciledReceiptHash || ""))
+    || !safeId(binding.taskAttemptId)
+    || !safeId(binding.modelCallId)
+    || !safeId(binding.agentRunReceiptId)
+    || !safeId(binding.budgetReservationId)
+    || !safeId(binding.costId)
+    || !Number.isSafeInteger(binding.amountAudCents)
+    || binding.amountAudCents < 0
+    || !Number.isFinite(Date.parse(binding.occurredAt))
+  ) {
+    throw new Error("The pre-venture provider-cost reconciliation capability binding is invalid.");
+  }
+  return Object.freeze({ ...binding });
+}
+
+function registerPreventureProviderCostReconciliationCapabilityFunction(db) {
+  db.function("pantheon_preventure_provider_cost_reconciliation_capability", (
+    phaseValue,
+    authorityHashValue,
+    assignmentHashValue,
+    decisionHashValue,
+    objectIdValue,
+    receiptHashValue,
+    previousReceiptHashValue,
+    amountAudCentsValue,
+    occurredAtValue,
+  ) => {
+    const state = preventureProviderCostReconciliationCapabilities.get(db);
+    if (!state) return 0;
+    const phase = String(phaseValue ?? "");
+    const expected = state.binding;
+    const actual = {
+      authorityHash: String(authorityHashValue ?? ""),
+      assignmentHash: String(assignmentHashValue ?? ""),
+      decisionHash: String(decisionHashValue ?? ""),
+      objectId: String(objectIdValue ?? ""),
+      receiptHash: String(receiptHashValue ?? ""),
+      previousReceiptHash: String(previousReceiptHashValue ?? ""),
+      amountAudCents: Number(amountAudCentsValue),
+      occurredAt: String(occurredAtValue ?? ""),
+    };
+    if (
+      actual.authorityHash !== expected.authorityHash
+      || actual.assignmentHash !== expected.assignmentHash
+      || actual.decisionHash !== expected.decisionHash
+      || actual.receiptHash !== expected.reconciledReceiptHash
+      || actual.previousReceiptHash !== expected.expectedPreviousReceiptHash
+      || actual.amountAudCents !== expected.amountAudCents
+      || actual.occurredAt !== expected.occurredAt
+    ) return 0;
+    const transitions = {
+      cost_event_insert: ["armed", "cost_event_inserted", expected.costId],
+      reservation_update: ["cost_event_inserted", "reservation_updated", expected.budgetReservationId],
+      cost_update: ["reservation_updated", "cost_updated", expected.costId],
+      model_call_update: ["cost_updated", "consumed", expected.modelCallId],
+    };
+    const transition = transitions[phase];
+    if (!transition || state.phase !== transition[0] || actual.objectId !== transition[2]) return 0;
+    state.phase = transition[1];
+    return 1;
+  });
+}
+
+function withPreventureProviderCostReconciliationCapability(db, binding, action) {
+  if (binding !== RETIRED_PROVIDER_COST_RECONCILIATION_SENTINEL) {
+    throw new Error(
+      "Provider-cost reconciliation is retired; use an authenticated owner billing observation.",
+    );
+  }
+  if (!db || typeof db.prepare !== "function" || typeof action !== "function") {
+    throw new Error("Provider-cost reconciliation requires one exact synchronous database action.");
+  }
+  if (preventureProviderCostReconciliationCapabilities.has(db)) {
+    throw new Error("A pre-venture provider-cost reconciliation is already in progress.");
+  }
+  const exactBinding = normalizePreventureProviderCostReconciliationCapability(binding);
+  beginAtomic(db);
+  preventureProviderCostReconciliationCapabilities.set(db, {
+    binding: exactBinding,
+    phase: "armed",
+  });
+  try {
+    const result = action();
+    if (result && typeof result.then === "function") {
+      throw new Error("Provider-cost reconciliation must be synchronous.");
+    }
+    const state = preventureProviderCostReconciliationCapabilities.get(db);
+    const costEvent = db.prepare(
+      `SELECT authority_hash, assignment_hash, cost_key, previous_receipt_hash,
+              event_type, amount_aud_cents, exposure_aud_cents,
+              task_attempt_id, model_call_id, budget_reservation_id, cost_id,
+              agent_run_receipt_id, occurred_at
+       FROM preventure_research_cost_events WHERE receipt_hash = ?`,
+    ).get(exactBinding.reconciledReceiptHash);
+    const decision = db.prepare(
+      `SELECT decision_hash FROM preventure_research_decisions
+       WHERE authority_hash = ?`,
+    ).get(exactBinding.authorityHash);
+    const reservation = db.prepare(
+      `SELECT task_id, status, amount_cents, currency, resolved_at
+       FROM budget_reservations WHERE id = ?`,
+    ).get(exactBinding.budgetReservationId);
+    const cost = db.prepare(
+      `SELECT task_id, model_call_id, status, amount_cents, currency, occurred_at
+       FROM costs WHERE id = ?`,
+    ).get(exactBinding.costId);
+    const modelCall = db.prepare(
+      `SELECT task_id, cost_status, actual_cost_cents, reconciled_cost_cents
+       FROM model_calls WHERE id = ?`,
+    ).get(exactBinding.modelCallId);
+    const assignment = db.prepare(
+      `SELECT task_id FROM preventure_research_assignments
+       WHERE authority_hash = ? AND assignment_hash = ?`,
+    ).get(exactBinding.authorityHash, exactBinding.assignmentHash);
+    if (
+      !state
+      || state.phase !== "consumed"
+      || decision?.decision_hash !== exactBinding.decisionHash
+      || !assignment
+      || costEvent?.authority_hash !== exactBinding.authorityHash
+      || costEvent?.assignment_hash !== exactBinding.assignmentHash
+      || costEvent?.cost_key !== exactBinding.costKey
+      || costEvent?.previous_receipt_hash !== exactBinding.expectedPreviousReceiptHash
+      || costEvent?.event_type !== "reconciled"
+      || Number(costEvent?.amount_aud_cents) !== exactBinding.amountAudCents
+      || Number(costEvent?.exposure_aud_cents) !== exactBinding.amountAudCents
+      || costEvent?.task_attempt_id !== exactBinding.taskAttemptId
+      || costEvent?.model_call_id !== exactBinding.modelCallId
+      || costEvent?.budget_reservation_id !== exactBinding.budgetReservationId
+      || costEvent?.cost_id !== exactBinding.costId
+      || costEvent?.agent_run_receipt_id !== exactBinding.agentRunReceiptId
+      || costEvent?.occurred_at !== exactBinding.occurredAt
+      || reservation?.task_id !== assignment.task_id
+      || reservation?.status !== "reconciled"
+      || Number(reservation?.amount_cents) !== exactBinding.amountAudCents
+      || reservation?.currency !== "AUD"
+      || reservation?.resolved_at !== exactBinding.occurredAt
+      || cost?.task_id !== assignment.task_id
+      || cost?.model_call_id !== exactBinding.modelCallId
+      || cost?.status !== "reconciled"
+      || Number(cost?.amount_cents) !== exactBinding.amountAudCents
+      || cost?.currency !== "AUD"
+      || cost?.occurred_at !== exactBinding.occurredAt
+      || modelCall?.task_id !== assignment.task_id
+      || modelCall?.cost_status !== "reconciled"
+      || Number(modelCall?.actual_cost_cents) !== exactBinding.amountAudCents
+      || Number(modelCall?.reconciled_cost_cents) !== exactBinding.amountAudCents
+    ) {
+      throw new Error(
+        "Provider-cost reconciliation did not atomically persist its exact receipt and projections.",
+      );
+    }
+    preventureProviderCostReconciliationCapabilities.delete(db);
+    commitAtomic(db);
+    return result;
+  } catch (error) {
+    preventureProviderCostReconciliationCapabilities.delete(db);
+    rollbackAtomic(db);
+    throw error;
+  } finally {
+    preventureProviderCostReconciliationCapabilities.delete(db);
+  }
+}
+
+function normalizePreventureOwnerBillingObservationCapability(binding) {
+  const exactKeys = [
+    "authorityHash",
+    "assignmentHash",
+    "observationHash",
+    "observationJson",
+    "costKey",
+    "expectedPreviousReceiptHash",
+    "reconciledReceiptHash",
+    "taskAttemptId",
+    "modelCallId",
+    "agentRunReceiptId",
+    "budgetReservationId",
+    "costId",
+    "amountAudCents",
+    "originalCostOccurredAt",
+    "recordedAt",
+    "reservationMetadata",
+    "costMetadata",
+    "modelCallMetadata",
+  ];
+  const safeId = (value, maximum = 256) => (
+    typeof value === "string"
+    && value.length >= 1
+    && value.length <= maximum
+    && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  );
+  const exactJson = (value) => {
+    if (typeof value !== "string") return false;
+    try {
+      return canonicalCapabilityJson(JSON.parse(value)) === value;
+    } catch {
+      return false;
+    }
+  };
+  if (
+    !binding
+    || typeof binding !== "object"
+    || Array.isArray(binding)
+    || JSON.stringify(Object.keys(binding).sort()) !== JSON.stringify([...exactKeys].sort())
+    || !SHA256_DIGEST_PATTERN.test(String(binding.authorityHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.assignmentHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.observationHash || ""))
+    || !exactJson(binding.observationJson)
+    || !safeId(binding.costKey, 128)
+    || !SHA256_DIGEST_PATTERN.test(String(binding.expectedPreviousReceiptHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.reconciledReceiptHash || ""))
+    || !safeId(binding.taskAttemptId)
+    || !safeId(binding.modelCallId)
+    || !safeId(binding.agentRunReceiptId)
+    || !safeId(binding.budgetReservationId)
+    || !safeId(binding.costId)
+    || !Number.isSafeInteger(binding.amountAudCents)
+    || binding.amountAudCents < 0
+    || !Number.isFinite(Date.parse(binding.originalCostOccurredAt))
+    || !Number.isFinite(Date.parse(binding.recordedAt))
+    || !exactJson(binding.reservationMetadata)
+    || !exactJson(binding.costMetadata)
+    || !exactJson(binding.modelCallMetadata)
+  ) {
+    throw new Error("The owner-attested provider billing observation capability binding is invalid.");
+  }
+  return Object.freeze({ ...binding });
+}
+
+function registerPreventureOwnerBillingObservationCapabilityFunction(db) {
+  db.function("pantheon_preventure_owner_billing_observation_capability", (
+    phaseValue,
+    authorityHashValue,
+    assignmentHashValue,
+    objectIdValue,
+    observationHashValue,
+    receiptHashValue,
+    previousReceiptHashValue,
+    amountAudCentsValue,
+    occurredAtValue,
+    jsonValue,
+  ) => {
+    const state = preventureOwnerBillingObservationCapabilities.get(db);
+    if (!state) return 0;
+    const phase = String(phaseValue ?? "");
+    const actual = {
+      authorityHash: String(authorityHashValue ?? ""),
+      assignmentHash: String(assignmentHashValue ?? ""),
+      objectId: String(objectIdValue ?? ""),
+      observationHash: String(observationHashValue ?? ""),
+      receiptHash: receiptHashValue === null || receiptHashValue === undefined
+        ? null
+        : String(receiptHashValue),
+      previousReceiptHash: previousReceiptHashValue === null || previousReceiptHashValue === undefined
+        ? null
+        : String(previousReceiptHashValue),
+      amountAudCents: Number(amountAudCentsValue),
+      occurredAt: String(occurredAtValue ?? ""),
+      json: String(jsonValue ?? ""),
+    };
+    const expected = state.binding;
+    if (
+      actual.authorityHash !== expected.authorityHash
+      || actual.assignmentHash !== expected.assignmentHash
+      || actual.observationHash !== expected.observationHash
+      || actual.amountAudCents !== expected.amountAudCents
+    ) return 0;
+    const matches = {
+      observation_insert: actual.objectId === expected.observationHash
+        && actual.receiptHash === null
+        && actual.previousReceiptHash === null
+        && actual.occurredAt === expected.recordedAt
+        && actual.json === expected.observationJson,
+      cost_event_insert: actual.objectId === expected.costId
+        && actual.receiptHash === expected.reconciledReceiptHash
+        && actual.previousReceiptHash === expected.expectedPreviousReceiptHash
+        && actual.occurredAt === expected.originalCostOccurredAt,
+      reservation_update: actual.objectId === expected.budgetReservationId
+        && actual.receiptHash === expected.reconciledReceiptHash
+        && actual.previousReceiptHash === expected.expectedPreviousReceiptHash
+        && actual.occurredAt === expected.recordedAt
+        && actual.json === expected.reservationMetadata,
+      cost_update: actual.objectId === expected.costId
+        && actual.receiptHash === expected.reconciledReceiptHash
+        && actual.previousReceiptHash === expected.expectedPreviousReceiptHash
+        && actual.occurredAt === expected.originalCostOccurredAt
+        && actual.json === expected.costMetadata,
+      model_call_update: actual.objectId === expected.modelCallId
+        && actual.receiptHash === expected.reconciledReceiptHash
+        && actual.previousReceiptHash === expected.expectedPreviousReceiptHash
+        && actual.occurredAt === expected.recordedAt
+        && actual.json === expected.modelCallMetadata,
+    };
+    const guardedPhase = phase.startsWith("guard_") ? phase.slice(6) : phase;
+    if (!matches[guardedPhase]) return 0;
+    if (phase.startsWith("guard_")) return 1;
+    const transitions = {
+      observation_insert: ["armed", "observation_inserted"],
+      cost_event_insert: ["observation_inserted", "cost_event_inserted"],
+      reservation_update: ["cost_event_inserted", "reservation_updated"],
+      cost_update: ["reservation_updated", "cost_updated"],
+      model_call_update: ["cost_updated", "consumed"],
+    };
+    const transition = transitions[phase];
+    if (!transition || state.phase !== transition[0]) return 0;
+    state.phase = transition[1];
+    return 1;
+  });
+}
+
+function withPreventureOwnerBillingObservationCapability(db, binding, action) {
+  if (!db || typeof db.prepare !== "function" || typeof action !== "function") {
+    throw new Error("Owner-attested provider billing requires one exact synchronous database action.");
+  }
+  if (preventureOwnerBillingObservationCapabilities.has(db)) {
+    throw new Error("An owner-attested provider billing observation is already in progress.");
+  }
+  const exactBinding = normalizePreventureOwnerBillingObservationCapability(binding);
+  beginAtomic(db);
+  preventureOwnerBillingObservationCapabilities.set(db, {
+    binding: exactBinding,
+    phase: "armed",
+  });
+  try {
+    const result = action();
+    if (result && typeof result.then === "function") {
+      throw new Error("Owner-attested provider billing must be synchronous.");
+    }
+    const state = preventureOwnerBillingObservationCapabilities.get(db);
+    const observation = db.prepare(
+      `SELECT * FROM preventure_research_provider_billing_observations
+       WHERE observation_hash = ?`,
+    ).get(exactBinding.observationHash);
+    const costEvent = db.prepare(
+      `SELECT * FROM preventure_research_cost_events WHERE receipt_hash = ?`,
+    ).get(exactBinding.reconciledReceiptHash);
+    const reservation = db.prepare(
+      `SELECT * FROM budget_reservations WHERE id = ?`,
+    ).get(exactBinding.budgetReservationId);
+    const cost = db.prepare(
+      `SELECT * FROM costs WHERE id = ?`,
+    ).get(exactBinding.costId);
+    const modelCall = db.prepare(
+      `SELECT * FROM model_calls WHERE id = ?`,
+    ).get(exactBinding.modelCallId);
+    if (
+      !state
+      || state.phase !== "consumed"
+      || observation?.authority_hash !== exactBinding.authorityHash
+      || observation?.assignment_hash !== exactBinding.assignmentHash
+      || observation?.observation_json !== exactBinding.observationJson
+      || observation?.expected_previous_receipt_hash
+        !== exactBinding.expectedPreviousReceiptHash
+      || Number(observation?.amount_aud_cents) !== exactBinding.amountAudCents
+      || observation?.original_cost_occurred_at !== exactBinding.originalCostOccurredAt
+      || observation?.recorded_at !== exactBinding.recordedAt
+      || costEvent?.authority_hash !== exactBinding.authorityHash
+      || costEvent?.assignment_hash !== exactBinding.assignmentHash
+      || costEvent?.cost_key !== exactBinding.costKey
+      || costEvent?.previous_receipt_hash !== exactBinding.expectedPreviousReceiptHash
+      || costEvent?.event_type !== "reconciled"
+      || Number(costEvent?.amount_aud_cents) !== exactBinding.amountAudCents
+      || Number(costEvent?.exposure_aud_cents) !== exactBinding.amountAudCents
+      || costEvent?.task_attempt_id !== exactBinding.taskAttemptId
+      || costEvent?.model_call_id !== exactBinding.modelCallId
+      || costEvent?.budget_reservation_id !== exactBinding.budgetReservationId
+      || costEvent?.cost_id !== exactBinding.costId
+      || costEvent?.agent_run_receipt_id !== exactBinding.agentRunReceiptId
+      || costEvent?.occurred_at !== exactBinding.originalCostOccurredAt
+      || reservation?.status !== "reconciled"
+      || Number(reservation?.amount_cents) !== exactBinding.amountAudCents
+      || reservation?.currency !== "AUD"
+      || reservation?.resolved_at !== exactBinding.recordedAt
+      || reservation?.metadata !== exactBinding.reservationMetadata
+      || cost?.model_call_id !== exactBinding.modelCallId
+      || cost?.status !== "reconciled"
+      || Number(cost?.amount_cents) !== exactBinding.amountAudCents
+      || cost?.currency !== "AUD"
+      || cost?.occurred_at !== exactBinding.originalCostOccurredAt
+      || cost?.metadata !== exactBinding.costMetadata
+      || modelCall?.cost_status !== "reconciled"
+      || Number(modelCall?.actual_cost_cents) !== exactBinding.amountAudCents
+      || Number(modelCall?.reconciled_cost_cents) !== exactBinding.amountAudCents
+      || modelCall?.metadata !== exactBinding.modelCallMetadata
+    ) {
+      throw new Error(
+        "Owner-attested provider billing did not atomically persist its observation, receipt, and projections.",
+      );
+    }
+    preventureOwnerBillingObservationCapabilities.delete(db);
+    commitAtomic(db);
+    return result;
+  } catch (error) {
+    preventureOwnerBillingObservationCapabilities.delete(db);
+    rollbackAtomic(db);
+    throw error;
+  } finally {
+    preventureOwnerBillingObservationCapabilities.delete(db);
+  }
+}
+
+function normalizePreventureTerminalRetainedRecoveryCapability(binding) {
+  const exactKeys = [
+    "authorityHash",
+    "assignmentHash",
+    "recoveryIntentHash",
+    "recoveryHash",
+    "taskAttemptId",
+    "modelCallId",
+    "terminalKind",
+    "terminalRecordId",
+    "terminalEventHash",
+    "artifactHash",
+    "priorCostReceiptHash",
+    "terminalCostReceiptHash",
+    "budgetReservationId",
+    "costId",
+    "assignmentCapAudCents",
+    "appendUnknownCost",
+    "recoveryJson",
+    "recordedAt",
+  ];
+  const safeId = (value, maximum = 256) => (
+    typeof value === "string"
+    && value.length >= 1
+    && value.length <= maximum
+    && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  );
+  if (
+    !binding
+    || typeof binding !== "object"
+    || Array.isArray(binding)
+    || JSON.stringify(Object.keys(binding).sort()) !== JSON.stringify([...exactKeys].sort())
+    || !SHA256_DIGEST_PATTERN.test(String(binding.authorityHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.assignmentHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.recoveryIntentHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.recoveryHash || ""))
+    || !safeId(binding.taskAttemptId)
+    || !safeId(binding.modelCallId)
+    || !["lifecycle", "runtime_emergency_stop"].includes(binding.terminalKind)
+    || !safeId(String(binding.terminalRecordId || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.terminalEventHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.artifactHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.priorCostReceiptHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.terminalCostReceiptHash || ""))
+    || !safeId(binding.budgetReservationId)
+    || !safeId(binding.costId)
+    || !Number.isSafeInteger(binding.assignmentCapAudCents)
+    || binding.assignmentCapAudCents < 0
+    || typeof binding.appendUnknownCost !== "boolean"
+    || typeof binding.recoveryJson !== "string"
+    || binding.recoveryJson.length < 2
+    || binding.recoveryJson.length > 262144
+    || !Number.isFinite(Date.parse(binding.recordedAt))
+  ) {
+    throw new Error("The terminal retained-output recovery capability binding is invalid.");
+  }
+  return Object.freeze({ ...binding });
+}
+
+function registerPreventureTerminalRetainedRecoveryCapabilityFunction(db) {
+  db.function("pantheon_preventure_terminal_retained_recovery_capability", (
+    phaseValue,
+    authorityHashValue,
+    assignmentHashValue,
+    recoveryHashValue,
+    objectIdValue,
+    receiptHashValue,
+    previousReceiptHashValue,
+    terminalKindValue,
+    terminalRecordIdValue,
+    terminalEventHashValue,
+    artifactHashValue,
+    assignmentCapAudCentsValue,
+    recoveryJsonValue,
+    recordedAtValue,
+  ) => {
+    const state = preventureTerminalRetainedRecoveryCapabilities.get(db);
+    if (!state) return 0;
+    const phase = String(phaseValue ?? "");
+    const expected = state.binding;
+    const actual = {
+      authorityHash: String(authorityHashValue ?? ""),
+      assignmentHash: String(assignmentHashValue ?? ""),
+      recoveryHash: String(recoveryHashValue ?? ""),
+      objectId: String(objectIdValue ?? ""),
+      receiptHash: String(receiptHashValue ?? ""),
+      previousReceiptHash: String(previousReceiptHashValue ?? ""),
+      terminalKind: String(terminalKindValue ?? ""),
+      terminalRecordId: String(terminalRecordIdValue ?? ""),
+      terminalEventHash: String(terminalEventHashValue ?? ""),
+      artifactHash: String(artifactHashValue ?? ""),
+      assignmentCapAudCents: Number(assignmentCapAudCentsValue),
+      recoveryJson: recoveryJsonValue === null || recoveryJsonValue === undefined
+        ? null
+        : String(recoveryJsonValue),
+      recordedAt: String(recordedAtValue ?? ""),
+    };
+    if (
+      actual.authorityHash !== expected.authorityHash
+      || actual.assignmentHash !== expected.assignmentHash
+      || actual.recoveryHash !== (phase === "recovery_insert"
+        ? expected.recoveryHash
+        : expected.recoveryIntentHash)
+      || actual.terminalKind !== expected.terminalKind
+      || actual.terminalRecordId !== expected.terminalRecordId
+      || actual.terminalEventHash !== expected.terminalEventHash
+      || actual.artifactHash !== expected.artifactHash
+      || actual.assignmentCapAudCents !== expected.assignmentCapAudCents
+      || actual.recordedAt !== expected.recordedAt
+    ) return 0;
+    const transitions = expected.appendUnknownCost
+      ? {
+        cost_update: [
+          "armed",
+          "cost_updated",
+          expected.costId,
+          expected.terminalCostReceiptHash,
+          expected.priorCostReceiptHash,
+        ],
+        cost_event_insert: [
+          "cost_updated",
+          "cost_event_inserted",
+          expected.costId,
+          expected.terminalCostReceiptHash,
+          expected.priorCostReceiptHash,
+        ],
+        reservation_update: [
+          "cost_event_inserted",
+          "reservation_updated",
+          expected.budgetReservationId,
+          expected.terminalCostReceiptHash,
+          expected.priorCostReceiptHash,
+        ],
+        model_call_update: [
+          "reservation_updated",
+          "model_call_updated",
+          expected.modelCallId,
+          expected.terminalCostReceiptHash,
+          expected.priorCostReceiptHash,
+        ],
+        recovery_insert: [
+          "model_call_updated",
+          "consumed",
+          expected.taskAttemptId,
+          expected.terminalCostReceiptHash,
+          expected.priorCostReceiptHash,
+        ],
+      }
+      : {
+        recovery_insert: [
+          "armed",
+          "consumed",
+          expected.taskAttemptId,
+          expected.terminalCostReceiptHash,
+          expected.priorCostReceiptHash,
+        ],
+      };
+    const transition = transitions[phase];
+    if (
+      !transition
+      || state.phase !== transition[0]
+      || actual.objectId !== transition[2]
+      || actual.receiptHash !== transition[3]
+      || actual.previousReceiptHash !== transition[4]
+      || (phase === "recovery_insert"
+        ? actual.recoveryJson !== expected.recoveryJson
+        : actual.recoveryJson !== null)
+    ) return 0;
+    state.phase = transition[1];
+    return 1;
+  });
+}
+
+function withPreventureTerminalRetainedRecoveryCapability(db, binding, action) {
+  if (!db || typeof db.prepare !== "function" || typeof action !== "function") {
+    throw new Error("Terminal retained-output recovery requires one synchronous database action.");
+  }
+  if (preventureTerminalRetainedRecoveryCapabilities.has(db)) {
+    throw new Error("A terminal retained-output recovery action is already in progress.");
+  }
+  const exactBinding = normalizePreventureTerminalRetainedRecoveryCapability(binding);
+  beginAtomic(db);
+  preventureTerminalRetainedRecoveryCapabilities.set(db, {
+    binding: exactBinding,
+    phase: "armed",
+  });
+  try {
+    const result = action();
+    if (result && typeof result.then === "function") {
+      throw new Error("Terminal retained-output recovery must be synchronous.");
+    }
+    const state = preventureTerminalRetainedRecoveryCapabilities.get(db);
+    const row = db.prepare(
+      `SELECT recovery_intent_hash, authority_hash, assignment_hash, task_id, workflow_id,
+              task_attempt_id, model_call_id,
+              terminal_kind, terminal_record_id, terminal_event_hash,
+              artifact_hash, prior_cost_receipt_hash, terminal_cost_receipt_hash,
+              budget_reservation_id, cost_id, assignment_cap_aud_cents,
+              recovery_json, recorded_at
+       FROM preventure_research_terminal_recoveries WHERE recovery_hash = ?`,
+    ).get(exactBinding.recoveryHash);
+    const terminalCost = db.prepare(
+      `SELECT event_type, amount_aud_cents, exposure_aud_cents,
+              task_attempt_id, model_call_id, budget_reservation_id, cost_id,
+              agent_run_receipt_id
+       FROM preventure_research_cost_events WHERE receipt_hash = ?`,
+    ).get(exactBinding.terminalCostReceiptHash);
+    const reservation = db.prepare(
+      "SELECT status, amount_cents FROM budget_reservations WHERE id = ?",
+    ).get(exactBinding.budgetReservationId);
+    const cost = db.prepare(
+      "SELECT status, amount_cents, model_call_id FROM costs WHERE id = ?",
+    ).get(exactBinding.costId);
+    const recovery = row ? fromJson(row.recovery_json, null) : null;
+    const closure = recovery?.executionClosure || null;
+    const closureJson = closure ? JSON.stringify(closure) : null;
+    const exactClosureMarker = (value) => {
+      const marker = fromJson(value, {}).terminalRetainedExecution;
+      return marker && JSON.stringify(marker) === closureJson;
+    };
+    const modelCall = db.prepare(
+      `SELECT * FROM model_calls WHERE id = ?`,
+    ).get(exactBinding.modelCallId);
+    const task = row ? db.prepare(
+      "SELECT * FROM tasks WHERE id = ?",
+    ).get(row.task_id) : null;
+    const attempt = db.prepare(
+      "SELECT * FROM task_attempts WHERE id = ?",
+    ).get(exactBinding.taskAttemptId);
+    const agentRun = closure?.agentRunId
+      ? db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(closure.agentRunId)
+      : null;
+    const tool = closure?.toolInvocationId
+      ? db.prepare("SELECT * FROM agent_tool_invocations WHERE id = ?").get(
+        closure.toolInvocationId,
+      )
+      : null;
+    const workflow = row ? db.prepare(
+      "SELECT * FROM workflows WHERE id = ?",
+    ).get(row.workflow_id) : null;
+    const receipt = recovery?.executionReceipt?.id
+      ? db.prepare("SELECT * FROM agent_run_receipts WHERE id = ?").get(
+        recovery.executionReceipt.id,
+      )
+      : null;
+    const latestReceipt = db.prepare(
+      `SELECT * FROM agent_run_receipts WHERE attempt_id = ?
+       ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1`,
+    ).get(exactBinding.taskAttemptId);
+    const expectedOutcome = recovery?.retainedArtifact?.artifactKind === "canonical_known_response"
+      ? "known"
+      : recovery?.retainedArtifact?.artifactKind;
+    const expectedErrorKind = recovery?.terminalBinding?.kind === "runtime_emergency_stop"
+      ? "operator_emergency_stop"
+      : "terminal_retained_output_custody";
+    const siblingClosureOk = Boolean(closure) && closure.siblingClosures.every((sibling) => {
+      const siblingTask = db.prepare("SELECT * FROM tasks WHERE id = ?").get(sibling.taskId);
+      const activity = db.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM task_attempts WHERE task_id = ?) +
+           (SELECT COUNT(*) FROM model_calls WHERE task_id = ?) +
+           (SELECT COUNT(*) FROM agent_runs WHERE task_id = ?) +
+           (SELECT COUNT(*) FROM agent_run_receipts WHERE task_id = ?) +
+           (SELECT COUNT(*) FROM agent_tool_invocations WHERE task_id = ?) +
+           (SELECT COUNT(*) FROM budget_reservations WHERE task_id = ?) +
+           (SELECT COUNT(*) FROM costs WHERE task_id = ?) +
+           (SELECT COUNT(*) FROM preventure_research_cost_events WHERE assignment_hash = ?) +
+           (SELECT COUNT(*) FROM preventure_research_source_snapshots WHERE assignment_hash = ?) +
+           (SELECT COUNT(*) FROM preventure_research_evidence_records WHERE assignment_hash = ?)
+           AS count`,
+      ).get(
+        sibling.taskId,
+        sibling.taskId,
+        sibling.taskId,
+        sibling.taskId,
+        sibling.taskId,
+        sibling.taskId,
+        sibling.taskId,
+        sibling.assignmentHash,
+        sibling.assignmentHash,
+        sibling.assignmentHash,
+      );
+      return siblingTask?.status === "cancelled"
+        && siblingTask.outcome_status === "cancelled_by_terminal_authority_custody"
+        && siblingTask.claim_token === null
+        && siblingTask.claimed_at === null
+        && Number(siblingTask.attempt_count) === 0
+        && Number(siblingTask.max_retries) === 0
+        && siblingTask.completed_at === closure.closedAt
+        && siblingTask.updated_at === closure.closedAt
+        && exactClosureMarker(siblingTask.result)
+        && Number(activity.count) === 0;
+    });
+    if (
+      !state
+      || state.phase !== "consumed"
+      || row?.recovery_intent_hash !== exactBinding.recoveryIntentHash
+      || row?.authority_hash !== exactBinding.authorityHash
+      || row?.assignment_hash !== exactBinding.assignmentHash
+      || row?.task_attempt_id !== exactBinding.taskAttemptId
+      || row?.model_call_id !== exactBinding.modelCallId
+      || row?.terminal_kind !== exactBinding.terminalKind
+      || String(row?.terminal_record_id ?? "") !== exactBinding.terminalRecordId
+      || row?.terminal_event_hash !== exactBinding.terminalEventHash
+      || row?.artifact_hash !== exactBinding.artifactHash
+      || row?.prior_cost_receipt_hash !== exactBinding.priorCostReceiptHash
+      || row?.terminal_cost_receipt_hash !== exactBinding.terminalCostReceiptHash
+      || row?.budget_reservation_id !== exactBinding.budgetReservationId
+      || row?.cost_id !== exactBinding.costId
+      || Number(row?.assignment_cap_aud_cents) !== exactBinding.assignmentCapAudCents
+      || row?.recovery_json !== exactBinding.recoveryJson
+      || row?.recorded_at !== exactBinding.recordedAt
+      || terminalCost?.event_type !== "unknown"
+      || terminalCost?.amount_aud_cents !== null
+      || Number(terminalCost?.exposure_aud_cents) !== exactBinding.assignmentCapAudCents
+      || terminalCost?.task_attempt_id !== exactBinding.taskAttemptId
+      || terminalCost?.model_call_id !== exactBinding.modelCallId
+      || terminalCost?.budget_reservation_id !== exactBinding.budgetReservationId
+      || terminalCost?.cost_id !== exactBinding.costId
+      || terminalCost?.agent_run_receipt_id !== recovery?.executionReceipt?.id
+      || reservation?.status !== "unknown"
+      || Number(reservation?.amount_cents) !== exactBinding.assignmentCapAudCents
+      || cost?.status !== "unknown"
+      || Number(cost?.amount_cents) !== exactBinding.assignmentCapAudCents
+      || cost?.model_call_id !== exactBinding.modelCallId
+      || modelCall?.cost_status !== "unknown"
+      || modelCall?.status !== "needs_attention"
+      || modelCall?.outcome_status !== expectedOutcome
+      || modelCall?.provider_request_id !== recovery?.originalDispatch?.providerRequestId
+      || modelCall?.error_kind !== expectedErrorKind
+      || modelCall?.completed_at !== closure?.closedAt
+      || Number(modelCall?.reserved_cost_cents) !== exactBinding.assignmentCapAudCents
+      || Number(modelCall?.actual_cost_cents) !== 0
+      || Number(modelCall?.reconciled_cost_cents) !== 0
+      || !exactClosureMarker(modelCall?.metadata)
+      || task?.status !== "needs_attention"
+      || task?.outcome_status !== expectedOutcome
+      || task?.claim_token !== null
+      || task?.claimed_at !== null
+      || Number(task?.max_retries) !== 0
+      || task?.completed_at !== closure?.closedAt
+      || !exactClosureMarker(task?.result)
+      || attempt?.status !== "needs_attention"
+      || attempt?.outcome_status !== expectedOutcome
+      || attempt?.provider_request_id !== recovery?.originalDispatch?.providerRequestId
+      || attempt?.error_kind !== expectedErrorKind
+      || attempt?.completed_at !== closure?.closedAt
+      || !exactClosureMarker(attempt?.metadata)
+      || agentRun?.task_id !== row?.task_id
+      || agentRun?.workflow_id !== row?.workflow_id
+      || agentRun?.venture_id !== null
+      || agentRun?.status !== "needs_attention"
+      || agentRun?.model_call_id !== exactBinding.modelCallId
+      || agentRun?.completed_at !== closure?.closedAt
+      || !exactClosureMarker(agentRun?.metadata)
+      || tool?.task_id !== row?.task_id
+      || tool?.workflow_id !== row?.workflow_id
+      || tool?.attempt_id !== exactBinding.taskAttemptId
+      || tool?.status !== "needs_attention"
+      || tool?.decision !== "terminal_custody_only"
+      || tool?.resolved_at !== closure?.closedAt
+      || !exactClosureMarker(tool?.metadata)
+      || workflow?.status !== "needs_attention"
+      || workflow?.current_step
+        !== "Terminal provider output is held for custody and billing review only"
+      || Number(workflow?.approval_required) !== 1
+      || workflow?.updated_at !== closure?.closedAt
+      || !exactClosureMarker(workflow?.metadata)
+      || closure?.authorityHash !== exactBinding.authorityHash
+      || closure?.assignmentHash !== exactBinding.assignmentHash
+      || closure?.taskId !== row?.task_id
+      || closure?.workflowId !== row?.workflow_id
+      || closure?.taskAttemptId !== exactBinding.taskAttemptId
+      || closure?.modelCallId !== exactBinding.modelCallId
+      || closure?.terminalEventHash !== exactBinding.terminalEventHash
+      || closure?.artifactHash !== exactBinding.artifactHash
+      || closure?.outcomeStatus !== expectedOutcome
+      || closure?.errorKind !== expectedErrorKind
+      || closure?.resultingStatus !== "needs_attention"
+      || closure?.claimCleared !== true
+      || closure?.retryAuthorized !== false
+      || closure?.evidenceEligible !== false
+      || closure?.closedAt !== exactBinding.recordedAt
+      || !Array.isArray(closure?.siblingClosures)
+      || !siblingClosureOk
+      || receipt?.attempt_id !== exactBinding.taskAttemptId
+      || receipt?.run_id !== closure?.agentRunId
+      || receipt?.status !== recovery?.executionReceipt?.status
+      || receipt?.outcome_status !== recovery?.executionReceipt?.outcomeStatus
+      || `sha256:${receipt?.receipt_hash}` !== recovery?.executionReceipt?.hash
+      || latestReceipt?.id !== receipt?.id
+    ) {
+      throw new Error(
+        "Terminal retained-output recovery did not persist its exact immutable custody record.",
+      );
+    }
+    preventureTerminalRetainedRecoveryCapabilities.delete(db);
+    commitAtomic(db);
+    return result;
+  } catch (error) {
+    preventureTerminalRetainedRecoveryCapabilities.delete(db);
+    rollbackAtomic(db);
+    throw error;
+  } finally {
+    preventureTerminalRetainedRecoveryCapabilities.delete(db);
+  }
+}
+
+function normalizePreventureTerminalReceiptCapability(binding) {
+  const exactKeys = [
+    "agentRunId",
+    "assignmentHash",
+    "authorityHash",
+    "closureHash",
+    "createdAt",
+    "expectedSequence",
+    "missingFieldsJson",
+    "outcomeStatus",
+    "previousReceiptHash",
+    "receiptHash",
+    "receiptId",
+    "receiptJson",
+    "snapshotHash",
+    "status",
+    "taskAttemptId",
+    "taskId",
+    "warningsJson",
+  ];
+  if (
+    !binding
+    || typeof binding !== "object"
+    || Array.isArray(binding)
+    || JSON.stringify(Object.keys(binding).sort()) !== JSON.stringify(exactKeys)
+    || !SHA256_DIGEST_PATTERN.test(String(binding.authorityHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.assignmentHash || ""))
+    || !SHA256_DIGEST_PATTERN.test(String(binding.closureHash || ""))
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(String(binding.taskId || ""))
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(String(binding.taskAttemptId || ""))
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(String(binding.agentRunId || ""))
+    || !Number.isInteger(binding.expectedSequence)
+    || binding.expectedSequence < 1
+    || !Number.isFinite(Date.parse(binding.createdAt))
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(String(binding.receiptId || ""))
+    || !/^[a-f0-9]{64}$/.test(String(binding.snapshotHash || ""))
+    || !/^[a-f0-9]{64}$/.test(String(binding.receiptHash || ""))
+    || typeof binding.status !== "string"
+    || binding.status.length < 1
+    || typeof binding.outcomeStatus !== "string"
+    || binding.outcomeStatus.length < 1
+    || typeof binding.missingFieldsJson !== "string"
+    || typeof binding.warningsJson !== "string"
+    || typeof binding.receiptJson !== "string"
+    || (binding.previousReceiptHash !== null
+      && !/^[a-f0-9]{64}$/.test(String(binding.previousReceiptHash || "")))
+  ) {
+    throw new Error("The terminal execution-receipt capability binding is invalid.");
+  }
+  return Object.freeze({ ...binding });
+}
+
+function registerPreventureTerminalReceiptCapabilityFunction(db) {
+  db.function("pantheon_preventure_terminal_receipt_capability", (
+    authorityHashValue,
+    assignmentHashValue,
+    receiptIdValue,
+    attemptIdValue,
+    runIdValue,
+    taskIdValue,
+    sequenceValue,
+    statusValue,
+    outcomeStatusValue,
+    snapshotHashValue,
+    previousHashValue,
+    receiptHashValue,
+    missingFieldsJsonValue,
+    warningsJsonValue,
+    receiptJsonValue,
+    createdAtValue,
+    closureHashValue,
+  ) => {
+    const state = preventureTerminalReceiptCapabilities.get(db);
+    if (!state || state.phase !== "armed") return 0;
+    const expected = state.binding;
+    let receipt;
+    try {
+      receipt = JSON.parse(String(receiptJsonValue || ""));
+    } catch {
+      return 0;
+    }
+    const inserted = {
+      authorityHash: String(authorityHashValue || ""),
+      assignmentHash: String(assignmentHashValue || ""),
+      id: String(receiptIdValue || ""),
+      attemptId: String(attemptIdValue || ""),
+      runId: String(runIdValue || ""),
+      taskId: String(taskIdValue || ""),
+      sequence: Number(sequenceValue),
+      status: String(statusValue || ""),
+      outcomeStatus: String(outcomeStatusValue || ""),
+      snapshotHash: String(snapshotHashValue || ""),
+      previousHash: previousHashValue === null ? null : String(previousHashValue || ""),
+      receiptHash: String(receiptHashValue || ""),
+      missingFieldsJson: String(missingFieldsJsonValue || ""),
+      warningsJson: String(warningsJsonValue || ""),
+      receiptJson: String(receiptJsonValue || ""),
+      createdAt: String(createdAtValue || ""),
+      closureHash: String(closureHashValue || ""),
+    };
+    if (
+      inserted.authorityHash !== expected.authorityHash
+      || inserted.assignmentHash !== expected.assignmentHash
+      || inserted.attemptId !== expected.taskAttemptId
+      || inserted.runId !== expected.agentRunId
+      || inserted.taskId !== expected.taskId
+      || inserted.sequence !== expected.expectedSequence
+      || inserted.previousHash !== expected.previousReceiptHash
+      || inserted.closureHash !== expected.closureHash
+      || inserted.id !== expected.receiptId
+      || inserted.snapshotHash !== expected.snapshotHash
+      || inserted.receiptHash !== expected.receiptHash
+      || inserted.status !== expected.status
+      || inserted.outcomeStatus !== expected.outcomeStatus
+      || inserted.missingFieldsJson !== expected.missingFieldsJson
+      || inserted.warningsJson !== expected.warningsJson
+      || inserted.receiptJson !== expected.receiptJson
+      || inserted.createdAt !== expected.createdAt
+      || receipt?.schema !== "jarvis.agent-run-receipt.v2"
+      || receipt?.attempt?.id !== expected.taskAttemptId
+      || receipt?.run?.id !== expected.agentRunId
+      || receipt?.task?.id !== expected.taskId
+      || receipt?.attempt?.metadata?.terminalRetainedExecution?.closureHash
+        !== expected.closureHash
+      || receipt?.run?.metadata?.terminalRetainedExecution?.closureHash
+        !== expected.closureHash
+    ) return 0;
+    state.phase = "consumed";
+    state.receipt = Object.freeze(inserted);
+    return 1;
+  });
+}
+
+function withPreventureTerminalReceiptCapability(db, binding, action) {
+  if (!db || typeof db.prepare !== "function" || typeof action !== "function") {
+    throw new Error("Terminal execution-receipt admission requires one synchronous database action.");
+  }
+  if (preventureTerminalReceiptCapabilities.has(db)) {
+    throw new Error("A terminal execution-receipt action is already in progress.");
+  }
+  const exactBinding = normalizePreventureTerminalReceiptCapability(binding);
+  beginAtomic(db);
+  preventureTerminalReceiptCapabilities.set(db, {
+    binding: exactBinding,
+    phase: "armed",
+    receipt: null,
+  });
+  try {
+    const result = action();
+    if (result && typeof result.then === "function") {
+      throw new Error("Terminal execution-receipt admission must be synchronous.");
+    }
+    const state = preventureTerminalReceiptCapabilities.get(db);
+    const row = state?.receipt?.id
+      ? db.prepare("SELECT * FROM agent_run_receipts WHERE id = ?").get(state.receipt.id)
+      : null;
+    const latest = db.prepare(
+      `SELECT id FROM agent_run_receipts WHERE attempt_id = ?
+       ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1`,
+    ).get(exactBinding.taskAttemptId);
+    if (
+      !state
+      || state.phase !== "consumed"
+      || !row
+      || latest?.id !== row.id
+      || row.attempt_id !== exactBinding.taskAttemptId
+      || row.run_id !== exactBinding.agentRunId
+      || row.task_id !== exactBinding.taskId
+      || Number(row.sequence) !== exactBinding.expectedSequence
+      || row.previous_hash !== exactBinding.previousReceiptHash
+      || row.receipt_hash !== state.receipt.receiptHash
+      || row.snapshot_hash !== state.receipt.snapshotHash
+      || row.status !== state.receipt.status
+      || row.outcome_status !== state.receipt.outcomeStatus
+      || row.missing_fields !== state.receipt.missingFieldsJson
+      || row.warnings !== state.receipt.warningsJson
+      || row.receipt !== state.receipt.receiptJson
+      || row.created_at !== state.receipt.createdAt
+    ) {
+      throw new Error("Terminal execution-receipt admission did not consume its exact one-shot receipt.");
+    }
+    preventureTerminalReceiptCapabilities.delete(db);
+    commitAtomic(db);
+    return result;
+  } catch (error) {
+    preventureTerminalReceiptCapabilities.delete(db);
+    rollbackAtomic(db);
+    throw error;
+  } finally {
+    preventureTerminalReceiptCapabilities.delete(db);
+  }
+}
+
+function normalizePreventureEmergencyCostSafetyCapability(binding) {
+  const exactKeys = ["stoppedAt", "taskIds"];
+  if (
+    !binding
+    || typeof binding !== "object"
+    || Array.isArray(binding)
+    || JSON.stringify(Object.keys(binding).sort()) !== JSON.stringify(exactKeys)
+    || !Number.isFinite(Date.parse(binding.stoppedAt))
+    || !Array.isArray(binding.taskIds)
+    || binding.taskIds.length === 0
+    || binding.taskIds.some((taskId) => (
+      typeof taskId !== "string"
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(taskId)
+    ))
+    || new Set(binding.taskIds).size !== binding.taskIds.length
+  ) {
+    throw new Error("The emergency pre-venture cost-safety capability binding is invalid.");
+  }
+  return Object.freeze({
+    stoppedAt: new Date(Date.parse(binding.stoppedAt)).toISOString(),
+    taskIds: Object.freeze([...binding.taskIds].sort()),
+  });
+}
+
+function preparePreventureEmergencyCostSafetyTask(db, taskId, assignment, stoppedAt) {
+  const attempts = db.prepare(
+    `SELECT * FROM task_attempts
+     WHERE task_id = ? AND status = 'running'
+     ORDER BY started_at, id`,
+  ).all(taskId);
+  const modelCalls = db.prepare(
+    `SELECT * FROM model_calls
+     WHERE task_id = ?
+       AND (status IN ('dispatching', 'running')
+         OR (completed_at IS NULL AND outcome_status IN ('provider_dispatched', 'unknown')))
+     ORDER BY created_at, id`,
+  ).all(taskId);
+  const costHeads = db.prepare(
+    `SELECT costs.* FROM preventure_research_cost_events AS costs
+     WHERE costs.assignment_hash = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM preventure_research_cost_events AS later
+         WHERE later.assignment_hash = costs.assignment_hash
+           AND later.cost_key = costs.cost_key
+           AND later.sequence > costs.sequence
+       )
+     ORDER BY costs.cost_key`,
+  ).all(assignment.assignment_hash);
+  if (attempts.length !== 1 || modelCalls.length !== 1 || costHeads.length !== 1) {
+    throw new Error(
+      "Emergency pre-venture cost safety requires one exact running attempt, provider call, and cost head.",
+    );
+  }
+  const attempt = attempts[0];
+  const modelCall = modelCalls[0];
+  const priorRow = costHeads[0];
+  let prior;
+  try {
+    prior = JSON.parse(priorRow.cost_json);
+  } catch {
+    throw new Error("Emergency pre-venture cost safety found invalid immutable cost JSON.");
+  }
+  const { receiptHash: suppliedReceiptHash, ...priorBody } = prior || {};
+  const cap = Number(assignment.max_cost_aud_cents);
+  const reservation = prior?.budgetReservationId
+    ? db.prepare("SELECT * FROM budget_reservations WHERE id = ?").get(prior.budgetReservationId)
+    : null;
+  const genericCost = prior?.costId
+    ? db.prepare("SELECT * FROM costs WHERE id = ?").get(prior.costId)
+    : null;
+  let reservationMetadata;
+  let costMetadata;
+  let modelMetadata;
+  try {
+    reservationMetadata = JSON.parse(reservation?.metadata || "{}");
+    costMetadata = JSON.parse(genericCost?.metadata || "{}");
+    modelMetadata = JSON.parse(modelCall.metadata || "{}");
+  } catch {
+    throw new Error("Emergency pre-venture cost safety found invalid accounting metadata.");
+  }
+  const statusMap = {
+    reserved: new Set(["reserved"]),
+    estimated: new Set(["estimated", "incurred_estimate"]),
+    incurred: new Set(["incurred", "incurred_estimate"]),
+  };
+  const expectedKnownAmount = prior?.amountAudCents ?? prior?.exposureAudCents;
+  if (
+    prior?.schema !== PREVENTURE_RESEARCH_COST_EVENT_SCHEMA
+    || suppliedReceiptHash !== priorRow.receipt_hash
+    || canonicalCapabilityHash(priorBody) !== priorRow.receipt_hash
+    || prior.authorityHash !== assignment.authority_hash
+    || prior.assignmentHash !== assignment.assignment_hash
+    || prior.costKey !== priorRow.cost_key
+    || prior.sequence !== Number(priorRow.sequence)
+    || prior.previousReceiptHash !== priorRow.previous_receipt_hash
+    || !statusMap[prior.eventType]
+    || prior.exposureAudCents !== cap
+    || prior.taskAttemptId !== attempt.id
+    || (prior.modelCallId !== null && prior.modelCallId !== modelCall.id)
+    || attempt.provider_dispatch_model_call_id !== modelCall.id
+    || modelCall.attempt_id !== attempt.id
+    || modelCall.cost_status !== prior.eventType
+    || Number(modelCall.reserved_cost_cents) !== cap
+    || Number(modelCall.actual_cost_cents) !== (prior.eventType === "incurred" ? prior.amountAudCents : 0)
+    || Number(modelCall.reconciled_cost_cents) !== 0
+    || modelMetadata.authorityHash !== assignment.authority_hash
+    || modelMetadata.assignmentHash !== assignment.assignment_hash
+    || !reservation
+    || reservation.task_id !== taskId
+    || reservation.workflow_id !== assignment.workflow_id
+    || reservation.venture_id !== null
+    || reservation.currency !== "AUD"
+    || !statusMap[prior.eventType].has(reservation.status)
+    || Number(reservation.amount_cents) !== cap
+    || reservationMetadata.authorityHash !== assignment.authority_hash
+    || reservationMetadata.assignmentHash !== assignment.assignment_hash
+    || reservationMetadata.costKey !== prior.costKey
+    || reservationMetadata.exposureAudCents !== cap
+    || !genericCost
+    || genericCost.task_id !== taskId
+    || genericCost.workflow_id !== assignment.workflow_id
+    || genericCost.venture_id !== null
+    || genericCost.currency !== "AUD"
+    || !statusMap[prior.eventType].has(genericCost.status)
+    || Number(genericCost.amount_cents) !== Number(expectedKnownAmount)
+    || (genericCost.model_call_id !== null && genericCost.model_call_id !== modelCall.id)
+    || costMetadata.authorityHash !== assignment.authority_hash
+    || costMetadata.assignmentHash !== assignment.assignment_hash
+    || costMetadata.costKey !== prior.costKey
+    || costMetadata.exposureAudCents !== cap
+    || Date.parse(stoppedAt) < Date.parse(prior.occurredAt)
+  ) {
+    throw new Error("Emergency pre-venture cost safety found drifted execution or accounting truth.");
+  }
+  const transition = Object.freeze({
+    schema: PREVENTURE_RESEARCH_EMERGENCY_COST_TRANSITION_SCHEMA,
+    taskId,
+    taskAttemptId: attempt.id,
+    modelCallId: modelCall.id,
+    priorCostReceiptHash: prior.receiptHash,
+    stoppedAt,
+    providerOutcomeKnown: false,
+    exactBillingPending: true,
+  });
+  const eventBody = {
+    schema: PREVENTURE_RESEARCH_COST_EVENT_SCHEMA,
+    authorityHash: assignment.authority_hash,
+    assignmentHash: assignment.assignment_hash,
+    costKey: prior.costKey,
+    sequence: prior.sequence + 1,
+    previousReceiptHash: prior.receiptHash,
+    eventType: "unknown",
+    amountAudCents: null,
+    exposureAudCents: cap,
+    taskAttemptId: attempt.id,
+    modelCallId: modelCall.id,
+    budgetReservationId: reservation.id,
+    costId: genericCost.id,
+    agentRunReceiptId: prior.agentRunReceiptId ?? null,
+    emergencyStop: transition,
+    occurredAt: stoppedAt,
+  };
+  const costEvent = Object.freeze({
+    ...eventBody,
+    receiptHash: canonicalCapabilityHash(eventBody),
+  });
+  return {
+    authorityHash: assignment.authority_hash,
+    assignmentHash: assignment.assignment_hash,
+    assignmentCapAudCents: cap,
+    modelCallId: modelCall.id,
+    modelCallIds: new Set([modelCall.id]),
+    reservationId: reservation.id,
+    reservationIds: new Set([reservation.id]),
+    costId: genericCost.id,
+    costIds: new Set([genericCost.id]),
+    costEvent,
+    costReceiptHashes: new Set([costEvent.receiptHash]),
+  };
+}
+
+function registerPreventureEmergencyCostSafetyCapabilityFunction(db) {
+  db.function("pantheon_preventure_emergency_cost_safety_capability", (
+    phaseValue,
+    taskIdValue,
+    objectIdValue,
+    authorityHashValue,
+    assignmentHashValue,
+    assignmentCapAudCentsValue,
+    stoppedAtValue,
+  ) => {
+    const state = preventureEmergencyCostSafetyCapabilities.get(db);
+    if (!state) return 0;
+    const phase = String(phaseValue ?? "");
+    const taskId = String(taskIdValue ?? "");
+    const objectId = String(objectIdValue ?? "");
+    const expectedTask = state.tasks.get(taskId);
+    const objects = phase === "model_call_update"
+      ? expectedTask?.modelCallIds
+      : phase === "reservation_update"
+        ? expectedTask?.reservationIds
+        : phase === "cost_update"
+          ? expectedTask?.costIds
+          : phase === "cost_event_insert"
+            ? expectedTask?.costReceiptHashes
+            : null;
+    if (
+      !expectedTask
+      || !objects?.has(objectId)
+      || String(authorityHashValue ?? "") !== expectedTask.authorityHash
+      || String(assignmentHashValue ?? "") !== expectedTask.assignmentHash
+      || Number(assignmentCapAudCentsValue) !== expectedTask.assignmentCapAudCents
+      || String(stoppedAtValue ?? "") !== state.binding.stoppedAt
+    ) return 0;
+    objects.delete(objectId);
+    return 1;
+  });
+}
+
+function recordPreventureEmergencyUnknownCost(db, taskId, stoppedAt) {
+  const state = preventureEmergencyCostSafetyCapabilities.get(db);
+  const expected = state?.tasks.get(String(taskId || ""));
+  if (!expected || state.binding.stoppedAt !== stoppedAt) {
+    throw new Error("Emergency pre-venture cost truth requires its exact armed safety capability.");
+  }
+  const metadata = JSON.stringify({
+    emergencyStop: true,
+    stoppedAt,
+    providerOutcomeUnknown: true,
+    exactBillingPending: true,
+    exposureAudCents: expected.assignmentCapAudCents,
+  });
+  const changed = db.prepare(
+    `UPDATE costs
+     SET model_call_id = ?, status = 'unknown', amount_cents = ?,
+         metadata = json_patch(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, ?)
+     WHERE id = ? AND task_id = ?`,
+  ).run(
+    expected.modelCallId,
+    expected.assignmentCapAudCents,
+    metadata,
+    expected.costId,
+    taskId,
+  );
+  if (Number(changed.changes) !== 1) {
+    throw new Error("Emergency pre-venture cost safety lost its exact Pantheon cost row.");
+  }
+  const event = expected.costEvent;
+  db.prepare(
+    `INSERT INTO preventure_research_cost_events
+     (receipt_hash, authority_hash, assignment_hash, cost_key, sequence,
+      previous_receipt_hash, event_type, amount_aud_cents, exposure_aud_cents,
+      task_attempt_id, model_call_id, budget_reservation_id, cost_id,
+      agent_run_receipt_id, cost_json, occurred_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'unknown', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    event.receiptHash,
+    event.authorityHash,
+    event.assignmentHash,
+    event.costKey,
+    event.sequence,
+    event.previousReceiptHash,
+    event.exposureAudCents,
+    event.taskAttemptId,
+    event.modelCallId,
+    event.budgetReservationId,
+    event.costId,
+    event.agentRunReceiptId,
+    canonicalCapabilityJson(event),
+    event.occurredAt,
+    event.occurredAt,
+  );
+  return event;
+}
+
+function withPreventureEmergencyCostSafetyCapability(db, binding, action) {
+  if (!db || typeof db.prepare !== "function" || typeof action !== "function") {
+    throw new Error("Emergency pre-venture cost safety requires one synchronous database action.");
+  }
+  if (preventureEmergencyCostSafetyCapabilities.has(db)) {
+    throw new Error("An emergency pre-venture cost-safety action is already in progress.");
+  }
+  const normalized = normalizePreventureEmergencyCostSafetyCapability(binding);
+  const tasks = new Map();
+  for (const taskId of normalized.taskIds) {
+    const assignment = db.prepare(
+      `SELECT assignments.authority_hash, assignments.assignment_hash,
+              assignments.workflow_id, assignments.max_cost_aud_cents
+       FROM preventure_research_assignments AS assignments
+       WHERE assignments.task_id = ?`,
+    ).get(taskId);
+    if (!assignment) continue;
+    tasks.set(
+      taskId,
+      preparePreventureEmergencyCostSafetyTask(db, taskId, assignment, normalized.stoppedAt),
+    );
+  }
+  beginAtomic(db);
+  preventureEmergencyCostSafetyCapabilities.set(db, { binding: normalized, tasks });
+  try {
+    const result = action();
+    if (result && typeof result.then === "function") {
+      throw new Error("Emergency pre-venture cost safety must be synchronous.");
+    }
+    for (const [taskId, expected] of tasks) {
+      if (
+        expected.modelCallIds.size
+        || expected.reservationIds.size
+        || expected.costIds.size
+        || expected.costReceiptHashes.size
+      ) {
+        throw new Error(`Emergency cost safety did not consume every bound projection for ${taskId}.`);
+      }
+      const invalidModel = db.prepare(
+        `SELECT 1 FROM model_calls
+         WHERE task_id = ? AND error_kind = 'operator_emergency_stop'
+           AND (status <> 'needs_attention' OR outcome_status <> 'unknown'
+             OR cost_status <> 'unknown' OR reserved_cost_cents <> ?
+             OR actual_cost_cents <> 0 OR reconciled_cost_cents <> 0
+             OR json_extract(metadata, '$.emergencyStop') <> 1
+             OR json_extract(metadata, '$.stoppedAt') IS NOT ?)
+         LIMIT 1`,
+      ).get(taskId, expected.assignmentCapAudCents, normalized.stoppedAt);
+      const invalidReservation = db.prepare(
+        `SELECT 1 FROM budget_reservations
+         WHERE task_id = ? AND json_extract(metadata, '$.emergencyStop') = 1
+           AND (status <> 'unknown' OR amount_cents <> ? OR resolved_at IS NOT NULL
+             OR json_extract(metadata, '$.stoppedAt') IS NOT ?)
+         LIMIT 1`,
+      ).get(taskId, expected.assignmentCapAudCents, normalized.stoppedAt);
+      const invalidCost = db.prepare(
+        `SELECT 1 FROM costs
+         WHERE id = ? AND (task_id <> ? OR model_call_id <> ? OR status <> 'unknown'
+           OR amount_cents <> ? OR currency <> 'AUD'
+           OR json_extract(metadata, '$.emergencyStop') <> 1
+           OR json_extract(metadata, '$.providerOutcomeUnknown') <> 1
+           OR json_extract(metadata, '$.exactBillingPending') <> 1
+           OR json_extract(metadata, '$.stoppedAt') IS NOT ?)
+         LIMIT 1`,
+      ).get(
+        expected.costId,
+        taskId,
+        expected.modelCallId,
+        expected.assignmentCapAudCents,
+        normalized.stoppedAt,
+      );
+      const costEvent = db.prepare(
+        `SELECT * FROM preventure_research_cost_events
+         WHERE receipt_hash = ? AND authority_hash = ? AND assignment_hash = ?
+           AND event_type = 'unknown' AND amount_aud_cents IS NULL
+           AND exposure_aud_cents = ? AND task_attempt_id = ?
+           AND model_call_id = ? AND budget_reservation_id = ? AND cost_id = ?
+           AND cost_json = ? AND occurred_at = ? AND created_at = ?`,
+      ).get(
+        expected.costEvent.receiptHash,
+        expected.authorityHash,
+        expected.assignmentHash,
+        expected.assignmentCapAudCents,
+        expected.costEvent.taskAttemptId,
+        expected.modelCallId,
+        expected.reservationId,
+        expected.costId,
+        canonicalCapabilityJson(expected.costEvent),
+        normalized.stoppedAt,
+        normalized.stoppedAt,
+      );
+      const terminalSnapshot = db.prepare(
+        `SELECT 1
+         FROM tasks
+         WHERE id = ? AND claim_token IS NULL
+           AND json_extract(result, '$.emergencyStop') = 1
+           AND json_extract(result, '$.claimInvalidated') = 1
+           AND json_extract(result, '$.stoppedAt') IS ?
+           AND EXISTS (
+             SELECT 1 FROM task_attempts AS attempts
+             WHERE attempts.task_id = tasks.id
+               AND attempts.error_kind = 'operator_emergency_stop'
+               AND json_extract(attempts.metadata, '$.emergencyStop') = 1
+               AND json_extract(attempts.metadata, '$.claimInvalidated') = 1
+               AND json_extract(attempts.metadata, '$.stoppedAt') IS ?
+           )
+           AND EXISTS (
+             SELECT 1 FROM events AS emergency
+             WHERE emergency.type = 'runtime.emergency_stop_recorded'
+               AND emergency.ts IS ?
+               AND EXISTS (
+                 SELECT 1 FROM json_each(emergency.metadata, '$.affectedTaskIds') AS affected
+                 WHERE affected.value = tasks.id
+               )
+           )`,
+      ).get(taskId, normalized.stoppedAt, normalized.stoppedAt, normalized.stoppedAt);
+      if (invalidModel || invalidReservation || invalidCost || !costEvent || !terminalSnapshot) {
+        throw new Error("Emergency pre-venture cost safety did not retain full unknown exposure.");
+      }
+    }
+    preventureEmergencyCostSafetyCapabilities.delete(db);
+    commitAtomic(db);
+    return result;
+  } catch (error) {
+    preventureEmergencyCostSafetyCapabilities.delete(db);
+    rollbackAtomic(db);
+    throw error;
+  } finally {
+    preventureEmergencyCostSafetyCapabilities.delete(db);
+  }
+}
 
 const COMMERCIAL_LEDGER_IMMUTABLE_TRIGGER_SQL = Object.freeze({
   trg_venture_kits_definition_immutable_update: `
@@ -199,13 +1942,3681 @@ const COMMERCIAL_LEDGER_REQUIRED_INDEX_SQL = Object.freeze({
   `,
 });
 
+const PREVENTURE_RESEARCH_IMMUTABLE_TRIGGER_SQL = Object.freeze({
+  trg_preventure_research_provider_billing_observations_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_provider_billing_observations_immutable_update
+    BEFORE UPDATE ON preventure_research_provider_billing_observations
+    BEGIN
+      SELECT RAISE(ABORT, 'Owner-attested provider billing observations are immutable.');
+    END
+  `,
+  trg_preventure_research_provider_billing_observations_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_provider_billing_observations_immutable_delete
+    BEFORE DELETE ON preventure_research_provider_billing_observations
+    BEGIN
+      SELECT RAISE(ABORT, 'Owner-attested provider billing observations are immutable.');
+    END
+  `,
+  trg_preventure_research_terminal_recoveries_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recoveries_immutable_update
+    BEFORE UPDATE ON preventure_research_terminal_recoveries
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal retained-output recovery records are immutable.');
+    END
+  `,
+  trg_preventure_research_terminal_recoveries_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recoveries_immutable_delete
+    BEFORE DELETE ON preventure_research_terminal_recoveries
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal retained-output recovery records are immutable.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_event_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_event_immutable_update
+    BEFORE UPDATE ON events
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_terminal_recoveries AS recoveries
+      WHERE recoveries.emergency_event_id = OLD.id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'A referenced emergency-stop event is immutable.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_event_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_event_immutable_delete
+    BEFORE DELETE ON events
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_terminal_recoveries AS recoveries
+      WHERE recoveries.emergency_event_id = OLD.id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'A referenced emergency-stop event is immutable.');
+    END
+  `,
+  trg_preventure_research_terminal_stops_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_stops_immutable_update
+    BEFORE UPDATE ON preventure_research_terminal_stops
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture terminal-stop records are immutable.');
+    END
+  `,
+  trg_preventure_research_terminal_stops_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_stops_immutable_delete
+    BEFORE DELETE ON preventure_research_terminal_stops
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture terminal-stop records are immutable.');
+    END
+  `,
+  trg_preventure_research_assignment_skips_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_assignment_skips_immutable_update
+    BEFORE UPDATE ON preventure_research_assignment_skips
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture assignment skip records are immutable.');
+    END
+  `,
+  trg_preventure_research_assignment_skips_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_assignment_skips_immutable_delete
+    BEFORE DELETE ON preventure_research_assignment_skips
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture assignment skip records are immutable.');
+    END
+  `,
+  trg_preventure_research_approval_decisions_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_approval_decisions_immutable_update
+    BEFORE UPDATE ON preventure_research_approval_decisions
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture approval decision receipts are immutable.');
+    END
+  `,
+  trg_preventure_research_approval_decisions_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_approval_decisions_immutable_delete
+    BEFORE DELETE ON preventure_research_approval_decisions
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture approval decision receipts are immutable.');
+    END
+  `,
+  trg_preventure_research_authorities_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_authorities_immutable_update
+    BEFORE UPDATE ON preventure_research_authorities
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research authorities are immutable; create a new version.');
+    END
+  `,
+  trg_preventure_research_authorities_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_authorities_immutable_delete
+    BEFORE DELETE ON preventure_research_authorities
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research authorities are immutable.');
+    END
+  `,
+  trg_preventure_research_lifecycle_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_lifecycle_immutable_update
+    BEFORE UPDATE ON preventure_research_lifecycle_events
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research lifecycle events are append-only.');
+    END
+  `,
+  trg_preventure_research_lifecycle_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_lifecycle_immutable_delete
+    BEFORE DELETE ON preventure_research_lifecycle_events
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research lifecycle events are append-only.');
+    END
+  `,
+  trg_preventure_research_assignments_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_assignments_immutable_update
+    BEFORE UPDATE ON preventure_research_assignments
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research assignments are immutable.');
+    END
+  `,
+  trg_preventure_research_assignments_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_assignments_immutable_delete
+    BEFORE DELETE ON preventure_research_assignments
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research assignments are immutable.');
+    END
+  `,
+  trg_preventure_research_cost_events_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_cost_events_immutable_update
+    BEFORE UPDATE ON preventure_research_cost_events
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research cost events are append-only.');
+    END
+  `,
+  trg_preventure_research_cost_events_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_cost_events_immutable_delete
+    BEFORE DELETE ON preventure_research_cost_events
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research cost events are append-only.');
+    END
+  `,
+  trg_preventure_research_sources_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_sources_immutable_update
+    BEFORE UPDATE ON preventure_research_source_snapshots
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research source snapshots are immutable; append a revision.');
+    END
+  `,
+  trg_preventure_research_sources_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_sources_immutable_delete
+    BEFORE DELETE ON preventure_research_source_snapshots
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research source snapshots are immutable.');
+    END
+  `,
+  trg_preventure_research_evidence_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_evidence_immutable_update
+    BEFORE UPDATE ON preventure_research_evidence_records
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research evidence is immutable; append a revision.');
+    END
+  `,
+  trg_preventure_research_evidence_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_evidence_immutable_delete
+    BEFORE DELETE ON preventure_research_evidence_records
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research evidence is immutable.');
+    END
+  `,
+  trg_preventure_research_decisions_immutable_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_decisions_immutable_update
+    BEFORE UPDATE ON preventure_research_decisions
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research decisions are immutable.');
+    END
+  `,
+  trg_preventure_research_decisions_immutable_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_decisions_immutable_delete
+    BEFORE DELETE ON preventure_research_decisions
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research decisions are immutable.');
+    END
+  `,
+});
+
+function preventureExecutionVentureGuardTriggerSql(tableName) {
+  return {
+    [`trg_preventure_research_${tableName}_venture_insert`]: `
+      CREATE TRIGGER IF NOT EXISTS trg_preventure_research_${tableName}_venture_insert
+      BEFORE INSERT ON ${tableName}
+      WHEN NEW.venture_id IS NOT NULL
+        AND (
+          EXISTS (
+            SELECT 1 FROM tasks
+            WHERE id = NEW.task_id AND kind = 'preventure_research'
+          )
+          OR EXISTS (
+            SELECT 1 FROM workflows
+            WHERE id = NEW.workflow_id AND type = 'preventure_research'
+          )
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'Pre-venture research execution cannot be assigned to a venture.');
+      END
+    `,
+    [`trg_preventure_research_${tableName}_venture_update`]: `
+      CREATE TRIGGER IF NOT EXISTS trg_preventure_research_${tableName}_venture_update
+      BEFORE UPDATE OF venture_id, workflow_id, task_id ON ${tableName}
+      WHEN NEW.venture_id IS NOT NULL
+        AND (
+          EXISTS (
+            SELECT 1 FROM tasks
+            WHERE id = NEW.task_id AND kind = 'preventure_research'
+          )
+          OR EXISTS (
+            SELECT 1 FROM workflows
+            WHERE id = NEW.workflow_id AND type = 'preventure_research'
+          )
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'Pre-venture research execution cannot be assigned to a venture.');
+      END
+    `,
+  };
+}
+
+function preventureResearchEventOwnershipCondition(row = "NEW") {
+  return `(
+    (
+      ${row}.entity_type = 'preventure_research_authority'
+      AND ${row}.type IN (
+        'preventure_research.proposed',
+        'preventure_research.acceptance_requested',
+        'preventure_research.accepted',
+        'preventure_research.activation_requested',
+        'preventure_research.activated',
+        'preventure_research.assignments_materialized',
+        'preventure_research.outcome_unknown',
+        'preventure_research.revoked',
+        'preventure_research.expired',
+        'preventure_research.decision_completed'
+      )
+    )
+    OR (
+      ${row}.entity_type = 'preventure_research_assignment'
+      AND ${row}.type IN (
+        'preventure_research.assignment_started',
+        'preventure_research.assignment_completed',
+        'preventure_research.assignment_needs_reprocess'
+      )
+    )
+  )`;
+}
+
+function preventureSkippedTaskActivityInsertTriggerSql(tableName) {
+  return {
+    [`trg_preventure_research_${tableName}_skipped_task_insert`]: `
+      CREATE TRIGGER IF NOT EXISTS trg_preventure_research_${tableName}_skipped_task_insert
+      BEFORE INSERT ON ${tableName}
+      WHEN EXISTS (
+        SELECT 1
+        FROM preventure_research_assignment_skips AS skips
+        WHERE skips.task_id = NEW.task_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'A skipped pre-venture assignment cannot acquire later execution or cost activity.');
+      END
+    `,
+    [`trg_preventure_research_${tableName}_skipped_task_update`]: `
+      CREATE TRIGGER IF NOT EXISTS trg_preventure_research_${tableName}_skipped_task_update
+      BEFORE UPDATE OF task_id ON ${tableName}
+      WHEN EXISTS (
+        SELECT 1
+        FROM preventure_research_assignment_skips AS skips
+        WHERE skips.task_id = NEW.task_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Existing execution or cost activity cannot be rebound to a skipped pre-venture assignment.');
+      END
+    `,
+  };
+}
+
+function preventureTerminalRecoveryTaskActivityTriggerSql(tableName) {
+  const ownerBillingUpdateGuard = {
+    budget_reservations: `
+      AND COALESCE(pantheon_preventure_owner_billing_observation_capability(
+        'guard_reservation_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.amount_cents,
+        NEW.resolved_at,
+        NEW.metadata
+      ), 0) <> 1`,
+    costs: `
+      AND COALESCE(pantheon_preventure_owner_billing_observation_capability(
+        'guard_cost_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.amount_cents,
+        NEW.occurred_at,
+        NEW.metadata
+      ), 0) <> 1`,
+    model_calls: `
+      AND COALESCE(pantheon_preventure_owner_billing_observation_capability(
+        'guard_model_call_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.actual_cost_cents,
+        json_extract(NEW.metadata, '$.ownerBillingRecordedAt'),
+        NEW.metadata
+      ), 0) <> 1`,
+  }[tableName] || "";
+  return {
+    [`trg_preventure_research_${tableName}_terminal_recovery_insert`]: `
+      CREATE TRIGGER IF NOT EXISTS trg_preventure_research_${tableName}_terminal_recovery_insert
+      BEFORE INSERT ON ${tableName}
+      WHEN EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        JOIN preventure_research_terminal_recoveries AS recoveries
+          ON recoveries.authority_hash = assignments.authority_hash
+        WHERE assignments.task_id = NEW.task_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Terminal retained-output custody cannot acquire later execution or cost activity.');
+      END
+    `,
+    [`trg_preventure_research_${tableName}_terminal_recovery_update`]: `
+      CREATE TRIGGER IF NOT EXISTS trg_preventure_research_${tableName}_terminal_recovery_update
+      BEFORE UPDATE ON ${tableName}
+      WHEN EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        JOIN preventure_research_terminal_recoveries AS recoveries
+          ON recoveries.authority_hash = assignments.authority_hash
+        WHERE assignments.task_id IN (OLD.task_id, NEW.task_id)
+      )
+      ${ownerBillingUpdateGuard}
+      BEGIN
+        SELECT RAISE(ABORT, 'Terminal retained-output custody freezes later execution and cost projections.');
+      END
+    `,
+    [`trg_preventure_research_${tableName}_terminal_recovery_delete`]: `
+      CREATE TRIGGER IF NOT EXISTS trg_preventure_research_${tableName}_terminal_recovery_delete
+      BEFORE DELETE ON ${tableName}
+      WHEN EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        JOIN preventure_research_terminal_recoveries AS recoveries
+          ON recoveries.authority_hash = assignments.authority_hash
+        WHERE assignments.task_id = OLD.task_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Terminal retained-output custody freezes later execution and cost projections.');
+      END
+    `,
+  };
+}
+
+function preventureTerminalRecoveryIndirectChildTriggerSql(tableName, parentTable) {
+  return {
+    [`trg_preventure_research_${tableName}_terminal_recovery_insert`]: `
+      CREATE TRIGGER IF NOT EXISTS trg_preventure_research_${tableName}_terminal_recovery_insert
+      BEFORE INSERT ON ${tableName}
+      WHEN EXISTS (
+        SELECT 1
+        FROM ${parentTable} AS parent
+        JOIN preventure_research_assignments AS assignments
+          ON assignments.task_id = parent.task_id
+        JOIN preventure_research_terminal_recoveries AS recoveries
+          ON recoveries.authority_hash = assignments.authority_hash
+        WHERE parent.id = NEW.run_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Terminal retained-output custody freezes indirectly bound execution evidence.');
+      END
+    `,
+    [`trg_preventure_research_${tableName}_terminal_recovery_update`]: `
+      CREATE TRIGGER IF NOT EXISTS trg_preventure_research_${tableName}_terminal_recovery_update
+      BEFORE UPDATE ON ${tableName}
+      WHEN EXISTS (
+        SELECT 1
+        FROM ${parentTable} AS parent
+        JOIN preventure_research_assignments AS assignments
+          ON assignments.task_id = parent.task_id
+        JOIN preventure_research_terminal_recoveries AS recoveries
+          ON recoveries.authority_hash = assignments.authority_hash
+        WHERE parent.id IN (OLD.run_id, NEW.run_id)
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Terminal retained-output custody freezes indirectly bound execution evidence.');
+      END
+    `,
+    [`trg_preventure_research_${tableName}_terminal_recovery_delete`]: `
+      CREATE TRIGGER IF NOT EXISTS trg_preventure_research_${tableName}_terminal_recovery_delete
+      BEFORE DELETE ON ${tableName}
+      WHEN EXISTS (
+        SELECT 1
+        FROM ${parentTable} AS parent
+        JOIN preventure_research_assignments AS assignments
+          ON assignments.task_id = parent.task_id
+        JOIN preventure_research_terminal_recoveries AS recoveries
+          ON recoveries.authority_hash = assignments.authority_hash
+        WHERE parent.id = OLD.run_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Terminal retained-output custody freezes indirectly bound execution evidence.');
+      END
+    `,
+  };
+}
+
+const PREVENTURE_RESEARCH_GUARD_TRIGGER_SQL = Object.freeze({
+  trg_preventure_research_owner_billing_observation_admission_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_owner_billing_observation_admission_insert
+    BEFORE INSERT ON preventure_research_provider_billing_observations
+    WHEN pantheon_preventure_owner_billing_observation_capability(
+        'observation_insert',
+        NEW.authority_hash,
+        NEW.assignment_hash,
+        NEW.observation_hash,
+        NEW.observation_hash,
+        NULL,
+        NULL,
+        NEW.amount_aud_cents,
+        NEW.recorded_at,
+        NEW.observation_json
+      ) <> 1
+      OR NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignment
+        WHERE assignment.authority_hash = NEW.authority_hash
+          AND assignment.assignment_hash = NEW.assignment_hash
+          AND assignment.template_hash = NEW.assignment_template_hash
+          AND assignment.task_id = NEW.task_id
+      )
+      OR NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_cost_events AS predecessor
+        WHERE predecessor.receipt_hash = NEW.expected_previous_receipt_hash
+          AND predecessor.authority_hash = NEW.authority_hash
+          AND predecessor.assignment_hash = NEW.assignment_hash
+          AND predecessor.cost_key = NEW.cost_key
+          AND predecessor.task_attempt_id = NEW.task_attempt_id
+          AND predecessor.model_call_id = NEW.model_call_id
+          AND predecessor.budget_reservation_id = NEW.budget_reservation_id
+          AND predecessor.cost_id = NEW.cost_id
+          AND predecessor.agent_run_receipt_id = NEW.agent_run_receipt_id
+          AND NOT EXISTS (
+            SELECT 1 FROM preventure_research_cost_events AS later
+            WHERE later.assignment_hash = predecessor.assignment_hash
+              AND later.cost_key = predecessor.cost_key
+              AND later.sequence > predecessor.sequence
+          )
+          AND NEW.original_cost_occurred_at = (
+            SELECT original.occurred_at
+            FROM preventure_research_cost_events AS original
+            WHERE original.assignment_hash = predecessor.assignment_hash
+              AND original.cost_key = predecessor.cost_key
+            ORDER BY original.sequence ASC
+            LIMIT 1
+          )
+      )
+      OR NOT (
+        (
+          NEW.predecessor_kind = 'terminal_recovery'
+          AND EXISTS (
+            SELECT 1 FROM preventure_research_terminal_recoveries AS recovery
+            WHERE recovery.recovery_hash = NEW.predecessor_hash
+              AND recovery.authority_hash = NEW.authority_hash
+              AND recovery.assignment_hash = NEW.assignment_hash
+              AND recovery.task_attempt_id = NEW.task_attempt_id
+              AND recovery.model_call_id = NEW.model_call_id
+              AND recovery.terminal_cost_receipt_hash
+                = NEW.expected_previous_receipt_hash
+          )
+        )
+        OR (
+          NEW.predecessor_kind = 'sealed_decision'
+          AND EXISTS (
+            SELECT 1 FROM preventure_research_decisions AS decision
+            WHERE decision.decision_hash = NEW.predecessor_hash
+              AND decision.authority_hash = NEW.authority_hash
+          )
+        )
+      )
+      OR NOT EXISTS (
+        SELECT 1
+        FROM task_attempts AS attempt
+        JOIN model_calls AS model ON model.id = NEW.model_call_id
+        JOIN agent_run_receipts AS receipt ON receipt.id = NEW.agent_run_receipt_id
+        JOIN budget_reservations AS reservation ON reservation.id = NEW.budget_reservation_id
+        JOIN costs AS cost ON cost.id = NEW.cost_id
+        WHERE attempt.id = NEW.task_attempt_id
+          AND attempt.task_id = NEW.task_id
+          AND model.task_id = NEW.task_id
+          AND receipt.task_id = NEW.task_id
+          AND receipt.attempt_id = NEW.task_attempt_id
+          AND (
+            CASE
+              WHEN length(receipt.receipt_hash) = 64 THEN 'sha256:' || receipt.receipt_hash
+              ELSE receipt.receipt_hash
+            END
+          ) = NEW.agent_run_receipt_hash
+          AND reservation.task_id = NEW.task_id
+          AND reservation.currency = 'AUD'
+          AND cost.task_id = NEW.task_id
+          AND cost.model_call_id = NEW.model_call_id
+          AND cost.currency = 'AUD'
+      )
+    BEGIN
+      SELECT RAISE(
+        ABORT,
+        'Owner-attested provider billing observations require the exact database capability.'
+      );
+    END
+  `,
+  trg_preventure_research_owner_billing_cost_event_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_owner_billing_cost_event_insert
+    BEFORE INSERT ON preventure_research_cost_events
+    WHEN json_extract(NEW.cost_json, '$.ownerBillingObservationHash') IS NOT NULL
+      AND pantheon_preventure_owner_billing_observation_capability(
+        'cost_event_insert',
+        NEW.authority_hash,
+        NEW.assignment_hash,
+        NEW.cost_id,
+        json_extract(NEW.cost_json, '$.ownerBillingObservationHash'),
+        NEW.receipt_hash,
+        NEW.previous_receipt_hash,
+        NEW.amount_aud_cents,
+        NEW.occurred_at,
+        NEW.cost_json
+      ) <> 1
+    BEGIN
+      SELECT RAISE(ABORT, 'Owner-attested provider cost requires its exact observation capability.');
+    END
+  `,
+  trg_preventure_research_owner_billing_reservation_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_owner_billing_reservation_update
+    BEFORE UPDATE ON budget_reservations
+    WHEN json_extract(NEW.metadata, '$.ownerBillingObservationHash') IS NOT NULL
+      AND pantheon_preventure_owner_billing_observation_capability(
+        'reservation_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.amount_cents,
+        NEW.resolved_at,
+        NEW.metadata
+      ) <> 1
+    BEGIN
+      SELECT RAISE(ABORT, 'Owner-attested provider billing requires its exact reservation transition.');
+    END
+  `,
+  trg_preventure_research_owner_billing_cost_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_owner_billing_cost_update
+    BEFORE UPDATE ON costs
+    WHEN json_extract(NEW.metadata, '$.ownerBillingObservationHash') IS NOT NULL
+      AND pantheon_preventure_owner_billing_observation_capability(
+        'cost_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.amount_cents,
+        NEW.occurred_at,
+        NEW.metadata
+      ) <> 1
+    BEGIN
+      SELECT RAISE(ABORT, 'Owner-attested provider billing requires its exact cost transition.');
+    END
+  `,
+  trg_preventure_research_owner_billing_model_call_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_owner_billing_model_call_update
+    BEFORE UPDATE OF cost_status, reserved_cost_cents, actual_cost_cents,
+                     reconciled_cost_cents, metadata ON model_calls
+    WHEN json_extract(NEW.metadata, '$.ownerBillingObservationHash') IS NOT NULL
+      AND pantheon_preventure_owner_billing_observation_capability(
+        'model_call_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.actual_cost_cents,
+        json_extract(NEW.metadata, '$.ownerBillingRecordedAt'),
+        NEW.metadata
+      ) <> 1
+    BEGIN
+      SELECT RAISE(ABORT, 'Owner-attested provider billing requires its exact model-cost transition.');
+    END
+  `,
+  trg_preventure_research_terminal_receipt_admission_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_receipt_admission_insert
+    BEFORE INSERT ON agent_run_receipts
+    WHEN EXISTS (
+      SELECT 1
+      FROM preventure_research_assignments AS assignment
+      JOIN preventure_research_authorities AS authority
+        ON authority.authority_hash = assignment.authority_hash
+      WHERE assignment.task_id = NEW.task_id
+        AND (
+          julianday(pantheon_current_time()) >= julianday(authority.expires_at)
+          OR EXISTS (
+            SELECT 1
+            FROM preventure_research_lifecycle_events AS lifecycle
+            WHERE lifecycle.authority_hash = assignment.authority_hash
+              AND lifecycle.event_type IN ('revoked', 'expired')
+              AND NOT EXISTS (
+                SELECT 1 FROM preventure_research_lifecycle_events AS later
+                WHERE later.authority_hash = lifecycle.authority_hash
+                  AND later.sequence > lifecycle.sequence
+              )
+          )
+          OR EXISTS (
+            SELECT 1 FROM events AS emergency
+            WHERE emergency.type = 'runtime.emergency_stop_recorded'
+              AND json_valid(emergency.metadata)
+              AND EXISTS (
+                SELECT 1 FROM json_each(emergency.metadata, '$.affectedTaskIds') AS affected
+                WHERE affected.value = assignment.task_id
+              )
+          )
+        )
+    )
+      AND pantheon_preventure_terminal_receipt_capability(
+        (SELECT assignment.authority_hash
+         FROM preventure_research_assignments AS assignment
+         WHERE assignment.task_id = NEW.task_id LIMIT 1),
+        (SELECT assignment.assignment_hash
+         FROM preventure_research_assignments AS assignment
+         WHERE assignment.task_id = NEW.task_id LIMIT 1),
+        NEW.id,
+        NEW.attempt_id,
+        NEW.run_id,
+        NEW.task_id,
+        NEW.sequence,
+        NEW.status,
+        NEW.outcome_status,
+        NEW.snapshot_hash,
+        NEW.previous_hash,
+        NEW.receipt_hash,
+        NEW.missing_fields,
+        NEW.warnings,
+        NEW.receipt,
+        NEW.created_at,
+        json_extract(NEW.receipt, '$.attempt.metadata.terminalRetainedExecution.closureHash')
+      ) <> 1
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal execution receipts require the exact one-shot custody capability.');
+    END
+  `,
+  ...preventureSkippedTaskActivityInsertTriggerSql("task_attempts"),
+  ...preventureSkippedTaskActivityInsertTriggerSql("model_calls"),
+  ...preventureSkippedTaskActivityInsertTriggerSql("research_runs"),
+  ...preventureSkippedTaskActivityInsertTriggerSql("agent_runs"),
+  ...preventureSkippedTaskActivityInsertTriggerSql("agent_run_receipts"),
+  ...preventureSkippedTaskActivityInsertTriggerSql("agent_tool_invocations"),
+  ...preventureSkippedTaskActivityInsertTriggerSql("agent_eval_results"),
+  ...preventureSkippedTaskActivityInsertTriggerSql("agent_run_provenance"),
+  ...preventureSkippedTaskActivityInsertTriggerSql("budget_reservations"),
+  ...preventureSkippedTaskActivityInsertTriggerSql("costs"),
+  ...preventureTerminalRecoveryTaskActivityTriggerSql("task_attempts"),
+  ...preventureTerminalRecoveryTaskActivityTriggerSql("model_calls"),
+  ...preventureTerminalRecoveryTaskActivityTriggerSql("research_runs"),
+  ...preventureTerminalRecoveryTaskActivityTriggerSql("agent_runs"),
+  ...preventureTerminalRecoveryTaskActivityTriggerSql("agent_run_receipts"),
+  ...preventureTerminalRecoveryTaskActivityTriggerSql("agent_tool_invocations"),
+  ...preventureTerminalRecoveryTaskActivityTriggerSql("agent_eval_results"),
+  ...preventureTerminalRecoveryTaskActivityTriggerSql("agent_run_provenance"),
+  ...preventureTerminalRecoveryTaskActivityTriggerSql("budget_reservations"),
+  ...preventureTerminalRecoveryTaskActivityTriggerSql("costs"),
+  ...preventureTerminalRecoveryIndirectChildTriggerSql("agent_trace_events", "agent_runs"),
+  ...preventureTerminalRecoveryIndirectChildTriggerSql("research_sources", "research_runs"),
+  ...preventureTerminalRecoveryIndirectChildTriggerSql("agent_pilot_reviews", "agent_runs"),
+  trg_preventure_research_terminal_recovery_task_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_task_update
+    BEFORE UPDATE ON tasks
+    WHEN EXISTS (
+      SELECT 1
+      FROM preventure_research_assignments AS assignments
+      JOIN preventure_research_terminal_recoveries AS recoveries
+        ON recoveries.authority_hash = assignments.authority_hash
+      WHERE assignments.task_id IN (OLD.id, NEW.id)
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal custody freezes every assignment task in its authority.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_task_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_task_delete
+    BEFORE DELETE ON tasks
+    WHEN EXISTS (
+      SELECT 1
+      FROM preventure_research_assignments AS assignments
+      JOIN preventure_research_terminal_recoveries AS recoveries
+        ON recoveries.authority_hash = assignments.authority_hash
+      WHERE assignments.task_id = OLD.id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal retained-output custody freezes later execution and cost projections.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_workflow_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_workflow_update
+    BEFORE UPDATE ON workflows
+    WHEN EXISTS (
+      SELECT 1
+      FROM preventure_research_assignments AS assignments
+      JOIN preventure_research_terminal_recoveries AS recoveries
+        ON recoveries.authority_hash = assignments.authority_hash
+      WHERE assignments.workflow_id IN (OLD.id, NEW.id)
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal custody freezes every assignment workflow in its authority.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_workflow_delete: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_workflow_delete
+    BEFORE DELETE ON workflows
+    WHEN EXISTS (
+      SELECT 1
+      FROM preventure_research_assignments AS assignments
+      JOIN preventure_research_terminal_recoveries AS recoveries
+        ON recoveries.authority_hash = assignments.authority_hash
+      WHERE assignments.workflow_id = OLD.id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal retained-output custody freezes later execution and cost projections.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_cost_event_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_cost_event_insert
+    BEFORE INSERT ON preventure_research_cost_events
+    WHEN (
+      EXISTS (
+        SELECT 1 FROM preventure_research_terminal_recoveries AS recoveries
+        WHERE recoveries.authority_hash = NEW.authority_hash
+      )
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_authorities AS authorities
+        WHERE authorities.authority_hash = NEW.authority_hash
+          AND julianday(pantheon_current_time()) >= julianday(authorities.expires_at)
+      )
+      OR
+      EXISTS (
+        SELECT 1
+        FROM preventure_research_lifecycle_events AS lifecycle
+        WHERE lifecycle.authority_hash = NEW.authority_hash
+          AND lifecycle.sequence = (
+            SELECT MAX(sequence) FROM preventure_research_lifecycle_events
+            WHERE authority_hash = NEW.authority_hash
+          )
+          AND lifecycle.event_type IN ('revoked', 'expired')
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        JOIN task_attempts AS attempts ON attempts.task_id = assignments.task_id
+        WHERE assignments.assignment_hash = NEW.assignment_hash
+          AND attempts.error_kind = 'operator_emergency_stop'
+      )
+    )
+      AND NOT (
+        (
+          NEW.event_type = 'unknown'
+          AND NEW.amount_aud_cents IS NULL
+          AND json_extract(NEW.cost_json, '$.terminalRecovery.schema')
+            IS 'pantheon.preventure-research-terminal-cost-transition.v1'
+          AND pantheon_preventure_terminal_retained_recovery_capability(
+            'cost_event_insert',
+            NEW.authority_hash,
+            NEW.assignment_hash,
+            json_extract(NEW.cost_json, '$.terminalRecovery.recoveryIntentHash'),
+            NEW.cost_id,
+            NEW.receipt_hash,
+            NEW.previous_receipt_hash,
+            json_extract(NEW.cost_json, '$.terminalRecovery.terminalKind'),
+            json_extract(NEW.cost_json, '$.terminalRecovery.terminalRecordId'),
+            json_extract(NEW.cost_json, '$.terminalRecovery.terminalEventHash'),
+            json_extract(NEW.cost_json, '$.terminalRecovery.artifactHash'),
+            NEW.exposure_aud_cents,
+            NULL,
+            NEW.occurred_at
+          ) = 1
+        )
+        OR (
+          NEW.event_type = 'unknown'
+          AND NEW.amount_aud_cents IS NULL
+          AND NEW.exposure_aud_cents = (
+            SELECT max_cost_aud_cents FROM preventure_research_assignments
+            WHERE assignment_hash = NEW.assignment_hash
+          )
+          AND json_extract(NEW.cost_json, '$.emergencyStop.schema')
+            IS 'pantheon.preventure-research-emergency-cost-transition.v1'
+          AND json_extract(NEW.cost_json, '$.emergencyStop.taskAttemptId')
+            IS NEW.task_attempt_id
+          AND json_extract(NEW.cost_json, '$.emergencyStop.modelCallId')
+            IS NEW.model_call_id
+          AND json_extract(NEW.cost_json, '$.emergencyStop.priorCostReceiptHash')
+            IS NEW.previous_receipt_hash
+          AND json_extract(NEW.cost_json, '$.emergencyStop.providerOutcomeKnown') IS 0
+          AND json_extract(NEW.cost_json, '$.emergencyStop.exactBillingPending') IS 1
+          AND json_extract(NEW.cost_json, '$.emergencyStop.stoppedAt') IS NEW.occurred_at
+          AND pantheon_preventure_emergency_cost_safety_capability(
+            'cost_event_insert',
+            (SELECT task_id FROM preventure_research_assignments
+             WHERE assignment_hash = NEW.assignment_hash),
+            NEW.receipt_hash,
+            NEW.authority_hash,
+            NEW.assignment_hash,
+            NEW.exposure_aud_cents,
+            NEW.occurred_at
+          ) = 1
+        )
+        OR (
+          NEW.event_type = 'reconciled'
+          AND NEW.amount_aud_cents IS NOT NULL
+          AND NEW.exposure_aud_cents = NEW.amount_aud_cents
+          AND json_extract(NEW.cost_json, '$.ownerBillingObservationHash') IS NOT NULL
+          AND pantheon_preventure_owner_billing_observation_capability(
+            'guard_cost_event_insert',
+            NEW.authority_hash,
+            NEW.assignment_hash,
+            NEW.cost_id,
+            json_extract(NEW.cost_json, '$.ownerBillingObservationHash'),
+            NEW.receipt_hash,
+            NEW.previous_receipt_hash,
+            NEW.amount_aud_cents,
+            NEW.occurred_at,
+            NEW.cost_json
+          ) = 1
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal pre-venture cost truth only accepts its exact custody-bound unknown successor.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_reservation_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_reservation_update
+    BEFORE UPDATE ON budget_reservations
+    WHEN NOT EXISTS (
+      SELECT 1 FROM preventure_research_terminal_recoveries AS recoveries
+      WHERE recoveries.task_id = OLD.task_id
+    )
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignments
+          JOIN preventure_research_lifecycle_events AS lifecycle
+            ON lifecycle.authority_hash = assignments.authority_hash
+          WHERE assignments.task_id = OLD.task_id
+            AND lifecycle.sequence = (
+              SELECT MAX(sequence) FROM preventure_research_lifecycle_events
+              WHERE authority_hash = assignments.authority_hash
+            )
+            AND lifecycle.event_type IN ('revoked', 'expired')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignments
+          JOIN preventure_research_authorities AS authorities
+            ON authorities.authority_hash = assignments.authority_hash
+          WHERE assignments.task_id = OLD.task_id
+            AND julianday(pantheon_current_time()) >= julianday(authorities.expires_at)
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignments
+          JOIN task_attempts AS attempts ON attempts.task_id = assignments.task_id
+          WHERE assignments.task_id = OLD.task_id
+            AND attempts.error_kind = 'operator_emergency_stop'
+        )
+      )
+      AND COALESCE(pantheon_preventure_owner_billing_observation_capability(
+        'guard_reservation_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.amount_cents,
+        NEW.resolved_at,
+        NEW.metadata
+      ), 0) <> 1
+      AND (
+        NEW.id IS NOT OLD.id
+        OR NEW.venture_id IS NOT OLD.venture_id
+        OR NEW.workflow_id IS NOT OLD.workflow_id
+        OR NEW.task_id IS NOT OLD.task_id
+        OR NEW.approval_id IS NOT OLD.approval_id
+        OR NEW.currency IS NOT OLD.currency
+        OR NEW.reserved_at IS NOT OLD.reserved_at
+        OR NEW.status <> 'unknown'
+        OR NEW.amount_cents <> (
+          SELECT max_cost_aud_cents FROM preventure_research_assignments
+          WHERE task_id = OLD.task_id
+        )
+        OR NEW.resolved_at IS NOT NULL
+        OR (
+          pantheon_preventure_terminal_retained_recovery_capability(
+            'reservation_update',
+            (SELECT authority_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            (SELECT assignment_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            json_extract(NEW.metadata, '$.terminalRecovery.recoveryIntentHash'),
+            NEW.id,
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalCostReceiptHash'),
+            json_extract(NEW.metadata, '$.terminalRecovery.priorCostReceiptHash'),
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalKind'),
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalRecordId'),
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalEventHash'),
+            json_extract(NEW.metadata, '$.terminalRecovery.artifactHash'),
+            NEW.amount_cents,
+            NULL,
+            json_extract(NEW.metadata, '$.terminalRecovery.recordedAt')
+          ) <> 1
+          AND pantheon_preventure_emergency_cost_safety_capability(
+            'reservation_update',
+            OLD.task_id,
+            NEW.id,
+            (SELECT authority_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            (SELECT assignment_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            NEW.amount_cents,
+            json_extract(NEW.metadata, '$.stoppedAt')
+          ) <> 1
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal custody requires one exact unknown full-cap reservation projection.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_cost_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_cost_update
+    BEFORE UPDATE ON costs
+    WHEN NOT EXISTS (
+      SELECT 1 FROM preventure_research_terminal_recoveries AS recoveries
+      WHERE recoveries.task_id = OLD.task_id
+    )
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignments
+          JOIN preventure_research_lifecycle_events AS lifecycle
+            ON lifecycle.authority_hash = assignments.authority_hash
+          WHERE assignments.task_id = OLD.task_id
+            AND lifecycle.sequence = (
+              SELECT MAX(sequence) FROM preventure_research_lifecycle_events
+              WHERE authority_hash = assignments.authority_hash
+            )
+            AND lifecycle.event_type IN ('revoked', 'expired')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignments
+          JOIN preventure_research_authorities AS authorities
+            ON authorities.authority_hash = assignments.authority_hash
+          WHERE assignments.task_id = OLD.task_id
+            AND julianday(pantheon_current_time()) >= julianday(authorities.expires_at)
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignments
+          JOIN task_attempts AS attempts ON attempts.task_id = assignments.task_id
+          WHERE assignments.task_id = OLD.task_id
+            AND attempts.error_kind = 'operator_emergency_stop'
+        )
+      )
+      AND COALESCE(pantheon_preventure_owner_billing_observation_capability(
+        'guard_cost_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.amount_cents,
+        NEW.occurred_at,
+        NEW.metadata
+      ), 0) <> 1
+      AND (
+        NEW.id IS NOT OLD.id
+        OR NEW.workflow_id IS NOT OLD.workflow_id
+        OR NEW.venture_id IS NOT OLD.venture_id
+        OR NEW.run_id IS NOT OLD.run_id
+        OR NEW.task_id IS NOT OLD.task_id
+        OR NEW.category IS NOT OLD.category
+        OR NEW.source IS NOT OLD.source
+        OR NEW.currency IS NOT OLD.currency
+        OR NEW.occurred_at IS NOT OLD.occurred_at
+        OR NEW.status <> 'unknown'
+        OR NEW.amount_cents <> (
+          SELECT max_cost_aud_cents FROM preventure_research_assignments
+          WHERE task_id = OLD.task_id
+        )
+        OR (
+          pantheon_preventure_terminal_retained_recovery_capability(
+            'cost_update',
+            (SELECT authority_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            (SELECT assignment_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            json_extract(NEW.metadata, '$.terminalRecovery.recoveryIntentHash'),
+            NEW.id,
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalCostReceiptHash'),
+            json_extract(NEW.metadata, '$.terminalRecovery.priorCostReceiptHash'),
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalKind'),
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalRecordId'),
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalEventHash'),
+            json_extract(NEW.metadata, '$.terminalRecovery.artifactHash'),
+            NEW.amount_cents,
+            NULL,
+            json_extract(NEW.metadata, '$.terminalRecovery.recordedAt')
+          ) <> 1
+          AND pantheon_preventure_emergency_cost_safety_capability(
+            'cost_update',
+            OLD.task_id,
+            NEW.id,
+            (SELECT authority_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            (SELECT assignment_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            NEW.amount_cents,
+            json_extract(NEW.metadata, '$.stoppedAt')
+          ) <> 1
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal custody requires one exact unknown full-cap cost projection.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_model_call_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_model_call_update
+    BEFORE UPDATE OF cost_status, reserved_cost_cents, actual_cost_cents,
+                     reconciled_cost_cents, metadata ON model_calls
+    WHEN NOT EXISTS (
+      SELECT 1 FROM preventure_research_terminal_recoveries AS recoveries
+      WHERE recoveries.task_id = OLD.task_id
+    )
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignments
+          JOIN preventure_research_lifecycle_events AS lifecycle
+            ON lifecycle.authority_hash = assignments.authority_hash
+          WHERE assignments.task_id = OLD.task_id
+            AND lifecycle.sequence = (
+              SELECT MAX(sequence) FROM preventure_research_lifecycle_events
+              WHERE authority_hash = assignments.authority_hash
+            )
+            AND lifecycle.event_type IN ('revoked', 'expired')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignments
+          JOIN preventure_research_authorities AS authorities
+            ON authorities.authority_hash = assignments.authority_hash
+          WHERE assignments.task_id = OLD.task_id
+            AND julianday(pantheon_current_time()) >= julianday(authorities.expires_at)
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignments
+          JOIN task_attempts AS attempts ON attempts.task_id = assignments.task_id
+          WHERE assignments.task_id = OLD.task_id
+            AND attempts.error_kind = 'operator_emergency_stop'
+        )
+      )
+      AND COALESCE(pantheon_preventure_owner_billing_observation_capability(
+        'guard_model_call_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.actual_cost_cents,
+        json_extract(NEW.metadata, '$.ownerBillingRecordedAt'),
+        NEW.metadata
+      ), 0) <> 1
+      AND (
+        NEW.cost_status <> 'unknown'
+        OR NEW.reserved_cost_cents <> (
+          SELECT max_cost_aud_cents FROM preventure_research_assignments
+          WHERE task_id = OLD.task_id
+        )
+        OR NEW.actual_cost_cents <> 0
+        OR NEW.reconciled_cost_cents <> 0
+        OR (
+          pantheon_preventure_terminal_retained_recovery_capability(
+            'model_call_update',
+            (SELECT authority_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            (SELECT assignment_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            json_extract(NEW.metadata, '$.terminalRecovery.recoveryIntentHash'),
+            NEW.id,
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalCostReceiptHash'),
+            json_extract(NEW.metadata, '$.terminalRecovery.priorCostReceiptHash'),
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalKind'),
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalRecordId'),
+            json_extract(NEW.metadata, '$.terminalRecovery.terminalEventHash'),
+            json_extract(NEW.metadata, '$.terminalRecovery.artifactHash'),
+            NEW.reserved_cost_cents,
+            NULL,
+            json_extract(NEW.metadata, '$.terminalRecovery.recordedAt')
+          ) <> 1
+          AND pantheon_preventure_emergency_cost_safety_capability(
+            'model_call_update',
+            OLD.task_id,
+            NEW.id,
+            (SELECT authority_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            (SELECT assignment_hash FROM preventure_research_assignments WHERE task_id = OLD.task_id),
+            NEW.reserved_cost_cents,
+            json_extract(NEW.metadata, '$.stoppedAt')
+          ) <> 1
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal custody requires one exact unknown full-cap model projection.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_admission_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_admission_insert
+    BEFORE INSERT ON preventure_research_terminal_recoveries
+    WHEN pantheon_preventure_terminal_retained_recovery_capability(
+        'recovery_insert',
+        NEW.authority_hash,
+        NEW.assignment_hash,
+        NEW.recovery_hash,
+        NEW.task_attempt_id,
+        NEW.terminal_cost_receipt_hash,
+        NEW.prior_cost_receipt_hash,
+        NEW.terminal_kind,
+        NEW.terminal_record_id,
+        NEW.terminal_event_hash,
+        NEW.artifact_hash,
+        NEW.assignment_cap_aud_cents,
+        NEW.recovery_json,
+        NEW.recorded_at
+      ) <> 1
+      OR NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        WHERE assignments.authority_hash = NEW.authority_hash
+          AND assignments.assignment_hash = NEW.assignment_hash
+          AND assignments.template_hash = NEW.assignment_template_hash
+          AND assignments.max_cost_aud_cents = NEW.assignment_cap_aud_cents
+          AND assignments.task_id = NEW.task_id
+          AND assignments.workflow_id = NEW.workflow_id
+      )
+      OR NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        JOIN task_attempts AS attempts ON attempts.task_id = assignments.task_id
+        JOIN model_calls AS calls ON calls.id = NEW.model_call_id
+        WHERE assignments.assignment_hash = NEW.assignment_hash
+          AND attempts.id = NEW.task_attempt_id
+          AND attempts.workflow_id = NEW.workflow_id
+          AND attempts.venture_id IS NULL
+          AND attempts.provider_dispatched_at = NEW.provider_dispatched_at
+          AND attempts.provider_dispatch_model_call_id = NEW.model_call_id
+          AND calls.task_id = NEW.task_id
+          AND calls.workflow_id = NEW.workflow_id
+          AND calls.venture_id IS NULL
+          AND calls.attempt_id = NEW.task_attempt_id
+          AND calls.provider = assignments.provider_id
+          AND calls.selected_model = assignments.provider_model
+      )
+      OR julianday(NEW.provider_dispatched_at) >= julianday((
+        SELECT expires_at FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      ))
+      OR NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_cost_events AS terminal_cost
+        WHERE terminal_cost.receipt_hash = NEW.terminal_cost_receipt_hash
+          AND terminal_cost.authority_hash = NEW.authority_hash
+          AND terminal_cost.assignment_hash = NEW.assignment_hash
+          AND terminal_cost.cost_key = NEW.cost_key
+          AND terminal_cost.event_type = 'unknown'
+          AND terminal_cost.amount_aud_cents IS NULL
+          AND terminal_cost.exposure_aud_cents = NEW.assignment_cap_aud_cents
+          AND terminal_cost.task_attempt_id = NEW.task_attempt_id
+          AND terminal_cost.model_call_id = NEW.model_call_id
+          AND terminal_cost.budget_reservation_id = NEW.budget_reservation_id
+          AND terminal_cost.cost_id = NEW.cost_id
+          AND NOT EXISTS (
+            SELECT 1 FROM preventure_research_cost_events AS later
+            WHERE later.assignment_hash = terminal_cost.assignment_hash
+              AND later.cost_key = terminal_cost.cost_key
+              AND later.sequence > terminal_cost.sequence
+          )
+      )
+      OR NOT EXISTS (
+        SELECT 1 FROM budget_reservations AS reservations
+        WHERE reservations.id = NEW.budget_reservation_id
+          AND reservations.task_id = NEW.task_id
+          AND reservations.workflow_id = NEW.workflow_id
+          AND reservations.venture_id IS NULL
+          AND reservations.status = 'unknown'
+          AND reservations.amount_cents = NEW.assignment_cap_aud_cents
+          AND reservations.currency = 'AUD'
+      )
+      OR NOT EXISTS (
+        SELECT 1 FROM costs
+        WHERE costs.id = NEW.cost_id
+          AND costs.task_id = NEW.task_id
+          AND costs.workflow_id = NEW.workflow_id
+          AND costs.venture_id IS NULL
+          AND costs.model_call_id = NEW.model_call_id
+          AND costs.status = 'unknown'
+          AND costs.amount_cents = NEW.assignment_cap_aud_cents
+          AND costs.currency = 'AUD'
+      )
+      OR (
+        NEW.terminal_kind = 'lifecycle'
+        AND NOT EXISTS (
+          SELECT 1 FROM preventure_research_lifecycle_events AS lifecycle
+          WHERE lifecycle.authority_hash = NEW.authority_hash
+            AND lifecycle.id = NEW.lifecycle_event_id
+            AND lifecycle.event_hash = NEW.terminal_event_hash
+            AND lifecycle.event_type = NEW.terminal_event_type
+            AND lifecycle.event_type IN ('revoked', 'expired')
+            AND lifecycle.sequence = (
+              SELECT MAX(sequence) FROM preventure_research_lifecycle_events
+              WHERE authority_hash = NEW.authority_hash
+            )
+            AND NEW.terminal_at = CASE lifecycle.event_type
+              WHEN 'expired' THEN (
+                SELECT expires_at FROM preventure_research_authorities
+                WHERE authority_hash = NEW.authority_hash
+              )
+              ELSE lifecycle.occurred_at
+            END
+        )
+      )
+      OR (
+        NEW.terminal_kind = 'runtime_emergency_stop'
+        AND NOT EXISTS (
+          SELECT 1 FROM events AS emergency
+          JOIN task_attempts AS attempts ON attempts.id = NEW.task_attempt_id
+          JOIN tasks ON tasks.id = NEW.task_id
+          WHERE emergency.id = NEW.emergency_event_id
+            AND emergency.type = 'runtime.emergency_stop_recorded'
+            AND emergency.ts = NEW.terminal_at
+            AND EXISTS (
+              SELECT 1 FROM json_each(emergency.metadata, '$.affectedTaskIds') AS affected
+              WHERE affected.value = NEW.task_id
+            )
+            AND attempts.error_kind = 'operator_emergency_stop'
+            AND json_extract(attempts.metadata, '$.emergencyStop') = 1
+            AND json_extract(attempts.metadata, '$.claimInvalidated') = 1
+            AND tasks.claim_token IS NULL
+            AND json_extract(tasks.result, '$.emergencyStop') = 1
+            AND json_extract(tasks.result, '$.claimInvalidated') = 1
+        )
+      )
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_decisions
+        WHERE authority_hash = NEW.authority_hash
+      )
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_terminal_stops
+        WHERE authority_hash = NEW.authority_hash
+      )
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_source_snapshots
+        WHERE assignment_hash = NEW.assignment_hash
+      )
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_evidence_records
+        WHERE assignment_hash = NEW.assignment_hash
+      )
+      OR (
+        NEW.agent_run_receipt_id IS NULL
+        AND EXISTS (SELECT 1 FROM agent_run_receipts WHERE attempt_id = NEW.task_attempt_id)
+      )
+      OR (
+        NEW.agent_run_receipt_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_run_receipts AS receipts
+          WHERE receipts.id = NEW.agent_run_receipt_id
+            AND receipts.attempt_id = NEW.task_attempt_id
+            AND receipts.task_id = NEW.task_id
+            AND 'sha256:' || receipts.receipt_hash = NEW.agent_run_receipt_hash
+            AND receipts.status = NEW.agent_run_receipt_status
+            AND receipts.outcome_status = NEW.agent_run_receipt_outcome_status
+            AND NOT EXISTS (
+              SELECT 1 FROM agent_run_receipts AS later
+              WHERE later.attempt_id = receipts.attempt_id
+                AND (later.created_at > receipts.created_at
+                  OR (later.created_at = receipts.created_at AND later.id > receipts.id))
+            )
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal retained-output recovery must match exact dispatch, terminal, artifact, and unknown cost truth.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_source_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_source_insert
+    BEFORE INSERT ON preventure_research_source_snapshots
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_terminal_recoveries
+      WHERE authority_hash = NEW.authority_hash
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal custody is not commercial evidence.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_evidence_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_evidence_insert
+    BEFORE INSERT ON preventure_research_evidence_records
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_terminal_recoveries
+      WHERE authority_hash = NEW.authority_hash
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal custody cannot create commercial evidence.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_decision_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_decision_insert
+    BEFORE INSERT ON preventure_research_decisions
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_terminal_recoveries
+      WHERE authority_hash = NEW.authority_hash
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal custody cannot create a diligence decision.');
+    END
+  `,
+  trg_preventure_research_terminal_recovery_completion_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_recovery_completion_insert
+    BEFORE INSERT ON preventure_research_lifecycle_events
+    WHEN NEW.event_type = 'completed'
+      AND EXISTS (
+        SELECT 1 FROM preventure_research_terminal_recoveries
+        WHERE authority_hash = NEW.authority_hash
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Terminal custody cannot complete the diligence lifecycle.');
+    END
+  `,
+  trg_preventure_research_skipped_task_state_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_skipped_task_state_update
+    BEFORE UPDATE OF status, outcome_status, attempt_count, claim_token, claimed_at,
+                     cost_actual_cents ON tasks
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_assignment_skips AS skips
+      WHERE skips.task_id = OLD.id
+    )
+      AND (
+        NEW.status <> 'skipped'
+        OR NEW.outcome_status <> 'not_started'
+        OR NEW.attempt_count <> 0
+        OR NEW.claim_token IS NOT NULL
+        OR NEW.claimed_at IS NOT NULL
+        OR NEW.cost_actual_cents <> 0
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'A skipped pre-venture assignment task must remain untouched.');
+    END
+  `,
+  trg_preventure_research_skipped_cost_event_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_skipped_cost_event_insert
+    BEFORE INSERT ON preventure_research_cost_events
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_assignment_skips AS skips
+      WHERE skips.assignment_hash = NEW.assignment_hash
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'A skipped pre-venture assignment cannot acquire a cost event.');
+    END
+  `,
+  trg_preventure_research_skipped_source_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_skipped_source_insert
+    BEFORE INSERT ON preventure_research_source_snapshots
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_assignment_skips AS skips
+      WHERE skips.assignment_hash = NEW.assignment_hash
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'A skipped pre-venture assignment cannot acquire a source snapshot.');
+    END
+  `,
+  trg_preventure_research_skipped_evidence_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_skipped_evidence_insert
+    BEFORE INSERT ON preventure_research_evidence_records
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_assignment_skips AS skips
+      WHERE skips.assignment_hash = NEW.assignment_hash
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'A skipped pre-venture assignment cannot acquire evidence.');
+    END
+  `,
+  trg_preventure_research_terminal_stop_admission_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_terminal_stop_admission_insert
+    BEFORE INSERT ON preventure_research_terminal_stops
+    WHEN pantheon_preventure_validated_early_stop_capability(
+        NEW.authority_hash,
+        NEW.early_stop_record_hash,
+        NEW.expected_decision_id,
+        NEW.expected_completion_event_id,
+        json_array_length(NEW.skipped_assignments_json)
+      ) <> 1
+      OR NOT EXISTS (
+        SELECT 1 FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      )
+      OR 'activated' <> (
+        SELECT event_type FROM preventure_research_lifecycle_events
+        WHERE authority_hash = NEW.authority_hash
+        ORDER BY sequence DESC LIMIT 1
+      )
+      OR julianday(pantheon_current_time()) >= julianday((
+        SELECT expires_at FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      ))
+      OR julianday(NEW.stopped_at) > julianday(pantheon_current_time())
+      OR julianday(NEW.stopped_at) < julianday((
+        SELECT approved_at FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      ))
+      OR julianday(NEW.stopped_at) >= julianday((
+        SELECT expires_at FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      ))
+      OR NOT EXISTS (
+        SELECT 1 FROM preventure_research_assignments AS assignments
+        WHERE assignments.authority_hash = NEW.authority_hash
+          AND assignments.assignment_id = NEW.trigger_assignment_id
+          AND assignments.assignment_hash = NEW.trigger_assignment_hash
+      )
+      OR NEW.expected_decision_id <> (
+        SELECT authority_id || '_decision'
+        FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      )
+      OR NEW.expected_completion_event_id <> (
+        SELECT authority_id || '_completed'
+        FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      )
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_terminal_stops
+        WHERE authority_hash = NEW.authority_hash
+      )
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_decisions
+        WHERE authority_hash = NEW.authority_hash
+      )
+      OR json_array_length(NEW.skipped_assignments_json) <> (
+        SELECT json_array_length(authorities.authority_json, '$.assignments')
+                 - 1 - CAST(trigger_template.key AS INTEGER)
+        FROM preventure_research_authorities AS authorities,
+             json_each(authorities.authority_json, '$.assignments') AS trigger_template
+        WHERE authorities.authority_hash = NEW.authority_hash
+          AND json_extract(trigger_template.value, '$.id') = NEW.trigger_assignment_id
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM json_each(NEW.skipped_assignments_json) AS skipped
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM preventure_research_authorities AS authorities,
+               json_each(authorities.authority_json, '$.assignments') AS template
+          JOIN preventure_research_assignments AS assignments
+            ON assignments.authority_hash = authorities.authority_hash
+           AND assignments.assignment_id = json_extract(template.value, '$.id')
+          WHERE authorities.authority_hash = NEW.authority_hash
+            AND CAST(template.key AS INTEGER) > (
+              SELECT CAST(trigger_template.key AS INTEGER)
+              FROM json_each(authorities.authority_json, '$.assignments') AS trigger_template
+              WHERE json_extract(trigger_template.value, '$.id') = NEW.trigger_assignment_id
+            )
+            AND json_extract(skipped.value, '$.authorityHash') = NEW.authority_hash
+            AND json_extract(skipped.value, '$.terminalStopId') = NEW.terminal_stop_id
+            AND json_extract(skipped.value, '$.triggerAssignmentHash') = NEW.trigger_assignment_hash
+            AND json_extract(skipped.value, '$.assignmentId') = assignments.assignment_id
+            AND json_extract(skipped.value, '$.assignmentHash') = assignments.assignment_hash
+            AND json_extract(skipped.value, '$.assignmentOrder') = CAST(template.key AS INTEGER) + 1
+            AND json_extract(skipped.value, '$.taskId') = assignments.task_id
+            AND json_extract(skipped.value, '$.dispatchState') = 'not_dispatched'
+            AND json_extract(skipped.value, '$.taskAttemptCount') = 0
+            AND json_extract(skipped.value, '$.modelCallCount') = 0
+            AND json_extract(skipped.value, '$.agentRunReceiptCount') = 0
+            AND json_extract(skipped.value, '$.researchRunCount') = 0
+            AND json_extract(skipped.value, '$.agentRunCount') = 0
+            AND json_extract(skipped.value, '$.toolInvocationCount') = 0
+            AND json_extract(skipped.value, '$.budgetReservationCount') = 0
+            AND json_extract(skipped.value, '$.costRecordCount') = 0
+            AND json_extract(skipped.value, '$.costEventCount') = 0
+            AND json_extract(skipped.value, '$.sourceSnapshotCount') = 0
+            AND json_extract(skipped.value, '$.evidenceRecordCount') = 0
+            AND json_extract(skipped.value, '$.totalAudCostCents') = 0
+        )
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM preventure_research_authorities AS authorities,
+             json_each(authorities.authority_json, '$.assignments') AS template
+        WHERE authorities.authority_hash = NEW.authority_hash
+          AND CAST(template.key AS INTEGER) > (
+            SELECT CAST(trigger_template.key AS INTEGER)
+            FROM json_each(authorities.authority_json, '$.assignments') AS trigger_template
+            WHERE json_extract(trigger_template.value, '$.id') = NEW.trigger_assignment_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM json_each(NEW.skipped_assignments_json) AS skipped
+            WHERE json_extract(skipped.value, '$.assignmentId')
+              = json_extract(template.value, '$.id')
+          )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'A pre-venture terminal stop must bind the exact untouched authority-order suffix.');
+    END
+  `,
+  trg_preventure_research_assignment_skip_admission_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_assignment_skip_admission_insert
+    BEFORE INSERT ON preventure_research_assignment_skips
+    WHEN NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_terminal_stops AS stops,
+             json_each(stops.skipped_assignments_json) AS expected
+        WHERE stops.authority_hash = NEW.authority_hash
+          AND stops.terminal_stop_id = NEW.terminal_stop_id
+          AND json_extract(expected.value, '$.skipRecordHash') = NEW.skip_record_hash
+          AND json(expected.value) = json(NEW.skip_json)
+      )
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_decisions
+        WHERE authority_hash = NEW.authority_hash
+      )
+      OR NOT EXISTS (
+        SELECT 1 FROM tasks
+        WHERE id = NEW.task_id
+          AND status = 'skipped'
+          AND outcome_status = 'not_started'
+          AND attempt_count = 0
+          AND claim_token IS NULL
+          AND claimed_at IS NULL
+          AND cost_actual_cents = 0
+      )
+      OR EXISTS (SELECT 1 FROM task_attempts WHERE task_id = NEW.task_id)
+      OR EXISTS (SELECT 1 FROM model_calls WHERE task_id = NEW.task_id)
+      OR EXISTS (SELECT 1 FROM agent_run_receipts WHERE task_id = NEW.task_id)
+      OR EXISTS (SELECT 1 FROM research_runs WHERE task_id = NEW.task_id)
+      OR EXISTS (SELECT 1 FROM agent_runs WHERE task_id = NEW.task_id)
+      OR EXISTS (SELECT 1 FROM agent_tool_invocations WHERE task_id = NEW.task_id)
+      OR EXISTS (SELECT 1 FROM agent_eval_results WHERE task_id = NEW.task_id)
+      OR EXISTS (SELECT 1 FROM agent_run_provenance WHERE task_id = NEW.task_id)
+      OR EXISTS (SELECT 1 FROM budget_reservations WHERE task_id = NEW.task_id)
+      OR EXISTS (SELECT 1 FROM costs WHERE task_id = NEW.task_id)
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_cost_events
+        WHERE assignment_hash = NEW.assignment_hash
+      )
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_source_snapshots
+        WHERE assignment_hash = NEW.assignment_hash
+      )
+      OR EXISTS (
+        SELECT 1 FROM preventure_research_evidence_records
+        WHERE assignment_hash = NEW.assignment_hash
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'A skipped pre-venture assignment must be the exact zero-activity suffix record.');
+    END
+  `,
+  trg_preventure_research_completed_stop_pair_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_completed_stop_pair_insert
+    BEFORE INSERT ON preventure_research_lifecycle_events
+    WHEN NEW.event_type = 'completed'
+      AND EXISTS (
+        SELECT 1 FROM preventure_research_decisions AS decisions
+        WHERE decisions.decision_hash = NEW.decision_hash
+          AND decisions.completion_mode = 'validated_early_stop'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_decisions AS decisions
+        JOIN preventure_research_terminal_stops AS stops
+          ON stops.authority_hash = decisions.authority_hash
+         AND stops.early_stop_record_hash = decisions.early_stop_record_hash
+        WHERE decisions.decision_hash = NEW.decision_hash
+          AND decisions.authority_hash = NEW.authority_hash
+          AND stops.expected_decision_id = decisions.decision_id
+          AND stops.expected_completion_event_id = NEW.id
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'The completed lifecycle event does not match its exact terminal stop and decision.');
+    END
+  `,
+  trg_preventure_research_source_capture_grade_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_source_capture_grade_insert
+    BEFORE INSERT ON preventure_research_source_snapshots
+    WHEN NEW.capture_status = 'captured'
+    BEGIN
+      SELECT RAISE(
+        ABORT,
+        'Web-search-only pre-venture research cannot claim independently captured page content.'
+      );
+    END
+  `,
+  trg_preventure_research_approval_pending_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_approval_pending_insert
+    BEFORE INSERT ON approvals
+    WHEN (
+      (
+        json_valid(NEW.scope)
+        AND json_extract(NEW.scope, '$.schema') IN (
+          'pantheon.preventure-research-approval-scope.v1',
+          'pantheon.preventure-research-approval-scope.v2'
+        )
+      )
+      OR (
+        json_valid(NEW.payload)
+        AND json_extract(
+          NEW.payload,
+          '$.preventureResearchApprovalScope.schema'
+        ) IN (
+          'pantheon.preventure-research-approval-scope.v1',
+          'pantheon.preventure-research-approval-scope.v2'
+        )
+      )
+    )
+      AND (
+        NEW.status <> 'pending'
+        OR NEW.requested_by <> 'jarvis'
+        OR NEW.decided_at IS NOT NULL
+        OR NEW.decided_by IS NOT NULL
+        OR NEW.consumed_at IS NOT NULL
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture owner approvals must enter through the exact pending decision path.');
+    END
+  `,
+  trg_preventure_research_approval_decision_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_approval_decision_update
+    BEFORE UPDATE OF status, decided_at, decided_by ON approvals
+    WHEN (
+      (
+        json_valid(OLD.scope)
+        AND json_extract(OLD.scope, '$.schema') IN (
+          'pantheon.preventure-research-approval-scope.v1',
+          'pantheon.preventure-research-approval-scope.v2'
+        )
+      )
+      OR (
+        json_valid(OLD.payload)
+        AND json_extract(
+          OLD.payload,
+          '$.preventureResearchApprovalScope.schema'
+        ) IN (
+          'pantheon.preventure-research-approval-scope.v1',
+          'pantheon.preventure-research-approval-scope.v2'
+        )
+      )
+    )
+      AND NEW.status IN ('approved', 'needs_changes', 'rejected')
+      AND (
+        OLD.status <> 'pending'
+        OR OLD.decided_at IS NOT NULL
+        OR OLD.decided_by IS NOT NULL
+        OR NEW.requested_by <> 'jarvis'
+        OR NEW.decided_at IS NULL
+        OR NEW.decided_by <> 'owner'
+        OR pantheon_preventure_owner_attestation_capability(
+          'approval_update',
+          NEW.id,
+          COALESCE(
+            json_extract(NEW.scope, '$.authority.hash'),
+            json_extract(NEW.payload, '$.preventureResearchApprovalScope.authority.hash')
+          ),
+          COALESCE(
+            json_extract(NEW.scope, '$.eventType'),
+            json_extract(NEW.payload, '$.preventureResearchApprovalScope.eventType')
+          ),
+          NEW.scope_hash,
+          NEW.status,
+          NEW.decided_at,
+          NULL
+        ) <> 1
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture owner approval decision identity is invalid.');
+    END
+  `,
+  trg_preventure_research_approval_attestation_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_approval_attestation_insert
+    BEFORE INSERT ON preventure_research_approval_decisions
+    WHEN NEW.decision_source <> 'authenticated_owner_session_attestation'
+      OR pantheon_preventure_owner_attestation_capability(
+        'receipt_insert',
+        NEW.approval_id,
+        NEW.authority_hash,
+        NEW.event_type,
+        NEW.scope_hash,
+        NEW.decision_status,
+        NEW.decided_at,
+        NEW.decision_receipt_hash
+      ) <> 1
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture owner decisions require one exact authenticated local owner-session attestation.');
+    END
+  `,
+  trg_preventure_research_workflow_venture_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_workflow_venture_insert
+    BEFORE INSERT ON workflows
+    WHEN NEW.type = 'preventure_research' AND NEW.venture_id IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research workflow must remain outside venture ownership.');
+    END
+  `,
+  trg_preventure_research_workflow_venture_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_workflow_venture_update
+    BEFORE UPDATE OF type, venture_id ON workflows
+    WHEN NEW.type = 'preventure_research' AND NEW.venture_id IS NOT NULL
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research workflow must remain outside venture ownership.');
+    END
+  `,
+  trg_preventure_research_task_venture_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_task_venture_insert
+    BEFORE INSERT ON tasks
+    WHEN NEW.kind = 'preventure_research'
+      AND (
+        NEW.venture_id IS NOT NULL
+        OR NEW.workflow_id IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM workflows
+          WHERE id = NEW.workflow_id
+            AND type = 'preventure_research'
+            AND venture_id IS NULL
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research task requires one unowned pre-venture workflow.');
+    END
+  `,
+  trg_preventure_research_task_venture_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_task_venture_update
+    BEFORE UPDATE OF kind, venture_id, workflow_id ON tasks
+    WHEN NEW.kind = 'preventure_research'
+      AND (
+        NEW.venture_id IS NOT NULL
+        OR NEW.workflow_id IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM workflows
+          WHERE id = NEW.workflow_id
+            AND type = 'preventure_research'
+            AND venture_id IS NULL
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research task requires one unowned pre-venture workflow.');
+    END
+  `,
+  ...preventureExecutionVentureGuardTriggerSql("task_attempts"),
+  ...preventureExecutionVentureGuardTriggerSql("model_calls"),
+  ...preventureExecutionVentureGuardTriggerSql("research_runs"),
+  ...preventureExecutionVentureGuardTriggerSql("costs"),
+  ...preventureExecutionVentureGuardTriggerSql("agent_runs"),
+  ...preventureExecutionVentureGuardTriggerSql("budget_reservations"),
+  trg_preventure_research_event_venture_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_event_venture_insert
+    BEFORE INSERT ON events
+    WHEN NEW.venture_id IS NOT NULL
+      AND ${preventureResearchEventOwnershipCondition()}
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research events must remain outside venture ownership.');
+    END
+  `,
+  trg_preventure_research_event_venture_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_event_venture_update
+    BEFORE UPDATE OF venture_id, type, entity_type ON events
+    WHEN NEW.venture_id IS NOT NULL
+      AND ${preventureResearchEventOwnershipCondition()}
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research events must remain outside venture ownership.');
+    END
+  `,
+  trg_preventure_research_lifecycle_transition_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_lifecycle_transition_insert
+    BEFORE INSERT ON preventure_research_lifecycle_events
+    WHEN COALESCE((
+      (
+        NEW.sequence = 1
+        AND NEW.previous_event_hash IS NULL
+        AND NEW.event_type = 'proposed'
+        AND NOT EXISTS (
+          SELECT 1 FROM preventure_research_lifecycle_events
+          WHERE authority_hash = NEW.authority_hash
+        )
+      )
+      OR (
+        NEW.sequence > 1
+        AND NEW.previous_event_hash = (
+          SELECT event_hash
+          FROM preventure_research_lifecycle_events
+          WHERE authority_hash = NEW.authority_hash
+          ORDER BY sequence DESC
+          LIMIT 1
+        )
+        AND NEW.sequence = 1 + (
+          SELECT sequence
+          FROM preventure_research_lifecycle_events
+          WHERE authority_hash = NEW.authority_hash
+          ORDER BY sequence DESC
+          LIMIT 1
+        )
+        AND julianday(NEW.occurred_at) >= julianday((
+          SELECT occurred_at
+          FROM preventure_research_lifecycle_events
+          WHERE authority_hash = NEW.authority_hash
+          ORDER BY sequence DESC
+          LIMIT 1
+        ))
+        AND CASE (
+          SELECT event_type
+          FROM preventure_research_lifecycle_events
+          WHERE authority_hash = NEW.authority_hash
+          ORDER BY sequence DESC
+          LIMIT 1
+        )
+          WHEN 'proposed' THEN NEW.event_type IN ('accepted', 'revoked', 'expired', 'revised', 'superseded')
+          WHEN 'accepted' THEN NEW.event_type IN ('activated', 'revoked', 'expired', 'revised', 'superseded')
+          WHEN 'activated' THEN NEW.event_type IN ('completed', 'revoked', 'expired', 'revised', 'superseded')
+          ELSE 0
+        END
+      )
+    ), 0) = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research lifecycle transition is not contiguous or allowed.');
+    END
+  `,
+  trg_preventure_research_renewal_predecessor_terminal_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_renewal_predecessor_terminal_insert
+    BEFORE INSERT ON preventure_research_lifecycle_events
+    WHEN NEW.event_type IN ('proposed', 'accepted', 'activated')
+      AND EXISTS (
+        SELECT 1 FROM preventure_research_authorities AS authority
+        WHERE authority.authority_hash = NEW.authority_hash
+          AND authority.authority_schema = 'pantheon.preventure-research-authority.v2'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_authorities AS authority
+        JOIN preventure_research_lifecycle_events AS predecessor_event
+          ON predecessor_event.authority_hash = authority.supersedes_authority_hash
+        WHERE authority.authority_hash = NEW.authority_hash
+          AND predecessor_event.sequence = (
+            SELECT MAX(sequence)
+            FROM preventure_research_lifecycle_events
+            WHERE authority_hash = authority.supersedes_authority_hash
+          )
+          AND predecessor_event.event_type IN ('completed', 'revoked', 'expired')
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'A renewal authority requires its exact predecessor to be durably terminal.');
+    END
+  `,
+  trg_preventure_research_lifecycle_approval_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_lifecycle_approval_insert
+    BEFORE INSERT ON preventure_research_lifecycle_events
+    WHEN NEW.event_type IN ('accepted', 'activated')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM approvals
+        WHERE approvals.id = NEW.approval_id
+          AND approvals.status = 'approved'
+          AND approvals.scope_hash = NEW.approval_scope_hash
+          AND approvals.requested_by = 'jarvis'
+          AND approvals.decided_by = 'owner'
+          AND approvals.consumed_at IS NULL
+          AND approvals.decided_at IS NOT NULL
+          AND julianday(approvals.decided_at) <= julianday(NEW.occurred_at)
+          AND (approvals.expires_at IS NULL OR julianday(approvals.expires_at) > julianday(NEW.occurred_at))
+          AND EXISTS (
+            SELECT 1
+            FROM preventure_research_approval_decisions AS decisions
+            WHERE decisions.approval_id = approvals.id
+              AND decisions.authority_hash = NEW.authority_hash
+              AND decisions.event_type = NEW.event_type
+              AND decisions.scope_hash = NEW.approval_scope_hash
+              AND decisions.requested_by = 'jarvis'
+              AND decisions.decided_by = 'owner'
+              AND decisions.decision_source = 'authenticated_owner_session_attestation'
+              AND decisions.decision_status = 'approved'
+              AND decisions.decided_at = NEW.occurred_at
+          )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research acceptance or activation requires one exact current approval.');
+    END
+  `,
+  trg_preventure_research_lifecycle_cross_approval_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_lifecycle_cross_approval_insert
+    BEFORE INSERT ON preventure_research_lifecycle_events
+    WHEN NEW.approval_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM commercial_test_lifecycle_events
+        WHERE approval_id = NEW.approval_id
+          AND event_type IN ('accepted', 'activated')
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'An approval cannot be reused across commercial authority ledgers.');
+    END
+  `,
+  trg_commercial_test_lifecycle_preventure_approval_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_commercial_test_lifecycle_preventure_approval_insert
+    BEFORE INSERT ON commercial_test_lifecycle_events
+    WHEN NEW.approval_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM preventure_research_lifecycle_events
+        WHERE approval_id = NEW.approval_id
+          AND event_type IN ('accepted', 'activated')
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'An approval cannot be reused across commercial authority ledgers.');
+    END
+  `,
+  trg_preventure_research_activation_guard_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_activation_guard_insert
+    BEFORE INSERT ON preventure_research_lifecycle_events
+    WHEN NEW.event_type = 'activated'
+      AND (
+        julianday(pantheon_current_time()) >= julianday((
+          SELECT expires_at FROM preventure_research_authorities
+          WHERE authority_hash = NEW.authority_hash
+        ))
+        OR
+        julianday(NEW.occurred_at) > julianday((
+          SELECT expires_at FROM preventure_research_authorities
+          WHERE authority_hash = NEW.authority_hash
+        ))
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_authorities AS authorities
+          WHERE authorities.authority_hash <> NEW.authority_hash
+            AND (
+              SELECT event_type
+              FROM preventure_research_lifecycle_events AS events
+              WHERE events.authority_hash = authorities.authority_hash
+              ORDER BY sequence DESC
+              LIMIT 1
+            ) = 'activated'
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM commercial_test_contracts AS contracts
+          WHERE (
+            SELECT event_type
+            FROM commercial_test_lifecycle_events AS events
+            WHERE events.decision_hash = contracts.decision_hash
+            ORDER BY sequence DESC
+            LIMIT 1
+          ) = 'activated'
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research activation is expired or conflicts with active commercial authority.');
+    END
+  `,
+  trg_preventure_research_assignment_admission_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_assignment_admission_insert
+    BEFORE INSERT ON preventure_research_assignments
+    WHEN COALESCE((
+      NEW.activation_event_hash = (
+        SELECT event_hash
+        FROM preventure_research_lifecycle_events
+        WHERE authority_hash = NEW.authority_hash
+        ORDER BY sequence DESC
+        LIMIT 1
+      )
+      AND 'activated' = (
+        SELECT event_type
+        FROM preventure_research_lifecycle_events
+        WHERE authority_hash = NEW.authority_hash
+        ORDER BY sequence DESC
+        LIMIT 1
+      )
+      AND julianday(NEW.assigned_at) <= julianday(NEW.expires_at)
+      AND julianday(pantheon_current_time()) < julianday(NEW.expires_at)
+      AND NEW.expires_at = (
+        SELECT expires_at FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      )
+      AND NEW.provider_id = (
+        SELECT provider_id FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      )
+      AND NEW.provider_model = (
+        SELECT provider_model FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      )
+      AND NEW.max_cost_aud_cents <= (
+        SELECT internal_ai_spend_cap_aud_cents
+        FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      )
+      AND NEW.max_cost_aud_cents + COALESCE((
+        SELECT SUM(max_cost_aud_cents)
+        FROM preventure_research_assignments
+        WHERE authority_hash = NEW.authority_hash
+      ), 0) <= (
+        SELECT internal_ai_spend_cap_aud_cents
+        FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      )
+    ), 0) = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research assignment is outside active exact authority or its cost cap.');
+    END
+  `,
+  trg_preventure_research_cost_chain_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_cost_chain_insert
+    BEFORE INSERT ON preventure_research_cost_events
+    WHEN COALESCE((
+      (
+        NEW.sequence = 1
+        AND NEW.previous_receipt_hash IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM preventure_research_cost_events
+          WHERE assignment_hash = NEW.assignment_hash AND cost_key = NEW.cost_key
+        )
+      )
+      OR (
+        NEW.sequence > 1
+        AND NEW.previous_receipt_hash = (
+          SELECT receipt_hash
+          FROM preventure_research_cost_events
+          WHERE assignment_hash = NEW.assignment_hash AND cost_key = NEW.cost_key
+          ORDER BY sequence DESC
+          LIMIT 1
+        )
+        AND NEW.sequence = 1 + (
+          SELECT sequence
+          FROM preventure_research_cost_events
+          WHERE assignment_hash = NEW.assignment_hash AND cost_key = NEW.cost_key
+          ORDER BY sequence DESC
+          LIMIT 1
+        )
+      )
+    ), 0) = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research cost receipt chain is not contiguous.');
+    END
+  `,
+  trg_preventure_research_cost_decision_freeze_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_cost_decision_freeze_insert
+    BEFORE INSERT ON preventure_research_cost_events
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_decisions
+      WHERE authority_hash = NEW.authority_hash
+    )
+      AND NOT (
+        (
+        NEW.event_type = 'reconciled'
+        AND NEW.sequence > 1
+        AND NEW.previous_receipt_hash IS NOT NULL
+        AND NEW.amount_aud_cents IS NOT NULL
+        AND NEW.exposure_aud_cents = NEW.amount_aud_cents
+        AND EXISTS (
+          SELECT 1
+          FROM preventure_research_cost_events AS prior
+          JOIN preventure_research_decisions AS decision
+            ON decision.authority_hash = NEW.authority_hash
+          WHERE prior.receipt_hash = NEW.previous_receipt_hash
+            AND prior.assignment_hash = NEW.assignment_hash
+            AND prior.cost_key = NEW.cost_key
+            AND prior.event_type IN ('estimated', 'incurred')
+            AND NEW.amount_aud_cents <= prior.exposure_aud_cents
+            AND NEW.task_attempt_id IS prior.task_attempt_id
+            AND NEW.model_call_id IS prior.model_call_id
+            AND NEW.budget_reservation_id IS prior.budget_reservation_id
+            AND NEW.cost_id IS prior.cost_id
+            AND NEW.agent_run_receipt_id IS prior.agent_run_receipt_id
+            AND julianday(NEW.occurred_at) > julianday(decision.decided_at)
+            AND pantheon_preventure_provider_cost_reconciliation_capability(
+              'cost_event_insert',
+              NEW.authority_hash,
+              NEW.assignment_hash,
+              decision.decision_hash,
+              NEW.cost_id,
+              NEW.receipt_hash,
+              NEW.previous_receipt_hash,
+              NEW.amount_aud_cents,
+              NEW.occurred_at
+            ) = 1
+        )
+        )
+        OR (
+          NEW.event_type = 'reconciled'
+          AND NEW.sequence > 1
+          AND NEW.previous_receipt_hash IS NOT NULL
+          AND NEW.amount_aud_cents IS NOT NULL
+          AND NEW.exposure_aud_cents = NEW.amount_aud_cents
+          AND json_extract(NEW.cost_json, '$.ownerBillingObservationHash') IS NOT NULL
+          AND pantheon_preventure_owner_billing_observation_capability(
+            'guard_cost_event_insert',
+            NEW.authority_hash,
+            NEW.assignment_hash,
+            NEW.cost_id,
+            json_extract(NEW.cost_json, '$.ownerBillingObservationHash'),
+            NEW.receipt_hash,
+            NEW.previous_receipt_hash,
+            NEW.amount_aud_cents,
+            NEW.occurred_at,
+            NEW.cost_json
+          ) = 1
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'A sealed diligence decision only permits bounded same-chain cost reconciliation.');
+    END
+  `,
+  trg_preventure_research_reconciled_reservation_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_reconciled_reservation_update
+    BEFORE UPDATE ON budget_reservations
+    WHEN EXISTS (
+      SELECT 1
+      FROM preventure_research_assignments AS assignments
+      JOIN preventure_research_decisions AS decisions
+        ON decisions.authority_hash = assignments.authority_hash
+      WHERE assignments.task_id = OLD.task_id
+    )
+      AND COALESCE(pantheon_preventure_owner_billing_observation_capability(
+        'guard_reservation_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.amount_cents,
+        NEW.resolved_at,
+        NEW.metadata
+      ), 0) <> 1
+      AND (
+        NEW.id IS NOT OLD.id
+        OR NEW.venture_id IS NOT OLD.venture_id
+        OR NEW.workflow_id IS NOT OLD.workflow_id
+        OR NEW.task_id IS NOT OLD.task_id
+        OR NEW.approval_id IS NOT OLD.approval_id
+        OR NEW.currency IS NOT OLD.currency
+        OR NEW.reserved_at IS NOT OLD.reserved_at
+        OR NEW.metadata IS NOT OLD.metadata
+        OR NEW.status <> 'reconciled'
+        OR NEW.currency <> 'AUD'
+        OR NEW.amount_cents < 0
+        OR julianday(NEW.resolved_at) IS NULL
+        OR COALESCE(pantheon_preventure_provider_cost_reconciliation_capability(
+          'reservation_update',
+          (SELECT assignments.authority_hash
+           FROM preventure_research_assignments AS assignments
+           WHERE assignments.task_id = OLD.task_id),
+          (SELECT assignments.assignment_hash
+           FROM preventure_research_assignments AS assignments
+           WHERE assignments.task_id = OLD.task_id),
+          (SELECT decisions.decision_hash
+           FROM preventure_research_assignments AS assignments
+           JOIN preventure_research_decisions AS decisions
+             ON decisions.authority_hash = assignments.authority_hash
+           WHERE assignments.task_id = OLD.task_id),
+          NEW.id,
+          (SELECT events.receipt_hash
+           FROM preventure_research_cost_events AS events
+           WHERE events.budget_reservation_id = NEW.id
+             AND events.event_type = 'reconciled'
+           ORDER BY events.sequence DESC LIMIT 1),
+          (SELECT events.previous_receipt_hash
+           FROM preventure_research_cost_events AS events
+           WHERE events.budget_reservation_id = NEW.id
+             AND events.event_type = 'reconciled'
+           ORDER BY events.sequence DESC LIMIT 1),
+          NEW.amount_cents,
+          NEW.resolved_at
+        ), 0) <> 1
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'A sealed pre-venture reservation only accepts its exact provider-cost reconciliation.');
+    END
+  `,
+  trg_preventure_research_reconciled_cost_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_reconciled_cost_update
+    BEFORE UPDATE ON costs
+    WHEN EXISTS (
+      SELECT 1
+      FROM preventure_research_assignments AS assignments
+      JOIN preventure_research_decisions AS decisions
+        ON decisions.authority_hash = assignments.authority_hash
+      WHERE assignments.task_id = OLD.task_id
+    )
+      AND COALESCE(pantheon_preventure_owner_billing_observation_capability(
+        'guard_cost_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.amount_cents,
+        NEW.occurred_at,
+        NEW.metadata
+      ), 0) <> 1
+      AND (
+        NEW.id IS NOT OLD.id
+        OR NEW.workflow_id IS NOT OLD.workflow_id
+        OR NEW.venture_id IS NOT OLD.venture_id
+        OR NEW.run_id IS NOT OLD.run_id
+        OR NEW.task_id IS NOT OLD.task_id
+        OR NEW.model_call_id IS NOT OLD.model_call_id
+        OR NEW.category IS NOT OLD.category
+        OR NEW.source IS NOT OLD.source
+        OR NEW.currency IS NOT OLD.currency
+        OR NEW.metadata IS NOT OLD.metadata
+        OR NEW.status <> 'reconciled'
+        OR NEW.currency <> 'AUD'
+        OR NEW.amount_cents < 0
+        OR julianday(NEW.occurred_at) IS NULL
+        OR COALESCE(pantheon_preventure_provider_cost_reconciliation_capability(
+          'cost_update',
+          (SELECT assignments.authority_hash
+           FROM preventure_research_assignments AS assignments
+           WHERE assignments.task_id = OLD.task_id),
+          (SELECT assignments.assignment_hash
+           FROM preventure_research_assignments AS assignments
+           WHERE assignments.task_id = OLD.task_id),
+          (SELECT decisions.decision_hash
+           FROM preventure_research_assignments AS assignments
+           JOIN preventure_research_decisions AS decisions
+             ON decisions.authority_hash = assignments.authority_hash
+           WHERE assignments.task_id = OLD.task_id),
+          NEW.id,
+          (SELECT events.receipt_hash
+           FROM preventure_research_cost_events AS events
+           WHERE events.cost_id = NEW.id
+             AND events.event_type = 'reconciled'
+           ORDER BY events.sequence DESC LIMIT 1),
+          (SELECT events.previous_receipt_hash
+           FROM preventure_research_cost_events AS events
+           WHERE events.cost_id = NEW.id
+             AND events.event_type = 'reconciled'
+           ORDER BY events.sequence DESC LIMIT 1),
+          NEW.amount_cents,
+          NEW.occurred_at
+        ), 0) <> 1
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'A sealed pre-venture cost only accepts its exact provider-cost reconciliation.');
+    END
+  `,
+  trg_preventure_research_reconciled_model_call_update: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_reconciled_model_call_update
+    BEFORE UPDATE OF cost_status, actual_cost_cents, reconciled_cost_cents ON model_calls
+    WHEN EXISTS (
+      SELECT 1
+      FROM preventure_research_assignments AS assignments
+      JOIN preventure_research_decisions AS decisions
+        ON decisions.authority_hash = assignments.authority_hash
+      WHERE assignments.task_id = OLD.task_id
+    )
+      AND COALESCE(pantheon_preventure_owner_billing_observation_capability(
+        'guard_model_call_update',
+        json_extract(NEW.metadata, '$.authorityHash'),
+        json_extract(NEW.metadata, '$.assignmentHash'),
+        NEW.id,
+        json_extract(NEW.metadata, '$.ownerBillingObservationHash'),
+        json_extract(NEW.metadata, '$.ownerBillingCostReceiptHash'),
+        json_extract(NEW.metadata, '$.ownerBillingPreviousReceiptHash'),
+        NEW.actual_cost_cents,
+        json_extract(NEW.metadata, '$.ownerBillingRecordedAt'),
+        NEW.metadata
+      ), 0) <> 1
+      AND (
+        NEW.cost_status <> 'reconciled'
+        OR NEW.actual_cost_cents < 0
+        OR NEW.actual_cost_cents <> NEW.reconciled_cost_cents
+        OR COALESCE(pantheon_preventure_provider_cost_reconciliation_capability(
+          'model_call_update',
+          (SELECT assignments.authority_hash
+           FROM preventure_research_assignments AS assignments
+           WHERE assignments.task_id = OLD.task_id),
+          (SELECT assignments.assignment_hash
+           FROM preventure_research_assignments AS assignments
+           WHERE assignments.task_id = OLD.task_id),
+          (SELECT decisions.decision_hash
+           FROM preventure_research_assignments AS assignments
+           JOIN preventure_research_decisions AS decisions
+             ON decisions.authority_hash = assignments.authority_hash
+           WHERE assignments.task_id = OLD.task_id),
+          NEW.id,
+          (SELECT events.receipt_hash
+           FROM preventure_research_cost_events AS events
+           WHERE events.model_call_id = NEW.id
+             AND events.event_type = 'reconciled'
+           ORDER BY events.sequence DESC LIMIT 1),
+          (SELECT events.previous_receipt_hash
+           FROM preventure_research_cost_events AS events
+           WHERE events.model_call_id = NEW.id
+             AND events.event_type = 'reconciled'
+           ORDER BY events.sequence DESC LIMIT 1),
+          NEW.actual_cost_cents,
+          (SELECT events.occurred_at
+           FROM preventure_research_cost_events AS events
+           WHERE events.model_call_id = NEW.id
+             AND events.event_type = 'reconciled'
+           ORDER BY events.sequence DESC LIMIT 1)
+        ), 0) <> 1
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'A sealed pre-venture model call only accepts its exact provider-cost reconciliation.');
+    END
+  `,
+  trg_preventure_research_source_decision_freeze_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_source_decision_freeze_insert
+    BEFORE INSERT ON preventure_research_source_snapshots
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_decisions
+      WHERE authority_hash = NEW.authority_hash
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'A sealed diligence decision freezes its exact source snapshot set.');
+    END
+  `,
+  trg_preventure_research_evidence_decision_freeze_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_evidence_decision_freeze_insert
+    BEFORE INSERT ON preventure_research_evidence_records
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_decisions
+      WHERE authority_hash = NEW.authority_hash
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'A sealed diligence decision freezes its exact evidence set.');
+    END
+  `,
+  trg_preventure_research_model_call_decision_freeze_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_model_call_decision_freeze_insert
+    BEFORE INSERT ON model_calls
+    WHEN EXISTS (
+      SELECT 1
+      FROM preventure_research_assignments AS assignments
+      JOIN preventure_research_decisions AS decisions
+        ON decisions.authority_hash = assignments.authority_hash
+      WHERE assignments.task_id = NEW.task_id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'A sealed diligence decision freezes its exact provider receipt set.');
+    END
+  `,
+  trg_preventure_research_agent_receipt_decision_freeze_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_agent_receipt_decision_freeze_insert
+    BEFORE INSERT ON agent_run_receipts
+    WHEN EXISTS (
+      SELECT 1
+      FROM preventure_research_assignments AS assignments
+      JOIN preventure_research_decisions AS decisions
+        ON decisions.authority_hash = assignments.authority_hash
+      WHERE assignments.task_id = NEW.task_id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'A sealed diligence decision freezes its exact agent receipt set.');
+    END
+  `,
+  trg_preventure_research_cost_lifecycle_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_cost_lifecycle_insert
+    BEFORE INSERT ON preventure_research_cost_events
+    WHEN COALESCE((
+      'activated' = (
+        SELECT event_type
+        FROM preventure_research_lifecycle_events
+        WHERE authority_hash = NEW.authority_hash
+        ORDER BY sequence DESC
+        LIMIT 1
+      )
+      AND julianday(pantheon_current_time()) < julianday((
+        SELECT expires_at FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      ))
+    ), 0) = 0
+      AND NOT (
+        NEW.event_type IN ('unknown', 'reconciled', 'released')
+        AND EXISTS (
+          SELECT 1 FROM preventure_research_cost_events
+          WHERE assignment_hash = NEW.assignment_hash
+            AND cost_key = NEW.cost_key
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'New cost work requires active authority; only late truth reconciliation may append after stop.');
+    END
+  `,
+  trg_preventure_research_source_lifecycle_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_source_lifecycle_insert
+    BEFORE INSERT ON preventure_research_source_snapshots
+    WHEN COALESCE((
+      'activated' = (
+        SELECT event_type
+        FROM preventure_research_lifecycle_events
+        WHERE authority_hash = NEW.authority_hash
+        ORDER BY sequence DESC
+        LIMIT 1
+      )
+      AND julianday(pantheon_current_time()) < julianday((
+        SELECT expires_at FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      ))
+    ), 0) = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'Source capture requires active unexpired pre-venture research authority.');
+    END
+  `,
+  trg_preventure_research_evidence_lifecycle_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_evidence_lifecycle_insert
+    BEFORE INSERT ON preventure_research_evidence_records
+    WHEN COALESCE((
+      'activated' = (
+        SELECT event_type
+        FROM preventure_research_lifecycle_events
+        WHERE authority_hash = NEW.authority_hash
+        ORDER BY sequence DESC
+        LIMIT 1
+      )
+      AND julianday(pantheon_current_time()) < julianday((
+        SELECT expires_at FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      ))
+    ), 0) = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'Evidence capture requires active unexpired pre-venture research authority.');
+    END
+  `,
+  trg_preventure_research_task_attempt_admission_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_task_attempt_admission_insert
+    BEFORE INSERT ON task_attempts
+    WHEN EXISTS (
+      SELECT 1 FROM preventure_research_assignments
+      WHERE task_id = NEW.task_id
+    )
+      AND (
+        EXISTS (
+          SELECT 1 FROM task_attempts
+          WHERE task_id = NEW.task_id
+        )
+        OR 'activated' <> (
+          SELECT events.event_type
+          FROM preventure_research_assignments AS assignments
+          JOIN preventure_research_lifecycle_events AS events
+            ON events.authority_hash = assignments.authority_hash
+          WHERE assignments.task_id = NEW.task_id
+          ORDER BY events.sequence DESC
+          LIMIT 1
+        )
+        OR julianday(pantheon_current_time()) >= julianday((
+          SELECT expires_at FROM preventure_research_assignments
+          WHERE task_id = NEW.task_id
+        ))
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignment
+          JOIN preventure_research_assignments AS sibling
+            ON sibling.authority_hash = assignment.authority_hash
+          JOIN task_attempts AS attempts ON attempts.task_id = sibling.task_id
+          WHERE assignment.task_id = NEW.task_id
+            AND attempts.outcome_status = 'unknown'
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignment
+          JOIN preventure_research_assignments AS sibling
+            ON sibling.authority_hash = assignment.authority_hash
+          JOIN model_calls AS calls ON calls.task_id = sibling.task_id
+          WHERE assignment.task_id = NEW.task_id
+            AND (calls.outcome_status = 'unknown' OR calls.cost_status = 'unknown')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_assignments AS assignment
+          JOIN preventure_research_cost_events AS costs
+            ON costs.authority_hash = assignment.authority_hash
+          WHERE assignment.task_id = NEW.task_id
+            AND costs.event_type = 'unknown'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM preventure_research_cost_events AS later
+              WHERE later.assignment_hash = costs.assignment_hash
+                AND later.cost_key = costs.cost_key
+                AND later.sequence > costs.sequence
+            )
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research permits one provider attempt and freezes dispatch on expiry or unknown truth.');
+    END
+  `,
+  trg_preventure_research_cost_admission_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_cost_admission_insert
+    BEFORE INSERT ON preventure_research_cost_events
+    WHEN COALESCE(pantheon_preventure_owner_billing_observation_capability(
+        'guard_cost_event_insert',
+        NEW.authority_hash,
+        NEW.assignment_hash,
+        NEW.cost_id,
+        json_extract(NEW.cost_json, '$.ownerBillingObservationHash'),
+        NEW.receipt_hash,
+        NEW.previous_receipt_hash,
+        NEW.amount_aud_cents,
+        NEW.occurred_at,
+        NEW.cost_json
+      ), 0) <> 1
+      AND (
+      NEW.authority_hash <> (
+        SELECT authority_hash FROM preventure_research_assignments
+        WHERE assignment_hash = NEW.assignment_hash
+      )
+      OR NEW.exposure_aud_cents > (
+        SELECT max_cost_aud_cents FROM preventure_research_assignments
+        WHERE assignment_hash = NEW.assignment_hash
+      )
+      OR (
+        NEW.amount_aud_cents IS NOT NULL
+        AND NEW.amount_aud_cents > (
+          SELECT max_cost_aud_cents FROM preventure_research_assignments
+          WHERE assignment_hash = NEW.assignment_hash
+        )
+      )
+      OR NEW.exposure_aud_cents + COALESCE((
+        SELECT SUM(costs.exposure_aud_cents)
+        FROM preventure_research_cost_events AS costs
+        WHERE costs.assignment_hash = NEW.assignment_hash
+          AND costs.cost_key <> NEW.cost_key
+          AND NOT EXISTS (
+            SELECT 1 FROM preventure_research_cost_events AS later
+            WHERE later.assignment_hash = costs.assignment_hash
+              AND later.cost_key = costs.cost_key
+              AND later.sequence > costs.sequence
+          )
+      ), 0) > (
+        SELECT max_cost_aud_cents FROM preventure_research_assignments
+        WHERE assignment_hash = NEW.assignment_hash
+      )
+      OR COALESCE(NEW.amount_aud_cents, 0) + COALESCE((
+        SELECT SUM(COALESCE(costs.amount_aud_cents, 0))
+        FROM preventure_research_cost_events AS costs
+        WHERE costs.assignment_hash = NEW.assignment_hash
+          AND costs.cost_key <> NEW.cost_key
+          AND NOT EXISTS (
+            SELECT 1 FROM preventure_research_cost_events AS later
+            WHERE later.assignment_hash = costs.assignment_hash
+              AND later.cost_key = costs.cost_key
+              AND later.sequence > costs.sequence
+          )
+      ), 0) > (
+        SELECT max_cost_aud_cents FROM preventure_research_assignments
+        WHERE assignment_hash = NEW.assignment_hash
+      )
+      OR NEW.exposure_aud_cents + COALESCE((
+        SELECT SUM(costs.exposure_aud_cents)
+        FROM preventure_research_cost_events AS costs
+        WHERE costs.authority_hash = NEW.authority_hash
+          AND NOT (
+            costs.assignment_hash = NEW.assignment_hash
+            AND costs.cost_key = NEW.cost_key
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM preventure_research_cost_events AS later
+            WHERE later.assignment_hash = costs.assignment_hash
+              AND later.cost_key = costs.cost_key
+              AND later.sequence > costs.sequence
+          )
+      ), 0) > (
+        SELECT MIN(
+          authorities.internal_ai_spend_cap_aud_cents,
+          COALESCE((
+            SELECT SUM(assignments.max_cost_aud_cents)
+            FROM preventure_research_assignments AS assignments
+            WHERE assignments.authority_hash = NEW.authority_hash
+          ), 0)
+        )
+        FROM preventure_research_authorities AS authorities
+        WHERE authorities.authority_hash = NEW.authority_hash
+      )
+      OR COALESCE(NEW.amount_aud_cents, 0) + COALESCE((
+        SELECT SUM(COALESCE(costs.amount_aud_cents, 0))
+        FROM preventure_research_cost_events AS costs
+        WHERE costs.authority_hash = NEW.authority_hash
+          AND NOT (
+            costs.assignment_hash = NEW.assignment_hash
+            AND costs.cost_key = NEW.cost_key
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM preventure_research_cost_events AS later
+            WHERE later.assignment_hash = costs.assignment_hash
+              AND later.cost_key = costs.cost_key
+              AND later.sequence > costs.sequence
+          )
+      ), 0) > (
+        SELECT MIN(
+          authorities.internal_ai_spend_cap_aud_cents,
+          COALESCE((
+            SELECT SUM(assignments.max_cost_aud_cents)
+            FROM preventure_research_assignments AS assignments
+            WHERE assignments.authority_hash = NEW.authority_hash
+          ), 0)
+        )
+        FROM preventure_research_authorities AS authorities
+        WHERE authorities.authority_hash = NEW.authority_hash
+      )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research cost truth exceeds its immutable assignment authority.');
+    END
+  `,
+  trg_preventure_research_cost_generic_binding_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_cost_generic_binding_insert
+    BEFORE INSERT ON preventure_research_cost_events
+    WHEN (
+      NEW.budget_reservation_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        JOIN budget_reservations AS reservations
+          ON reservations.id = NEW.budget_reservation_id
+        WHERE assignments.assignment_hash = NEW.assignment_hash
+          AND reservations.task_id = assignments.task_id
+          AND reservations.workflow_id = assignments.workflow_id
+          AND reservations.venture_id IS NULL
+          AND reservations.currency = 'AUD'
+      )
+    ) OR (
+      NEW.cost_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        JOIN costs ON costs.id = NEW.cost_id
+        WHERE assignments.assignment_hash = NEW.assignment_hash
+          AND costs.task_id = assignments.task_id
+          AND costs.workflow_id = assignments.workflow_id
+          AND costs.venture_id IS NULL
+          AND costs.currency = 'AUD'
+          AND (NEW.model_call_id IS NULL OR costs.model_call_id = NEW.model_call_id)
+      )
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture cost receipts must bind the exact unowned Pantheon accounting rows.');
+    END
+  `,
+  trg_preventure_research_decision_admission_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_decision_admission_insert
+    BEFORE INSERT ON preventure_research_decisions
+    WHEN NOT EXISTS (
+        SELECT 1
+        FROM preventure_research_lifecycle_events
+        WHERE authority_hash = NEW.authority_hash
+      )
+      OR 'activated' <> (
+        SELECT event_type
+        FROM preventure_research_lifecycle_events
+        WHERE authority_hash = NEW.authority_hash
+        ORDER BY sequence DESC
+        LIMIT 1
+      )
+      OR julianday(pantheon_current_time()) >= julianday((
+        SELECT expires_at FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      ))
+      OR NEW.estimated_internal_ai_cost_aud_cents
+           + NEW.reconciled_internal_ai_cost_aud_cents > (
+        SELECT internal_ai_spend_cap_aud_cents
+        FROM preventure_research_authorities
+        WHERE authority_hash = NEW.authority_hash
+      )
+      OR NEW.external_commercial_spend_aud_cents <> 0
+      OR EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        JOIN task_attempts AS attempts ON attempts.task_id = assignments.task_id
+        WHERE assignments.authority_hash = NEW.authority_hash
+          AND attempts.outcome_status = 'unknown'
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        JOIN model_calls AS calls ON calls.task_id = assignments.task_id
+        WHERE assignments.authority_hash = NEW.authority_hash
+          AND (calls.outcome_status = 'unknown' OR calls.cost_status = 'unknown')
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM preventure_research_cost_events AS costs
+        WHERE costs.authority_hash = NEW.authority_hash
+          AND costs.event_type = 'unknown'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM preventure_research_cost_events AS later
+            WHERE later.assignment_hash = costs.assignment_hash
+              AND later.cost_key = costs.cost_key
+              AND later.sequence > costs.sequence
+          )
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM preventure_research_assignments AS assignments
+        WHERE assignments.authority_hash = NEW.authority_hash
+          AND NOT (
+            NEW.completion_mode = 'validated_early_stop'
+            AND EXISTS (
+              SELECT 1
+              FROM preventure_research_assignment_skips AS skips
+              WHERE skips.authority_hash = NEW.authority_hash
+                AND skips.assignment_hash = assignments.assignment_hash
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM preventure_research_cost_events AS costs
+            WHERE costs.assignment_hash = assignments.assignment_hash
+              AND costs.budget_reservation_id IS NOT NULL
+              AND costs.cost_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM preventure_research_cost_events AS later
+                WHERE later.assignment_hash = costs.assignment_hash
+                  AND later.cost_key = costs.cost_key
+                  AND later.sequence > costs.sequence
+              )
+          )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'Pre-venture research decision requires active unexpired authority and fully known provider/cost truth.');
+    END
+  `,
+  trg_preventure_research_early_decision_pair_insert: `
+    CREATE TRIGGER IF NOT EXISTS trg_preventure_research_early_decision_pair_insert
+    BEFORE INSERT ON preventure_research_decisions
+    WHEN NEW.completion_mode = 'validated_early_stop'
+      AND (
+        NOT EXISTS (
+          SELECT 1
+          FROM preventure_research_terminal_stops AS stops
+          WHERE stops.authority_hash = NEW.authority_hash
+            AND stops.early_stop_record_hash = NEW.early_stop_record_hash
+            AND stops.expected_decision_id = NEW.decision_id
+            AND stops.next_evidence_action_json = NEW.next_evidence_action_json
+            AND stops.prior_evidence_set_hash = NEW.evidence_set_hash
+        )
+        OR NEW.outcome <> 'research_more'
+        OR json_array_length(NEW.skipped_assignment_record_hashes_json) <> (
+          SELECT COUNT(*)
+          FROM preventure_research_assignment_skips AS skips
+          WHERE skips.authority_hash = NEW.authority_hash
+        )
+        OR json_array_length(NEW.skipped_assignment_record_hashes_json) <> (
+          SELECT json_array_length(stops.skipped_assignments_json)
+          FROM preventure_research_terminal_stops AS stops
+          WHERE stops.authority_hash = NEW.authority_hash
+            AND stops.early_stop_record_hash = NEW.early_stop_record_hash
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM json_each(NEW.skipped_assignment_record_hashes_json) AS supplied
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM preventure_research_assignment_skips AS skips
+            WHERE skips.authority_hash = NEW.authority_hash
+              AND skips.skip_record_hash = supplied.value
+          )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM preventure_research_assignment_skips AS skips
+          WHERE skips.authority_hash = NEW.authority_hash
+            AND NOT EXISTS (
+              SELECT 1
+              FROM json_each(NEW.skipped_assignment_record_hashes_json) AS supplied
+              WHERE supplied.value = skips.skip_record_hash
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM json_each(NEW.skipped_assignment_record_hashes_json) AS left_hash
+          JOIN json_each(NEW.skipped_assignment_record_hashes_json) AS right_hash
+            ON CAST(left_hash.key AS INTEGER) < CAST(right_hash.key AS INTEGER)
+          WHERE left_hash.value >= right_hash.value
+        )
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'A validated early-stop decision must match its exact stop, untouched suffix, and next evidence action.');
+    END
+  `,
+});
+
+const PREVENTURE_RESEARCH_OWNER_BILLING_OBSERVATION_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS preventure_research_provider_billing_observations (
+    observation_hash TEXT PRIMARY KEY
+      CHECK (
+        length(observation_hash) = 71
+        AND substr(observation_hash, 1, 7) = 'sha256:'
+        AND substr(observation_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    action_kind TEXT NOT NULL
+      CHECK (action_kind = 'owner_attested_provider_billing_observation'),
+    authority_hash TEXT NOT NULL,
+    assignment_hash TEXT NOT NULL UNIQUE,
+    assignment_template_hash TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    predecessor_kind TEXT NOT NULL
+      CHECK (predecessor_kind IN ('sealed_decision', 'terminal_recovery')),
+    predecessor_hash TEXT NOT NULL,
+    expected_previous_receipt_hash TEXT NOT NULL UNIQUE,
+    task_attempt_id TEXT NOT NULL,
+    model_call_id TEXT NOT NULL,
+    agent_run_receipt_id TEXT NOT NULL,
+    agent_run_receipt_hash TEXT NOT NULL,
+    cost_key TEXT NOT NULL,
+    budget_reservation_id TEXT NOT NULL,
+    cost_id TEXT NOT NULL,
+    client_request_id TEXT NOT NULL,
+    provider_request_id TEXT,
+    provider_response_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_account_reference_hash TEXT NOT NULL,
+    billing_record_reference_hash TEXT NOT NULL,
+    currency TEXT NOT NULL CHECK (currency = 'AUD'),
+    amount_aud_cents INTEGER NOT NULL CHECK (amount_aud_cents >= 0),
+    observed_at TEXT NOT NULL CHECK (julianday(observed_at) IS NOT NULL),
+    original_cost_occurred_at TEXT NOT NULL
+      CHECK (julianday(original_cost_occurred_at) IS NOT NULL),
+    provider_dispatched_at TEXT NOT NULL
+      CHECK (julianday(provider_dispatched_at) IS NOT NULL),
+    allocation_basis_json TEXT NOT NULL
+      CHECK (json_valid(allocation_basis_json) AND json_type(allocation_basis_json) = 'object'),
+    limitations_json TEXT NOT NULL
+      CHECK (json_valid(limitations_json) AND json_type(limitations_json) = 'array'),
+    budget_comparison_json TEXT NOT NULL
+      CHECK (json_valid(budget_comparison_json) AND json_type(budget_comparison_json) = 'object'),
+    truth_status TEXT NOT NULL
+      CHECK (truth_status = 'owner_attested_not_provider_settled'),
+    observation_json TEXT NOT NULL
+      CHECK (
+        json_valid(observation_json)
+        AND json_extract(observation_json, '$.observationHash') IS observation_hash
+        AND json_extract(observation_json, '$.schema')
+          IS 'pantheon.owner-attested-provider-billing-observation.v1'
+        AND json_extract(observation_json, '$.actionKind') IS action_kind
+        AND json_extract(observation_json, '$.authorityHash') IS authority_hash
+        AND json_extract(observation_json, '$.assignmentHash') IS assignment_hash
+        AND json_extract(observation_json, '$.assignmentTemplateHash') IS assignment_template_hash
+        AND json_extract(observation_json, '$.taskId') IS task_id
+        AND json_extract(observation_json, '$.predecessor.kind') IS predecessor_kind
+        AND json_extract(observation_json, '$.predecessor.hash') IS predecessor_hash
+        AND json_extract(observation_json, '$.predecessor.expectedPreviousReceiptHash')
+          IS expected_previous_receipt_hash
+        AND json_extract(observation_json, '$.executionIdentity.taskAttemptId') IS task_attempt_id
+        AND json_extract(observation_json, '$.executionIdentity.modelCallId') IS model_call_id
+        AND json_extract(observation_json, '$.executionIdentity.agentRunReceiptId')
+          IS agent_run_receipt_id
+        AND json_extract(observation_json, '$.executionIdentity.agentRunReceiptHash')
+          IS agent_run_receipt_hash
+        AND json_extract(observation_json, '$.executionIdentity.clientRequestId') IS client_request_id
+        AND json_extract(observation_json, '$.executionIdentity.providerRequestId')
+          IS provider_request_id
+        AND json_extract(observation_json, '$.executionIdentity.providerResponseId')
+          IS provider_response_id
+        AND json_extract(observation_json, '$.executionIdentity.providerDispatchedAt')
+          IS provider_dispatched_at
+        AND json_extract(observation_json, '$.costBinding.costKey') IS cost_key
+        AND json_extract(observation_json, '$.costBinding.expectedPreviousReceiptHash')
+          IS expected_previous_receipt_hash
+        AND json_extract(observation_json, '$.costBinding.budgetReservationId')
+          IS budget_reservation_id
+        AND json_extract(observation_json, '$.costBinding.costId') IS cost_id
+        AND json_extract(observation_json, '$.billingObservation.provider') IS provider
+        AND json_extract(observation_json, '$.billingObservation.providerAccountReferenceHash')
+          IS provider_account_reference_hash
+        AND json_extract(observation_json, '$.billingObservation.billingRecordReferenceHash')
+          IS billing_record_reference_hash
+        AND json_extract(observation_json, '$.billingObservation.currency') IS currency
+        AND json_extract(observation_json, '$.billingObservation.amountAudCents')
+          IS amount_aud_cents
+        AND json_extract(observation_json, '$.billingObservation.observedAt') IS observed_at
+        AND json_extract(observation_json, '$.billingObservation.originalCostOccurredAt')
+          IS original_cost_occurred_at
+        AND json_extract(observation_json, '$.billingObservation.allocationBasis')
+          IS allocation_basis_json
+        AND json_extract(observation_json, '$.billingObservation.limitations')
+          IS limitations_json
+        AND json_extract(observation_json, '$.budgetComparison') IS budget_comparison_json
+        AND json_extract(observation_json, '$.truth.source')
+          IS 'authenticated_owner_session_attestation'
+        AND json_extract(observation_json, '$.truth.status') IS truth_status
+        AND json_extract(observation_json, '$.truth.statement')
+          IS 'Owner-attested provider billing observation; not provider-settled.'
+        AND json_extract(observation_json, '$.recordedAt') IS recorded_at
+      ),
+    recorded_at TEXT NOT NULL CHECK (julianday(recorded_at) IS NOT NULL),
+    created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+    UNIQUE (provider, provider_account_reference_hash, billing_record_reference_hash),
+    CHECK (julianday(provider_dispatched_at) <= julianday(observed_at)),
+    CHECK (julianday(observed_at) <= julianday(recorded_at)),
+    CHECK (created_at = recorded_at),
+    FOREIGN KEY (authority_hash)
+      REFERENCES preventure_research_authorities(authority_hash),
+    FOREIGN KEY (assignment_hash)
+      REFERENCES preventure_research_assignments(assignment_hash),
+    FOREIGN KEY (authority_hash, assignment_hash)
+      REFERENCES preventure_research_assignments(authority_hash, assignment_hash),
+    FOREIGN KEY (task_id) REFERENCES tasks(id),
+    FOREIGN KEY (task_attempt_id) REFERENCES task_attempts(id),
+    FOREIGN KEY (model_call_id) REFERENCES model_calls(id),
+    FOREIGN KEY (agent_run_receipt_id) REFERENCES agent_run_receipts(id),
+    FOREIGN KEY (budget_reservation_id) REFERENCES budget_reservations(id),
+    FOREIGN KEY (cost_id) REFERENCES costs(id),
+    FOREIGN KEY (expected_previous_receipt_hash)
+      REFERENCES preventure_research_cost_events(receipt_hash)
+  );
+`;
+
+const PREVENTURE_RESEARCH_TERMINAL_RECOVERY_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS preventure_research_terminal_recoveries (
+    recovery_hash TEXT PRIMARY KEY
+      CHECK (
+        length(recovery_hash) = 71
+        AND substr(recovery_hash, 1, 7) = 'sha256:'
+        AND substr(recovery_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    recovery_intent_hash TEXT NOT NULL UNIQUE
+      CHECK (
+        length(recovery_intent_hash) = 71
+        AND substr(recovery_intent_hash, 1, 7) = 'sha256:'
+        AND substr(recovery_intent_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    authority_hash TEXT NOT NULL,
+    assignment_hash TEXT NOT NULL UNIQUE,
+    assignment_template_hash TEXT NOT NULL
+      CHECK (
+        length(assignment_template_hash) = 71
+        AND substr(assignment_template_hash, 1, 7) = 'sha256:'
+        AND substr(assignment_template_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    assignment_cap_aud_cents INTEGER NOT NULL CHECK (assignment_cap_aud_cents >= 0),
+    task_id TEXT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    task_attempt_id TEXT NOT NULL UNIQUE,
+    model_call_id TEXT NOT NULL UNIQUE,
+    terminal_kind TEXT NOT NULL
+      CHECK (terminal_kind IN ('lifecycle', 'runtime_emergency_stop')),
+    terminal_record_id TEXT NOT NULL,
+    terminal_event_type TEXT NOT NULL
+      CHECK (terminal_event_type IN ('revoked', 'expired', 'runtime.emergency_stop_recorded')),
+    terminal_event_hash TEXT NOT NULL
+      CHECK (
+        length(terminal_event_hash) = 71
+        AND substr(terminal_event_hash, 1, 7) = 'sha256:'
+        AND substr(terminal_event_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    lifecycle_event_id TEXT,
+    emergency_event_id INTEGER,
+    terminal_at TEXT NOT NULL CHECK (julianday(terminal_at) IS NOT NULL),
+    original_claim_token_hash TEXT NOT NULL
+      CHECK (
+        length(original_claim_token_hash) = 71
+        AND substr(original_claim_token_hash, 1, 7) = 'sha256:'
+        AND substr(original_claim_token_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    descriptor_hash TEXT NOT NULL
+      CHECK (
+        length(descriptor_hash) = 71
+        AND substr(descriptor_hash, 1, 7) = 'sha256:'
+        AND substr(descriptor_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    request_body_hash TEXT NOT NULL
+      CHECK (
+        length(request_body_hash) = 71
+        AND substr(request_body_hash, 1, 7) = 'sha256:'
+        AND substr(request_body_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    client_request_id TEXT NOT NULL,
+    provider_request_id TEXT,
+    provider_response_id TEXT,
+    provider_dispatched_at TEXT NOT NULL CHECK (julianday(provider_dispatched_at) IS NOT NULL),
+    artifact_hash TEXT NOT NULL UNIQUE
+      CHECK (
+        length(artifact_hash) = 71
+        AND substr(artifact_hash, 1, 7) = 'sha256:'
+        AND substr(artifact_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    artifact_ref TEXT NOT NULL UNIQUE,
+    artifact_kind TEXT NOT NULL
+      CHECK (artifact_kind IN (
+        'canonical_known_response',
+        'known_effect_invalid',
+        'known_pre_effect_rejection'
+      )),
+    retained_at TEXT NOT NULL CHECK (julianday(retained_at) IS NOT NULL),
+    provider_response_hash TEXT,
+    raw_provider_body_hash TEXT NOT NULL,
+    raw_provider_bytes_hash TEXT NOT NULL,
+    output_hash TEXT NOT NULL,
+    grounded_source_set_hash TEXT NOT NULL,
+    billing_hash TEXT NOT NULL,
+    response_metadata_hash TEXT NOT NULL,
+    agent_run_receipt_id TEXT,
+    agent_run_receipt_hash TEXT,
+    agent_run_receipt_status TEXT,
+    agent_run_receipt_outcome_status TEXT,
+    cost_key TEXT NOT NULL,
+    prior_cost_receipt_hash TEXT NOT NULL
+      CHECK (
+        length(prior_cost_receipt_hash) = 71
+        AND substr(prior_cost_receipt_hash, 1, 7) = 'sha256:'
+        AND substr(prior_cost_receipt_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    terminal_cost_receipt_hash TEXT NOT NULL
+      CHECK (
+        length(terminal_cost_receipt_hash) = 71
+        AND substr(terminal_cost_receipt_hash, 1, 7) = 'sha256:'
+        AND substr(terminal_cost_receipt_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    prior_cost_event_type TEXT NOT NULL
+      CHECK (prior_cost_event_type IN ('reserved', 'estimated', 'incurred', 'reconciled', 'unknown')),
+    prior_cost_amount_aud_cents INTEGER,
+    prior_cost_exposure_aud_cents INTEGER NOT NULL
+      CHECK (prior_cost_exposure_aud_cents BETWEEN 0 AND assignment_cap_aud_cents),
+    budget_reservation_id TEXT NOT NULL,
+    budget_reservation_status TEXT NOT NULL,
+    budget_reservation_amount_aud_cents INTEGER NOT NULL
+      CHECK (budget_reservation_amount_aud_cents = assignment_cap_aud_cents),
+    cost_id TEXT NOT NULL,
+    generic_cost_status TEXT NOT NULL,
+    generic_cost_amount_aud_cents INTEGER NOT NULL
+      CHECK (generic_cost_amount_aud_cents BETWEEN 0 AND assignment_cap_aud_cents),
+    cost_truth TEXT NOT NULL CHECK (cost_truth = 'unknown'),
+    known_cost_aud_cents INTEGER CHECK (known_cost_aud_cents IS NULL),
+    exposure_aud_cents INTEGER NOT NULL CHECK (exposure_aud_cents = assignment_cap_aud_cents),
+    exact_billing_pending INTEGER NOT NULL CHECK (exact_billing_pending = 1),
+    commercial_inference TEXT NOT NULL CHECK (commercial_inference = 'none'),
+    evidence_eligible INTEGER NOT NULL CHECK (evidence_eligible = 0),
+    decision_eligible INTEGER NOT NULL CHECK (decision_eligible = 0),
+    completion_eligible INTEGER NOT NULL CHECK (completion_eligible = 0),
+    retry_authorized INTEGER NOT NULL CHECK (retry_authorized = 0),
+    additional_network_calls INTEGER NOT NULL CHECK (additional_network_calls = 0),
+    additional_ai_cost_aud_cents INTEGER NOT NULL CHECK (additional_ai_cost_aud_cents = 0),
+    terminal_binding_json TEXT NOT NULL
+      CHECK (json_valid(terminal_binding_json) AND json_type(terminal_binding_json) = 'object'),
+    original_dispatch_json TEXT NOT NULL
+      CHECK (json_valid(original_dispatch_json) AND json_type(original_dispatch_json) = 'object'),
+    retained_artifact_json TEXT NOT NULL
+      CHECK (json_valid(retained_artifact_json) AND json_type(retained_artifact_json) = 'object'),
+    execution_receipt_json TEXT
+      CHECK (
+        execution_receipt_json IS NULL
+        OR (json_valid(execution_receipt_json) AND json_type(execution_receipt_json) = 'object')
+      ),
+    cost_snapshot_json TEXT NOT NULL
+      CHECK (json_valid(cost_snapshot_json) AND json_type(cost_snapshot_json) = 'object'),
+    controls_json TEXT NOT NULL
+      CHECK (json_valid(controls_json) AND json_type(controls_json) = 'object'),
+    recovery_json TEXT NOT NULL
+      CHECK (
+        json_valid(recovery_json)
+        AND json_extract(recovery_json, '$.schema')
+          IS 'pantheon.preventure-research-terminal-retained-recovery.v1'
+        AND json_extract(recovery_json, '$.recoveryHash') IS recovery_hash
+        AND json_extract(recovery_json, '$.recoveryIntentHash') IS recovery_intent_hash
+        AND json_extract(recovery_json, '$.authorityHash') IS authority_hash
+        AND json_extract(recovery_json, '$.assignmentHash') IS assignment_hash
+        AND json_extract(recovery_json, '$.assignmentTemplateHash') IS assignment_template_hash
+        AND json_extract(recovery_json, '$.assignmentCapAudCents') IS assignment_cap_aud_cents
+        AND json_extract(recovery_json, '$.taskId') IS task_id
+        AND json_extract(recovery_json, '$.workflowId') IS workflow_id
+        AND json_extract(recovery_json, '$.terminalBinding') IS terminal_binding_json
+        AND json_extract(recovery_json, '$.originalDispatch') IS original_dispatch_json
+        AND json_extract(recovery_json, '$.retainedArtifact') IS retained_artifact_json
+        AND json_extract(recovery_json, '$.executionReceipt') IS execution_receipt_json
+        AND json_extract(recovery_json, '$.costSnapshot') IS cost_snapshot_json
+        AND json_extract(recovery_json, '$.controls') IS controls_json
+        AND json_extract(recovery_json, '$.recordedAt') IS recorded_at
+      ),
+    recorded_at TEXT NOT NULL CHECK (julianday(recorded_at) IS NOT NULL),
+    created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+    CHECK (
+      (
+        terminal_kind = 'lifecycle'
+        AND terminal_event_type IN ('revoked', 'expired')
+        AND lifecycle_event_id IS terminal_record_id
+        AND emergency_event_id IS NULL
+      )
+      OR (
+        terminal_kind = 'runtime_emergency_stop'
+        AND terminal_event_type = 'runtime.emergency_stop_recorded'
+        AND lifecycle_event_id IS NULL
+        AND CAST(emergency_event_id AS TEXT) IS terminal_record_id
+      )
+    ),
+    CHECK (
+      (agent_run_receipt_id IS NULL AND agent_run_receipt_hash IS NULL
+       AND agent_run_receipt_status IS NULL AND agent_run_receipt_outcome_status IS NULL
+       AND execution_receipt_json IS NULL)
+      OR
+      (agent_run_receipt_id IS NOT NULL AND agent_run_receipt_hash IS NOT NULL
+       AND agent_run_receipt_status IS NOT NULL AND agent_run_receipt_outcome_status IS NOT NULL
+       AND execution_receipt_json IS NOT NULL)
+    ),
+    CHECK (
+      artifact_ref = 'preventure-output:' || substr(artifact_hash, 8)
+      AND julianday(provider_dispatched_at) < julianday(terminal_at)
+      AND julianday(provider_dispatched_at) < julianday(retained_at)
+      AND julianday(terminal_at) <= julianday(recorded_at)
+      AND julianday(retained_at) <= julianday(recorded_at)
+    ),
+    CHECK (
+      (artifact_kind = 'canonical_known_response'
+       AND provider_response_id IS NOT NULL AND provider_response_hash IS NOT NULL)
+      OR
+      (artifact_kind = 'known_pre_effect_rejection'
+       AND provider_response_id IS NULL AND provider_response_hash IS NOT NULL)
+      OR
+      (artifact_kind = 'known_effect_invalid'
+       AND ((provider_response_id IS NULL AND provider_response_hash IS NULL)
+         OR (provider_response_id IS NOT NULL AND provider_response_hash IS NOT NULL)))
+    ),
+    FOREIGN KEY (authority_hash)
+      REFERENCES preventure_research_authorities(authority_hash),
+    FOREIGN KEY (authority_hash, assignment_hash)
+      REFERENCES preventure_research_assignments(authority_hash, assignment_hash),
+    FOREIGN KEY (task_id) REFERENCES tasks(id),
+    FOREIGN KEY (task_attempt_id) REFERENCES task_attempts(id),
+    FOREIGN KEY (model_call_id) REFERENCES model_calls(id),
+    FOREIGN KEY (authority_hash, lifecycle_event_id)
+      REFERENCES preventure_research_lifecycle_events(authority_hash, id),
+    FOREIGN KEY (emergency_event_id) REFERENCES events(id),
+    FOREIGN KEY (agent_run_receipt_id) REFERENCES agent_run_receipts(id),
+    FOREIGN KEY (prior_cost_receipt_hash)
+      REFERENCES preventure_research_cost_events(receipt_hash),
+    FOREIGN KEY (terminal_cost_receipt_hash)
+      REFERENCES preventure_research_cost_events(receipt_hash),
+    FOREIGN KEY (budget_reservation_id) REFERENCES budget_reservations(id),
+    FOREIGN KEY (cost_id) REFERENCES costs(id)
+  );
+`;
+
+const PREVENTURE_RESEARCH_TERMINAL_STOP_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS preventure_research_terminal_stops (
+    early_stop_record_hash TEXT PRIMARY KEY
+      CHECK (
+        length(early_stop_record_hash) = 71
+        AND substr(early_stop_record_hash, 1, 7) = 'sha256:'
+        AND substr(early_stop_record_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    terminal_stop_id TEXT NOT NULL,
+    authority_hash TEXT NOT NULL UNIQUE,
+    expected_decision_id TEXT NOT NULL,
+    expected_completion_event_id TEXT NOT NULL,
+    trigger_assignment_id TEXT NOT NULL,
+    trigger_assignment_hash TEXT NOT NULL,
+    trigger_outcome_class TEXT NOT NULL
+      CHECK (trigger_outcome_class IN (
+        'validated_evidence_shortfall',
+        'known_failed_before_effect',
+        'known_retained_unusable_provider_response'
+      )),
+    reason_class TEXT NOT NULL CHECK (reason_class IN ('evidence', 'technical')),
+    reason_code TEXT NOT NULL,
+    commercial_inference TEXT NOT NULL CHECK (commercial_inference = 'none'),
+    provider_evidence_json TEXT NOT NULL
+      CHECK (json_valid(provider_evidence_json) AND json_type(provider_evidence_json) = 'object'),
+    actual_coverage_json TEXT NOT NULL
+      CHECK (json_valid(actual_coverage_json) AND json_type(actual_coverage_json) = 'object'),
+    gap_codes_json TEXT NOT NULL
+      CHECK (json_valid(gap_codes_json) AND json_type(gap_codes_json) = 'array'),
+    skipped_assignments_json TEXT NOT NULL
+      CHECK (json_valid(skipped_assignments_json) AND json_type(skipped_assignments_json) = 'array'),
+    next_evidence_action_json TEXT NOT NULL
+      CHECK (json_valid(next_evidence_action_json) AND json_type(next_evidence_action_json) = 'object'),
+    prior_evidence_set_hash TEXT NOT NULL
+      CHECK (
+        length(prior_evidence_set_hash) = 71
+        AND substr(prior_evidence_set_hash, 1, 7) = 'sha256:'
+        AND substr(prior_evidence_set_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    prior_receipt_set_hash TEXT NOT NULL
+      CHECK (
+        length(prior_receipt_set_hash) = 71
+        AND substr(prior_receipt_set_hash, 1, 7) = 'sha256:'
+        AND substr(prior_receipt_set_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    stopped_at TEXT NOT NULL CHECK (julianday(stopped_at) IS NOT NULL),
+    stop_json TEXT NOT NULL
+      CHECK (
+        json_valid(stop_json)
+        AND json_extract(stop_json, '$.schema')
+          IS 'pantheon.preventure-research-terminal-stop.v1'
+        AND json_extract(stop_json, '$.id') IS terminal_stop_id
+        AND json_extract(stop_json, '$.authorityHash') IS authority_hash
+        AND json_extract(stop_json, '$.triggerAssignmentId') IS trigger_assignment_id
+        AND json_extract(stop_json, '$.triggerAssignmentHash') IS trigger_assignment_hash
+        AND json_extract(stop_json, '$.triggerOutcomeClass') IS trigger_outcome_class
+        AND json_extract(stop_json, '$.reasonClass') IS reason_class
+        AND json_extract(stop_json, '$.reasonCode') IS reason_code
+        AND json_extract(stop_json, '$.commercialInference') IS commercial_inference
+        AND json_extract(stop_json, '$.providerEvidence') IS provider_evidence_json
+        AND json_extract(stop_json, '$.actualCoverage') IS actual_coverage_json
+        AND json_extract(stop_json, '$.gapCodes') IS gap_codes_json
+        AND json_extract(stop_json, '$.skippedAssignments') IS skipped_assignments_json
+        AND json_extract(stop_json, '$.nextEvidenceAction') IS next_evidence_action_json
+        AND json_extract(stop_json, '$.stoppedAt') IS stopped_at
+        AND json_extract(stop_json, '$.earlyStopRecordHash') IS early_stop_record_hash
+        AND json_extract(actual_coverage_json, '$.evidenceSetHash') IS prior_evidence_set_hash
+        AND json_extract(actual_coverage_json, '$.executionReceiptSetHash') IS prior_receipt_set_hash
+      ),
+    created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+    CHECK (
+      (trigger_outcome_class = 'validated_evidence_shortfall' AND reason_class = 'evidence')
+      OR (
+        trigger_outcome_class IN (
+          'known_failed_before_effect',
+          'known_retained_unusable_provider_response'
+        )
+        AND reason_class = 'technical'
+      )
+    ),
+    UNIQUE (authority_hash, terminal_stop_id),
+    UNIQUE (authority_hash, early_stop_record_hash),
+    FOREIGN KEY (authority_hash)
+      REFERENCES preventure_research_authorities(authority_hash),
+    FOREIGN KEY (authority_hash, trigger_assignment_hash)
+      REFERENCES preventure_research_assignments(authority_hash, assignment_hash),
+    FOREIGN KEY (authority_hash, expected_decision_id)
+      REFERENCES preventure_research_decisions(authority_hash, decision_id)
+      DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (authority_hash, expected_completion_event_id)
+      REFERENCES preventure_research_lifecycle_events(authority_hash, id)
+      DEFERRABLE INITIALLY DEFERRED
+  );
+
+  CREATE TABLE IF NOT EXISTS preventure_research_assignment_skips (
+    skip_record_hash TEXT PRIMARY KEY
+      CHECK (
+        length(skip_record_hash) = 71
+        AND substr(skip_record_hash, 1, 7) = 'sha256:'
+        AND substr(skip_record_hash, 8) NOT GLOB '*[^0-9a-f]*'
+      ),
+    terminal_stop_id TEXT NOT NULL,
+    authority_hash TEXT NOT NULL,
+    trigger_assignment_hash TEXT NOT NULL,
+    assignment_id TEXT NOT NULL,
+    assignment_hash TEXT NOT NULL UNIQUE,
+    assignment_order INTEGER NOT NULL CHECK (assignment_order BETWEEN 1 AND 3),
+    task_id TEXT NOT NULL,
+    dispatch_state TEXT NOT NULL CHECK (dispatch_state = 'not_dispatched'),
+    task_attempt_count INTEGER NOT NULL CHECK (task_attempt_count = 0),
+    model_call_count INTEGER NOT NULL CHECK (model_call_count = 0),
+    agent_run_receipt_count INTEGER NOT NULL CHECK (agent_run_receipt_count = 0),
+    research_run_count INTEGER NOT NULL CHECK (research_run_count = 0),
+    agent_run_count INTEGER NOT NULL CHECK (agent_run_count = 0),
+    tool_invocation_count INTEGER NOT NULL CHECK (tool_invocation_count = 0),
+    budget_reservation_count INTEGER NOT NULL CHECK (budget_reservation_count = 0),
+    cost_record_count INTEGER NOT NULL CHECK (cost_record_count = 0),
+    cost_event_count INTEGER NOT NULL CHECK (cost_event_count = 0),
+    source_snapshot_count INTEGER NOT NULL CHECK (source_snapshot_count = 0),
+    evidence_record_count INTEGER NOT NULL CHECK (evidence_record_count = 0),
+    total_aud_cost_cents INTEGER NOT NULL CHECK (total_aud_cost_cents = 0),
+    skipped_at TEXT NOT NULL CHECK (julianday(skipped_at) IS NOT NULL),
+    skip_json TEXT NOT NULL
+      CHECK (
+        json_valid(skip_json)
+        AND json_extract(skip_json, '$.schema')
+          IS 'pantheon.preventure-research-assignment-skip.v1'
+        AND json_extract(skip_json, '$.terminalStopId') IS terminal_stop_id
+        AND json_extract(skip_json, '$.authorityHash') IS authority_hash
+        AND json_extract(skip_json, '$.triggerAssignmentHash') IS trigger_assignment_hash
+        AND json_extract(skip_json, '$.assignmentId') IS assignment_id
+        AND json_extract(skip_json, '$.assignmentHash') IS assignment_hash
+        AND json_extract(skip_json, '$.assignmentOrder') IS assignment_order
+        AND json_extract(skip_json, '$.taskId') IS task_id
+        AND json_extract(skip_json, '$.dispatchState') IS dispatch_state
+        AND json_extract(skip_json, '$.taskAttemptCount') IS task_attempt_count
+        AND json_extract(skip_json, '$.modelCallCount') IS model_call_count
+        AND json_extract(skip_json, '$.agentRunReceiptCount') IS agent_run_receipt_count
+        AND json_extract(skip_json, '$.researchRunCount') IS research_run_count
+        AND json_extract(skip_json, '$.agentRunCount') IS agent_run_count
+        AND json_extract(skip_json, '$.toolInvocationCount') IS tool_invocation_count
+        AND json_extract(skip_json, '$.budgetReservationCount') IS budget_reservation_count
+        AND json_extract(skip_json, '$.costRecordCount') IS cost_record_count
+        AND json_extract(skip_json, '$.costEventCount') IS cost_event_count
+        AND json_extract(skip_json, '$.sourceSnapshotCount') IS source_snapshot_count
+        AND json_extract(skip_json, '$.evidenceRecordCount') IS evidence_record_count
+        AND json_extract(skip_json, '$.totalAudCostCents') IS total_aud_cost_cents
+        AND json_extract(skip_json, '$.skippedAt') IS skipped_at
+        AND json_extract(skip_json, '$.skipRecordHash') IS skip_record_hash
+      ),
+    created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+    UNIQUE (authority_hash, terminal_stop_id, assignment_hash),
+    FOREIGN KEY (authority_hash, terminal_stop_id)
+      REFERENCES preventure_research_terminal_stops(authority_hash, terminal_stop_id)
+      DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (authority_hash, trigger_assignment_hash)
+      REFERENCES preventure_research_assignments(authority_hash, assignment_hash),
+    FOREIGN KEY (authority_hash, assignment_hash)
+      REFERENCES preventure_research_assignments(authority_hash, assignment_hash),
+    FOREIGN KEY (task_id) REFERENCES tasks(id)
+  );
+`;
+
+const PREVENTURE_RESEARCH_REQUIRED_INDEX_SQL = Object.freeze({
+  idx_preventure_research_authority_version: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_authority_version
+    ON preventure_research_authorities(authority_id, authority_version)
+  `,
+  idx_preventure_research_authority_readiness: `
+    CREATE INDEX IF NOT EXISTS idx_preventure_research_authority_readiness
+    ON preventure_research_authorities(readiness_id, readiness_version, created_at DESC)
+  `,
+  idx_preventure_research_authority_supersession: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_authority_supersession
+    ON preventure_research_authorities(supersedes_authority_hash)
+    WHERE supersedes_authority_hash IS NOT NULL
+  `,
+  idx_preventure_research_lifecycle_latest: `
+    CREATE INDEX IF NOT EXISTS idx_preventure_research_lifecycle_latest
+    ON preventure_research_lifecycle_events(authority_hash, sequence DESC)
+  `,
+  idx_preventure_research_lifecycle_approval_once: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_lifecycle_approval_once
+    ON preventure_research_lifecycle_events(approval_id)
+    WHERE approval_id IS NOT NULL AND event_type IN ('accepted', 'activated')
+  `,
+  idx_preventure_research_assignment_identity: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_assignment_identity
+    ON preventure_research_assignments(authority_hash, assignment_id, assignment_version)
+  `,
+  idx_preventure_research_assignment_task: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_assignment_task
+    ON preventure_research_assignments(task_id)
+  `,
+  idx_task_attempts_one_running_per_task: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_task_attempts_one_running_per_task
+    ON task_attempts(task_id)
+    WHERE status = 'running'
+  `,
+  idx_preventure_research_cost_chain: `
+    CREATE INDEX IF NOT EXISTS idx_preventure_research_cost_chain
+    ON preventure_research_cost_events(assignment_hash, cost_key, sequence DESC)
+  `,
+  idx_preventure_research_cost_predecessor: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_cost_predecessor
+    ON preventure_research_cost_events(previous_receipt_hash)
+    WHERE previous_receipt_hash IS NOT NULL
+  `,
+  idx_preventure_research_terminal_recovery_authority: `
+    CREATE INDEX IF NOT EXISTS idx_preventure_research_terminal_recovery_authority
+    ON preventure_research_terminal_recoveries(authority_hash, recorded_at, recovery_hash)
+  `,
+  idx_preventure_research_terminal_recovery_event: `
+    CREATE INDEX IF NOT EXISTS idx_preventure_research_terminal_recovery_event
+    ON preventure_research_terminal_recoveries(terminal_kind, terminal_record_id, recorded_at)
+  `,
+  idx_preventure_research_owner_billing_observation_time: `
+    CREATE INDEX IF NOT EXISTS idx_preventure_research_owner_billing_observation_time
+    ON preventure_research_provider_billing_observations(
+      authority_hash, original_cost_occurred_at, recorded_at, observation_hash
+    )
+  `,
+  idx_preventure_research_source_assignment: `
+    CREATE INDEX IF NOT EXISTS idx_preventure_research_source_assignment
+    ON preventure_research_source_snapshots(assignment_hash, retrieved_at, snapshot_hash)
+  `,
+  idx_preventure_research_source_supersession: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_source_supersession
+    ON preventure_research_source_snapshots(supersedes_snapshot_hash)
+    WHERE supersedes_snapshot_hash IS NOT NULL
+  `,
+  idx_preventure_research_source_identity: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_source_identity
+    ON preventure_research_source_snapshots(authority_hash, source_identity_hash)
+    WHERE source_identity_hash IS NOT NULL
+  `,
+  idx_preventure_research_offer_identity: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_offer_identity
+    ON preventure_research_source_snapshots(authority_hash, offer_identity_key)
+    WHERE offer_identity_key IS NOT NULL
+  `,
+  idx_preventure_research_evidence_question: `
+    CREATE INDEX IF NOT EXISTS idx_preventure_research_evidence_question
+    ON preventure_research_evidence_records(authority_hash, question_id, captured_at, evidence_hash)
+  `,
+  idx_preventure_research_evidence_source: `
+    CREATE INDEX IF NOT EXISTS idx_preventure_research_evidence_source
+    ON preventure_research_evidence_records(source_snapshot_hash)
+    WHERE source_snapshot_hash IS NOT NULL
+  `,
+  idx_preventure_research_evidence_supersession: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_evidence_supersession
+    ON preventure_research_evidence_records(supersedes_evidence_hash)
+    WHERE supersedes_evidence_hash IS NOT NULL
+  `,
+  idx_preventure_research_decision_authority: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_decision_authority
+    ON preventure_research_decisions(authority_hash)
+  `,
+  idx_preventure_research_decision_identity: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_decision_identity
+    ON preventure_research_decisions(authority_hash, decision_id)
+  `,
+  idx_preventure_research_terminal_stop_assignment: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_terminal_stop_assignment
+    ON preventure_research_terminal_stops(authority_hash, trigger_assignment_hash)
+  `,
+  idx_preventure_research_assignment_skip_order: `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_preventure_research_assignment_skip_order
+    ON preventure_research_assignment_skips(authority_hash, assignment_order)
+  `,
+  idx_preventure_research_decision_outcome: `
+    CREATE INDEX IF NOT EXISTS idx_preventure_research_decision_outcome
+    ON preventure_research_decisions(outcome, decided_at DESC)
+  `,
+});
+
+const PREVENTURE_RESEARCH_OWNERSHIP_TRIGGER_SQL = Object.freeze({
+  trg_approvals_venture_owner: `
+    CREATE TRIGGER IF NOT EXISTS trg_approvals_venture_owner
+    AFTER INSERT ON approvals
+    FOR EACH ROW
+    WHEN NEW.venture_id IS NULL
+      AND NOT (
+        json_valid(NEW.scope)
+        AND json_extract(NEW.scope, '$.schema') IN (
+          'pantheon.preventure-research-approval-scope.v1',
+          'pantheon.preventure-research-approval-scope.v2'
+        )
+      )
+      AND NOT (
+        json_valid(NEW.payload)
+        AND json_extract(
+          NEW.payload,
+          '$.preventureResearchApprovalScope.schema'
+        ) IN (
+          'pantheon.preventure-research-approval-scope.v1',
+          'pantheon.preventure-research-approval-scope.v2'
+        )
+      )
+    BEGIN
+      UPDATE approvals
+      SET venture_id = COALESCE(
+        (SELECT venture_id FROM workflows WHERE workflows.id = NEW.workflow_id),
+        (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1),
+        (SELECT id FROM ventures ORDER BY created_at ASC LIMIT 1)
+      )
+      WHERE id = NEW.id;
+    END
+  `,
+  trg_events_venture_owner: `
+    CREATE TRIGGER IF NOT EXISTS trg_events_venture_owner
+    AFTER INSERT ON events
+    FOR EACH ROW
+    WHEN NEW.venture_id IS NULL
+      AND NOT ${preventureResearchEventOwnershipCondition()}
+    BEGIN
+      UPDATE events
+      SET venture_id = COALESCE(
+        (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1),
+        (SELECT id FROM ventures ORDER BY created_at ASC LIMIT 1)
+      )
+      WHERE id = NEW.id;
+    END
+  `,
+  trg_workflows_venture_owner: `
+    CREATE TRIGGER IF NOT EXISTS trg_workflows_venture_owner
+    AFTER INSERT ON workflows
+    FOR EACH ROW
+    WHEN NEW.venture_id IS NULL AND NEW.type <> 'preventure_research'
+    BEGIN
+      UPDATE workflows
+      SET venture_id = COALESCE(
+        (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1),
+        (SELECT id FROM ventures ORDER BY created_at ASC LIMIT 1)
+      )
+      WHERE id = NEW.id;
+    END
+  `,
+  trg_tasks_venture_owner: `
+    CREATE TRIGGER IF NOT EXISTS trg_tasks_venture_owner
+    AFTER INSERT ON tasks
+    FOR EACH ROW
+    WHEN NEW.venture_id IS NULL
+      AND NEW.kind <> 'preventure_research'
+      AND NOT EXISTS (
+        SELECT 1 FROM workflows
+        WHERE id = NEW.workflow_id AND type = 'preventure_research'
+      )
+    BEGIN
+      UPDATE tasks
+      SET venture_id = COALESCE(
+        (SELECT venture_id FROM workflows WHERE workflows.id = NEW.workflow_id),
+        (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1),
+        (SELECT id FROM ventures ORDER BY created_at ASC LIMIT 1)
+      )
+      WHERE id = NEW.id;
+    END
+  `,
+  trg_task_attempts_venture_owner: `
+    CREATE TRIGGER IF NOT EXISTS trg_task_attempts_venture_owner
+    AFTER INSERT ON task_attempts
+    FOR EACH ROW
+    WHEN NEW.venture_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks
+        WHERE id = NEW.task_id AND kind = 'preventure_research'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM workflows
+        WHERE id = NEW.workflow_id AND type = 'preventure_research'
+      )
+    BEGIN
+      UPDATE task_attempts
+      SET venture_id = COALESCE(
+        (SELECT venture_id FROM workflows WHERE workflows.id = NEW.workflow_id),
+        (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1),
+        (SELECT id FROM ventures ORDER BY created_at ASC LIMIT 1)
+      )
+      WHERE id = NEW.id;
+    END
+  `,
+  trg_model_calls_venture_owner: `
+    CREATE TRIGGER IF NOT EXISTS trg_model_calls_venture_owner
+    AFTER INSERT ON model_calls
+    FOR EACH ROW
+    WHEN NEW.venture_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks
+        WHERE id = NEW.task_id AND kind = 'preventure_research'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM workflows
+        WHERE id = NEW.workflow_id AND type = 'preventure_research'
+      )
+    BEGIN
+      UPDATE model_calls
+      SET venture_id = COALESCE(
+        (SELECT venture_id FROM workflows WHERE workflows.id = NEW.workflow_id),
+        (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1),
+        (SELECT id FROM ventures ORDER BY created_at ASC LIMIT 1)
+      )
+      WHERE id = NEW.id;
+    END
+  `,
+  trg_research_runs_venture_owner: `
+    CREATE TRIGGER IF NOT EXISTS trg_research_runs_venture_owner
+    AFTER INSERT ON research_runs
+    FOR EACH ROW
+    WHEN NEW.venture_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks
+        WHERE id = NEW.task_id AND kind = 'preventure_research'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM workflows
+        WHERE id = NEW.workflow_id AND type = 'preventure_research'
+      )
+    BEGIN
+      UPDATE research_runs
+      SET venture_id = COALESCE(
+        (SELECT venture_id FROM workflows WHERE workflows.id = NEW.workflow_id),
+        (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1),
+        (SELECT id FROM ventures ORDER BY created_at ASC LIMIT 1)
+      )
+      WHERE id = NEW.id;
+    END
+  `,
+  trg_costs_venture_owner: `
+    CREATE TRIGGER IF NOT EXISTS trg_costs_venture_owner
+    AFTER INSERT ON costs
+    FOR EACH ROW
+    WHEN NEW.venture_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks
+        WHERE id = NEW.task_id AND kind = 'preventure_research'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM workflows
+        WHERE id = NEW.workflow_id AND type = 'preventure_research'
+      )
+    BEGIN
+      UPDATE costs
+      SET venture_id = COALESCE(
+        (SELECT venture_id FROM workflows WHERE workflows.id = NEW.workflow_id),
+        (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1),
+        (SELECT id FROM ventures ORDER BY created_at ASC LIMIT 1)
+      )
+      WHERE id = NEW.id;
+    END
+  `,
+  trg_agent_runs_venture_owner: `
+    CREATE TRIGGER IF NOT EXISTS trg_agent_runs_venture_owner
+    AFTER INSERT ON agent_runs
+    FOR EACH ROW
+    WHEN NEW.venture_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks
+        WHERE id = NEW.task_id AND kind = 'preventure_research'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM workflows
+        WHERE id = NEW.workflow_id AND type = 'preventure_research'
+      )
+    BEGIN
+      UPDATE agent_runs
+      SET venture_id = COALESCE(
+        (SELECT venture_id FROM workflows WHERE workflows.id = NEW.workflow_id),
+        (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1),
+        (SELECT id FROM ventures ORDER BY created_at ASC LIMIT 1)
+      )
+      WHERE id = NEW.id;
+    END
+  `,
+  trg_budget_reservations_venture_owner: `
+    CREATE TRIGGER IF NOT EXISTS trg_budget_reservations_venture_owner
+    AFTER INSERT ON budget_reservations
+    FOR EACH ROW
+    WHEN NEW.venture_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks
+        WHERE id = NEW.task_id AND kind = 'preventure_research'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM workflows
+        WHERE id = NEW.workflow_id AND type = 'preventure_research'
+      )
+    BEGIN
+      UPDATE budget_reservations
+      SET venture_id = COALESCE(
+        (SELECT venture_id FROM workflows WHERE workflows.id = NEW.workflow_id),
+        (SELECT id FROM ventures WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1),
+        (SELECT id FROM ventures ORDER BY created_at ASC LIMIT 1)
+      )
+      WHERE id = NEW.id;
+    END
+  `,
+});
+
 const REQUIRED_SCHEMA_SHAPE = Object.freeze({
   settings: ["key", "value", "updated_at"],
   ventures: ["id", "status", "lifecycle_stage", "is_active", "metadata"],
   commands: ["id", "status", "workflow_id", "venture_id", "metadata"],
   workflows: ["id", "venture_id", "status", "metadata", "updated_at"],
   tasks: ["id", "workflow_id", "venture_id", "claim_token", "outcome_status"],
-  approvals: ["id", "workflow_id", "venture_id", "task_id", "scope_hash", "consumed_at"],
+  approvals: [
+    "id", "workflow_id", "venture_id", "task_id", "scope_hash", "consumed_at", "decided_by",
+  ],
   task_attempts: ["id", "task_id", "claim_token", "status", "outcome_status"],
   deliverables: ["id", "workflow_id", "venture_id", "status", "file_path", "content_hash", "metadata"],
   deliverable_quality_reviews: [
@@ -516,6 +5927,271 @@ const REQUIRED_SCHEMA_SHAPE = Object.freeze({
     "evaluation_json",
     "evaluated_at",
   ],
+  preventure_research_authorities: [
+    "authority_hash",
+    "authority_schema",
+    "authority_id",
+    "authority_version",
+    "readiness_id",
+    "readiness_version",
+    "readiness_hash",
+    "provider_id",
+    "provider_model",
+    "approved_at",
+    "expires_at",
+    "internal_ai_spend_cap_aud_cents",
+    "total_worst_case_exposure_aud_cents",
+    "external_commercial_spend_cap_aud_cents",
+    "authority_json",
+    "readiness_json",
+  ],
+  preventure_research_approval_decisions: [
+    "decision_receipt_hash",
+    "approval_id",
+    "authority_hash",
+    "event_type",
+    "scope_hash",
+    "requested_by",
+    "requested_at",
+    "decided_by",
+    "decision_source",
+    "decision_status",
+    "decided_at",
+    "receipt_json",
+  ],
+  preventure_research_lifecycle_events: [
+    "id",
+    "authority_hash",
+    "sequence",
+    "previous_event_hash",
+    "event_type",
+    "event_hash",
+    "approval_id",
+    "approval_scope_hash",
+    "decision_hash",
+    "successor_authority_hash",
+    "event_json",
+    "occurred_at",
+  ],
+  preventure_research_assignments: [
+    "assignment_hash",
+    "authority_hash",
+    "activation_event_hash",
+    "assignment_id",
+    "assignment_version",
+    "template_hash",
+    "workflow_id",
+    "task_id",
+    "provider_id",
+    "provider_model",
+    "max_cost_aud_cents",
+    "max_attempts",
+    "max_tool_calls",
+    "maximum_model_passes",
+    "max_input_tokens",
+    "local_prompt_preflight_max_input_tokens",
+    "max_output_tokens",
+    "max_turns",
+    "deadline_ms",
+    "worst_case_exposure_json",
+    "expires_at",
+    "assignment_json",
+  ],
+  preventure_research_cost_events: [
+    "receipt_hash",
+    "authority_hash",
+    "assignment_hash",
+    "cost_key",
+    "sequence",
+    "previous_receipt_hash",
+    "event_type",
+    "amount_aud_cents",
+    "exposure_aud_cents",
+    "budget_reservation_id",
+    "cost_id",
+    "cost_json",
+    "occurred_at",
+  ],
+  preventure_research_terminal_recoveries: [
+    "recovery_hash",
+    "authority_hash",
+    "assignment_hash",
+    "assignment_template_hash",
+    "task_id",
+    "workflow_id",
+    "task_attempt_id",
+    "model_call_id",
+    "terminal_kind",
+    "terminal_record_id",
+    "terminal_event_type",
+    "terminal_event_hash",
+    "lifecycle_event_id",
+    "emergency_event_id",
+    "terminal_at",
+    "original_claim_token_hash",
+    "descriptor_hash",
+    "request_body_hash",
+    "client_request_id",
+    "provider_request_id",
+    "provider_response_id",
+    "provider_dispatched_at",
+    "artifact_hash",
+    "artifact_ref",
+    "artifact_kind",
+    "retained_at",
+    "prior_cost_receipt_hash",
+    "cost_truth",
+    "exposure_aud_cents",
+    "exact_billing_pending",
+    "recovery_json",
+    "recorded_at",
+  ],
+  preventure_research_provider_billing_observations: [
+    "observation_hash",
+    "action_kind",
+    "authority_hash",
+    "assignment_hash",
+    "assignment_template_hash",
+    "task_id",
+    "predecessor_kind",
+    "predecessor_hash",
+    "expected_previous_receipt_hash",
+    "task_attempt_id",
+    "model_call_id",
+    "agent_run_receipt_id",
+    "agent_run_receipt_hash",
+    "cost_key",
+    "budget_reservation_id",
+    "cost_id",
+    "client_request_id",
+    "provider_request_id",
+    "provider_response_id",
+    "provider",
+    "provider_account_reference_hash",
+    "billing_record_reference_hash",
+    "currency",
+    "amount_aud_cents",
+    "observed_at",
+    "original_cost_occurred_at",
+    "provider_dispatched_at",
+    "allocation_basis_json",
+    "limitations_json",
+    "budget_comparison_json",
+    "truth_status",
+    "observation_json",
+    "recorded_at",
+    "created_at",
+  ],
+  preventure_research_terminal_stops: [
+    "early_stop_record_hash",
+    "terminal_stop_id",
+    "authority_hash",
+    "expected_decision_id",
+    "expected_completion_event_id",
+    "trigger_assignment_id",
+    "trigger_assignment_hash",
+    "trigger_outcome_class",
+    "reason_class",
+    "reason_code",
+    "commercial_inference",
+    "provider_evidence_json",
+    "actual_coverage_json",
+    "gap_codes_json",
+    "skipped_assignments_json",
+    "next_evidence_action_json",
+    "prior_evidence_set_hash",
+    "prior_receipt_set_hash",
+    "stopped_at",
+    "stop_json",
+  ],
+  preventure_research_assignment_skips: [
+    "skip_record_hash",
+    "terminal_stop_id",
+    "authority_hash",
+    "trigger_assignment_hash",
+    "assignment_id",
+    "assignment_hash",
+    "assignment_order",
+    "task_id",
+    "dispatch_state",
+    "task_attempt_count",
+    "model_call_count",
+    "agent_run_receipt_count",
+    "research_run_count",
+    "agent_run_count",
+    "tool_invocation_count",
+    "budget_reservation_count",
+    "cost_record_count",
+    "cost_event_count",
+    "source_snapshot_count",
+    "evidence_record_count",
+    "total_aud_cost_cents",
+    "skipped_at",
+    "skip_json",
+  ],
+  preventure_research_source_snapshots: [
+    "snapshot_hash",
+    "authority_hash",
+    "assignment_hash",
+    "source_id",
+    "source_version",
+    "source_class",
+    "source_tier",
+    "capture_status",
+    "canonical_url",
+    "canonical_host",
+    "source_identity_url",
+    "source_identity_hash",
+    "marketplace_channel_id",
+    "offer_identity_key",
+    "seller_identity_key",
+    "identity_derivation",
+    "publisher_identity_key",
+    "buyer_independence_group",
+    "content_hash",
+    "limitations_json",
+    "retrieved_at",
+    "snapshot_json",
+  ],
+  preventure_research_evidence_records: [
+    "evidence_hash",
+    "authority_hash",
+    "assignment_hash",
+    "evidence_id",
+    "evidence_version",
+    "source_snapshot_hash",
+    "truth_class",
+    "polarity",
+    "question_id",
+    "claim",
+    "limitations_json",
+    "evidence_json",
+    "captured_at",
+  ],
+  preventure_research_decisions: [
+    "decision_hash",
+    "decision_schema",
+    "authority_hash",
+    "decision_id",
+    "decision_version",
+    "outcome",
+    "completion_mode",
+    "early_stop_record_hash",
+    "skipped_assignment_record_hashes_json",
+    "next_evidence_action_json",
+    "comparator_count",
+    "estimated_internal_ai_cost_aud_cents",
+    "reconciled_internal_ai_cost_aud_cents",
+    "exact_billing_pending",
+    "external_commercial_spend_aud_cents",
+    "provenance_complete",
+    "unknown_provider_outcome_count",
+    "unknown_cost_count",
+    "evidence_set_hash",
+    "receipt_set_hash",
+    "decision_json",
+    "decided_at",
+  ],
 });
 
 function now() {
@@ -553,15 +6229,99 @@ function all(db, sql, params = []) {
   return db.prepare(sql).all(...prepareArgs(params));
 }
 
-function openDatabase(dbPath = CONFIG.dbPath) {
+function openDatabase(dbPath = CONFIG.dbPath, options = {}) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
+  const clock = typeof options.clock === "function"
+    ? options.clock
+    : () => new Date().toISOString();
+  db.function("pantheon_current_time", () => {
+    const value = clock();
+    const parsed = value instanceof Date ? value.toISOString() : String(value || "");
+    if (!Number.isFinite(Date.parse(parsed))) {
+      throw new Error("Pantheon database clock returned an invalid timestamp.");
+    }
+    return new Date(parsed).toISOString();
+  });
+  registerPreventureOwnerApprovalCapabilityFunction(db);
+  registerPreventureValidatedEarlyStopCapabilityFunction(db);
+  registerPreventureProviderCostReconciliationCapabilityFunction(db);
+  registerPreventureOwnerBillingObservationCapabilityFunction(db);
+  registerPreventureTerminalRetainedRecoveryCapabilityFunction(db);
+  registerPreventureTerminalReceiptCapabilityFunction(db);
+  registerPreventureEmergencyCostSafetyCapabilityFunction(db);
+  const ownerAttestationProbe = db.prepare(
+    `SELECT pantheon_preventure_owner_attestation_capability(
+       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+     ) AS authorized`,
+  ).get();
+  if (Number(ownerAttestationProbe.authorized) !== 0) {
+    db.close();
+    throw new Error("Pantheon owner-session attestation guard did not fail closed.");
+  }
+  const earlyStopProbe = db.prepare(
+    `SELECT pantheon_preventure_validated_early_stop_capability(
+       NULL, NULL, NULL, NULL, NULL
+     ) AS authorized`,
+  ).get();
+  if (Number(earlyStopProbe.authorized) !== 0) {
+    db.close();
+    throw new Error("Pantheon validated early-stop database guard did not fail closed.");
+  }
+  const providerCostReconciliationProbe = db.prepare(
+    `SELECT pantheon_preventure_provider_cost_reconciliation_capability(
+       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+     ) AS authorized`,
+  ).get();
+  if (Number(providerCostReconciliationProbe.authorized) !== 0) {
+    db.close();
+    throw new Error("Pantheon provider-cost reconciliation guard did not fail closed.");
+  }
+  const ownerBillingObservationProbe = db.prepare(
+    `SELECT pantheon_preventure_owner_billing_observation_capability(
+       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+     ) AS authorized`,
+  ).get();
+  if (Number(ownerBillingObservationProbe.authorized) !== 0) {
+    db.close();
+    throw new Error("Pantheon owner-billing observation guard did not fail closed.");
+  }
+  const terminalRetainedRecoveryProbe = db.prepare(
+    `SELECT pantheon_preventure_terminal_retained_recovery_capability(
+       NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+       NULL, NULL, NULL, NULL, NULL, NULL, NULL
+     ) AS authorized`,
+  ).get();
+  if (Number(terminalRetainedRecoveryProbe.authorized) !== 0) {
+    db.close();
+    throw new Error("Pantheon terminal retained-output recovery guard did not fail closed.");
+  }
+  const terminalReceiptProbe = db.prepare(
+    `SELECT pantheon_preventure_terminal_receipt_capability(
+       NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+       NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+       NULL, NULL, NULL
+     ) AS authorized`,
+  ).get();
+  if (Number(terminalReceiptProbe.authorized) !== 0) {
+    db.close();
+    throw new Error("Pantheon terminal execution-receipt guard did not fail closed.");
+  }
+  const emergencyCostSafetyProbe = db.prepare(
+    `SELECT pantheon_preventure_emergency_cost_safety_capability(
+       NULL, NULL, NULL, NULL, NULL, NULL, NULL
+     ) AS authorized`,
+  ).get();
+  if (Number(emergencyCostSafetyProbe.authorized) !== 0) {
+    db.close();
+    throw new Error("Pantheon emergency cost-safety guard did not fail closed.");
+  }
   db.exec("PRAGMA busy_timeout = 5000;");
-  db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   try {
     migrate(db);
     verifyDatabase(db);
+    db.exec("PRAGMA journal_mode = WAL;");
     return db;
   } catch (error) {
     db.close();
@@ -570,12 +6330,42 @@ function openDatabase(dbPath = CONFIG.dbPath) {
 }
 
 function normalizeSchemaSql(value) {
-  return String(value || "")
-    .trim()
-    .replace(/;\s*$/, "")
-    .replace(/\bIF\s+NOT\s+EXISTS\b/gi, "")
-    .replace(/\s+/g, " ")
-    .toLowerCase();
+  const input = String(value || "").trim().replace(/;\s*$/, "");
+  let output = "";
+  let outside = "";
+  let quote = null;
+  const flushOutside = () => {
+    output += outside
+      .replace(/\bIF\s+NOT\s+EXISTS\b/gi, "")
+      .replace(/\s+/g, " ")
+      .toLowerCase();
+    outside = "";
+  };
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (quote !== null) {
+      output += character;
+      const closing = quote === "[" ? "]" : quote;
+      if (character === closing) {
+        if (quote !== "[" && input[index + 1] === closing) {
+          output += input[index + 1];
+          index += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (["'", '"', "`", "["].includes(character)) {
+      flushOutside();
+      quote = character;
+      output += character;
+    } else {
+      outside += character;
+    }
+  }
+  flushOutside();
+  return output.trim();
 }
 
 function recoverySchemaObjects(db) {
@@ -583,7 +6373,7 @@ function recoverySchemaObjects(db) {
     db,
     `SELECT type, name, tbl_name, sql
      FROM sqlite_master
-     WHERE type IN ('table', 'index', 'trigger')
+     WHERE type IN ('table', 'index', 'trigger', 'view')
        AND sql IS NOT NULL
        AND name NOT LIKE 'sqlite_%'
      ORDER BY type, name`,
@@ -600,7 +6390,7 @@ function canonicalRecoverySchemaContract() {
   const reference = new DatabaseSync(":memory:");
   try {
     reference.exec("PRAGMA foreign_keys = ON");
-    migrate(reference);
+    migrate(reference, { verifyBeforeCommit: false });
     canonicalRecoverySchemaContractCache = Object.freeze({
       schemaVersion: LATEST_SCHEMA_VERSION,
       migrations: Object.freeze(
@@ -637,6 +6427,14 @@ function verifyCanonicalRecoverySchema(db) {
 
   const expectedObjects = new Map(expected.objects.map((object) => [object.name, object]));
   const actualObjects = new Map(recoverySchemaObjects(db).map((object) => [object.name, object]));
+  const unexpectedObjects = [...actualObjects.keys()]
+    .filter((name) => !expectedObjects.has(name))
+    .sort();
+  if (unexpectedObjects.length > 0) {
+    throw new Error(
+      `Runtime schema contains unsupported object(s): ${unexpectedObjects.join(", ")}.`,
+    );
+  }
   for (const [name, expectedObject] of expectedObjects) {
     const actualObject = actualObjects.get(name);
     if (!actualObject) {
@@ -702,6 +6500,8 @@ function verifyDatabase(db) {
     "trg_deliverable_quality_reviews_immutable_update",
     "trg_deliverable_quality_reviews_immutable_delete",
     ...Object.keys(COMMERCIAL_LEDGER_IMMUTABLE_TRIGGER_SQL),
+    ...Object.keys(PREVENTURE_RESEARCH_IMMUTABLE_TRIGGER_SQL),
+    ...Object.keys(PREVENTURE_RESEARCH_GUARD_TRIGGER_SQL),
   ];
   for (const triggerName of requiredTriggerNames) {
     const trigger = get(
@@ -742,6 +6542,49 @@ function verifyDatabase(db) {
       );
     }
   }
+  for (const [triggerName, expectedSql] of Object.entries({
+    ...PREVENTURE_RESEARCH_IMMUTABLE_TRIGGER_SQL,
+    ...PREVENTURE_RESEARCH_GUARD_TRIGGER_SQL,
+  })) {
+    const actualSql = get(
+      db,
+      "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+      [triggerName],
+    )?.sql;
+    if (normalizeSchemaSql(actualSql) !== normalizeSchemaSql(expectedSql)) {
+      throw new Error(
+        `Runtime schema trigger ${triggerName} does not match its exact pre-venture research definition.`,
+      );
+    }
+  }
+  for (const [indexName, expectedSql] of Object.entries(
+    PREVENTURE_RESEARCH_REQUIRED_INDEX_SQL,
+  )) {
+    const actualSql = get(
+      db,
+      "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+      [indexName],
+    )?.sql;
+    if (normalizeSchemaSql(actualSql) !== normalizeSchemaSql(expectedSql)) {
+      throw new Error(
+        `Runtime schema index ${indexName} does not match its required pre-venture research definition.`,
+      );
+    }
+  }
+  for (const [triggerName, expectedSql] of Object.entries(
+    PREVENTURE_RESEARCH_OWNERSHIP_TRIGGER_SQL,
+  )) {
+    const actualSql = get(
+      db,
+      "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+      [triggerName],
+    )?.sql;
+    if (normalizeSchemaSql(actualSql) !== normalizeSchemaSql(expectedSql)) {
+      throw new Error(
+        `Runtime schema trigger ${triggerName} does not match its exact pre-venture ownership definition.`,
+      );
+    }
+  }
   verifyCanonicalRecoverySchema(db);
   const {
     ventureKitContentHash,
@@ -761,6 +6604,10 @@ function verifyDatabase(db) {
       );
     }
   }
+  const {
+    verifyPreventureResearchLedger,
+  } = require("./runtime/preventure-research-store");
+  verifyPreventureResearchLedger(db, { artifactVerification: "structural" });
   return { quickCheck: "ok", foreignKeyFailures: 0, schemaVersion: current };
 }
 
@@ -789,7 +6636,7 @@ function addColumn(db, tableName, definition) {
 
 function applyFoundationMigration(db) {
   if (migrationApplied(db, 2)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     addColumn(db, "ventures", "lifecycle_stage TEXT NOT NULL DEFAULT 'candidate'");
     addColumn(db, "ventures", "is_active INTEGER NOT NULL DEFAULT 0");
@@ -1032,16 +6879,16 @@ function applyFoundationMigration(db) {
     }
     run(db, "UPDATE messages SET venture_id = COALESCE((SELECT venture_id FROM tasks WHERE tasks.id = messages.task_id), 'venture-digital-products') WHERE venture_id IS NULL");
     recordMigration(db, 2, "foundation-truth-and-commercial-model");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyPilotEvidenceMigration(db) {
   if (migrationApplied(db, 3)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     addColumn(db, "agent_pilot_fixtures", "fixture_version INTEGER NOT NULL DEFAULT 1");
     addColumn(db, "agent_pilot_fixtures", "baseline_output TEXT NOT NULL DEFAULT '{}'");
@@ -1059,16 +6906,16 @@ function applyPilotEvidenceMigration(db) {
         ON agent_pilot_reviews(capability_key, created_at);
     `);
     recordMigration(db, 3, "agents-sdk-pilot-evidence-ledger");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyVentureOwnershipMigration(db) {
   if (migrationApplied(db, 4)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     addColumn(db, "workflow_runs", "venture_id TEXT");
     addColumn(db, "events", "venture_id TEXT");
@@ -1171,16 +7018,16 @@ function applyVentureOwnershipMigration(db) {
     run(db, `UPDATE monitor_findings SET venture_id = ${activeVenture} WHERE venture_id IS NULL`);
 
     recordMigration(db, 4, "venture-ownership-backstops");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyExecutiveDigestMigration(db) {
   if (migrationApplied(db, 5)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS executive_digests (
@@ -1203,16 +7050,16 @@ function applyExecutiveDigestMigration(db) {
         ON executive_digests(venture_id, period_end DESC);
     `);
     recordMigration(db, 5, "weekly-executive-digest");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyLegacyDemoSanitizationMigration(db) {
   if (migrationApplied(db, 6)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     const ts = now();
     db.exec(`
@@ -1334,16 +7181,16 @@ function applyLegacyDemoSanitizationMigration(db) {
     );
     db.exec("DROP TABLE migration6_stale_approvals");
     recordMigration(db, 6, "archive-unverified-legacy-demo-state");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyLegacyReviewQueueMigration(db) {
   if (migrationApplied(db, 7)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     const ts = now();
     const legacyCutoff = "2026-07-14T00:00:00.000Z";
@@ -1406,16 +7253,16 @@ function applyLegacyReviewQueueMigration(db) {
       [ts, legacyCutoff],
     );
     recordMigration(db, 7, "archive-legacy-review-queue-clutter");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyLegacyNotificationCleanupMigration(db) {
   if (migrationApplied(db, 8)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     const ts = now();
     const legacyCutoff = "2026-07-14T00:00:00.000Z";
@@ -1450,16 +7297,16 @@ function applyLegacyNotificationCleanupMigration(db) {
       [ts, legacyCutoff],
     );
     recordMigration(db, 8, "archive-legacy-proof-notifications");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyHistoricalWorkArchiveMigration(db) {
   if (migrationApplied(db, 9)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     const ts = now();
     const legacyCutoff = "2026-07-14T00:00:00.000Z";
@@ -1556,16 +7403,16 @@ function applyHistoricalWorkArchiveMigration(db) {
     );
     db.exec("DROP TABLE migration9_historical_workflows");
     recordMigration(db, 9, "archive-historical-work-and-output-paths");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyAccountingLedgerMigration(db) {
   if (migrationApplied(db, 10)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS accounting_entries (
@@ -1592,16 +7439,16 @@ function applyAccountingLedgerMigration(db) {
         ON accounting_entries(entry_type, status);
     `);
     recordMigration(db, 10, "aud-accounting-ledger");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyCommercialDataTruthMigration(db) {
   if (migrationApplied(db, 11)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     addColumn(db, "costs", "run_id TEXT");
     addColumn(db, "costs", "task_id TEXT");
@@ -1727,16 +7574,16 @@ function applyCommercialDataTruthMigration(db) {
     `);
 
     recordMigration(db, 11, "commercial-data-truth-and-first-use-reset");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyAgentOperationsEvidenceMigration(db) {
   if (migrationApplied(db, 12)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     addColumn(db, "task_attempts", "provider_dispatched_at TEXT");
     addColumn(db, "task_attempts", "provider_dispatch_model_call_id TEXT");
@@ -1829,16 +7676,16 @@ function applyAgentOperationsEvidenceMigration(db) {
     `);
 
     recordMigration(db, 12, "agent-operations-evidence-and-receipts");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyAgentContextMigration(db) {
   if (migrationApplied(db, 13)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS venture_records (
@@ -1918,16 +7765,16 @@ function applyAgentContextMigration(db) {
     `);
 
     recordMigration(db, 13, "task-scoped-agent-context");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyDeliverableQualityReviewMigration(db) {
   if (migrationApplied(db, 14)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS deliverable_quality_reviews (
@@ -1976,16 +7823,16 @@ function applyDeliverableQualityReviewMigration(db) {
     `);
 
     recordMigration(db, 14, "deliverable-quality-review-gate");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyDataRetentionPolicyMigration(db) {
   if (migrationApplied(db, 15)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS data_retention_policies (
@@ -2039,16 +7886,16 @@ function applyDataRetentionPolicyMigration(db) {
     `);
 
     recordMigration(db, 15, "data-retention-policy-and-deletion-markers");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyExecutionEvidenceBindingMigration(db) {
   if (migrationApplied(db, 16)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     addColumn(db, "task_attempts", "agent_run_id TEXT REFERENCES agent_runs(id)");
     addColumn(db, "task_attempts", "model_call_id TEXT REFERENCES model_calls(id)");
@@ -2254,16 +8101,16 @@ function applyExecutionEvidenceBindingMigration(db) {
     `);
 
     recordMigration(db, 16, "exact-agent-execution-evidence-bindings");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyProviderAttemptReceiptBackfillMigration(db) {
   if (migrationApplied(db, 17)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     run(
       db,
@@ -2293,16 +8140,16 @@ function applyProviderAttemptReceiptBackfillMigration(db) {
          )`,
     );
     recordMigration(db, 17, "provider-request-attempt-receipt-backfill");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyStableSpendCostIdMigration(db) {
   if (migrationApplied(db, 18)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     const costs = all(
       db,
@@ -2350,16 +8197,16 @@ function applyStableSpendCostIdMigration(db) {
       );
     }
     recordMigration(db, 18, "stable-spend-cost-identifiers");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyPantheonCommercialOperatingModelMigration(db) {
   if (migrationApplied(db, 19)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     addColumn(db, "commercial_results", "refund_amount_cents INTEGER NOT NULL DEFAULT 0");
     addColumn(db, "commercial_results", "fulfilment_cost_cents INTEGER NOT NULL DEFAULT 0");
@@ -2594,16 +8441,16 @@ function applyPantheonCommercialOperatingModelMigration(db) {
     }
 
     recordMigration(db, 19, "pantheon-commercial-operating-model");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyRetentionActivationLedgerMigration(db) {
   if (migrationApplied(db, 20)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS data_retention_policy_activations (
@@ -2691,16 +8538,16 @@ function applyRetentionActivationLedgerMigration(db) {
     }
 
     recordMigration(db, 20, "durable-retention-policy-activation-ledger");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyFullJourneyMigration(db) {
   if (migrationApplied(db, 21)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS pantheon_journeys (
@@ -2734,16 +8581,16 @@ function applyFullJourneyMigration(db) {
         ON pantheon_journeys(round_id);
     `);
     recordMigration(db, 21, "pantheon-full-commercial-journey");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyCommercialIntelligenceMigration(db) {
   if (migrationApplied(db, 22)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS commercial_knowledge_sources (
@@ -2937,30 +8784,30 @@ function applyCommercialIntelligenceMigration(db) {
         ON capability_assurance_records(capability_key, occurred_at DESC, created_at DESC);
     `);
     recordMigration(db, 22, "commercial-intelligence-foundation");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyRuntimeStopEvidenceMigration(db) {
   if (migrationApplied(db, 23)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     addColumn(db, "model_calls", "error TEXT");
     addColumn(db, "model_calls", "completed_at TEXT");
     recordMigration(db, 23, "runtime-stop-evidence");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyModelCallCompletionTruthMigration(db) {
   if (migrationApplied(db, 24)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     db.exec(`
       UPDATE model_calls
@@ -3025,16 +8872,16 @@ function applyModelCallCompletionTruthMigration(db) {
         );
     `);
     recordMigration(db, 24, "model-call-completion-truth");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyCommercialTestEvidenceLedgerMigration(db) {
   if (migrationApplied(db, 25)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     addColumn(db, "venture_kits", "content_hash TEXT");
     const {
@@ -3988,9 +9835,9 @@ function applyCommercialTestEvidenceLedgerMigration(db) {
     db.exec(Object.values(COMMERCIAL_LEDGER_REQUIRED_INDEX_SQL).join(";\n"));
     db.exec(Object.values(COMMERCIAL_LEDGER_IMMUTABLE_TRIGGER_SQL).join(";\n"));
     recordMigration(db, 25, "commercial-test-contract-evidence-ledger");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
@@ -4009,7 +9856,7 @@ function ensureCommercialLifecycleApprovalGuards(db) {
   );
   if (approvalIndex && freshnessTrigger) return;
 
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     const replay = get(
       db,
@@ -4031,20 +9878,19 @@ function ensureCommercialLifecycleApprovalGuards(db) {
       .idx_commercial_test_lifecycle_approval_once);
     db.exec(COMMERCIAL_LEDGER_IMMUTABLE_TRIGGER_SQL
       .trg_commercial_test_lifecycle_resume_approval_fresh_insert);
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 function applyCanonicalCommercialTruthReconciliationMigration(db) {
-  // Schema 26 is still an unreleased candidate. Re-assert these guards so
-  // disposable databases opened during candidate development gain the exact
-  // release contract even when migration 26 was already recorded.
+  // Schema 26 is the last released contract. Re-assert its guards for
+  // supported released databases before applying later migrations.
   ensureCommercialLifecycleApprovalGuards(db);
   if (migrationApplied(db, 26)) return;
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
     // Loaded lazily to avoid a module-initialization cycle: the reconciliation
     // module uses the database helpers exported by this file.
@@ -4053,27 +9899,833 @@ function applyCanonicalCommercialTruthReconciliationMigration(db) {
     } = require("./runtime/commercial-truth-reconciliation");
     reconcileCanonicalHistoricalTruth(db);
     recordMigration(db, 26, "canonical-commercial-truth-reconciliation");
-    db.exec("COMMIT");
+    commitAtomic(db);
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
-function migrate(db) {
-  db.exec(`
+const atomicScopes = new WeakMap();
+let atomicScopeSequence = 0;
+
+function beginAtomic(db) {
+  const scopes = atomicScopes.get(db) || [];
+  if (db.isTransaction) {
+    const savepoint = `pantheon_atomic_${++atomicScopeSequence}`;
+    db.exec(`SAVEPOINT ${savepoint}`);
+    scopes.push(savepoint);
+  } else {
+    db.exec("BEGIN " + "IMMEDIATE");
+    scopes.push(null);
+  }
+  atomicScopes.set(db, scopes);
+}
+
+function commitAtomic(db) {
+  const scopes = atomicScopes.get(db) || [];
+  const scope = scopes.at(-1);
+  if (scope === undefined) throw new Error("Pantheon atomic scope is missing.");
+  if (scope === null) db.exec("COM" + "MIT");
+  else db.exec(`RELEASE SAVEPOINT ${scope}`);
+  scopes.pop();
+  if (scopes.length === 0) atomicScopes.delete(db);
+}
+
+function rollbackAtomic(db) {
+  const scopes = atomicScopes.get(db) || [];
+  const scope = scopes.pop();
+  if (scope === undefined) throw new Error("Pantheon atomic scope is missing.");
+  if (scope === null) {
+    db.exec("ROLL" + "BACK");
+  } else {
+    db.exec(`ROLLBACK TO SAVEPOINT ${scope}`);
+    db.exec(`RELEASE SAVEPOINT ${scope}`);
+  }
+  if (scopes.length === 0) atomicScopes.delete(db);
+}
+
+function applyPreventureResearchAuthorityMigration(db) {
+  // Schema 27 has never been released. Once its migration row exists, startup
+  // must verify the exact candidate instead of mutating or "repairing" it.
+  // This preserves the rejected database byte-for-byte for operator recovery.
+  if (migrationApplied(db, 27)) return;
+  beginAtomic(db);
+  try {
+    addColumn(db, "approvals", "decided_by TEXT");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS preventure_research_authorities (
+        authority_hash TEXT PRIMARY KEY
+          CHECK (
+            length(authority_hash) = 71
+            AND substr(authority_hash, 1, 7) = 'sha256:'
+            AND substr(authority_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        authority_schema TEXT NOT NULL
+          CHECK (authority_schema IN (
+            'pantheon.preventure-research-authority.v1',
+            'pantheon.preventure-research-authority.v2'
+          )),
+        authority_id TEXT NOT NULL,
+        authority_version TEXT NOT NULL,
+        readiness_id TEXT NOT NULL,
+        readiness_version TEXT NOT NULL,
+        readiness_hash TEXT NOT NULL
+          CHECK (
+            length(readiness_hash) = 71
+            AND substr(readiness_hash, 1, 7) = 'sha256:'
+            AND substr(readiness_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        provider_id TEXT NOT NULL,
+        provider_model TEXT NOT NULL,
+        approved_at TEXT NOT NULL CHECK (julianday(approved_at) IS NOT NULL),
+        expires_at TEXT NOT NULL
+          CHECK (
+            julianday(expires_at) IS NOT NULL
+            AND julianday(expires_at) > julianday(approved_at)
+          ),
+        internal_ai_spend_cap_aud_cents INTEGER NOT NULL
+          CHECK (internal_ai_spend_cap_aud_cents BETWEEN 1 AND 200),
+        total_worst_case_exposure_aud_cents INTEGER NOT NULL
+          CHECK (total_worst_case_exposure_aud_cents = 150),
+        external_commercial_spend_cap_aud_cents INTEGER NOT NULL
+          CHECK (external_commercial_spend_cap_aud_cents = 0),
+        supersedes_authority_hash TEXT,
+        authority_json TEXT NOT NULL
+          CHECK (
+            json_valid(authority_json)
+            AND json_extract(authority_json, '$.authorityHash') IS authority_hash
+            AND json_extract(authority_json, '$.schema') IS authority_schema
+            AND json_extract(authority_json, '$.id') IS authority_id
+            AND json_extract(authority_json, '$.version') IS authority_version
+            AND json_extract(authority_json, '$.readinessBinding.id') IS readiness_id
+            AND json_extract(authority_json, '$.readinessBinding.version') IS readiness_version
+            AND json_extract(authority_json, '$.readinessBinding.hash') IS readiness_hash
+            AND json_extract(authority_json, '$.provider.id') IS provider_id
+            AND json_extract(authority_json, '$.provider.model') IS provider_model
+            AND json_extract(authority_json, '$.approvedAt') IS approved_at
+            AND json_extract(authority_json, '$.expiresAt') IS expires_at
+            AND json_extract(authority_json, '$.internalAiSpendCapAudCents')
+              IS internal_ai_spend_cap_aud_cents
+            AND json_extract(authority_json, '$.totalWorstCaseExposureAudCents')
+              IS total_worst_case_exposure_aud_cents
+            AND json_extract(authority_json, '$.externalCommercialSpendCapAudCents')
+              IS external_commercial_spend_cap_aud_cents
+            AND (
+              (
+                authority_schema = 'pantheon.preventure-research-authority.v1'
+                AND supersedes_authority_hash IS NULL
+                AND json_type(authority_json, '$.supersedesAuthorityHash') IS NULL
+              )
+              OR (
+                authority_schema = 'pantheon.preventure-research-authority.v2'
+                AND supersedes_authority_hash IS NOT NULL
+                AND supersedes_authority_hash <> authority_hash
+                AND json_extract(authority_json, '$.supersedesAuthorityHash')
+                  IS supersedes_authority_hash
+              )
+            )
+          ),
+        readiness_json TEXT NOT NULL
+          CHECK (
+            json_valid(readiness_json)
+            AND json_extract(readiness_json, '$.id') IS readiness_id
+            AND json_extract(readiness_json, '$.version') IS readiness_version
+          ),
+        created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+        FOREIGN KEY (supersedes_authority_hash)
+          REFERENCES preventure_research_authorities(authority_hash)
+      );
+
+      CREATE TABLE IF NOT EXISTS preventure_research_approval_decisions (
+        decision_receipt_hash TEXT PRIMARY KEY
+          CHECK (
+            length(decision_receipt_hash) = 71
+            AND substr(decision_receipt_hash, 1, 7) = 'sha256:'
+            AND substr(decision_receipt_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        approval_id TEXT NOT NULL UNIQUE,
+        authority_hash TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK (event_type IN ('accepted', 'activated')),
+        scope_hash TEXT NOT NULL
+          CHECK (
+            length(scope_hash) = 71
+            AND substr(scope_hash, 1, 7) = 'sha256:'
+            AND substr(scope_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        requested_by TEXT NOT NULL CHECK (requested_by = 'jarvis'),
+        requested_at TEXT NOT NULL CHECK (julianday(requested_at) IS NOT NULL),
+        decided_by TEXT NOT NULL CHECK (decided_by = 'owner'),
+        decision_source TEXT NOT NULL
+          CHECK (decision_source IN (
+            'authenticated_owner_session_attestation',
+            'signed_local_owner_session'
+          )),
+        decision_status TEXT NOT NULL
+          CHECK (decision_status IN ('approved', 'needs_changes', 'rejected')),
+        decided_at TEXT NOT NULL CHECK (julianday(decided_at) IS NOT NULL),
+        receipt_json TEXT NOT NULL
+          CHECK (
+            json_valid(receipt_json)
+            AND json_extract(receipt_json, '$.receiptHash') IS decision_receipt_hash
+            AND json_extract(receipt_json, '$.approvalId') IS approval_id
+            AND json_extract(receipt_json, '$.authorityHash') IS authority_hash
+            AND json_extract(receipt_json, '$.eventType') IS event_type
+            AND json_extract(receipt_json, '$.scopeHash') IS scope_hash
+            AND json_extract(receipt_json, '$.priorPending.requestedBy') IS requested_by
+            AND json_extract(receipt_json, '$.priorPending.requestedAt') IS requested_at
+            AND json_extract(receipt_json, '$.decidedBy') IS decided_by
+            AND json_extract(receipt_json, '$.decisionSource') IS decision_source
+            AND json_extract(receipt_json, '$.decisionStatus') IS decision_status
+            AND json_extract(receipt_json, '$.decidedAt') IS decided_at
+            AND (
+              (
+                json_extract(receipt_json, '$.schema')
+                  IS 'pantheon.preventure-research-approval-decision.v2'
+                AND decision_source = 'authenticated_owner_session_attestation'
+                AND length(json_extract(receipt_json, '$.decisionNoteHash')) = 71
+                AND substr(json_extract(receipt_json, '$.decisionNoteHash'), 1, 7)
+                  = 'sha256:'
+                AND substr(json_extract(receipt_json, '$.decisionNoteHash'), 8)
+                  NOT GLOB '*[^0-9a-f]*'
+              )
+              OR (
+                json_extract(receipt_json, '$.schema')
+                  IS 'pantheon.preventure-research-approval-decision.v1'
+                AND decision_source = 'signed_local_owner_session'
+                AND json_type(receipt_json, '$.decisionNoteHash') IS NULL
+              )
+            )
+          ),
+        created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+        CHECK (
+          decision_source = 'authenticated_owner_session_attestation'
+          OR (${HISTORICAL_PREVENTURE_APPROVAL_DECISION_SQL})
+        ),
+        FOREIGN KEY (approval_id) REFERENCES approvals(id),
+        FOREIGN KEY (authority_hash)
+          REFERENCES preventure_research_authorities(authority_hash)
+      );
+
+      CREATE TABLE IF NOT EXISTS preventure_research_decisions (
+        decision_hash TEXT PRIMARY KEY
+          CHECK (
+            length(decision_hash) = 71
+            AND substr(decision_hash, 1, 7) = 'sha256:'
+            AND substr(decision_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        decision_schema TEXT NOT NULL
+          CHECK (decision_schema = 'pantheon.preventure-research-decision.v1'),
+        authority_hash TEXT NOT NULL,
+        decision_id TEXT NOT NULL,
+        decision_version TEXT NOT NULL,
+        outcome TEXT NOT NULL
+          CHECK (outcome IN ('build', 'research_more', 'revise', 'reject', 'no_investment')),
+        completion_mode TEXT NOT NULL
+          CHECK (completion_mode IN ('full_round', 'validated_early_stop')),
+        early_stop_record_hash TEXT
+          CHECK (
+            early_stop_record_hash IS NULL
+            OR (
+              length(early_stop_record_hash) = 71
+              AND substr(early_stop_record_hash, 1, 7) = 'sha256:'
+              AND substr(early_stop_record_hash, 8) NOT GLOB '*[^0-9a-f]*'
+            )
+          ),
+        skipped_assignment_record_hashes_json TEXT NOT NULL
+          CHECK (
+            json_valid(skipped_assignment_record_hashes_json)
+            AND json_type(skipped_assignment_record_hashes_json) = 'array'
+          ),
+        next_evidence_action_json TEXT
+          CHECK (
+            next_evidence_action_json IS NULL
+            OR (
+              json_valid(next_evidence_action_json)
+              AND json_type(next_evidence_action_json) = 'object'
+            )
+          ),
+        comparator_count INTEGER NOT NULL CHECK (comparator_count BETWEEN 0 AND 15),
+        estimated_internal_ai_cost_aud_cents INTEGER NOT NULL
+          CHECK (estimated_internal_ai_cost_aud_cents BETWEEN 0 AND 200),
+        reconciled_internal_ai_cost_aud_cents INTEGER NOT NULL
+          CHECK (reconciled_internal_ai_cost_aud_cents BETWEEN 0 AND 200),
+        exact_billing_pending INTEGER NOT NULL CHECK (exact_billing_pending IN (0, 1)),
+        external_commercial_spend_aud_cents INTEGER NOT NULL
+          CHECK (external_commercial_spend_aud_cents = 0),
+        provenance_complete INTEGER NOT NULL CHECK (provenance_complete IN (0, 1)),
+        unknown_provider_outcome_count INTEGER NOT NULL
+          CHECK (unknown_provider_outcome_count >= 0),
+        unknown_cost_count INTEGER NOT NULL CHECK (unknown_cost_count >= 0),
+        evidence_set_hash TEXT NOT NULL
+          CHECK (
+            length(evidence_set_hash) = 71
+            AND substr(evidence_set_hash, 1, 7) = 'sha256:'
+            AND substr(evidence_set_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        receipt_set_hash TEXT NOT NULL
+          CHECK (
+            length(receipt_set_hash) = 71
+            AND substr(receipt_set_hash, 1, 7) = 'sha256:'
+            AND substr(receipt_set_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        decision_json TEXT NOT NULL
+          CHECK (
+            json_valid(decision_json)
+            AND json_extract(decision_json, '$.decisionHash') IS decision_hash
+            AND json_extract(decision_json, '$.schema') IS decision_schema
+            AND json_extract(decision_json, '$.authorityHash') IS authority_hash
+            AND json_extract(decision_json, '$.id') IS decision_id
+            AND json_extract(decision_json, '$.version') IS decision_version
+            AND json_extract(decision_json, '$.outcome') IS outcome
+            AND json_extract(decision_json, '$.completionMode') IS completion_mode
+            AND json_extract(decision_json, '$.earlyStopRecordHash') IS early_stop_record_hash
+            AND json_extract(decision_json, '$.skippedAssignmentRecordHashes')
+              IS skipped_assignment_record_hashes_json
+            AND json_extract(decision_json, '$.nextEvidenceAction') IS next_evidence_action_json
+            AND json_extract(decision_json, '$.comparatorCount') IS comparator_count
+            AND json_extract(decision_json, '$.estimatedInternalAiCostAudCents')
+              IS estimated_internal_ai_cost_aud_cents
+            AND json_extract(decision_json, '$.reconciledInternalAiCostAudCents')
+              IS reconciled_internal_ai_cost_aud_cents
+            AND json_extract(decision_json, '$.exactBillingPending')
+              IS exact_billing_pending
+            AND json_extract(decision_json, '$.externalCommercialSpendAudCents')
+              IS external_commercial_spend_aud_cents
+            AND json_extract(decision_json, '$.provenanceComplete') IS provenance_complete
+            AND json_extract(decision_json, '$.unknownProviderOutcomeCount')
+              IS unknown_provider_outcome_count
+            AND json_extract(decision_json, '$.unknownCostCount') IS unknown_cost_count
+            AND json_extract(decision_json, '$.evidenceSetHash') IS evidence_set_hash
+            AND json_extract(decision_json, '$.receiptSetHash') IS receipt_set_hash
+          ),
+        decided_at TEXT NOT NULL CHECK (julianday(decided_at) IS NOT NULL),
+        created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+        CHECK (
+          estimated_internal_ai_cost_aud_cents + reconciled_internal_ai_cost_aud_cents <= 200
+        ),
+        CHECK (
+          estimated_internal_ai_cost_aud_cents = 0
+          OR exact_billing_pending = 1
+        ),
+        CHECK (
+          (
+            completion_mode = 'full_round'
+            AND early_stop_record_hash IS NULL
+            AND skipped_assignment_record_hashes_json = '[]'
+            AND next_evidence_action_json IS NULL
+            AND comparator_count BETWEEN 10 AND 15
+          )
+          OR (
+            completion_mode = 'validated_early_stop'
+            AND early_stop_record_hash IS NOT NULL
+            AND outcome = 'research_more'
+            AND json_array_length(skipped_assignment_record_hashes_json) BETWEEN 0 AND 2
+            AND next_evidence_action_json IS NOT NULL
+          )
+        ),
+        CHECK (
+          outcome <> 'build'
+          OR (
+            provenance_complete = 1
+            AND unknown_provider_outcome_count = 0
+            AND unknown_cost_count = 0
+          )
+        ),
+        FOREIGN KEY (authority_hash)
+          REFERENCES preventure_research_authorities(authority_hash),
+        FOREIGN KEY (authority_hash, early_stop_record_hash)
+          REFERENCES preventure_research_terminal_stops(authority_hash, early_stop_record_hash)
+          DEFERRABLE INITIALLY DEFERRED,
+        UNIQUE (authority_hash, decision_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS preventure_research_lifecycle_events (
+        id TEXT PRIMARY KEY,
+        authority_hash TEXT NOT NULL,
+        sequence INTEGER NOT NULL CHECK (sequence >= 1),
+        previous_event_hash TEXT,
+        event_type TEXT NOT NULL
+          CHECK (event_type IN (
+            'proposed', 'accepted', 'activated', 'completed',
+            'revoked', 'expired', 'revised', 'superseded'
+          )),
+        event_hash TEXT NOT NULL
+          CHECK (
+            length(event_hash) = 71
+            AND substr(event_hash, 1, 7) = 'sha256:'
+            AND substr(event_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        approval_id TEXT,
+        approval_scope_hash TEXT
+          CHECK (
+            approval_scope_hash IS NULL
+            OR (
+              length(approval_scope_hash) = 71
+              AND substr(approval_scope_hash, 1, 7) = 'sha256:'
+              AND substr(approval_scope_hash, 8) NOT GLOB '*[^0-9a-f]*'
+            )
+          ),
+        actor TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        metadata TEXT NOT NULL CHECK (json_valid(metadata)),
+        decision_hash TEXT,
+        successor_authority_hash TEXT,
+        event_json TEXT NOT NULL
+          CHECK (
+            json_valid(event_json)
+            AND json_extract(event_json, '$.id') IS id
+            AND json_extract(event_json, '$.authorityHash') IS authority_hash
+            AND json_extract(event_json, '$.sequence') IS sequence
+            AND json_extract(event_json, '$.previousEventHash') IS previous_event_hash
+            AND json_extract(event_json, '$.eventType') IS event_type
+            AND json_extract(event_json, '$.eventHash') IS event_hash
+            AND json_extract(event_json, '$.approvalId') IS approval_id
+            AND json_extract(event_json, '$.approvalScopeHash') IS approval_scope_hash
+            AND json_extract(event_json, '$.actor') IS actor
+            AND json_extract(event_json, '$.reason') IS reason
+            AND json_extract(event_json, '$.metadata.decisionHash') IS decision_hash
+            AND json_extract(event_json, '$.metadata.successorAuthorityHash')
+              IS successor_authority_hash
+            AND json_extract(event_json, '$.occurredAt') IS occurred_at
+          ),
+        occurred_at TEXT NOT NULL CHECK (julianday(occurred_at) IS NOT NULL),
+        created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+        UNIQUE (authority_hash, sequence),
+        UNIQUE (authority_hash, event_hash),
+        UNIQUE (authority_hash, id),
+        CHECK (
+          (event_type IN ('accepted', 'activated') AND approval_id IS NOT NULL AND approval_scope_hash IS NOT NULL)
+          OR (event_type NOT IN ('accepted', 'activated') AND approval_id IS NULL AND approval_scope_hash IS NULL)
+        ),
+        CHECK ((event_type = 'completed') = (decision_hash IS NOT NULL)),
+        CHECK ((event_type IN ('revised', 'superseded')) = (successor_authority_hash IS NOT NULL)),
+        FOREIGN KEY (authority_hash)
+          REFERENCES preventure_research_authorities(authority_hash),
+        FOREIGN KEY (authority_hash, previous_event_hash)
+          REFERENCES preventure_research_lifecycle_events(authority_hash, event_hash),
+        FOREIGN KEY (approval_id) REFERENCES approvals(id),
+        FOREIGN KEY (decision_hash) REFERENCES preventure_research_decisions(decision_hash),
+        FOREIGN KEY (successor_authority_hash)
+          REFERENCES preventure_research_authorities(authority_hash)
+      );
+
+      CREATE TABLE IF NOT EXISTS preventure_research_assignments (
+        assignment_hash TEXT PRIMARY KEY
+          CHECK (
+            length(assignment_hash) = 71
+            AND substr(assignment_hash, 1, 7) = 'sha256:'
+            AND substr(assignment_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        authority_hash TEXT NOT NULL,
+        activation_event_hash TEXT NOT NULL,
+        assignment_id TEXT NOT NULL,
+        assignment_version TEXT NOT NULL,
+        template_hash TEXT NOT NULL,
+        workflow_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        provider_model TEXT NOT NULL,
+        max_cost_aud_cents INTEGER NOT NULL CHECK (max_cost_aud_cents = 50),
+        max_attempts INTEGER NOT NULL CHECK (max_attempts = 1),
+        max_tool_calls INTEGER NOT NULL CHECK (max_tool_calls = 2),
+        maximum_model_passes INTEGER NOT NULL CHECK (maximum_model_passes = 3),
+        max_input_tokens INTEGER NOT NULL CHECK (max_input_tokens = 272000),
+        local_prompt_preflight_max_input_tokens INTEGER NOT NULL
+          CHECK (local_prompt_preflight_max_input_tokens = 30000),
+        max_output_tokens INTEGER NOT NULL CHECK (max_output_tokens = 12000),
+        max_turns INTEGER NOT NULL CHECK (max_turns = 1),
+        deadline_ms INTEGER NOT NULL CHECK (deadline_ms BETWEEN 5000 AND 180000),
+        worst_case_exposure_json TEXT NOT NULL
+          CHECK (
+            json_valid(worst_case_exposure_json)
+            AND json_extract(worst_case_exposure_json, '$.method')
+              IS 'integer_ceiling_published_standard_price_v1'
+            AND json_extract(worst_case_exposure_json, '$.currency') IS 'AUD'
+            AND json_extract(worst_case_exposure_json, '$.amountAudCents') IS max_cost_aud_cents
+            AND json_extract(worst_case_exposure_json, '$.maxInputTokensPerModelPass') IS max_input_tokens
+            AND json_extract(worst_case_exposure_json, '$.maximumModelPasses') IS maximum_model_passes
+            AND json_extract(worst_case_exposure_json, '$.maximumBillableInputTokens') IS 816000
+            AND json_extract(worst_case_exposure_json, '$.maxOutputTokens') IS max_output_tokens
+            AND json_extract(worst_case_exposure_json, '$.maxToolCalls') IS max_tool_calls
+            AND json_extract(worst_case_exposure_json, '$.inputCostUsdMicros') IS 204000
+            AND json_extract(worst_case_exposure_json, '$.outputCostUsdMicros') IS 24000
+            AND json_extract(worst_case_exposure_json, '$.webSearchCostUsdMicros') IS 20000
+            AND json_extract(worst_case_exposure_json, '$.totalCostUsdMicros') IS 248000
+            AND json_extract(worst_case_exposure_json, '$.audPerUsdCeilingMicros') IS 2000000
+            AND json_extract(worst_case_exposure_json, '$.exactBillingPending') IS 1
+          ),
+        expires_at TEXT NOT NULL CHECK (julianday(expires_at) IS NOT NULL),
+        assignment_json TEXT NOT NULL
+          CHECK (
+            json_valid(assignment_json)
+            AND json_extract(assignment_json, '$.assignmentHash') IS assignment_hash
+            AND json_extract(assignment_json, '$.authorityHash') IS authority_hash
+            AND json_extract(assignment_json, '$.activationEventHash') IS activation_event_hash
+            AND json_extract(assignment_json, '$.id') IS assignment_id
+            AND json_extract(assignment_json, '$.version') IS assignment_version
+            AND json_extract(assignment_json, '$.templateHash') IS template_hash
+            AND json_extract(assignment_json, '$.workflowId') IS workflow_id
+            AND json_extract(assignment_json, '$.taskId') IS task_id
+            AND json_extract(assignment_json, '$.provider') IS provider_id
+            AND json_extract(assignment_json, '$.model') IS provider_model
+            AND json_extract(assignment_json, '$.maxCostAudCents') IS max_cost_aud_cents
+            AND json_extract(assignment_json, '$.maxAttempts') IS max_attempts
+            AND json_extract(assignment_json, '$.maxToolCalls') IS max_tool_calls
+            AND json_extract(assignment_json, '$.maximumModelPasses') IS maximum_model_passes
+            AND json_extract(assignment_json, '$.maxInputTokens') IS max_input_tokens
+            AND json_extract(assignment_json, '$.localPromptPreflightMaxInputTokens')
+              IS local_prompt_preflight_max_input_tokens
+            AND json_extract(assignment_json, '$.maxOutputTokens') IS max_output_tokens
+            AND json_extract(assignment_json, '$.maxTurns') IS max_turns
+            AND json_extract(assignment_json, '$.deadlineMs') IS deadline_ms
+            AND json_extract(assignment_json, '$.worstCaseExposure') IS worst_case_exposure_json
+            AND json_extract(assignment_json, '$.expiresAt') IS expires_at
+            AND json_extract(assignment_json, '$.assignedAt') IS assigned_at
+          ),
+        assigned_at TEXT NOT NULL CHECK (julianday(assigned_at) IS NOT NULL),
+        created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+        UNIQUE (authority_hash, assignment_hash),
+        FOREIGN KEY (authority_hash)
+          REFERENCES preventure_research_authorities(authority_hash),
+        FOREIGN KEY (authority_hash, activation_event_hash)
+          REFERENCES preventure_research_lifecycle_events(authority_hash, event_hash),
+        FOREIGN KEY (workflow_id) REFERENCES workflows(id),
+        FOREIGN KEY (task_id) REFERENCES tasks(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS preventure_research_cost_events (
+        receipt_hash TEXT PRIMARY KEY
+          CHECK (
+            length(receipt_hash) = 71
+            AND substr(receipt_hash, 1, 7) = 'sha256:'
+            AND substr(receipt_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        authority_hash TEXT NOT NULL,
+        assignment_hash TEXT NOT NULL,
+        cost_key TEXT NOT NULL,
+        sequence INTEGER NOT NULL CHECK (sequence >= 1),
+        previous_receipt_hash TEXT,
+        event_type TEXT NOT NULL
+          CHECK (event_type IN ('reserved', 'estimated', 'incurred', 'reconciled', 'released', 'unknown')),
+        amount_aud_cents INTEGER
+          CHECK (amount_aud_cents IS NULL OR amount_aud_cents >= 0),
+        exposure_aud_cents INTEGER NOT NULL CHECK (exposure_aud_cents >= 0),
+        task_attempt_id TEXT,
+        model_call_id TEXT,
+        budget_reservation_id TEXT,
+        cost_id TEXT,
+        agent_run_receipt_id TEXT,
+        cost_json TEXT NOT NULL
+          CHECK (
+            json_valid(cost_json)
+            AND json_extract(cost_json, '$.receiptHash') IS receipt_hash
+            AND json_extract(cost_json, '$.authorityHash') IS authority_hash
+            AND json_extract(cost_json, '$.assignmentHash') IS assignment_hash
+            AND json_extract(cost_json, '$.costKey') IS cost_key
+            AND json_extract(cost_json, '$.sequence') IS sequence
+            AND json_extract(cost_json, '$.previousReceiptHash') IS previous_receipt_hash
+            AND json_extract(cost_json, '$.eventType') IS event_type
+            AND json_extract(cost_json, '$.amountAudCents') IS amount_aud_cents
+            AND json_extract(cost_json, '$.exposureAudCents') IS exposure_aud_cents
+            AND json_extract(cost_json, '$.taskAttemptId') IS task_attempt_id
+            AND json_extract(cost_json, '$.modelCallId') IS model_call_id
+            AND json_extract(cost_json, '$.budgetReservationId') IS budget_reservation_id
+            AND json_extract(cost_json, '$.costId') IS cost_id
+            AND json_extract(cost_json, '$.agentRunReceiptId') IS agent_run_receipt_id
+            AND json_extract(cost_json, '$.occurredAt') IS occurred_at
+          ),
+        occurred_at TEXT NOT NULL CHECK (julianday(occurred_at) IS NOT NULL),
+        created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+        UNIQUE (assignment_hash, cost_key, sequence),
+        UNIQUE (assignment_hash, cost_key, receipt_hash),
+        CHECK ((event_type = 'unknown') = (amount_aud_cents IS NULL)),
+        FOREIGN KEY (authority_hash)
+          REFERENCES preventure_research_authorities(authority_hash),
+        FOREIGN KEY (assignment_hash)
+          REFERENCES preventure_research_assignments(assignment_hash),
+        FOREIGN KEY (authority_hash, assignment_hash)
+          REFERENCES preventure_research_assignments(authority_hash, assignment_hash),
+        FOREIGN KEY (assignment_hash, cost_key, previous_receipt_hash)
+          REFERENCES preventure_research_cost_events(assignment_hash, cost_key, receipt_hash),
+        FOREIGN KEY (task_attempt_id) REFERENCES task_attempts(id),
+        FOREIGN KEY (model_call_id) REFERENCES model_calls(id),
+        FOREIGN KEY (budget_reservation_id) REFERENCES budget_reservations(id),
+        FOREIGN KEY (cost_id) REFERENCES costs(id),
+        FOREIGN KEY (agent_run_receipt_id) REFERENCES agent_run_receipts(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS preventure_research_source_snapshots (
+        snapshot_hash TEXT PRIMARY KEY
+          CHECK (
+            length(snapshot_hash) = 71
+            AND substr(snapshot_hash, 1, 7) = 'sha256:'
+            AND substr(snapshot_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        authority_hash TEXT NOT NULL,
+        assignment_hash TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        source_version TEXT NOT NULL,
+        source_class TEXT NOT NULL,
+        source_tier INTEGER NOT NULL CHECK (source_tier BETWEEN 1 AND 4),
+        capture_status TEXT NOT NULL
+          CHECK (capture_status IN ('captured', 'partial', 'unavailable', 'blocked')),
+        url TEXT,
+        canonical_url TEXT,
+        canonical_host TEXT,
+        source_identity_url TEXT,
+        source_identity_hash TEXT
+          CHECK (
+            source_identity_hash IS NULL
+            OR (
+              length(source_identity_hash) = 71
+              AND substr(source_identity_hash, 1, 7) = 'sha256:'
+              AND substr(source_identity_hash, 8) NOT GLOB '*[^0-9a-f]*'
+            )
+          ),
+        marketplace_channel_id TEXT
+          CHECK (marketplace_channel_id IS NULL OR marketplace_channel_id IN ('etsy', 'gumroad')),
+        offer_identity_key TEXT,
+        seller_identity_key TEXT CHECK (seller_identity_key IS NULL),
+        identity_derivation TEXT
+          CHECK (identity_derivation IS NULL OR identity_derivation = 'provider_grounded_url_v1'),
+        publisher_identity_key TEXT,
+        buyer_independence_group TEXT
+          CHECK (
+            buyer_independence_group IS NULL
+            OR (
+              buyer_independence_group = publisher_identity_key
+              AND buyer_independence_group GLOB 'public-publisher-host:*'
+              AND length(buyer_independence_group) BETWEEN 24 AND 277
+            )
+          ),
+        title TEXT,
+        publisher TEXT,
+        published_at TEXT CHECK (published_at IS NULL OR julianday(published_at) IS NOT NULL),
+        content_hash TEXT,
+        content_location TEXT,
+        research_run_id TEXT,
+        source_record_id TEXT,
+        provenance_id TEXT,
+        agent_run_receipt_id TEXT,
+        limitations_json TEXT NOT NULL
+          CHECK (json_valid(limitations_json) AND json_type(limitations_json) = 'array'),
+        supersedes_snapshot_hash TEXT,
+        retrieved_at TEXT NOT NULL CHECK (julianday(retrieved_at) IS NOT NULL),
+        snapshot_json TEXT NOT NULL
+          CHECK (
+            json_valid(snapshot_json)
+            AND json_extract(snapshot_json, '$.snapshotHash') IS snapshot_hash
+            AND json_extract(snapshot_json, '$.authorityHash') IS authority_hash
+            AND json_extract(snapshot_json, '$.assignmentHash') IS assignment_hash
+            AND json_extract(snapshot_json, '$.id') IS source_id
+            AND json_extract(snapshot_json, '$.version') IS source_version
+            AND json_extract(snapshot_json, '$.sourceClass') IS source_class
+            AND json_extract(snapshot_json, '$.sourceTier') IS source_tier
+            AND json_extract(snapshot_json, '$.captureStatus') IS capture_status
+            AND json_extract(snapshot_json, '$.url') IS url
+            AND json_extract(snapshot_json, '$.canonicalUrl') IS canonical_url
+            AND json_extract(snapshot_json, '$.canonicalHost') IS canonical_host
+            AND json_extract(snapshot_json, '$.sourceIdentityUrl') IS source_identity_url
+            AND json_extract(snapshot_json, '$.sourceIdentityHash') IS source_identity_hash
+            AND json_extract(snapshot_json, '$.marketplaceChannelId') IS marketplace_channel_id
+            AND json_extract(snapshot_json, '$.offerIdentityKey') IS offer_identity_key
+            AND json_extract(snapshot_json, '$.sellerIdentityKey') IS seller_identity_key
+            AND json_extract(snapshot_json, '$.identityDerivation') IS identity_derivation
+            AND json_extract(snapshot_json, '$.publisherIdentityKey') IS publisher_identity_key
+            AND json_extract(snapshot_json, '$.buyerIndependenceGroup')
+              IS buyer_independence_group
+            AND json_extract(snapshot_json, '$.title') IS title
+            AND json_extract(snapshot_json, '$.publisher') IS publisher
+            AND json_extract(snapshot_json, '$.publishedAt') IS published_at
+            AND json_extract(snapshot_json, '$.contentHash') IS content_hash
+            AND json_extract(snapshot_json, '$.contentLocation') IS content_location
+            AND json_extract(snapshot_json, '$.researchRunId') IS research_run_id
+            AND json_extract(snapshot_json, '$.sourceRecordId') IS source_record_id
+            AND json_extract(snapshot_json, '$.provenanceId') IS provenance_id
+            AND json_extract(snapshot_json, '$.agentRunReceiptId') IS agent_run_receipt_id
+            AND json_extract(snapshot_json, '$.limitations') IS limitations_json
+            AND json_extract(snapshot_json, '$.supersedesSnapshotHash') IS supersedes_snapshot_hash
+            AND json_extract(snapshot_json, '$.retrievedAt') IS retrieved_at
+          ),
+        created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+        UNIQUE (authority_hash, source_id, source_version),
+        UNIQUE (authority_hash, assignment_hash, snapshot_hash),
+        CHECK (
+          capture_status <> 'captured'
+          OR (url IS NOT NULL AND content_hash IS NOT NULL AND content_location IS NOT NULL)
+        ),
+        CHECK (
+          (
+            url IS NULL
+            AND canonical_url IS NULL
+            AND canonical_host IS NULL
+            AND source_identity_url IS NULL
+            AND source_identity_hash IS NULL
+            AND marketplace_channel_id IS NULL
+            AND offer_identity_key IS NULL
+            AND seller_identity_key IS NULL
+            AND identity_derivation IS NULL
+            AND publisher_identity_key IS NULL
+            AND buyer_independence_group IS NULL
+          )
+          OR (
+            url IS NOT NULL
+            AND canonical_url IS NOT NULL
+            AND canonical_host IS NOT NULL
+            AND source_identity_url IS NOT NULL
+            AND source_identity_hash IS NOT NULL
+            AND seller_identity_key IS NULL
+            AND identity_derivation = 'provider_grounded_url_v1'
+            AND publisher_identity_key IS NOT NULL
+            AND buyer_independence_group IS NOT NULL
+          )
+        ),
+        FOREIGN KEY (authority_hash)
+          REFERENCES preventure_research_authorities(authority_hash),
+        FOREIGN KEY (assignment_hash)
+          REFERENCES preventure_research_assignments(assignment_hash),
+        FOREIGN KEY (authority_hash, assignment_hash)
+          REFERENCES preventure_research_assignments(authority_hash, assignment_hash),
+        FOREIGN KEY (research_run_id) REFERENCES research_runs(id),
+        FOREIGN KEY (source_record_id) REFERENCES research_sources(id),
+        FOREIGN KEY (provenance_id) REFERENCES agent_run_provenance(id),
+        FOREIGN KEY (agent_run_receipt_id) REFERENCES agent_run_receipts(id),
+        FOREIGN KEY (supersedes_snapshot_hash)
+          REFERENCES preventure_research_source_snapshots(snapshot_hash)
+      );
+
+      CREATE TABLE IF NOT EXISTS preventure_research_evidence_records (
+        evidence_hash TEXT PRIMARY KEY
+          CHECK (
+            length(evidence_hash) = 71
+            AND substr(evidence_hash, 1, 7) = 'sha256:'
+            AND substr(evidence_hash, 8) NOT GLOB '*[^0-9a-f]*'
+          ),
+        authority_hash TEXT NOT NULL,
+        assignment_hash TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        evidence_version TEXT NOT NULL,
+        source_snapshot_hash TEXT,
+        truth_class TEXT NOT NULL
+          CHECK (truth_class IN (
+            'assumption', 'estimate', 'model_inference', 'observed_fact',
+            'owner_attestation', 'owner_preference', 'proven_pantheon_learning', 'unknown'
+          )),
+        polarity TEXT NOT NULL CHECK (polarity IN ('supporting', 'contrary', 'neutral', 'unknown')),
+        question_id TEXT NOT NULL,
+        criterion_id TEXT,
+        claim TEXT NOT NULL,
+        confidence TEXT NOT NULL CHECK (confidence IN ('low', 'medium', 'high', 'unknown')),
+        limitations_json TEXT NOT NULL
+          CHECK (json_valid(limitations_json) AND json_type(limitations_json) = 'array'),
+        supersedes_evidence_hash TEXT,
+        evidence_json TEXT NOT NULL
+          CHECK (
+            json_valid(evidence_json)
+            AND json_extract(evidence_json, '$.evidenceHash') IS evidence_hash
+            AND json_extract(evidence_json, '$.authorityHash') IS authority_hash
+            AND json_extract(evidence_json, '$.assignmentHash') IS assignment_hash
+            AND json_extract(evidence_json, '$.id') IS evidence_id
+            AND json_extract(evidence_json, '$.version') IS evidence_version
+            AND json_extract(evidence_json, '$.sourceSnapshotHash') IS source_snapshot_hash
+            AND json_extract(evidence_json, '$.truthClass') IS truth_class
+            AND json_extract(evidence_json, '$.polarity') IS polarity
+            AND json_extract(evidence_json, '$.questionId') IS question_id
+            AND json_extract(evidence_json, '$.criterionId') IS criterion_id
+            AND json_extract(evidence_json, '$.claim') IS claim
+            AND json_extract(evidence_json, '$.confidence') IS confidence
+            AND json_extract(evidence_json, '$.limitations') IS limitations_json
+            AND json_extract(evidence_json, '$.supersedesEvidenceHash') IS supersedes_evidence_hash
+            AND json_extract(evidence_json, '$.capturedAt') IS captured_at
+          ),
+        captured_at TEXT NOT NULL CHECK (julianday(captured_at) IS NOT NULL),
+        created_at TEXT NOT NULL CHECK (julianday(created_at) IS NOT NULL),
+        UNIQUE (authority_hash, evidence_id, evidence_version),
+        CHECK (truth_class <> 'observed_fact' OR source_snapshot_hash IS NOT NULL),
+        FOREIGN KEY (authority_hash)
+          REFERENCES preventure_research_authorities(authority_hash),
+        FOREIGN KEY (assignment_hash)
+          REFERENCES preventure_research_assignments(assignment_hash),
+        FOREIGN KEY (authority_hash, assignment_hash)
+          REFERENCES preventure_research_assignments(authority_hash, assignment_hash),
+        FOREIGN KEY (authority_hash, assignment_hash, source_snapshot_hash)
+          REFERENCES preventure_research_source_snapshots(
+            authority_hash, assignment_hash, snapshot_hash
+          ),
+        FOREIGN KEY (supersedes_evidence_hash)
+          REFERENCES preventure_research_evidence_records(evidence_hash)
+      );
+    `);
+    db.exec(PREVENTURE_RESEARCH_TERMINAL_RECOVERY_TABLE_SQL);
+    db.exec(PREVENTURE_RESEARCH_OWNER_BILLING_OBSERVATION_TABLE_SQL);
+    db.exec(PREVENTURE_RESEARCH_TERMINAL_STOP_TABLE_SQL);
+    for (const triggerName of Object.keys(PREVENTURE_RESEARCH_OWNERSHIP_TRIGGER_SQL)) {
+      db.exec(`DROP TRIGGER IF EXISTS ${triggerName}`);
+    }
+    db.exec(Object.values(PREVENTURE_RESEARCH_OWNERSHIP_TRIGGER_SQL).join(";\n"));
+    db.exec(Object.values(PREVENTURE_RESEARCH_REQUIRED_INDEX_SQL).join(";\n"));
+    db.exec(Object.values(PREVENTURE_RESEARCH_IMMUTABLE_TRIGGER_SQL).join(";\n"));
+    db.exec(Object.values(PREVENTURE_RESEARCH_GUARD_TRIGGER_SQL).join(";\n"));
+    recordMigration(db, 27, "pre-venture-research-authority-ledger");
+    commitAtomic(db);
+  } catch (error) {
+    rollbackAtomic(db);
+    throw error;
+  }
+}
+
+function migrate(db, options = {}) {
+  const migrationTable = get(
+    db,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+  );
+  const currentVersion = migrationTable
+    ? Number(get(
+        db,
+        "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
+      )?.version || 0)
+    : 0;
+  if (currentVersion > LATEST_SCHEMA_VERSION) {
+    throw new Error(`Runtime schema ${currentVersion} is newer than supported schema ${LATEST_SCHEMA_VERSION}.`);
+  }
+  if (currentVersion === LATEST_SCHEMA_VERSION) return;
+
+  const reservedCandidateObjects = all(
+    db,
+    `SELECT type, name FROM sqlite_master
+     WHERE name GLOB 'preventure_research_*'
+        OR name GLOB 'trg_preventure_research_*'
+        OR name GLOB 'idx_preventure_research_*'
+        OR name IN (
+          'idx_task_attempts_one_running_per_task',
+          'trg_commercial_test_lifecycle_preventure_approval_insert'
+        )
+     ORDER BY type, name`,
+  );
+  const approvalsHasCandidateColumn = Boolean(get(
+    db,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'approvals'",
+  )) && tableColumns(db, "approvals").has("decided_by");
+  if (reservedCandidateObjects.length > 0 || approvalsHasCandidateColumn) {
+    const names = reservedCandidateObjects.map((item) => item.name);
+    if (approvalsHasCandidateColumn) names.push("approvals.decided_by");
+    throw new Error(
+      `Runtime schema ${currentVersion} contains unreleased schema-27 object(s): ${names.join(", ")}.`,
+    );
+  }
+
+  beginAtomic(db);
+  try {
+    db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
       applied_at TEXT NOT NULL
     );
   `);
-  const currentVersion = Number(get(db, "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")?.version || 0);
-  if (currentVersion > LATEST_SCHEMA_VERSION) {
-    throw new Error(`Runtime schema ${currentVersion} is newer than supported schema ${LATEST_SCHEMA_VERSION}.`);
-  }
   if (!migrationApplied(db, 1)) {
-    db.exec("BEGIN IMMEDIATE");
+    beginAtomic(db);
     try {
       db.exec(`
     CREATE TABLE IF NOT EXISTS settings (
@@ -4849,9 +11501,9 @@ function migrate(db) {
        WHERE status = 'planned' AND current_step = 'waiting for agent runner implementation'`,
     );
       recordMigration(db, 1, "initial-runtime-schema");
-      db.exec("COMMIT");
+      commitAtomic(db);
     } catch (error) {
-      db.exec("ROLLBACK");
+      rollbackAtomic(db);
       throw error;
     }
   }
@@ -4880,6 +11532,13 @@ function migrate(db) {
   applyModelCallCompletionTruthMigration(db);
   applyCommercialTestEvidenceLedgerMigration(db);
   applyCanonicalCommercialTruthReconciliationMigration(db);
+  applyPreventureResearchAuthorityMigration(db);
+    if (options.verifyBeforeCommit !== false) verifyDatabase(db);
+    commitAtomic(db);
+  } catch (error) {
+    rollbackAtomic(db);
+    throw error;
+  }
 }
 
 function putSetting(db, key, value) {
@@ -4914,7 +11573,7 @@ function seedDatabase(db, options = {}) {
   const existing = get(db, "SELECT value FROM settings WHERE key = ?", ["runtime.initialized"]);
   if (existing) return false;
 
-  db.exec("BEGIN IMMEDIATE");
+  beginAtomic(db);
   try {
   const ts = now();
   const includeDemoProof = options.includeDemoProof === true;
@@ -5160,16 +11819,18 @@ function seedDatabase(db, options = {}) {
   });
 
   putSetting(db, "runtime.initialized", { at: ts, version: LATEST_SCHEMA_VERSION });
-  db.exec("COMMIT");
+  commitAtomic(db);
   return true;
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackAtomic(db);
     throw error;
   }
 }
 
 module.exports = {
   LATEST_SCHEMA_VERSION,
+  applyProviderAttemptReceiptBackfillMigration,
+  applyPreventureResearchAuthorityMigration,
   applyCanonicalCommercialTruthReconciliationMigration,
   applyCommercialTestEvidenceLedgerMigration,
   applyCommercialIntelligenceMigration,
@@ -5184,8 +11845,16 @@ module.exports = {
   openDatabase,
   putSetting,
   randomId: randomUUID,
+  recordPreventureEmergencyUnknownCost,
   run,
   seedDatabase,
   toJson,
   verifyDatabase,
+  withPreventureOwnerApprovalCapability,
+  withPreventureEmergencyCostSafetyCapability,
+  withPreventureOwnerBillingObservationCapability,
+  withPreventureProviderCostReconciliationCapability,
+  withPreventureTerminalReceiptCapability,
+  withPreventureTerminalRetainedRecoveryCapability,
+  withPreventureValidatedEarlyStopCapability,
 };

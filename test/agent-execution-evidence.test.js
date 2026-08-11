@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   LATEST_SCHEMA_VERSION,
+  applyProviderAttemptReceiptBackfillMigration,
   applyStableSpendCostIdMigration,
   all,
   get,
@@ -42,7 +43,8 @@ function makeRuntime() {
 }
 
 function closeRuntime(runtime) {
-  runtime.db.close();
+  if (runtime.db?.isOpen) runtime.db.close();
+  runtime.db = null;
   fs.rmSync(runtime.root, { recursive: true, force: true });
 }
 
@@ -368,8 +370,7 @@ test("migrations install receipt immutability, exact attempt bindings, and provi
       [ts, ts],
     );
     run(runtime.db, "DELETE FROM schema_migrations WHERE version = 17");
-    runtime.db.close();
-    runtime.db = openDatabase(runtime.dbPath);
+    applyProviderAttemptReceiptBackfillMigration(runtime.db);
 
     const repairedAttempt = get(
       runtime.db,
@@ -377,6 +378,10 @@ test("migrations install receipt immutability, exact attempt bindings, and provi
     );
     assert.equal(repairedAttempt.provider_request_id, "resp_provider_repair");
     assert.equal(JSON.parse(repairedAttempt.metadata).providerRequestIdBackfill.source, "exact_model_call_binding");
+    assert.equal(
+      get(runtime.db, "SELECT name FROM schema_migrations WHERE version = 17").name,
+      "provider-request-attempt-receipt-backfill",
+    );
   } finally {
     closeRuntime(runtime);
   }

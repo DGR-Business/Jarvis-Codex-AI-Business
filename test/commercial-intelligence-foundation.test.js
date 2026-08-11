@@ -5,7 +5,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const retrievalCases = require("../config/commercial-retrieval-eval-v1");
-const { get, now, openDatabase, run, seedDatabase, toJson } = require("../src/db");
+const { fromJson, get, now, openDatabase, run, seedDatabase, toJson } = require("../src/db");
 const { buildAgentContextSnapshot } = require("../src/runtime/agent-context");
 const {
   commercialKnowledgeState,
@@ -18,6 +18,7 @@ const {
   createCommercialInvestmentReview,
 } = require("../src/runtime/commercial-investment-review");
 const { createResearchSourceAdapter } = require("../src/adapters/research");
+const { recordLiveWorkerModelCall } = require("../src/adapters/live-ai-worker");
 const {
   parkJobSearchProduct,
   startPortfolioDiscovery,
@@ -42,6 +43,12 @@ const {
   createRuntimeSupervisor,
   markEmergencyStopUnknown,
 } = require("../src/runtime/runtime-supervisor");
+const {
+  claimNextTask,
+  completeTaskClaim,
+  markTaskAttemptProviderDispatched,
+  releaseTaskClaim,
+} = require("../src/runtime/task-claims");
 
 function runtimeDb(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `pantheon-commercial-intelligence-${name}-`));
@@ -53,6 +60,32 @@ function runtimeDb(name) {
 function closeRuntime(runtime) {
   runtime.db.close();
   fs.rmSync(runtime.root, { recursive: true, force: true });
+}
+
+function claimEmergencyProofTask(db, suffix, title) {
+  const timestamp = now();
+  const workflowId = `wf-runtime-emergency-${suffix}`;
+  const taskId = `task-runtime-emergency-${suffix}`;
+  run(
+    db,
+    `INSERT INTO workflows
+     (id, venture_id, type, title, status, current_step, priority, metadata, created_at, updated_at)
+     VALUES (?, 'venture-digital-products', 'runtime_proof', ?, 'ready',
+             'ready for provider proof', 1, '{}', ?, ?)`,
+    [workflowId, title, timestamp, timestamp],
+  );
+  run(
+    db,
+    `INSERT INTO tasks
+     (id, workflow_id, venture_id, title, kind, agent, status, priority,
+      payload, result, outcome_status, created_at, updated_at)
+     VALUES (?, ?, 'venture-digital-products', ?, 'live_ai_worker_execution',
+             'demand_validator', 'queued', 1, '{}', '{}', 'not_started', ?, ?)`,
+    [taskId, workflowId, title, timestamp, timestamp],
+  );
+  const claim = claimNextTask(db, { taskId, claimant: "emergency-stop-regression" });
+  assert.ok(claim);
+  return { claim, taskId, workflowId };
 }
 
 function assertRetiredPreventureStart(db, operation, expectedPath) {
@@ -291,7 +324,7 @@ test("venture-kit readiness does not decide commercial merit", () => {
   }
 });
 
-test("commercial and lifecycle contracts are executable and emergency stop preserves unknown provider outcomes", () => {
+test("emergency stop preserves a real dispatching provider outcome and invalidates late completion", () => {
   const runtime = runtimeDb("contracts");
   try {
     assert.equal(createCommercialContextProvider(runtime.db).contract, "CommercialContextProvider.v1");
@@ -301,59 +334,265 @@ test("commercial and lifecycle contracts are executable and emergency stop prese
     assert.equal(createVentureKitRegistry(runtime.db).contract, "VentureKitRegistry.v1");
     const supervisor = createRuntimeSupervisor(runtime.db);
     assert.equal(supervisor.contract, "RuntimeSupervisor.v1");
-
-    const timestamp = now();
-    run(
+    const proof = claimEmergencyProofTask(
       runtime.db,
-      `INSERT INTO workflows
-       (id, venture_id, type, title, status, current_step, priority, metadata, created_at, updated_at)
-       VALUES ('wf-runtime-emergency-proof', 'venture-digital-products', 'runtime_proof',
-               'Runtime emergency proof', 'running', 'provider_call', 1, '{}', ?, ?)`,
-      [timestamp, timestamp],
+      "proof",
+      "Provider call in progress",
     );
-    run(
+    const dispatchCall = recordLiveWorkerModelCall(
       runtime.db,
-      `INSERT INTO tasks
-       (id, workflow_id, venture_id, title, kind, agent, status, priority,
-        payload, result, outcome_status, started_at, created_at, updated_at)
-       VALUES ('task-runtime-emergency-proof', 'wf-runtime-emergency-proof',
-               'venture-digital-products', 'Provider call in progress',
-               'live_ai_worker_execution', 'demand_validator', 'running', 1,
-               '{}', '{}', 'running', ?, ?, ?)`,
-      [timestamp, timestamp, timestamp],
+      proof.claim.task,
+      null,
+      100,
+      "gpt-5.6-terra",
+      "dispatching",
+      {
+        modelCallId: "call-runtime-emergency-proof",
+        reservedCostCents: 100,
+        taskAttemptId: proof.claim.attemptId,
+        dispatchIntent: { status: "dispatched", recordedAt: now() },
+      },
     );
+    markTaskAttemptProviderDispatched(runtime.db, proof.claim, {
+      modelCallId: dispatchCall.id,
+      provider: "openai-responses",
+      model: "gpt-5.6-terra",
+    });
     run(
       runtime.db,
-      `INSERT INTO task_attempts
-       (id, task_id, workflow_id, venture_id, claim_token, status,
-        outcome_status, provider_request_id, started_at, metadata)
-       VALUES ('attempt-runtime-emergency-proof', 'task-runtime-emergency-proof',
-               'wf-runtime-emergency-proof', 'venture-digital-products',
-               'claim-runtime-emergency-proof', 'running', 'running',
-               'provider-request-proof', ?, '{}')`,
-      [timestamp],
-    );
-    run(
-      runtime.db,
-      `INSERT INTO model_calls
-       (id, workflow_id, task_id, provider, model_class, selected_model, mode,
-        status, input_tokens, output_tokens, estimated_cost_cents,
-        actual_cost_cents, approval_required, metadata, created_at,
-        provider_request_id, cost_status, outcome_status)
-       VALUES ('call-runtime-emergency-proof', 'wf-runtime-emergency-proof',
-               'task-runtime-emergency-proof', 'openai', 'terra', 'gpt-5.6-terra',
-               'live', 'running', 0, 0, 100, 0, 1, '{}', ?,
-               'provider-request-proof', 'reserved', 'running')`,
-      [timestamp],
+      `INSERT INTO budget_reservations
+       (id, venture_id, workflow_id, task_id, status, amount_cents, currency,
+        reserved_at, metadata)
+       VALUES ('reservation-runtime-emergency-proof', 'venture-digital-products',
+               ?, ?,
+               'reserved', 100, 'AUD', ?, '{}')`,
+      [proof.workflowId, proof.taskId, now()],
     );
 
     assert.equal(supervisor.activeWork().length, 1);
+    assert.equal(supervisor.state().activeWork[0].providerDispatched, true);
     assert.deepEqual(markEmergencyStopUnknown(runtime.db), {
       affectedTasks: 1,
       providerOutcomesUnknown: 1,
     });
-    assert.equal(get(runtime.db, "SELECT outcome_status FROM tasks WHERE id = 'task-runtime-emergency-proof'").outcome_status, "unknown");
-    assert.equal(get(runtime.db, "SELECT cost_status FROM model_calls WHERE id = 'call-runtime-emergency-proof'").cost_status, "unknown");
+    const stoppedTask = get(
+      runtime.db,
+      "SELECT * FROM tasks WHERE id = ?",
+      [proof.taskId],
+    );
+    const stoppedAttempt = get(
+      runtime.db,
+      "SELECT * FROM task_attempts WHERE id = ?",
+      [proof.claim.attemptId],
+    );
+    const stoppedCall = get(
+      runtime.db,
+      "SELECT * FROM model_calls WHERE id = 'call-runtime-emergency-proof'",
+    );
+    const stoppedReservation = get(
+      runtime.db,
+      "SELECT * FROM budget_reservations WHERE id = 'reservation-runtime-emergency-proof'",
+    );
+    const stoppedWorkflow = get(
+      runtime.db,
+      "SELECT * FROM workflows WHERE id = ?",
+      [proof.workflowId],
+    );
+    assert.equal(stoppedTask.status, "needs_attention");
+    assert.equal(stoppedTask.outcome_status, "unknown");
+    assert.equal(stoppedTask.claim_token, null);
+    assert.equal(stoppedTask.claimed_at, null);
+    assert.equal(fromJson(stoppedTask.result).claimInvalidated, true);
+    assert.equal(stoppedAttempt.status, "needs_attention");
+    assert.equal(stoppedAttempt.outcome_status, "unknown");
+    assert.equal(stoppedAttempt.error_kind, "operator_emergency_stop");
+    assert.equal(fromJson(stoppedAttempt.metadata).claimInvalidated, true);
+    assert.equal(stoppedCall.status, "needs_attention");
+    assert.equal(stoppedCall.outcome_status, "unknown");
+    assert.equal(stoppedCall.cost_status, "unknown");
+    assert.equal(stoppedCall.error_kind, "operator_emergency_stop");
+    assert.equal(stoppedReservation.status, "unknown");
+    assert.equal(stoppedWorkflow.status, "needs_attention");
+    assert.equal(stoppedWorkflow.approval_required, 1);
+
+    assert.throws(
+      () => completeTaskClaim(
+        runtime.db,
+        proof.claim,
+        {
+          status: "completed",
+          outcomeStatus: "known",
+          result: { lateProviderCompletion: true },
+        },
+      ),
+      /Task claim was lost before completion/,
+    );
+    assert.throws(
+      () => releaseTaskClaim(runtime.db, proof.claim, "failed", {
+        outcomeStatus: "failed_before_effect",
+      }),
+      /Task claim was lost before release/,
+    );
+    assert.equal(
+      get(runtime.db, "SELECT status FROM tasks WHERE id = ?", [proof.taskId]).status,
+      "needs_attention",
+    );
+    assert.equal(
+      get(runtime.db, "SELECT status FROM task_attempts WHERE id = ?", [proof.claim.attemptId]).status,
+      "needs_attention",
+    );
+    assert.deepEqual(markEmergencyStopUnknown(runtime.db), {
+      affectedTasks: 0,
+      providerOutcomesUnknown: 0,
+    });
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("emergency stop distinguishes a durable provider result from pre-dispatch work", () => {
+  const runtime = runtimeDb("emergency-outcome-classification");
+  try {
+    const known = claimEmergencyProofTask(
+      runtime.db,
+      "known-result",
+      "Provider result awaiting local completion",
+    );
+    const dispatchCall = recordLiveWorkerModelCall(
+      runtime.db,
+      known.claim.task,
+      null,
+      80,
+      "gpt-5.6-terra",
+      "dispatching",
+      {
+        modelCallId: "call-runtime-emergency-known-result",
+        reservedCostCents: 80,
+        taskAttemptId: known.claim.attemptId,
+      },
+    );
+    markTaskAttemptProviderDispatched(runtime.db, known.claim, {
+      modelCallId: dispatchCall.id,
+      provider: "openai-responses",
+      model: "gpt-5.6-terra",
+    });
+    recordLiveWorkerModelCall(
+      runtime.db,
+      known.claim.task,
+      { id: "resp_runtime_emergency_known", usage: {} },
+      60,
+      "gpt-5.6-terra",
+      "provider_completed",
+      {
+        modelCallId: dispatchCall.id,
+        reservedCostCents: 80,
+        taskAttemptId: known.claim.attemptId,
+        providerResponseReceived: true,
+        providerReceiptRecordedAt: now(),
+      },
+    );
+    const preDispatch = claimEmergencyProofTask(
+      runtime.db,
+      "pre-dispatch",
+      "Local work before provider dispatch",
+    );
+
+    assert.deepEqual(markEmergencyStopUnknown(runtime.db), {
+      affectedTasks: 2,
+      providerOutcomesUnknown: 0,
+    });
+    const knownTask = get(runtime.db, "SELECT * FROM tasks WHERE id = ?", [known.taskId]);
+    const knownAttempt = get(
+      runtime.db,
+      "SELECT * FROM task_attempts WHERE id = ?",
+      [known.claim.attemptId],
+    );
+    const knownCall = get(
+      runtime.db,
+      "SELECT * FROM model_calls WHERE id = 'call-runtime-emergency-known-result'",
+    );
+    const preDispatchTask = get(
+      runtime.db,
+      "SELECT * FROM tasks WHERE id = ?",
+      [preDispatch.taskId],
+    );
+    const preDispatchAttempt = get(
+      runtime.db,
+      "SELECT * FROM task_attempts WHERE id = ?",
+      [preDispatch.claim.attemptId],
+    );
+    assert.equal(knownTask.status, "needs_attention");
+    assert.equal(knownTask.outcome_status, "known_provider_result_needs_review");
+    assert.equal(knownAttempt.outcome_status, "known_provider_result_needs_review");
+    assert.equal(knownCall.status, "provider_completed");
+    assert.equal(knownCall.outcome_status, "known");
+    assert.equal(knownCall.cost_status, "incurred_estimate");
+    assert.equal(preDispatchTask.status, "needs_attention");
+    assert.equal(preDispatchTask.outcome_status, "interrupted");
+    assert.equal(preDispatchAttempt.outcome_status, "interrupted");
+  } finally {
+    closeRuntime(runtime);
+  }
+});
+
+test("emergency stop rolls back every state change when its audit event cannot be recorded", () => {
+  const runtime = runtimeDb("emergency-atomic-rollback");
+  try {
+    const proof = claimEmergencyProofTask(
+      runtime.db,
+      "atomic-rollback",
+      "Provider call protected by atomic emergency stop",
+    );
+    const dispatchCall = recordLiveWorkerModelCall(
+      runtime.db,
+      proof.claim.task,
+      null,
+      50,
+      "gpt-5.6-terra",
+      "dispatching",
+      {
+        modelCallId: "call-runtime-emergency-atomic-rollback",
+        reservedCostCents: 50,
+        taskAttemptId: proof.claim.attemptId,
+      },
+    );
+    markTaskAttemptProviderDispatched(runtime.db, proof.claim, {
+      modelCallId: dispatchCall.id,
+      provider: "openai-responses",
+      model: "gpt-5.6-terra",
+    });
+    runtime.db.exec(`
+      CREATE TRIGGER abort_emergency_stop_event
+      BEFORE INSERT ON events
+      FOR EACH ROW WHEN NEW.type = 'runtime.emergency_stop_recorded'
+      BEGIN
+        SELECT RAISE(ABORT, 'emergency audit unavailable');
+      END;
+    `);
+
+    assert.throws(
+      () => markEmergencyStopUnknown(runtime.db),
+      /emergency audit unavailable/,
+    );
+    const task = get(runtime.db, "SELECT * FROM tasks WHERE id = ?", [proof.taskId]);
+    const attempt = get(
+      runtime.db,
+      "SELECT * FROM task_attempts WHERE id = ?",
+      [proof.claim.attemptId],
+    );
+    const call = get(
+      runtime.db,
+      "SELECT * FROM model_calls WHERE id = 'call-runtime-emergency-atomic-rollback'",
+    );
+    const workflow = get(runtime.db, "SELECT * FROM workflows WHERE id = ?", [proof.workflowId]);
+    assert.equal(task.status, "running");
+    assert.equal(task.claim_token, proof.claim.claimToken);
+    assert.equal(attempt.status, "running");
+    assert.equal(attempt.outcome_status, "provider_dispatched");
+    assert.equal(call.status, "dispatching");
+    assert.equal(call.outcome_status, "provider_dispatched");
+    assert.equal(call.cost_status, "reserved");
+    assert.equal(workflow.status, "ready");
   } finally {
     closeRuntime(runtime);
   }

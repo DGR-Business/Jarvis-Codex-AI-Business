@@ -5,6 +5,8 @@ const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 const {
   LOCAL_ORDINARY_SHARD_COUNT,
+  ORDINARY_TEST_WEIGHT_FLOORS,
+  ordinaryTestWeight,
   partitionTestFiles,
   planTestInvocations,
 } = require("../scripts/test-shards");
@@ -16,7 +18,10 @@ test("weighted ordinary shards cover every ordinary test exactly once", () => {
     .filter((name) => name.endsWith(".test.js") && name !== "windows-launcher.test.js")
     .sort()
     .map((name) => `test/${name}`);
-  const weightForFile = (file) => fs.statSync(path.join(workspaceRoot, file)).size;
+  const weightForFile = (file) => ordinaryTestWeight(
+    file,
+    fs.statSync(path.join(workspaceRoot, file)).size,
+  );
   const first = partitionTestFiles(files, LOCAL_ORDINARY_SHARD_COUNT, weightForFile);
   const second = partitionTestFiles(
     [...files].reverse(),
@@ -32,7 +37,27 @@ test("weighted ordinary shards cover every ordinary test exactly once", () => {
 
   const runtimeShard = first.findIndex((shard) => shard.includes("test/runtime.test.js"));
   const productionShard = first.findIndex((shard) => shard.includes("test/pantheon-production.test.js"));
+  const backupShard = first.findIndex((shard) => (
+    shard.includes("test/pantheon-backup-recovery-set.test.js")
+  ));
+  const doctorShard = first.findIndex((shard) => (
+    shard.includes("test/pantheon-backup-doctor.test.js")
+  ));
   assert.notEqual(runtimeShard, productionShard, "the two largest suites must remain separated");
+  assert.notEqual(backupShard, doctorShard, "the two slow encrypted-recovery suites must remain separated");
+  assert.deepEqual(
+    first[backupShard],
+    ["test/pantheon-backup-recovery-set.test.js"],
+    "the measured 157-second recovery suite must retain its own four-minute shard",
+  );
+  assert.equal(
+    ordinaryTestWeight("test/pantheon-backup-recovery-set.test.js", 1),
+    ORDINARY_TEST_WEIGHT_FLOORS["pantheon-backup-recovery-set.test.js"],
+  );
+  assert.equal(
+    ordinaryTestWeight("test/pantheon-backup-doctor.test.js", 1),
+    ORDINARY_TEST_WEIGHT_FLOORS["pantheon-backup-doctor.test.js"],
+  );
 });
 
 test("local full tests plan five sequential invocations while focused and CI runs stay singular", () => {
@@ -40,7 +65,10 @@ test("local full tests plan five sequential invocations while focused and CI run
     .filter((name) => name.endsWith(".test.js") && name !== "windows-launcher.test.js")
     .sort()
     .map((name) => `test/${name}`);
-  const weightForFile = (file) => fs.statSync(path.join(workspaceRoot, file)).size;
+  const weightForFile = (file) => ordinaryTestWeight(
+    file,
+    fs.statSync(path.join(workspaceRoot, file)).size,
+  );
   const local = planTestInvocations(
     files,
     {

@@ -16,8 +16,11 @@ const { upsertWorkflowScorecard } = require("./scorecard");
 const { consumeApproval, validateApprovalScope } = require("./approval-scope");
 const { reserveBudget, resolveReservation } = require("./cost-ledger");
 const {
+  assertTaskClaimActive,
+  assertTaskClaimOwned,
   claimNextTask,
   completeTaskClaim,
+  isTaskClaimLostError,
   releaseTaskClaim,
 } = require("./task-claims");
 const { finalizeAgentExecutionReceipt } = require("./agent-execution-evidence");
@@ -42,6 +45,18 @@ function hydrateWorkflow(workflow) {
     ...workflow,
     metadata: fromJson(workflow.metadata),
   };
+}
+
+function withImmediateTransaction(db, operation) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const value = operation();
+    db.exec("COMMIT");
+    return value;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function blockedTasks(db, workflowId) {
@@ -98,6 +113,21 @@ async function markBlocked(db, task, approval, metadata = {}) {
 }
 
 async function executeTask(db, task, options = {}) {
+  const protectedPreventureTask = task?.id
+    ? get(
+      db,
+      "SELECT task_id FROM preventure_research_assignments WHERE task_id = ? LIMIT 1",
+      [task.id],
+    )
+    : null;
+  if (task.kind === "preventure_research" || protectedPreventureTask) {
+    const error = new Error(
+      "Pre-venture research can only run through its exact dedicated authority bridge.",
+    );
+    error.code = "preventure_research_generic_execution_forbidden";
+    error.statusCode = 409;
+    throw error;
+  }
   const workflow = hydrateWorkflow(get(db, "SELECT * FROM workflows WHERE id = ?", [task.workflow_id]));
   if (!workflow) throw new Error(`Workflow missing for task ${task.id}`);
 
@@ -195,7 +225,36 @@ function isPantheonSupervisorOwnedTask(task) {
     || parameters.pantheonProduction?.supervisorOwned === true;
 }
 
-function updateWorkflowAfterCompletion(db, task, result, done) {
+function workflowNeedsReviewArtifacts(db, task) {
+  const current = get(db, "SELECT status FROM workflows WHERE id = ?", [task.workflow_id]);
+  if (["cancelled", "failed", "needs_changes", "needs_attention"].includes(current?.status)) return false;
+  if (["activate_retention_policy", "publish_gelato_dry_run", "publish_digital_product_dry_run"].includes(task.kind)) {
+    return false;
+  }
+  if (isPantheonSupervisorOwnedTask(task)) return false;
+  return remainingWorkflowTasks(db, task.workflow_id, task.id) === 0 || task.kind === "operator_pack_qc";
+}
+
+function prepareWorkflowCompletionArtifacts(db, claim, task) {
+  if (!workflowNeedsReviewArtifacts(db, task)) return null;
+  assertTaskClaimActive(db, claim, "review artifact preparation");
+  const scorecard = upsertWorkflowScorecard(db, task.workflow_id, { taskId: task.id });
+  assertTaskClaimActive(db, claim, "review artifact rendering");
+  const approvalPack = generateApprovalPack(db, task.workflow_id, {
+    taskId: task.id,
+    workflowStatus: "ready_for_review",
+    requireOutsideTransaction: true,
+    prePersistValidation: () => assertTaskClaimActive(
+      db,
+      claim,
+      "review artifact persistence",
+    ),
+  });
+  assertTaskClaimActive(db, claim, "review artifact finalization");
+  return { approvalPack, scorecard };
+}
+
+function updateWorkflowAfterCompletion(db, task, result, done, preparedArtifacts = null) {
   const current = get(db, "SELECT status FROM workflows WHERE id = ?", [task.workflow_id]);
   if (["cancelled", "failed", "needs_changes", "needs_attention"].includes(current?.status)) return;
   run(
@@ -276,8 +335,10 @@ function updateWorkflowAfterCompletion(db, task, result, done) {
       [qualityScore, qualityScore, done, task.workflow_id],
     );
     run(db, "UPDATE commands SET status = 'ready_for_review', updated_at = ? WHERE workflow_id = ?", [done, task.workflow_id]);
-    const scorecard = upsertWorkflowScorecard(db, task.workflow_id, { taskId: task.id });
-    const approvalPack = generateApprovalPack(db, task.workflow_id, { taskId: task.id });
+    if (!preparedArtifacts?.scorecard || !preparedArtifacts?.approvalPack) {
+      throw new Error("Review artifacts were not prepared before task finalization.");
+    }
+    const { scorecard, approvalPack } = preparedArtifacts;
     const teamSummary = recordAgentWorkbenchTeamSummary(db, task.workflow_id, { completingTaskId: task.id });
     const isHandoffFollowup = task.kind === "handoff_followup";
     const reviewSubject = teamSummary
@@ -496,8 +557,8 @@ async function runOnce(db, options = {}) {
   approval = approvalId ? get(db, "SELECT * FROM approvals WHERE id = ?", [approvalId]) : null;
   if (approvalId) {
     if (!approval || approval.status !== "approved") {
-      await markBlocked(db, task, approval || { id: task.approval_id, status: "missing", title: "Missing approval" });
       releaseTaskClaim(db, claim, "blocked", { outcomeStatus: "not_started", metadata: { noProviderCall: true } });
+      await markBlocked(db, task, approval || { id: task.approval_id, status: "missing", title: "Missing approval" });
       return { status: "blocked", task, approval };
     }
     const approvalPayload = fromJson(approval.payload, {});
@@ -565,56 +626,96 @@ async function runOnce(db, options = {}) {
       || result.raw?.responseId
       || result.id
       || null;
-    if (reservation) {
-      resolveReservation(db, task.id, incurredEstimateCents > 0 ? "incurred_estimate" : "released", {
-        amountCents: incurredEstimateCents,
-        metadata: { providerRequestId },
+    try {
+      withImmediateTransaction(db, () => {
+        assertTaskClaimActive(db, claim, "task result finalization");
+        if (reservation) {
+          resolveReservation(db, task.id, incurredEstimateCents > 0 ? "incurred_estimate" : "released", {
+            amountCents: incurredEstimateCents,
+            metadata: { providerRequestId },
+          });
+        }
+        const staged = run(
+          db,
+          `UPDATE tasks
+           SET result = ?, updated_at = ?
+           WHERE id = ? AND status = 'running' AND claim_token = ?`,
+          [toJson(result), done, task.id, claim.claimToken],
+        );
+        if (staged.changes !== 1) {
+          throw new Error(`Pantheon lost the claim for ${task.title} before result finalization.`);
+        }
       });
-    }
-    const staged = run(
-      db,
-      `UPDATE tasks
-       SET result = ?, updated_at = ?
-       WHERE id = ? AND status = 'running' AND claim_token = ?`,
-      [toJson(result), done, task.id, claim.claimToken],
-    );
-    if (staged.changes !== 1) {
-      throw new Error(`Pantheon lost the claim for ${task.title} before result finalization.`);
-    }
 
-    // Workflow state and human artifacts must be finalized while the claim is
-    // still owned. A renderer or projection failure can then be recovered
-    // without falsely reporting the task as completed.
-    updateWorkflowAfterCompletion(db, task, result, done);
-    completeTaskClaim(db, claim, {
-      status: "completed",
-      result,
-      completedAt: done,
-      reconciledCostCents,
-      outcomeStatus: "known",
-      providerRequestId,
-      metadata: { costStatus: result.costStatus || (incurredEstimateCents > 0 ? "incurred_estimate" : "none") },
-    });
-    insertEvent(db, {
-      actor: task.agent,
-      type: "task.completed",
-      entityType: "task",
-      entityId: task.id,
-      message: ["publish_gelato_dry_run", "publish_digital_product_dry_run"].includes(task.kind)
-        ? `${task.title} completed in dry-run mode. No external listing was created.`
-        : task.kind === "live_ai_worker_execution"
-          ? `${task.title} completed using the approved OpenAI Agents SDK worker.`
-          : task.kind === "live_market_research"
-            ? `${task.title} completed using the approved OpenAI research service.`
-            : `${task.title} completed internally and is ready for review.`,
-      metadata: result,
-    });
+      // PDF rendering may take time and must not hold SQLite's writer lock. The
+      // result is already staged, while the live claim remains the authority to
+      // prepare and register review artifacts.
+      const preparedArtifacts = prepareWorkflowCompletionArtifacts(db, claim, task);
+
+      withImmediateTransaction(db, () => {
+        assertTaskClaimActive(db, claim, "task completion commit");
+        // Final workflow state, task completion, and the audit event move
+        // together. The result and reservation were staged earlier while this
+        // same claim remained active.
+        updateWorkflowAfterCompletion(db, task, result, done, preparedArtifacts);
+        completeTaskClaim(db, claim, {
+          status: "completed",
+          result,
+          completedAt: done,
+          reconciledCostCents,
+          outcomeStatus: "known",
+          providerRequestId,
+          metadata: { costStatus: result.costStatus || (incurredEstimateCents > 0 ? "incurred_estimate" : "none") },
+        });
+        insertEvent(db, {
+          actor: task.agent,
+          type: "task.completed",
+          entityType: "task",
+          entityId: task.id,
+          message: ["publish_gelato_dry_run", "publish_digital_product_dry_run"].includes(task.kind)
+            ? `${task.title} completed in dry-run mode. No external listing was created.`
+            : task.kind === "live_ai_worker_execution"
+              ? `${task.title} completed using the approved OpenAI Agents SDK worker.`
+              : task.kind === "live_market_research"
+                ? `${task.title} completed using the approved OpenAI research service.`
+                : `${task.title} completed internally and is ready for review.`,
+          metadata: result,
+        });
+      });
+    } catch (error) {
+      if (!isTaskClaimLostError(error) && result.providerReceipt) {
+        error.providerCallOccurred = true;
+        error.providerResponseReceived = true;
+        error.outcomeUnknown = false;
+        error.needsAttention = true;
+        error.incurredEstimateCents = incurredEstimateCents;
+        error.providerRequestId = error.providerRequestId || providerRequestId;
+        error.providerReceipt = error.providerReceipt || result.providerReceipt;
+        error.localStructuredOutput = error.localStructuredOutput || result.output || null;
+        error.errorKind = error.errorKind || "local_processing_after_provider_success";
+      }
+      throw error;
+    }
     return { status: "completed", task: { ...task, result }, result };
   } catch (error) {
+    if (isTaskClaimLostError(error) || error?.code === "reservation_reconciliation_required") throw error;
+    assertTaskClaimOwned(db, claim, "task failure finalization");
     if (isAgentToolApprovalRequiredError(error)) {
       const providerCallOccurred = error.providerCallOccurred === true;
       const incurredEstimateCents = Number(error.incurredEstimateCents || 0);
       const approval = get(db, "SELECT * FROM approvals WHERE id = ?", [error.approvalId]);
+      if (reservation) {
+        resolveReservation(db, task.id, providerCallOccurred ? "incurred_estimate" : "released", {
+          amountCents: incurredEstimateCents,
+          metadata: { noProviderCall: !providerCallOccurred, pausedForToolApproval: true, providerRequestId: error.providerRequestId || null },
+        });
+      }
+      releaseTaskClaim(db, claim, "blocked", {
+        outcomeStatus: providerCallOccurred ? "known" : "not_started",
+        errorKind: "tool_approval_required",
+        providerRequestId: error.providerRequestId || null,
+        metadata: { approvalId: error.approvalId, noProviderCall: !providerCallOccurred, incurredEstimateCents },
+      });
       const escalation = await markBlocked(db, task, approval || {
         id: error.approvalId,
         status: "pending",
@@ -630,18 +731,6 @@ async function runOnce(db, options = {}) {
         providerRequestId: error.providerRequestId || null,
         agentSdkTraceId: error.agentSdkTraceId || null,
       });
-      if (reservation) {
-        resolveReservation(db, task.id, providerCallOccurred ? "incurred_estimate" : "released", {
-          amountCents: incurredEstimateCents,
-          metadata: { noProviderCall: !providerCallOccurred, pausedForToolApproval: true, providerRequestId: error.providerRequestId || null },
-        });
-      }
-      releaseTaskClaim(db, claim, "blocked", {
-        outcomeStatus: providerCallOccurred ? "known" : "not_started",
-        errorKind: "tool_approval_required",
-        providerRequestId: error.providerRequestId || null,
-        metadata: { approvalId: error.approvalId, noProviderCall: !providerCallOccurred, incurredEstimateCents },
-      });
       return {
         status: "blocked",
         task,
@@ -653,22 +742,63 @@ async function runOnce(db, options = {}) {
 
     const outcomeUnknown = error.outcomeUnknown === true;
     const providerReceipt = error.providerReceipt || null;
-    const providerCallOccurred = error.providerCallOccurred === true || Boolean(providerReceipt);
+    const providerCallOccurred = error.providerCallOccurred === true
+      || (
+        error.providerCallOccurred !== false
+        && Boolean(providerReceipt)
+        && providerReceipt.status !== "not_dispatched"
+      );
     const incurredEstimateCents = Math.max(0, Number(error.incurredEstimateCents || providerReceipt?.incurredEstimateCents || 0));
+    const billingOutcomeUnknown = providerCallOccurred
+      && (
+        error.billingOutcomeUnknown === true
+        || error.outcomeUnknown === true
+        || error.definiteProviderRejection === true
+        || providerReceipt?.billingOutcomeUnknown === true
+      );
+    const reservedExposureCents = billingOutcomeUnknown
+      ? Math.max(
+        0,
+        Number(
+          error.reservedExposureCents
+          || providerReceipt?.reservedExposureCents
+          || reservation?.amount_cents
+          || task.cost_budget_cents
+          || 0,
+        ),
+      )
+      : 0;
     const providerResultNeedsReview = providerCallOccurred
       && !outcomeUnknown
       && (error.needsAttention === true || incurredEstimateCents > 0);
-    const needsAttention = outcomeUnknown || providerResultNeedsReview;
+    const needsAttention = outcomeUnknown || providerResultNeedsReview || billingOutcomeUnknown;
     const retries = task.retries + 1;
     const retryable = !providerCallOccurred && !outcomeUnknown && !approvalId && retries <= task.max_retries;
     const status = needsAttention ? "needs_attention" : (retryable ? "queued" : "failed");
     const failedAt = now();
     run(db, "UPDATE tasks SET retries = ? WHERE id = ?", [retries, task.id]);
     if (reservation) {
-      const reservationStatus = incurredEstimateCents > 0 ? "incurred_estimate" : outcomeUnknown ? "unknown" : "released";
+      const reservationStatus = billingOutcomeUnknown
+        ? "unknown"
+        : incurredEstimateCents > 0
+          ? "incurred_estimate"
+          : outcomeUnknown
+            ? "unknown"
+            : "released";
       resolveReservation(db, task.id, reservationStatus, {
-        amountCents: incurredEstimateCents || undefined,
-        metadata: { error: error.message, outcomeUnknown, providerCallOccurred, providerReceipt },
+        amountCents: billingOutcomeUnknown
+          ? reservedExposureCents
+          : incurredEstimateCents || undefined,
+        metadata: {
+          error: error.message,
+          outcomeUnknown,
+          providerCallOccurred,
+          providerReceipt,
+          billingOutcomeUnknown,
+          exactBillingPending: billingOutcomeUnknown || incurredEstimateCents > 0,
+          noSpendOccurred: billingOutcomeUnknown ? null : !providerCallOccurred,
+          reservedExposureCents,
+        },
       });
     }
     if (retryable) {
@@ -681,13 +811,32 @@ async function runOnce(db, options = {}) {
     } else {
       completeTaskClaim(db, claim, {
         status,
-        result: { error: error.message, outcomeUnknown, providerCallOccurred, providerReceipt },
+        result: {
+          error: error.message,
+          outcomeUnknown,
+          providerCallOccurred,
+          providerReceipt,
+          billingOutcomeUnknown,
+          exactBillingPending: billingOutcomeUnknown || incurredEstimateCents > 0,
+          noSpendOccurred: billingOutcomeUnknown ? null : !providerCallOccurred,
+          reservedExposureCents,
+        },
         completedAt: failedAt,
         outcomeStatus: outcomeUnknown ? "unknown" : providerResultNeedsReview ? "known_provider_result_needs_review" : "failed_before_effect",
         error: error.message,
         errorKind: error.errorKind || (outcomeUnknown ? "provider_outcome_unknown" : providerResultNeedsReview ? "local_processing_after_provider_success" : "non_retryable_error"),
         providerRequestId: error.providerRequestId || providerReceipt?.providerRequestId || null,
-        metadata: { outcomeUnknown, providerCallOccurred, approvalConsumed: Boolean(approvalId), incurredEstimateCents, providerReceipt },
+        metadata: {
+          outcomeUnknown,
+          providerCallOccurred,
+          approvalConsumed: Boolean(approvalId),
+          incurredEstimateCents,
+          providerReceipt,
+          billingOutcomeUnknown,
+          exactBillingPending: billingOutcomeUnknown || incurredEstimateCents > 0,
+          noSpendOccurred: billingOutcomeUnknown ? null : !providerCallOccurred,
+          reservedExposureCents,
+        },
       });
     }
 
@@ -704,6 +853,8 @@ async function runOnce(db, options = {}) {
         [
           outcomeUnknown
             ? `Provider outcome is unknown for ${task.title}; review before any retry`
+            : billingOutcomeUnknown
+              ? `Provider rejected ${task.title} before a usable result, but billing remains pending`
             : `Provider completed ${task.title}, but the local result needs review`,
           failedAt,
           task.workflow_id,
@@ -719,12 +870,29 @@ async function runOnce(db, options = {}) {
           task.venture_id,
           "urgent",
           "open",
-          outcomeUnknown ? `Check provider outcome: ${task.title}` : `Review completed provider work: ${task.title}`,
+          outcomeUnknown
+            ? `Check provider outcome: ${task.title}`
+            : billingOutcomeUnknown
+              ? `Reconcile provider billing: ${task.title}`
+              : `Review completed provider work: ${task.title}`,
           outcomeUnknown
             ? "The provider request may have been accepted. Pantheon will not retry until the outcome and cost are reconciled."
+            : billingOutcomeUnknown
+              ? "The provider rejected the request before a usable result, so Pantheon will not retry. The full approved cost allowance remains held until provider billing evidence confirms the exact charge."
             : "The provider call completed and its receipt and cost were retained, but Pantheon could not safely accept the local result. Review it before any retry.",
           failedAt,
-          toJson({ workflowId: task.workflow_id, outcomeUnknown, providerCallOccurred, approvalId, providerReceipt, incurredEstimateCents }),
+          toJson({
+            workflowId: task.workflow_id,
+            outcomeUnknown,
+            providerCallOccurred,
+            approvalId,
+            providerReceipt,
+            incurredEstimateCents,
+            billingOutcomeUnknown,
+            exactBillingPending: billingOutcomeUnknown || incurredEstimateCents > 0,
+            noSpendOccurred: billingOutcomeUnknown ? null : !providerCallOccurred,
+            reservedExposureCents,
+          }),
         ],
       );
     } else {
@@ -773,6 +941,7 @@ async function runOnce(db, options = {}) {
   }
     })();
   } catch (error) {
+    if (isTaskClaimLostError(error) || error?.code === "reservation_reconciliation_required") throw error;
     executionError = error;
   }
 

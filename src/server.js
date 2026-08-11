@@ -3,10 +3,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { URL } = require("node:url");
+const { isDeepStrictEqual } = require("node:util");
 const { WebSocketServer } = require("ws");
 const {
   emergencyStopPantheon,
   getRuntimeControlState,
+  markEmergencyStopUnknown,
   returnToStandby,
   stopPantheon,
 } = require("./runtime/runtime-supervisor");
@@ -41,7 +43,11 @@ const { getAgentOperatingBriefsState } = require("./runtime/agent-operating-brie
 const { getAgentPlaybooksState } = require("./runtime/agent-playbooks");
 const { getAgentModelReadinessState, storedComparisonPackets } = require("./runtime/agent-model-readiness");
 const { recordAiPilotReviewDecision } = require("./runtime/ai-pilot-review");
-const { createLocalSecurity } = require("./runtime/local-security");
+const {
+  bindAuthenticatedOwnerBillingObservationIssuer,
+  bindAuthenticatedOwnerSessionAttestationIssuer,
+  createLocalSecurity,
+} = require("./runtime/local-security");
 const { recoverSetupBlockedTasks } = require("./runtime/spend-gate");
 const {
   ensureWeeklyDigest,
@@ -82,6 +88,39 @@ const {
   decideCommercialLifecycleApproval,
   hasCommercialLifecycleApprovalPayload,
 } = require("./runtime/commercial-lifecycle-decision");
+const {
+  defaultPreventureResearchAuthorityRegistry,
+} = require("./runtime/preventure-research-authority-registry");
+const {
+  RENEWAL_ADMISSIBLE_PREDECESSOR_EVENTS,
+} = require("./runtime/preventure-research-contract");
+const {
+  registerPreventureResearchProposal,
+  terminatePreventureResearchAuthority,
+} = require("./runtime/preventure-research-authority");
+const {
+  createPreventureLifecycleApproval,
+  decidePreventureLifecycleApproval,
+  hasPreventureLifecycleApprovalPayload,
+} = require("./runtime/preventure-research-lifecycle-decision");
+const { sha256 } = require("./runtime/commercial-test-contract");
+const {
+  materializePreventureResearchAssignments,
+} = require("./runtime/preventure-research-materializer");
+const {
+  getPreventureResearchOwnerState,
+} = require("./runtime/preventure-research-owner-state");
+const {
+  createPreventureResearchStore,
+} = require("./runtime/preventure-research-store");
+const {
+  createPreventureResearchFinalizer,
+} = require("./runtime/preventure-research-finalizer");
+const {
+  createPreventureResearchBridgeOutputStore,
+  createPreventureResearchExecutionBridge,
+} = require("./runtime/preventure-research-execution-bridge");
+const { createMonotonicIsoClock } = require("./runtime/monotonic-iso-clock");
 const {
   ensureSchedulerJobs,
   inspectSafeWorkflow,
@@ -129,6 +168,7 @@ const {
 
 const PUBLIC_DIR = path.join(CONFIG.rootDir, "public");
 const MONITOR_JOB_ID = "job-monitor-cycle";
+const PREVENTURE_RESEARCH_JOB_ID = "job-preventure-research";
 
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -156,6 +196,1786 @@ function clientRequestError(message, statusCode) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+function preventureApiError(code, message, statusCode = 409) {
+  const error = clientRequestError(message, statusCode);
+  error.code = code;
+  return error;
+}
+
+function assertExactRequestBody(body, allowedKeys, requiredKeys = []) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw preventureApiError(
+      "preventure_research_request_invalid",
+      "This pre-venture action requires one exact JSON object.",
+      400,
+    );
+  }
+  const allowed = new Set(allowedKeys);
+  const unexpected = Object.keys(body).filter((key) => !allowed.has(key));
+  if (unexpected.length) {
+    throw preventureApiError(
+      "preventure_research_request_scope_changed",
+      `This action contains unsupported fields: ${unexpected.join(", ")}. Refresh the recorded control and try again.`,
+      400,
+    );
+  }
+  const missing = requiredKeys.filter((key) => (
+    typeof body[key] !== "string" || !body[key].trim()
+  ));
+  if (missing.length) {
+    throw preventureApiError(
+      "preventure_research_request_incomplete",
+      `This action is missing its exact ${missing.join(", ")} binding. Refresh the recorded control and try again.`,
+      400,
+    );
+  }
+  return body;
+}
+
+function assertPreventureHash(value, label) {
+  if (!/^sha256:[a-f0-9]{64}$/.test(String(value || ""))) {
+    throw preventureApiError(
+      "preventure_research_request_hash_invalid",
+      `The exact ${label} binding is invalid. Refresh the recorded control and try again.`,
+      400,
+    );
+  }
+  return value;
+}
+
+function assertPreventureNote(value) {
+  if (value === undefined) return "";
+  if (typeof value !== "string" || value.length > 2_000) {
+    throw preventureApiError(
+      "preventure_research_request_note_invalid",
+      "The optional decision note must be ordinary text of at most 2,000 characters.",
+      400,
+    );
+  }
+  return value.trim();
+}
+
+function assertPreventureAssignmentBinding(db, runtime, assignmentId, body) {
+  assertPreventureHash(body.authorityHash, "authority hash");
+  assertPreventureHash(body.assignmentHash, "assignment hash");
+  assertPreventureHash(body.descriptorHash, "execution descriptor hash");
+  const store = createPreventureResearchStore(db, preventureStoreOptions(runtime));
+  store.verifyLedger();
+  const assignment = store.getAssignment(body.assignmentHash);
+  if (
+    !assignment
+    || assignment.id !== assignmentId
+    || assignment.authorityHash !== body.authorityHash
+    || body.authorityHash !== runtime.authority.authorityHash
+  ) {
+    throw preventureApiError(
+      "preventure_research_assignment_scope_changed",
+      "The requested assignment no longer matches the exact recorded authority. Refresh the control before trying again.",
+    );
+  }
+  return assignment;
+}
+
+function preventureTimestamp(clock) {
+  const raw = typeof clock === "function" ? clock() : new Date();
+  const value = raw instanceof Date ? raw : new Date(raw);
+  if (Number.isNaN(value.getTime())) {
+    throw preventureApiError(
+      "preventure_research_clock_invalid",
+      "Pantheon could not verify the bounded-research clock.",
+      500,
+    );
+  }
+  return value.toISOString();
+}
+
+function resolvePreventureResearchClock(value) {
+  if (value !== undefined && typeof value !== "function") {
+    throw preventureApiError(
+      "preventure_research_clock_invalid",
+      "Pantheon requires one callable bounded-research clock for database, provider retention, and lifecycle truth.",
+      500,
+    );
+  }
+  return createMonotonicIsoClock(value);
+}
+
+let preventureTransactionSequence = 0;
+
+function withPreventureTransaction(db, operation) {
+  if (db.isTransaction) {
+    const savepoint = `server_preventure_${++preventureTransactionSequence}`;
+    db.exec(`SAVEPOINT ${savepoint}`);
+    try {
+      const result = operation();
+      db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+      return result;
+    } catch (error) {
+      db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+      db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+      throw error;
+    }
+  }
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = operation();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function neutralizePreventureEventOwnership(db) {
+  run(
+    db,
+    `UPDATE events
+     SET venture_id = NULL
+     WHERE type LIKE 'preventure_research.%'
+        OR type LIKE 'preventure_research_lifecycle.%'`,
+  );
+}
+
+function insertPreventureEvent(db, event) {
+  insertEvent(db, {
+    ...event,
+    ts: event.ts || preventureTimestamp(
+      () => get(db, "SELECT pantheon_current_time() AS value")?.value,
+    ),
+    actor: event.actor || "pantheon",
+    entityType: event.entityType || "preventure_research_authority",
+  });
+  // Legacy venture ownership is insert-triggered. Reset these portfolio-level
+  // events after insertion so they are never presented as activity by an
+  // unrelated active venture.
+  neutralizePreventureEventOwnership(db);
+}
+
+function preventureScopeFromApproval(approval) {
+  const payload = fromJson(approval?.payload, {});
+  return payload.preventureResearchApprovalScope
+    || payload.preventureLifecycleApprovalScope
+    || payload.approvalScope
+    || payload.scope
+    || null;
+}
+
+function resolvePreventureRuntimeAuthority(options = {}) {
+  const authorityRegistry = options.preventureResearchAuthorityRegistry
+    || defaultPreventureResearchAuthorityRegistry;
+  if (
+    !authorityRegistry
+    || typeof authorityRegistry.resolveAuthorityEntry !== "function"
+    || typeof authorityRegistry.resolveCandidateAuthorityEntry !== "function"
+  ) {
+    const error = new Error("The immutable pre-venture authority registry is unavailable.");
+    error.code = "preventure_research_authority_registry_invalid";
+    throw error;
+  }
+  const suppliedAuthority = options.preventureResearchAuthority;
+  const suppliedReadiness = options.preventureResearchReadinessSpec;
+  const requestedHash = options.preventureResearchAuthorityHash
+    || suppliedAuthority?.authorityHash
+    || null;
+  let entry;
+  try {
+    entry = requestedHash
+      ? authorityRegistry.resolveAuthorityEntry(
+        requestedHash,
+        suppliedAuthority
+          ? { id: suppliedAuthority.id, version: suppliedAuthority.version }
+          : {},
+      )
+      : authorityRegistry.resolveCandidateAuthorityEntry();
+  } catch (cause) {
+    const error = new Error(
+      String(cause?.message || "The exact registered pre-venture authority is unavailable."),
+    );
+    error.code = cause?.code || "preventure_research_authority_unknown";
+    throw error;
+  }
+  if (!entry?.authority || !entry?.readinessSpec) {
+    const error = new Error(
+      "No exact registered candidate pre-venture authority is configured for dispatch.",
+    );
+    error.code = "preventure_research_candidate_authority_missing";
+    throw error;
+  }
+  if (
+    (suppliedAuthority && !isDeepStrictEqual(suppliedAuthority, entry.authority))
+    || (suppliedReadiness && !isDeepStrictEqual(suppliedReadiness, entry.readinessSpec))
+  ) {
+    const error = new Error(
+      "The supplied pre-venture authority or readiness record differs from its immutable registry entry.",
+    );
+    error.code = "preventure_research_authority_changed";
+    throw error;
+  }
+  let candidate = null;
+  try {
+    candidate = authorityRegistry.resolveCandidateAuthorityEntry();
+  } catch {
+    candidate = null;
+  }
+  return Object.freeze({
+    authorityRegistry,
+    authority: entry.authority,
+    readinessSpec: entry.readinessSpec,
+    dispatchCandidate: authorityRegistry.candidateAuthorityHash === entry.authority.authorityHash
+      && candidate?.authority?.authorityHash === entry.authority.authorityHash
+      && isDeepStrictEqual(candidate.authority, entry.authority)
+      && isDeepStrictEqual(candidate.readinessSpec, entry.readinessSpec),
+  });
+}
+
+function preventureRuntimeIsCandidate(runtime) {
+  let candidate = null;
+  try {
+    candidate = runtime?.authorityRegistry?.resolveCandidateAuthorityEntry();
+  } catch {
+    candidate = null;
+  }
+  return runtime?.authorityRegistry?.candidateAuthorityHash === runtime?.authority?.authorityHash
+    && candidate?.authority?.authorityHash === runtime?.authority?.authorityHash
+    && isDeepStrictEqual(candidate?.authority, runtime?.authority)
+    && isDeepStrictEqual(candidate?.readinessSpec, runtime?.readinessSpec);
+}
+
+function assertPreventureRuntimeCandidate(runtime) {
+  if (!preventureRuntimeIsCandidate(runtime)) {
+    throw preventureApiError(
+      "preventure_research_authority_not_candidate",
+      "This registered authority is historical. Only the registry's exact current candidate may create approvals, materialize work, dispatch, or finalize a fresh diligence round.",
+    );
+  }
+}
+
+function preventurePredecessorTerminality(store, authority) {
+  const predecessorHash = authority?.supersedesAuthorityHash || null;
+  if (!predecessorHash) {
+    return { required: false, terminal: true, predecessorHash: null, latest: null };
+  }
+  const predecessor = store.getAuthority(predecessorHash);
+  const lifecycle = predecessor ? store.loadLifecycle(predecessorHash) : [];
+  const latest = lifecycle.at(-1) || null;
+  return {
+    required: true,
+    terminal: Boolean(
+      predecessor
+      && RENEWAL_ADMISSIBLE_PREDECESSOR_EVENTS.includes(latest?.eventType),
+    ),
+    predecessorHash,
+    latest,
+  };
+}
+
+function assertPreventurePredecessorTerminal(store, authority) {
+  const status = preventurePredecessorTerminality(store, authority);
+  if (!status.terminal) {
+    throw preventureApiError(
+      "preventure_research_predecessor_not_terminal",
+      "The candidate renewal cannot be proposed, accepted, or activated until its exact predecessor has one durable terminal lifecycle event.",
+    );
+  }
+  return status;
+}
+
+function defaultPreventureResearchRuntime(db, options = {}) {
+  const resolved = resolvePreventureRuntimeAuthority(options);
+  const { authority, readinessSpec, authorityRegistry } = resolved;
+  const clock = options.preventureResearchClock;
+  const baseStore = createPreventureResearchStore(db, { clock, authorityRegistry });
+  const retainedOutputStore = createPreventureResearchBridgeOutputStore({
+    store: baseStore,
+    authority,
+    artifactRoot: options.preventureResearchArtifactRoot || CONFIG.artifactRoot,
+  });
+  const store = typeof baseStore.withRetainedOutputStore === "function"
+    ? baseStore.withRetainedOutputStore(retainedOutputStore)
+    : createPreventureResearchStore(db, {
+      clock,
+      authorityRegistry,
+      retainedOutputStore,
+    });
+  // Structural database checks cannot prove that an immutable retained-output
+  // hard link is still present and unchanged. The production runtime must bind
+  // and verify the exact output store before any health or owner control can
+  // report this authority as available.
+  store.verifyLedger();
+  const finalizer = createPreventureResearchFinalizer({
+    db,
+    store,
+    authority,
+    readinessSpec,
+    authorityRegistry,
+    clock,
+  });
+  const bridge = createPreventureResearchExecutionBridge({
+    db,
+    store,
+    outputStore: retainedOutputStore,
+    authority,
+    authorityRegistry,
+    artifactRoot: options.preventureResearchArtifactRoot || CONFIG.artifactRoot,
+    finalizeDecision: finalizer,
+    clock,
+  });
+  const startupArtifactRecovery = bridge.recoverCrashRetainedOutput();
+  store.verifyLedger();
+  return {
+    prepareAssignment: bridge.prepareAssignment,
+    runAssignment: bridge.runAssignment,
+    reprocessAssignment: bridge.reprocessAssignment,
+    recoverTerminalRetainedOutput: bridge.recoverTerminalRetainedOutput,
+    retainedOutputStore,
+    startupArtifactRecovery,
+    readiness: bridge.readiness,
+    finalizeDecision: finalizer,
+    describeFinalization: finalizer.describeFinalization,
+  };
+}
+
+function preventureRuntimeConfiguration(options = {}, db = null) {
+  const resolved = resolvePreventureRuntimeAuthority(options);
+  const injected = options.preventureResearchRuntime
+    || (db && typeof options.preventureResearchRuntimeFactory === "function"
+      ? options.preventureResearchRuntimeFactory({ db, options })
+      : db ? defaultPreventureResearchRuntime(db, options) : {});
+  return Object.freeze({
+    authorityRegistry: resolved.authorityRegistry,
+    authority: resolved.authority,
+    readinessSpec: resolved.readinessSpec,
+    dispatchCandidate: resolved.dispatchCandidate,
+    clock: options.preventureResearchClock,
+    prepareAssignment: typeof injected.prepareAssignment === "function"
+      ? injected.prepareAssignment
+      : null,
+    runAssignment: typeof injected.runAssignment === "function" ? injected.runAssignment : null,
+    reprocessAssignment: typeof injected.reprocessAssignment === "function"
+      ? injected.reprocessAssignment
+      : null,
+    recoverTerminalRetainedOutput:
+      typeof injected.recoverTerminalRetainedOutput === "function"
+        ? injected.recoverTerminalRetainedOutput
+        : null,
+    retainedOutputStore: injected.retainedOutputStore || null,
+    finalizeDecision: typeof injected.finalizeDecision === "function"
+      ? injected.finalizeDecision
+      : null,
+    describeFinalization: typeof injected.describeFinalization === "function"
+      ? injected.describeFinalization
+      : null,
+    readiness: typeof injected.readiness === "function" ? injected.readiness : null,
+  });
+}
+
+function preventureStoreOptions(runtime) {
+  return {
+    clock: runtime.clock,
+    authorityRegistry: runtime.authorityRegistry,
+    ...(runtime.retainedOutputStore
+      ? { retainedOutputStore: runtime.retainedOutputStore }
+      : {}),
+  };
+}
+
+function canonicalAgentReceiptHashForOwnerBilling(value) {
+  const text = String(value || "");
+  return text.startsWith("sha256:") ? text : `sha256:${text}`;
+}
+
+function deriveOwnerBillingObservationInput(db, store, assignmentHash, body) {
+  const assignment = store.getAssignment(assignmentHash);
+  if (!assignment) {
+    throw preventureApiError(
+      "preventure_research_assignment_missing",
+      "This owner billing observation no longer matches an exact research assignment.",
+      404,
+    );
+  }
+  if (
+    body.confirm !== "RECORD OWNER-ATTESTED PROVIDER BILLING"
+    || !Number.isSafeInteger(body.amountAudCents)
+    || body.amountAudCents < 0
+  ) {
+    throw preventureApiError(
+      "preventure_research_owner_billing_observation_invalid",
+      "Owner-attested billing requires the exact confirmation and a non-negative AUD-cent amount.",
+      400,
+    );
+  }
+  const reference = (value, label) => {
+    const text = String(value || "").trim();
+    const hasControlCharacter = [...text].some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 31 || code === 127;
+    });
+    if (!text || text.length > 200 || hasControlCharacter) {
+      throw preventureApiError(
+        "preventure_research_owner_billing_observation_invalid",
+        `${label} must be a non-secret local reference of 1-200 characters.`,
+        400,
+      );
+    }
+    return text;
+  };
+  const observedAtMs = Date.parse(body.observedAt);
+  if (!Number.isFinite(observedAtMs)) {
+    throw preventureApiError(
+      "preventure_research_owner_billing_observation_invalid",
+      "The owner-observed billing time is invalid.",
+      400,
+    );
+  }
+  const observedAt = new Date(observedAtMs).toISOString();
+  const ledger = store.readLedger(assignment.authorityHash);
+  if (ledger.ownerBillingObservations.some(
+    (item) => item.assignmentHash === assignment.assignmentHash,
+  )) {
+    throw preventureApiError(
+      "preventure_research_owner_billing_observation_already_recorded",
+      "This assignment already has an immutable owner-attested billing observation.",
+    );
+  }
+  const costChain = ledger.costEvents.filter(
+    (item) => item.assignmentHash === assignment.assignmentHash,
+  ).sort((left, right) => left.sequence - right.sequence);
+  const costKeys = new Set(costChain.map((item) => item.costKey));
+  const predecessor = costChain.at(-1);
+  const originalCost = costChain[0];
+  if (!predecessor || !originalCost || costKeys.size !== 1) {
+    throw preventureApiError(
+      "preventure_research_owner_billing_observation_cost_changed",
+      "The assignment no longer has one exact immutable provider-cost chain.",
+    );
+  }
+  const recovery = ledger.terminalRecoveries.find((item) => (
+    item.assignmentHash === assignment.assignmentHash
+    && item.costSnapshot.terminalReceiptHash === predecessor.receiptHash
+  )) || null;
+  const decision = !recovery && ledger.decision ? ledger.decision : null;
+  if (
+    (!recovery && !decision)
+    || (recovery && predecessor.eventType !== "unknown")
+    || (decision && !["estimated", "incurred"].includes(predecessor.eventType))
+  ) {
+    throw preventureApiError(
+      "preventure_research_owner_billing_observation_binding_changed",
+      "Owner billing can be recorded only against one exact terminal-custody or sealed-decision cost head.",
+    );
+  }
+  const modelCall = get(db, "SELECT * FROM model_calls WHERE id = ?", [
+    predecessor.modelCallId,
+  ]);
+  const receipt = get(db, "SELECT * FROM agent_run_receipts WHERE id = ?", [
+    predecessor.agentRunReceiptId,
+  ]);
+  if (!modelCall || !receipt) {
+    throw preventureApiError(
+      "preventure_research_owner_billing_observation_binding_changed",
+      "The provider execution receipt is unavailable.",
+    );
+  }
+  const modelMetadata = fromJson(modelCall.metadata, {});
+  const dispatch = recovery?.originalDispatch || null;
+  const providerDispatchedAt = dispatch?.providerDispatchedAt
+    || predecessor.occurredAt;
+  const clientRequestId = dispatch?.clientRequestId || modelMetadata.clientRequestId;
+  const providerRequestId = dispatch
+    ? dispatch.providerRequestId
+    : modelCall.provider_request_id;
+  const providerResponseId = dispatch
+    ? dispatch.providerResponseId
+    : modelMetadata.providerResponseId;
+  return {
+    actionKind: "owner_attested_provider_billing_observation",
+    authorityHash: assignment.authorityHash,
+    assignmentTemplateHash: assignment.templateHash,
+    taskId: assignment.taskId,
+    predecessor: {
+      kind: recovery ? "terminal_recovery" : "sealed_decision",
+      hash: recovery ? recovery.recoveryHash : decision.decisionHash,
+      expectedPreviousReceiptHash: predecessor.receiptHash,
+    },
+    costKey: predecessor.costKey,
+    taskAttemptId: predecessor.taskAttemptId,
+    modelCallId: predecessor.modelCallId,
+    agentRunReceiptId: predecessor.agentRunReceiptId,
+    agentRunReceiptHash: canonicalAgentReceiptHashForOwnerBilling(
+      receipt.receipt_hash,
+    ),
+    budgetReservationId: predecessor.budgetReservationId,
+    costId: predecessor.costId,
+    clientRequestId,
+    providerRequestId,
+    providerResponseId,
+    provider: assignment.provider,
+    providerDispatchedAt,
+    providerAccountReferenceHash: sha256({
+      kind: "owner_provider_account_reference",
+      provider: assignment.provider,
+      value: reference(body.providerAccountReference, "Provider account reference"),
+    }),
+    billingRecordReferenceHash: sha256({
+      kind: "owner_provider_billing_record_reference",
+      provider: assignment.provider,
+      value: reference(body.billingRecordReference, "Billing record reference"),
+    }),
+    currency: "AUD",
+    amountAudCents: body.amountAudCents,
+    observedAt,
+    originalCostOccurredAt: originalCost.occurredAt,
+    allocationBasis: {
+      method: "owner_observed_provider_billing_allocated_to_original_dispatch",
+      amountAudCents: body.amountAudCents,
+      currency: "AUD",
+      providerDispatchedAt,
+      originalCostOccurredAt: originalCost.occurredAt,
+    },
+    limitations: [
+      "This is an authenticated owner observation of provider billing, not a provider-settled API receipt.",
+    ],
+  };
+}
+
+function preventureExecutionReadiness(runtime, input = {}) {
+  let adapter = null;
+  let readinessError = null;
+  if (typeof runtime.readiness === "function") {
+    try {
+      const reported = runtime.readiness(input);
+      if (reported && typeof reported.then === "function") {
+        readinessError = "The bounded-research readiness check must finish locally before the request is handled.";
+      } else if (reported && typeof reported === "object" && !Array.isArray(reported)) {
+        adapter = reported;
+      } else {
+        readinessError = "The bounded-research adapter did not return an exact readiness record.";
+      }
+    } catch (error) {
+      readinessError = String(error?.message || "The bounded-research readiness check failed.");
+    }
+  }
+  const descriptorReady = /^sha256:[a-f0-9]{64}$/.test(
+    String(adapter?.descriptorHash || ""),
+  ) && /^sha256:[a-f0-9]{64}$/.test(String(adapter?.requestBodyHash || ""));
+  const providerPreflightReady = adapter?.credentialConfigured === true
+    && adapter?.egressReady === true
+    && adapter?.requestExact === true
+    && adapter?.artifactStoreReady === true
+    && descriptorReady;
+  const providerCallReady = typeof runtime.runAssignment === "function"
+    && adapter?.ready === true
+    && providerPreflightReady;
+  const preparationReady = typeof runtime.prepareAssignment === "function"
+    && adapter?.canPrepare === true
+    && providerPreflightReady;
+  const runReady = typeof runtime.runAssignment === "function"
+    && (providerCallReady || preparationReady)
+  const reprocessReady = typeof runtime.reprocessAssignment === "function";
+  const retainedOutputHash = /^sha256:[a-f0-9]{64}$/.test(
+    String(adapter?.retainedOutputHash || ""),
+  ) ? adapter.retainedOutputHash : null;
+  const canReprocess = reprocessReady
+    && adapter?.canReprocess === true
+    && descriptorReady
+    && retainedOutputHash !== null;
+  const terminalCustodyReady = typeof runtime.recoverTerminalRetainedOutput === "function";
+  const canRecoverCustody = terminalCustodyReady
+    && adapter?.canRecoverCustody === true
+    && descriptorReady
+    && retainedOutputHash !== null;
+  const finalizeReady = typeof runtime.finalizeDecision === "function"
+    && typeof runtime.describeFinalization === "function";
+  return {
+    status: runReady && reprocessReady && finalizeReady ? "ready" : "not_ready",
+    assignmentRunReady: runReady,
+    retainedOutputReprocessReady: reprocessReady,
+    canReprocess,
+    terminalCustodyReady,
+    canRecoverCustody,
+    retainedOutputHash,
+    deterministicDecisionReady: finalizeReady,
+    providerContactAllowed: providerCallReady,
+    providerCallReady,
+    requiresPreparation: preparationReady && !providerCallReady,
+    descriptorHash: descriptorReady ? adapter.descriptorHash : null,
+    requestBodyHash: descriptorReady ? adapter.requestBodyHash : null,
+    adapterStatus: adapter?.status || null,
+    blockers: Array.isArray(adapter?.blockers) ? adapter.blockers : [],
+    message: runReady
+      ? "The dedicated bounded-research runner is connected."
+      : readinessError
+        || adapter?.blockers?.[0]?.message
+        || "The dedicated bounded-research runner is not connected and locally ready, so no provider call can start.",
+  };
+}
+
+function preventureFinalizationControl(db, runtime) {
+  const unavailable = (message, blockers = []) => ({
+    ready: false,
+    authorityHash: runtime.authority.authorityHash,
+    evidenceSetHash: null,
+    receiptSetHash: null,
+    resultingReadinessHash: null,
+    outcome: null,
+    blockers,
+    message,
+  });
+  if (
+    typeof runtime.finalizeDecision !== "function"
+    || typeof runtime.describeFinalization !== "function"
+  ) {
+    return unavailable(
+      "The deterministic diligence decision builder is not connected.",
+    );
+  }
+  try {
+    const state = createPreventureResearchStore(
+      db,
+      preventureStoreOptions(runtime),
+    ).readState(runtime.authority.authorityHash);
+    if (state.state !== "activated") {
+      return unavailable(
+        state.terminal
+          ? "This bounded diligence round is already closed; there is no decision left to complete."
+          : "The diligence summary becomes available only while the exact research round is active.",
+      );
+    }
+    const described = runtime.describeFinalization({
+      db,
+      authority: runtime.authority,
+      readinessSpec: runtime.readinessSpec,
+      authorityHash: runtime.authority.authorityHash,
+      clock: runtime.clock,
+    });
+    if (described && typeof described.then === "function") {
+      return unavailable(
+        "The finalization readiness check must finish locally before it is displayed.",
+      );
+    }
+    const hashesReady = [
+      described?.authorityHash,
+      described?.evidenceSetHash,
+      described?.receiptSetHash,
+      described?.resultingReadinessHash,
+    ].every((value) => /^sha256:[a-f0-9]{64}$/.test(String(value || "")));
+    const exact = described?.authorityHash === runtime.authority.authorityHash;
+    const ready = described?.ready === true && hashesReady && exact;
+    const blockers = Array.isArray(described?.blockers) ? described.blockers : [];
+    return {
+      ready,
+      authorityHash: exact ? described.authorityHash : runtime.authority.authorityHash,
+      evidenceSetHash: ready ? described.evidenceSetHash : null,
+      receiptSetHash: ready ? described.receiptSetHash : null,
+      resultingReadinessHash: ready ? described.resultingReadinessHash : null,
+      outcome: ready ? described.outcome || null : null,
+      blockers,
+      message: ready
+        ? "The retained evidence is ready for a deterministic diligence decision."
+        : blockers[0]
+          || "The retained evidence is not complete enough to seal a diligence decision.",
+    };
+  } catch (error) {
+    return unavailable(
+      "The deterministic diligence decision readiness check failed closed.",
+      [String(error?.message || "unknown finalization readiness error")],
+    );
+  }
+}
+
+function preventureExecutionReadinessProjection(db, runtime) {
+  const summary = preventureExecutionReadiness(runtime);
+  const finalizationControl = preventureFinalizationControl(db, runtime);
+  try {
+    const store = createPreventureResearchStore(db, preventureStoreOptions(runtime));
+    store.verifyLedger();
+    const assignments = store.listAssignments(runtime.authority.authorityHash);
+    const assignmentControls = assignments.map((assignment) => {
+      const readiness = preventureExecutionReadiness(runtime, {
+        authorityHash: assignment.authorityHash,
+        assignmentId: assignment.id,
+        assignmentHash: assignment.assignmentHash,
+      });
+      return {
+        authorityHash: assignment.authorityHash,
+        assignmentId: assignment.id,
+        assignmentHash: assignment.assignmentHash,
+        descriptorHash: readiness.descriptorHash,
+        requestBodyHash: readiness.requestBodyHash,
+        ready: readiness.assignmentRunReady,
+        providerCallReady: readiness.providerCallReady,
+        requiresPreparation: readiness.requiresPreparation,
+        canReprocess: readiness.canReprocess,
+        canRecoverCustody: readiness.canRecoverCustody,
+        retainedOutputHash: readiness.retainedOutputHash,
+        status: readiness.adapterStatus || readiness.status,
+        blockers: readiness.blockers,
+      };
+    });
+    const assignmentRunReady = assignmentControls.some((control) => control.ready === true);
+    const providerContactAllowed = assignmentControls.some(
+      (control) => control.providerCallReady === true,
+    );
+    return {
+      ...summary,
+      status: assignmentRunReady
+        && summary.retainedOutputReprocessReady
+        && summary.deterministicDecisionReady
+        ? "ready"
+        : "not_ready",
+      assignmentRunReady,
+      providerContactAllowed,
+      assignmentControls,
+      finalizationControl,
+      descriptorHash: null,
+      requestBodyHash: null,
+      message: assignmentRunReady
+        ? "The dedicated bounded-research runner has an exact locally verified assignment control."
+        : summary.message,
+    };
+  } catch (error) {
+    return {
+      ...summary,
+      status: "not_ready",
+      assignmentRunReady: false,
+      providerContactAllowed: false,
+      assignmentControls: [],
+      finalizationControl,
+      descriptorHash: null,
+      requestBodyHash: null,
+      message: `The bounded-research ledger or assignment controls could not be verified: ${String(error?.message || "unknown integrity error")}`,
+    };
+  }
+}
+
+function getCanonicalPreventureResearchState(db, runtime) {
+  return getPreventureResearchOwnerState(db, {
+    authorityRegistry: runtime.authorityRegistry,
+    readinessSpec: runtime.readinessSpec,
+    clock: runtime.clock,
+    storeOptions: preventureStoreOptions(runtime),
+  });
+}
+
+function sealExpiredPreventureResearchFromServer(db, runtime) {
+  return withPreventureTransaction(db, () => {
+    const store = createPreventureResearchStore(db, preventureStoreOptions(runtime));
+    store.verifyLedger();
+    const authority = store.getAuthority(runtime.authority.authorityHash);
+    if (!authority) {
+      return { status: "not_applicable", reason: "authority_missing" };
+    }
+    const ledger = store.readLedger(authority.authorityHash);
+    const state = store.readState(authority.authorityHash);
+    const latest = ledger.lifecycle.at(-1);
+    if (latest?.eventType === "expired") {
+      return { status: "already_sealed", state };
+    }
+    if (state.state !== "expired" || !latest) {
+      return { status: "not_applicable", state };
+    }
+    const active = get(
+      db,
+      `SELECT tasks.id
+       FROM preventure_research_assignments AS assignments
+       JOIN tasks ON tasks.id = assignments.task_id
+       LEFT JOIN task_attempts AS attempts
+         ON attempts.task_id = tasks.id AND attempts.status = 'running'
+       WHERE assignments.authority_hash = ?
+         AND (tasks.status = 'running' OR attempts.id IS NOT NULL)
+       LIMIT 1`,
+      [authority.authorityHash],
+    );
+    if (active) {
+      return {
+        status: "withheld",
+        reason: "active_provider_outcome_must_be_preserved",
+        taskId: active.id,
+      };
+    }
+    const terminalAt = authority.expiresAt;
+    const recordedAt = preventureTimestamp(runtime.clock);
+    const terminated = terminatePreventureResearchAuthority(
+      store,
+      authority.authorityHash,
+      "expired",
+      {
+        expectedLatestEventHash: latest.eventHash,
+        occurredAt: terminalAt,
+        actor: "pantheon",
+        reason: "The fixed bounded-diligence deadline passed and no provider-capable attempt remains active.",
+      },
+    );
+    run(
+      db,
+      `UPDATE tasks
+       SET status = 'cancelled', error = COALESCE(error, ?), updated_at = ?
+       WHERE id IN (
+         SELECT task_id FROM preventure_research_assignments WHERE authority_hash = ?
+       ) AND status IN ('planned', 'queued', 'blocked', 'waiting_approval')`,
+      ["The exact bounded-diligence authority expired before this assignment ran.", recordedAt, authority.authorityHash],
+    );
+    run(
+      db,
+      `UPDATE workflows
+       SET status = CASE
+             WHEN EXISTS (
+               SELECT 1 FROM preventure_research_assignments AS assignments
+               JOIN tasks ON tasks.id = assignments.task_id
+               WHERE assignments.workflow_id = workflows.id
+                 AND tasks.status = 'needs_attention'
+             ) THEN 'needs_attention'
+             ELSE 'cancelled'
+           END,
+           current_step = ?, updated_at = ?
+       WHERE id IN (
+         SELECT workflow_id FROM preventure_research_assignments WHERE authority_hash = ?
+       ) AND status NOT IN ('completed', 'cancelled', 'archived')`,
+      ["The fixed bounded-diligence deadline passed.", recordedAt, authority.authorityHash],
+    );
+    run(
+      db,
+      `UPDATE approvals
+       SET status = 'expired', decided_at = COALESCE(decided_at, ?),
+           decision_note = COALESCE(decision_note, ?)
+       WHERE status = 'pending'
+         AND json_extract(
+           CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+           '$.preventureResearchApprovalScope.authority.hash'
+         ) = ?`,
+      [recordedAt, "The exact bounded-diligence authority expired.", authority.authorityHash],
+    );
+    insertPreventureEvent(db, {
+      ts: recordedAt,
+      level: state.unknownProviderOutcomeCount || state.unknownCostCount ? "warn" : "info",
+      actor: "pantheon",
+      type: "preventure_research.expired",
+      entityId: authority.authorityHash,
+      message: state.unknownProviderOutcomeCount || state.unknownCostCount
+        ? "The bounded diligence deadline was sealed. A provider outcome or cost still needs reconciliation; no new provider call may start."
+        : "The bounded diligence deadline was sealed. Remaining unstarted work was cancelled and no new provider call may start.",
+      metadata: {
+        terminalAt,
+        recordedAt,
+        previousEventHash: latest.eventHash,
+        unknownProviderOutcomeCount: state.unknownProviderOutcomeCount,
+        unknownCostCount: state.unknownCostCount,
+      },
+    });
+    setPreventureSchedulerStatus(db, "disabled");
+    neutralizePreventureEventOwnership(db);
+    return { status: "sealed", changed: terminated.created, state: terminated.state };
+  });
+}
+
+function ensurePreventureResearchFoundation(db, runtime) {
+  const timestamp = preventureTimestamp(runtime.clock);
+  return withPreventureTransaction(db, () => {
+    const store = createPreventureResearchStore(db, preventureStoreOptions(runtime));
+    store.verifyLedger();
+    if (!preventureRuntimeIsCandidate(runtime)) {
+      setPreventureSchedulerStatus(db, "disabled");
+      return {
+        status: "withheld",
+        reason: "historical_authority_not_candidate",
+        authorityHash: runtime.authority.authorityHash,
+        state: store.getAuthority(runtime.authority.authorityHash)
+          ? store.readState(runtime.authority.authorityHash).state
+          : "unregistered_history",
+      };
+    }
+    const predecessor = preventurePredecessorTerminality(store, runtime.authority);
+    if (!predecessor.terminal) {
+      setPreventureSchedulerStatus(db, "disabled");
+      return {
+        status: "withheld",
+        reason: "candidate_predecessor_not_terminal",
+        authorityHash: runtime.authority.authorityHash,
+        predecessorAuthorityHash: predecessor.predecessorHash,
+        predecessorLifecycleState: predecessor.latest?.eventType || "unregistered",
+      };
+    }
+    const candidateRecorded = store.getAuthority(runtime.authority.authorityHash);
+    let proposal = null;
+    if (!candidateRecorded) {
+      proposal = registerPreventureResearchProposal(
+        store,
+        runtime.authority,
+        runtime.readinessSpec,
+        {
+          occurredAt: timestamp,
+          actor: "jarvis",
+          reason: "The exact preparation-only diligence proposal is ready for owner review.",
+        },
+      );
+      insertPreventureEvent(db, {
+        type: "preventure_research.proposed",
+        entityId: runtime.authority.authorityHash,
+        message: "A bounded preparation-only research proposal is ready for review. No research, product work, contact, publishing, or spend has started.",
+        metadata: {
+          authorityHash: runtime.authority.authorityHash,
+          internalAiSpendCapAudCents: runtime.authority.internalAiSpendCapAudCents,
+          externalCommercialSpendCapAudCents: 0,
+        },
+      });
+    }
+    const authority = store.getAuthority(runtime.authority.authorityHash);
+    if (!authority) {
+      return {
+        status: "withheld",
+        reason: "exact_preventure_authority_unavailable",
+      };
+    }
+    const state = store.readState(authority.authorityHash);
+    const latestLifecycle = store.loadLifecycle(authority.authorityHash).at(-1);
+    if (
+      state.state === "expired"
+      && latestLifecycle
+      && latestLifecycle.eventType !== "expired"
+    ) {
+      const expiry = sealExpiredPreventureResearchFromServer(db, runtime);
+      return {
+        status: expiry.status === "sealed" ? "ready" : "withheld",
+        reason: expiry.reason || null,
+        authorityHash: authority.authorityHash,
+        state: expiry.state?.state || "expired",
+        expiry,
+      };
+    }
+    let approval = null;
+    let materialization = null;
+    if (state.state === "proposed" && !state.expired) {
+      approval = createPreventureLifecycleApproval(
+        db,
+        authority.authorityHash,
+        "accepted",
+        {
+          requestedAt: timestamp,
+          requestedBy: "jarvis",
+          storeOptions: preventureStoreOptions(runtime),
+        },
+      );
+      if (approval.created) {
+        insertPreventureEvent(db, {
+          type: "preventure_research.acceptance_requested",
+          entityType: "approval",
+          entityId: approval.approval.id,
+          message: "The exact bounded-research proposal is waiting for the owner's acceptance. No AI cost or external action has occurred.",
+          metadata: { authorityHash: authority.authorityHash, scopeHash: approval.scopeHash },
+        });
+      }
+    } else if (state.state === "accepted" && !state.expired) {
+      approval = createPreventureLifecycleApproval(
+        db,
+        authority.authorityHash,
+        "activated",
+        {
+          requestedAt: timestamp,
+          requestedBy: "jarvis",
+          storeOptions: preventureStoreOptions(runtime),
+        },
+      );
+      if (approval.created) {
+        insertPreventureEvent(db, {
+          type: "preventure_research.activation_requested",
+          entityType: "approval",
+          entityId: approval.approval.id,
+          message: "The accepted research scope is waiting for a separate activation decision. No AI call has started.",
+          metadata: { authorityHash: authority.authorityHash, scopeHash: approval.scopeHash },
+        });
+      }
+    } else if (state.state === "activated" && !state.expired) {
+      const existingAssignments = store.listAssignments(authority.authorityHash);
+      if (existingAssignments.length === 0) {
+        materialization = materializePreventureResearchAssignments(
+          store,
+          authority.authorityHash,
+          {
+            db,
+            insideTransaction: true,
+            expectedAuthorityHash: authority.authorityHash,
+            assignedAt: timestamp,
+          },
+        );
+      } else if (existingAssignments.length !== authority.assignments.length) {
+        throw preventureApiError(
+          "preventure_research_materialization_incomplete",
+          "The active bounded-research round has an incomplete assignment set. Pantheon withheld restart instead of recreating or widening work.",
+          500,
+        );
+      }
+    }
+    const currentState = store.readState(authority.authorityHash);
+    const executionReady = currentState.state === "activated"
+      && preventureExecutionReadinessProjection(db, runtime).assignmentRunReady === true;
+    setPreventureSchedulerStatus(db, executionReady ? "enabled" : "disabled");
+    neutralizePreventureEventOwnership(db);
+    return {
+      status: "ready",
+      proposalCreated: proposal?.created === true,
+      approvalCreated: approval?.created === true,
+      materialized: materialization?.created === true,
+      authorityHash: authority.authorityHash,
+      state: currentState.state,
+    };
+  });
+}
+
+function decidePreventureLifecycleFromServer(
+  db,
+  runtime,
+  approvalId,
+  decision,
+  body,
+  ownerRequest,
+) {
+  assertPreventureRuntimeCandidate(runtime);
+  assertPreventureHash(body.scopeHash, "decision scope hash");
+  const decisionNote = assertPreventureNote(body.note);
+  if (decision === "changes") {
+    throw preventureApiError(
+      "preventure_research_replacement_required",
+      "This authority is immutable. Decline it, then prepare a separately reviewed replacement instead of changing the accepted scope in place.",
+    );
+  }
+  if (!["approve", "reject"].includes(decision)) {
+    throw preventureApiError(
+      "preventure_research_lifecycle_decision_invalid",
+      "Decision must be approve or reject.",
+      400,
+    );
+  }
+  const decidedAt = preventureTimestamp(runtime.clock);
+  return withPreventureTransaction(db, () => {
+    const lifecycleStore = createPreventureResearchStore(
+      db,
+      preventureStoreOptions(runtime),
+    );
+    assertPreventurePredecessorTerminal(lifecycleStore, runtime.authority);
+    const approval = get(db, "SELECT * FROM approvals WHERE id = ?", [approvalId]);
+    if (!approval) {
+      throw preventureApiError(
+        "preventure_research_lifecycle_decision_not_found",
+        "This bounded-research decision no longer exists.",
+        404,
+      );
+    }
+    if (!hasPreventureLifecycleApprovalPayload(approval, {
+      db,
+      authority: runtime.authority,
+      storeOptions: preventureStoreOptions(runtime),
+    })) {
+      throw preventureApiError(
+        "preventure_research_lifecycle_scope_invalid",
+        "This decision is not an exact pre-venture research lifecycle control.",
+      );
+    }
+    const scope = preventureScopeFromApproval(approval);
+    const authorityHash = scope?.authority?.hash;
+    const eventType = scope?.eventType;
+    if (
+      authorityHash !== runtime.authority.authorityHash
+      || !["accepted", "activated"].includes(eventType)
+    ) {
+      throw preventureApiError(
+        "preventure_research_lifecycle_scope_changed",
+        "The recorded decision no longer matches the exact configured authority.",
+      );
+    }
+    let ownerSessionAttestation;
+    try {
+      ownerSessionAttestation = ownerRequest.security
+        .issueAuthenticatedOwnerSessionAttestation(
+        ownerRequest.req,
+        ownerRequest.session,
+        {
+          approvalId,
+          decidedAt,
+          decision,
+          decisionNoteHash: sha256(decisionNote),
+          expectedScopeHash: body.scopeHash,
+        },
+      );
+    } catch (cause) {
+      throw preventureApiError(
+        "preventure_research_lifecycle_owner_session_required",
+        String(cause?.message || "This protected decision requires an authenticated local owner session."),
+        403,
+      );
+    }
+    const result = decidePreventureLifecycleApproval(
+      db,
+      approvalId,
+      decision,
+      decisionNote,
+      {
+        expectedScopeHash: body.scopeHash,
+        actor: "owner",
+        decidedAt,
+        ownerSessionAttestation,
+        storeOptions: preventureStoreOptions(runtime),
+      },
+    );
+    let nextApproval = null;
+    let materialization = null;
+    if (result.decision === "approved" && eventType === "accepted") {
+      nextApproval = createPreventureLifecycleApproval(
+        db,
+        authorityHash,
+        "activated",
+        {
+          requestedAt: decidedAt,
+          requestedBy: "jarvis",
+          storeOptions: preventureStoreOptions(runtime),
+        },
+      );
+      if (result.lifecycleChanged) {
+        insertPreventureEvent(db, {
+          actor: "owner",
+          type: "preventure_research.accepted",
+          entityId: authorityHash,
+          message: "The owner accepted the exact bounded-research scope. Research remains stopped until the separate activation decision.",
+          metadata: { approvalId, scopeHash: body.scopeHash },
+        });
+      }
+      if (nextApproval.created) {
+        insertPreventureEvent(db, {
+          type: "preventure_research.activation_requested",
+          entityType: "approval",
+          entityId: nextApproval.approval.id,
+          message: "A separate activation decision is ready. No AI call or external action has started.",
+          metadata: { authorityHash, scopeHash: nextApproval.scopeHash },
+        });
+      }
+    } else if (
+      result.decision === "approved"
+      && eventType === "activated"
+      && result.lifecycleChanged
+    ) {
+      const store = createPreventureResearchStore(db, preventureStoreOptions(runtime));
+      materialization = materializePreventureResearchAssignments(
+        store,
+        authorityHash,
+        {
+          db,
+          insideTransaction: true,
+          expectedAuthorityHash: authorityHash,
+          assignedAt: decidedAt,
+        },
+      );
+      if (result.lifecycleChanged) {
+        insertPreventureEvent(db, {
+          actor: "owner",
+          type: "preventure_research.activated",
+          entityId: authorityHash,
+          message: "The exact internal diligence round was activated. Public research remains unable to start until the dedicated runner is healthy.",
+          metadata: {
+            approvalId,
+            scopeHash: body.scopeHash,
+            internalAiSpendCapAudCents: runtime.authority.internalAiSpendCapAudCents,
+            externalCommercialSpendCapAudCents: 0,
+          },
+        });
+      }
+      if (materialization.created) {
+        insertPreventureEvent(db, {
+          type: "preventure_research.assignments_materialized",
+          entityId: authorityHash,
+          message: "Pantheon created only the three accepted internal research assignments. They remain blocked from generic execution.",
+          metadata: {
+            assignmentCount: materialization.assignments.length,
+            assignedCapAudCents: materialization.plan.totalAssignedCostAudCents,
+          },
+        });
+      }
+    } else if (result.decision === "rejected" && result.lifecycleChanged) {
+      insertPreventureEvent(db, {
+        level: "warn",
+        actor: "owner",
+        type: "preventure_research.revoked",
+        entityId: authorityHash,
+        message: "The owner declined this bounded-research path. No research, build, contact, publication, advertising, or spend was started.",
+        metadata: { approvalId, scopeHash: body.scopeHash },
+      });
+    }
+    const schedulerExecutionReady = result.decision === "approved"
+      && eventType === "activated"
+      && preventureExecutionReadinessProjection(db, runtime).assignmentRunReady === true;
+    setPreventureSchedulerStatus(db, schedulerExecutionReady ? "enabled" : "disabled");
+    neutralizePreventureEventOwnership(db);
+    const store = createPreventureResearchStore(db, preventureStoreOptions(runtime));
+    return {
+      result,
+      nextApproval: nextApproval ? {
+        id: nextApproval.approval.id,
+        scopeHash: nextApproval.scopeHash,
+        created: nextApproval.created,
+      } : null,
+      materialization: materialization ? {
+        created: materialization.created,
+        assignmentCount: materialization.assignments.length,
+        assignedCapAudCents: materialization.plan.totalAssignedCostAudCents,
+      } : null,
+      state: store.readState(authorityHash),
+    };
+  });
+}
+
+function revokePreventureResearchFromServer(db, runtime, body) {
+  assertPreventureHash(body.authorityHash, "authority hash");
+  assertPreventureHash(body.expectedLatestEventHash, "latest lifecycle event hash");
+  const revocationNote = assertPreventureNote(body.note);
+  if (body.confirm !== "REVOKE PREVENTURE RESEARCH") {
+    throw preventureApiError(
+      "preventure_research_revocation_confirmation_required",
+      "Revocation needs the exact confirmation phrase.",
+      400,
+    );
+  }
+  const occurredAt = preventureTimestamp(runtime.clock);
+  return withPreventureTransaction(db, () => {
+    const store = createPreventureResearchStore(db, preventureStoreOptions(runtime));
+    store.verifyLedger();
+    const authority = store.getAuthority(body.authorityHash);
+    if (!authority || authority.authorityHash !== runtime.authority.authorityHash) {
+      throw preventureApiError(
+        "preventure_research_authority_missing",
+        "The exact bounded-research authority is unavailable.",
+        404,
+      );
+    }
+    const ledger = store.readLedger(authority.authorityHash);
+    const latest = ledger.lifecycle.at(-1);
+    if (latest?.eventType === "revoked") {
+      if (body.expectedLatestEventHash !== latest.eventHash) {
+        throw preventureApiError(
+          "preventure_research_terminal_scope_stale",
+          "Refresh the research authority before stopping it; its latest event changed.",
+        );
+      }
+      return { changed: false, state: store.readState(authority.authorityHash) };
+    }
+    const activeTaskIds = all(
+      db,
+      `SELECT DISTINCT tasks.id
+       FROM preventure_research_assignments AS assignments
+       JOIN tasks ON tasks.id = assignments.task_id
+       LEFT JOIN task_attempts AS attempts
+         ON attempts.task_id = tasks.id AND attempts.status = 'running'
+       LEFT JOIN model_calls AS calls
+         ON calls.task_id = tasks.id
+        AND (calls.status IN ('dispatching', 'running')
+          OR (calls.completed_at IS NULL
+            AND calls.outcome_status IN ('provider_dispatched', 'unknown')))
+       WHERE assignments.authority_hash = ?
+         AND (tasks.status = 'running' OR attempts.id IS NOT NULL OR calls.id IS NOT NULL)
+       ORDER BY tasks.id`,
+      [authority.authorityHash],
+    ).map((row) => row.id);
+    const terminated = terminatePreventureResearchAuthority(
+      store,
+      authority.authorityHash,
+      "revoked",
+      {
+        expectedLatestEventHash: body.expectedLatestEventHash,
+        occurredAt,
+        actor: "owner",
+        reason: revocationNote || "The owner revoked this bounded preparation-only research authority.",
+      },
+    );
+    const inflightSafety = activeTaskIds.length
+      ? markEmergencyStopUnknown(
+        db,
+        "The owner revoked this bounded preparation-only research authority while provider-capable work was in flight.",
+        { taskIds: activeTaskIds },
+      )
+      : { affectedTasks: 0, providerOutcomesUnknown: 0 };
+    run(
+      db,
+      `UPDATE tasks
+       SET status = 'cancelled', error = COALESCE(error, ?), updated_at = ?
+       WHERE id IN (
+         SELECT task_id FROM preventure_research_assignments WHERE authority_hash = ?
+       ) AND status IN ('planned', 'queued', 'blocked', 'waiting_approval')`,
+      ["The owner revoked the bounded-research authority before execution.", occurredAt, authority.authorityHash],
+    );
+    run(
+      db,
+      `UPDATE workflows
+       SET status = CASE
+             WHEN EXISTS (
+               SELECT 1 FROM preventure_research_assignments AS assignments
+               JOIN tasks ON tasks.id = assignments.task_id
+               WHERE assignments.workflow_id = workflows.id
+                 AND tasks.status = 'needs_attention'
+             ) THEN 'needs_attention'
+             ELSE 'cancelled'
+           END,
+           current_step = ?, updated_at = ?
+       WHERE id IN (
+         SELECT workflow_id FROM preventure_research_assignments WHERE authority_hash = ?
+       ) AND status NOT IN ('completed', 'cancelled', 'archived')`,
+      ["The owner revoked this preparation-only research round.", occurredAt, authority.authorityHash],
+    );
+    run(
+      db,
+      `UPDATE approvals
+       SET status = 'cancelled', decided_at = COALESCE(decided_at, ?),
+           decision_note = COALESCE(decision_note, ?)
+       WHERE status = 'pending'
+         AND json_extract(
+           CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+           '$.preventureResearchApprovalScope.authority.hash'
+         ) = ?`,
+      [occurredAt, "Superseded by owner revocation.", authority.authorityHash],
+    );
+    insertPreventureEvent(db, {
+      level: "warn",
+      actor: "owner",
+      type: "preventure_research.revoked",
+      entityId: authority.authorityHash,
+      message: "The owner stopped the bounded research round. Remaining internal assignments were cancelled and no new provider call may start.",
+      metadata: {
+        expectedPreviousEventHash: body.expectedLatestEventHash,
+        inflightTasksSafelyTerminalized: inflightSafety.affectedTasks,
+        providerOutcomesUnknown: inflightSafety.providerOutcomesUnknown,
+      },
+    });
+    setPreventureSchedulerStatus(db, "disabled");
+    return { changed: terminated.created, inflightSafety, state: store.readState(authority.authorityHash) };
+  });
+}
+
+async function recoverPendingTerminalCustodyFromServer(db, runtime, options = {}) {
+  if (typeof runtime.recoverTerminalRetainedOutput !== "function") return null;
+  const store = createPreventureResearchStore(db, preventureStoreOptions(runtime));
+  store.verifyLedger();
+  const assignments = store.listAssignments(runtime.authority.authorityHash);
+  for (const assignment of assignments) {
+    const readiness = preventureExecutionReadiness(runtime, {
+      authorityHash: assignment.authorityHash,
+      assignmentId: assignment.id,
+      assignmentHash: assignment.assignmentHash,
+    });
+    if (readiness.canRecoverCustody !== true) continue;
+    const result = await runtime.recoverTerminalRetainedOutput({
+      db,
+      authority: runtime.authority,
+      readinessSpec: runtime.readinessSpec,
+      authorityHash: assignment.authorityHash,
+      assignmentId: assignment.id,
+      expectedAssignmentHash: assignment.assignmentHash,
+      expectedDescriptorHash: readiness.descriptorHash,
+      retainedOutputHash: readiness.retainedOutputHash,
+      actor: options.actor || "preventure_terminal_custody",
+      clock: runtime.clock,
+    });
+    if (result?.status !== "terminal_provider_artifact_retained_pending_reconciliation") {
+      throw preventureApiError(
+        "preventure_research_terminal_custody_incomplete",
+        "The exact retained response did not produce its required custody/accounting record.",
+        500,
+      );
+    }
+    insertPreventureEvent(db, {
+      level: "warn",
+      actor: options.actor || "pantheon",
+      type: "preventure_research.terminal_artifact_custody_recorded",
+      entityId: assignment.id,
+      message: "Pantheon retained the already-dispatched provider response for terminal accounting only. It created no commercial evidence, decision, retry, or new provider call.",
+      metadata: {
+        authorityHash: assignment.authorityHash,
+        assignmentHash: assignment.assignmentHash,
+        retainedOutputHash: readiness.retainedOutputHash,
+        terminalState: result.terminalState,
+        accountingState: result.accountingState,
+        additionalAiCostAudCents: 0,
+      },
+    });
+    setPreventureSchedulerStatus(db, "disabled");
+    return {
+      status: "recorded",
+      assignmentId: assignment.id,
+      result,
+    };
+  }
+  return null;
+}
+
+async function continuePreventureResearchFromServer(db, runtime, options = {}) {
+  const store = createPreventureResearchStore(db, preventureStoreOptions(runtime));
+  store.verifyLedger();
+  const authority = store.getAuthority(runtime.authority.authorityHash);
+  if (!authority) {
+    return {
+      status: "idle",
+      reason: "exact_authority_not_registered",
+      message: "The exact bounded-diligence authority is not registered.",
+    };
+  }
+  const state = store.readState(authority.authorityHash);
+  const terminalCustody = await recoverPendingTerminalCustodyFromServer(
+    db,
+    runtime,
+    options,
+  );
+  if (terminalCustody) {
+    return {
+      status: "terminal_provider_artifact_retained_pending_reconciliation",
+      reason: "terminal_provider_artifact_custody_recorded",
+      assignmentId: terminalCustody.assignmentId,
+      message: "The already-dispatched response is held for accounting only. The round remains stopped and no evidence, decision, retry, or provider call was created.",
+    };
+  }
+  if (state.state === "expired") {
+    const expiry = sealExpiredPreventureResearchFromServer(db, runtime);
+    setPreventureSchedulerStatus(db, "disabled");
+    return {
+      status: expiry.status === "sealed" ? "completed" : "safety_blocked",
+      reason: expiry.reason || "fixed_deadline_sealed",
+      message: expiry.status === "sealed"
+        ? "The fixed diligence deadline was sealed without starting new provider work."
+        : "The fixed deadline passed, but an active outcome must be preserved before expiry can be sealed.",
+      expiry,
+    };
+  }
+  const assignments = store.listAssignments(authority.authorityHash);
+  const normalRecoveryAllowed = preventureRuntimeIsCandidate(runtime)
+    && state.state === "activated"
+    && state.terminal !== true
+    && state.expired !== true;
+  const recoverableAssignment = normalRecoveryAllowed
+    ? assignments.find((assignment) => (
+      preventureExecutionReadiness(runtime, {
+        authorityHash: authority.authorityHash,
+        assignmentId: assignment.id,
+        assignmentHash: assignment.assignmentHash,
+      }).canReprocess === true
+    ))
+    : null;
+  if (recoverableAssignment) {
+    const recovery = preventureExecutionReadiness(runtime, {
+      authorityHash: authority.authorityHash,
+      assignmentId: recoverableAssignment.id,
+      assignmentHash: recoverableAssignment.assignmentHash,
+    });
+    const result = await runtime.reprocessAssignment({
+      db,
+      authority: runtime.authority,
+      readinessSpec: runtime.readinessSpec,
+      authorityHash: authority.authorityHash,
+      assignmentId: recoverableAssignment.id,
+      expectedAssignmentHash: recoverableAssignment.assignmentHash,
+      expectedDescriptorHash: recovery.descriptorHash,
+      retainedOutputHash: recovery.retainedOutputHash,
+      actor: options.actor || "preventure_scheduler",
+      clock: runtime.clock,
+    });
+    insertPreventureEvent(db, {
+      type: "preventure_research.retained_output_reprocessed",
+      entityId: recoverableAssignment.id,
+      message: "Pantheon reprocessed one retained research result locally. No new provider call or additional provider cost occurred.",
+      metadata: {
+        schedulerRunId: options.schedulerRunId || null,
+        authorityHash: authority.authorityHash,
+        assignmentHash: recoverableAssignment.assignmentHash,
+        retainedOutputHash: recovery.retainedOutputHash,
+      },
+    });
+    const recoveredState = store.readState(authority.authorityHash);
+    if (recoveredState.state !== "activated" || !recoveredState.dispatchAllowed) {
+      setPreventureSchedulerStatus(db, "disabled");
+    }
+    return {
+      status: result?.status || "completed",
+      reason: "retained_output_reprocessed_locally",
+      assignmentId: recoverableAssignment.id,
+      message: "A retained result was recovered locally with no new provider call or cost.",
+    };
+  }
+
+  if (!preventureRuntimeIsCandidate(runtime)) {
+    setPreventureSchedulerStatus(db, "disabled");
+    return {
+      status: "idle",
+      reason: "historical_authority_not_candidate",
+      message: "This registered authority is retained for history or exact local recovery only; it cannot start or finalize fresh diligence work.",
+    };
+  }
+
+  const finalization = preventureFinalizationControl(db, runtime);
+  if (finalization.ready) {
+    const result = await runtime.finalizeDecision({
+      db,
+      authority: runtime.authority,
+      readinessSpec: runtime.readinessSpec,
+      authorityHash: finalization.authorityHash,
+      expectedEvidenceSetHash: finalization.evidenceSetHash,
+      expectedReceiptSetHash: finalization.receiptSetHash,
+      expectedResultingReadinessHash: finalization.resultingReadinessHash,
+      actor: options.actor || "preventure_scheduler",
+      clock: runtime.clock,
+    });
+    if (result?.created) {
+      insertPreventureEvent(db, {
+        type: "preventure_research.decision_completed",
+        entityId: authority.authorityHash,
+        message: "Pantheon completed the bounded diligence summary from retained evidence. This recommendation grants no build or external-action authority.",
+        metadata: {
+          schedulerRunId: options.schedulerRunId || null,
+          outcome: result.decision?.outcome || null,
+          decisionHash: result.decision?.decisionHash || null,
+        },
+      });
+    }
+    setPreventureSchedulerStatus(db, "disabled");
+    return {
+      status: "completed",
+      reason: "deterministic_diligence_decision_sealed",
+      outcome: result?.decision?.outcome || finalization.outcome || null,
+      message: "The retained evidence was sealed into a deterministic recommendation. No build or external action was authorised.",
+    };
+  }
+
+  if (state.state !== "activated" || !state.dispatchAllowed) {
+    setPreventureSchedulerStatus(db, "disabled");
+    return {
+      status: state.unknownProviderOutcomeCount || state.unknownCostCount
+        ? "needs_attention"
+        : "idle",
+      reason: state.unknownProviderOutcomeCount || state.unknownCostCount
+        ? "provider_or_cost_truth_unknown"
+        : `authority_${state.state}`,
+      message: state.unknownProviderOutcomeCount || state.unknownCostCount
+        ? "Bounded diligence is frozen until its provider outcome and cost are reconciled."
+        : "Bounded diligence is waiting for its exact owner lifecycle approval.",
+    };
+  }
+
+  const byId = new Map(assignments.map((assignment) => [assignment.id, assignment]));
+  for (const template of authority.assignments) {
+    const assignment = byId.get(template.id);
+    if (!assignment) {
+      return {
+        status: "needs_attention",
+        reason: "exact_assignment_missing",
+        message: "The activated diligence round is missing one exact accepted assignment.",
+      };
+    }
+    const task = get(db, "SELECT id, status FROM tasks WHERE id = ?", [assignment.taskId]);
+    if (!task) {
+      return {
+        status: "needs_attention",
+        reason: "exact_assignment_task_missing",
+        assignmentId: assignment.id,
+        message: "An exact diligence assignment lost its durable work record.",
+      };
+    }
+    if (["completed", "skipped"].includes(task.status)) continue;
+    if (task.status === "running") {
+      return {
+        status: "working",
+        reason: "exact_assignment_already_running",
+        assignmentId: assignment.id,
+        message: "One exact bounded-diligence assignment is already running.",
+      };
+    }
+    const readiness = preventureExecutionReadiness(runtime, {
+      authorityHash: authority.authorityHash,
+      assignmentId: assignment.id,
+      assignmentHash: assignment.assignmentHash,
+    });
+    if (readiness.canReprocess) {
+      const result = await runtime.reprocessAssignment({
+        db,
+        authority: runtime.authority,
+        readinessSpec: runtime.readinessSpec,
+        authorityHash: authority.authorityHash,
+        assignmentId: assignment.id,
+        expectedAssignmentHash: assignment.assignmentHash,
+        expectedDescriptorHash: readiness.descriptorHash,
+        retainedOutputHash: readiness.retainedOutputHash,
+        actor: options.actor || "preventure_scheduler",
+        clock: runtime.clock,
+      });
+      insertPreventureEvent(db, {
+        type: "preventure_research.retained_output_reprocessed",
+        entityId: assignment.id,
+        message: "Pantheon reprocessed one retained research result locally. No new provider call or additional provider cost occurred.",
+        metadata: {
+          schedulerRunId: options.schedulerRunId || null,
+          authorityHash: authority.authorityHash,
+          assignmentHash: assignment.assignmentHash,
+          retainedOutputHash: readiness.retainedOutputHash,
+        },
+      });
+      const recoveredState = store.readState(authority.authorityHash);
+      if (recoveredState.state !== "activated" || !recoveredState.dispatchAllowed) {
+        setPreventureSchedulerStatus(db, "disabled");
+      }
+      return {
+        status: result?.status || "completed",
+        reason: "retained_output_reprocessed_locally",
+        assignmentId: assignment.id,
+        message: "A retained result was recovered locally with no new provider call or cost.",
+      };
+    }
+    if (!readiness.assignmentRunReady) {
+      return {
+        status: "safety_blocked",
+        reason: "exact_assignment_runtime_not_ready",
+        assignmentId: assignment.id,
+        blockers: readiness.blockers,
+        message: readiness.message,
+      };
+    }
+    if (readiness.requiresPreparation) {
+      await runtime.prepareAssignment({
+        db,
+        authority: runtime.authority,
+        readinessSpec: runtime.readinessSpec,
+        authorityHash: authority.authorityHash,
+        assignmentId: assignment.id,
+        expectedAssignmentHash: assignment.assignmentHash,
+        expectedDescriptorHash: readiness.descriptorHash,
+        expectedRequestBodyHash: readiness.requestBodyHash,
+        actor: options.actor || "preventure_scheduler",
+        clock: runtime.clock,
+      });
+    }
+    const prepared = preventureExecutionReadiness(runtime, {
+      authorityHash: authority.authorityHash,
+      assignmentId: assignment.id,
+      assignmentHash: assignment.assignmentHash,
+    });
+    if (
+      !prepared.providerCallReady
+      || prepared.descriptorHash !== readiness.descriptorHash
+      || prepared.requestBodyHash !== readiness.requestBodyHash
+    ) {
+      return {
+        status: "safety_blocked",
+        reason: "exact_assignment_changed_during_preparation",
+        assignmentId: assignment.id,
+        message: "The exact assignment did not remain locally ready after preparation. No provider call was made.",
+      };
+    }
+    insertPreventureEvent(db, {
+      type: "preventure_research.assignment_started",
+      entityId: assignment.id,
+      message: "Pantheon started the next exact owner-activated research assignment within the fixed A$2 round cap.",
+      metadata: {
+        schedulerRunId: options.schedulerRunId || null,
+        authorityHash: authority.authorityHash,
+        assignmentHash: assignment.assignmentHash,
+        descriptorHash: prepared.descriptorHash,
+      },
+    });
+    const result = await runtime.runAssignment({
+      db,
+      authority: runtime.authority,
+      readinessSpec: runtime.readinessSpec,
+      authorityHash: authority.authorityHash,
+      assignmentId: assignment.id,
+      expectedAssignmentHash: assignment.assignmentHash,
+      expectedDescriptorHash: prepared.descriptorHash,
+      expectedRequestBodyHash: prepared.requestBodyHash,
+      actor: options.actor || "preventure_scheduler",
+      clock: runtime.clock,
+    });
+    const terminalCustodyRecorded = result?.status
+      === "terminal_provider_artifact_retained_pending_reconciliation";
+    insertPreventureEvent(db, {
+      level: terminalCustodyRecorded
+        || /unknown|needs_attention|unusable|failed/i.test(String(result?.status || ""))
+        ? "warn"
+        : "info",
+      type: "preventure_research.assignment_finished",
+      entityId: assignment.id,
+      message: terminalCustodyRecorded
+        ? "The exact provider response was retained for terminal custody and accounting only. It created no commercial evidence or decision and remains pending exact billing reconciliation."
+        : /reprocess/i.test(String(result?.status || ""))
+          ? "The provider result was retained but needs local recovery before Pantheon can continue. No automatic provider retry is allowed."
+          : "The exact bounded-research assignment finished and its provider, cost, receipt, and evidence records remain subject to verification.",
+      metadata: {
+        schedulerRunId: options.schedulerRunId || null,
+        authorityHash: authority.authorityHash,
+        assignmentHash: assignment.assignmentHash,
+        status: result?.status || null,
+      },
+    });
+    const completedState = store.readState(authority.authorityHash);
+    if (completedState.state !== "activated" || !completedState.dispatchAllowed) {
+      setPreventureSchedulerStatus(db, "disabled");
+    } else {
+      const closing = preventureFinalizationControl(db, runtime);
+      if (closing.ready) {
+        const sealed = await runtime.finalizeDecision({
+          db,
+          authority: runtime.authority,
+          readinessSpec: runtime.readinessSpec,
+          authorityHash: closing.authorityHash,
+          expectedEvidenceSetHash: closing.evidenceSetHash,
+          expectedReceiptSetHash: closing.receiptSetHash,
+          expectedResultingReadinessHash: closing.resultingReadinessHash,
+          actor: options.actor || "preventure_scheduler",
+          clock: runtime.clock,
+        });
+        setPreventureSchedulerStatus(db, "disabled");
+        return {
+          status: "completed",
+          reason: "deterministic_diligence_decision_sealed",
+          assignmentId: assignment.id,
+          outcome: sealed?.decision?.outcome || closing.outcome || null,
+          message: "The final bounded step and deterministic recommendation were sealed in the same continuation. No build or external action was authorised.",
+        };
+      }
+    }
+    if (terminalCustodyRecorded) {
+      return {
+        status: result.status,
+        reason: "terminal_provider_artifact_custody_recorded",
+        assignmentId: assignment.id,
+        message: "The already-dispatched response is in local custody for accounting only. Authority remains terminal or stopped; no evidence, decision, retry, or provider call was created.",
+      };
+    }
+    return {
+      status: result?.status || "completed",
+      reason: "exact_assignment_attempt_completed",
+      assignmentId: assignment.id,
+      message: "The scheduler completed one exact bounded-diligence step and stopped for fresh verification.",
+    };
+  }
+  const closing = preventureFinalizationControl(db, runtime);
+  if (closing.ready) {
+    const sealed = await runtime.finalizeDecision({
+      db,
+      authority: runtime.authority,
+      readinessSpec: runtime.readinessSpec,
+      authorityHash: closing.authorityHash,
+      expectedEvidenceSetHash: closing.evidenceSetHash,
+      expectedReceiptSetHash: closing.receiptSetHash,
+      expectedResultingReadinessHash: closing.resultingReadinessHash,
+      actor: options.actor || "preventure_scheduler",
+      clock: runtime.clock,
+    });
+    setPreventureSchedulerStatus(db, "disabled");
+    return {
+      status: "completed",
+      reason: "deterministic_diligence_decision_sealed",
+      outcome: sealed?.decision?.outcome || closing.outcome || null,
+      message: "The completed bounded round was sealed before the scheduler became idle. No build or external action was authorised.",
+    };
+  }
+  return {
+    status: "idle",
+    reason: "awaiting_deterministic_finalization",
+    blockers: finalization.blockers,
+    message: finalization.message,
+  };
 }
 
 function jsonResponse(res, statusCode, payload) {
@@ -525,7 +2345,13 @@ function selectSafeRuntimeTickTask(db) {
 }
 
 function createRuntime(options = {}) {
-  const db = openDatabase(options.dbPath || CONFIG.dbPath);
+  const preventureResearchClock = resolvePreventureResearchClock(
+    options.preventureResearchClock,
+  );
+  const db = openDatabase(
+    options.dbPath || CONFIG.dbPath,
+    { clock: preventureResearchClock },
+  );
   const seeded = seedDatabase(db, { includeDemoProof: options.includeDemoProof === true });
   ensureRuntimeFoundation(db);
   if (seeded) {
@@ -630,9 +2456,98 @@ function rejectUnboundCommercialRoute(db, res, message) {
   );
 }
 
+function isPreventureAssignmentTarget(db, target = {}) {
+  if (target.taskId) {
+    return Boolean(get(
+      db,
+      "SELECT 1 AS bound FROM preventure_research_assignments WHERE task_id = ? LIMIT 1",
+      [target.taskId],
+    ));
+  }
+  if (target.workflowId) {
+    return Boolean(get(
+      db,
+      "SELECT 1 AS bound FROM preventure_research_assignments WHERE workflow_id = ? LIMIT 1",
+      [target.workflowId],
+    ));
+  }
+  return false;
+}
+
+function rejectGenericPreventureTarget(db, res, target = {}) {
+  if (!isPreventureAssignmentTarget(db, target)) return false;
+  jsonResponse(res, 409, {
+    error: "This immutable bounded-research assignment can use only its dedicated exact control.",
+    code: "preventure_research_dedicated_runner_required",
+  });
+  return true;
+}
+
+function setPreventureSchedulerStatus(db, status) {
+  ensureSchedulerJobs(db);
+  const current = get(
+    db,
+    "SELECT status FROM scheduler_jobs WHERE id = ?",
+    [PREVENTURE_RESEARCH_JOB_ID],
+  );
+  if (!current || current.status === status) return current;
+  return setSchedulerJobStatus(db, PREVENTURE_RESEARCH_JOB_ID, status);
+}
+
 function createApp(options = {}) {
-  const db = options.db || createRuntime(options);
+  const preventureResearchClock = resolvePreventureResearchClock(
+    options.preventureResearchClock,
+  );
+  const runtimeOptions = {
+    ...options,
+    preventureResearchClock,
+  };
+  const db = options.db || createRuntime(runtimeOptions);
+  if (options.db && typeof db.function === "function") {
+    db.function("pantheon_current_time", preventureResearchClock);
+  }
   if (options.db) ensureRuntimeFoundation(db);
+  const preventureRuntime = preventureRuntimeConfiguration(runtimeOptions, db);
+  const preventureAuthorityContext = Object.freeze({
+    preventureResearchClock: preventureRuntime.clock,
+    preventureResearchAuthorityRegistry: preventureRuntime.authorityRegistry,
+    preventureResearchRetainedOutputStore: preventureRuntime.retainedOutputStore,
+  });
+  const preventureResearchExecutor = (context = {}) => continuePreventureResearchFromServer(
+    db,
+    preventureRuntime,
+    context,
+  );
+  let preventureInitialization = {
+    status: "not_requested",
+    reason: "preventure_foundation_initialization_not_requested",
+  };
+  if (options.initializePreventureResearch === true) {
+    try {
+      preventureInitialization = ensurePreventureResearchFoundation(db, preventureRuntime);
+    } catch (error) {
+      preventureInitialization = {
+        status: "withheld",
+        reason: error.code || "preventure_foundation_initialization_failed",
+        message: error.message,
+      };
+      try {
+        insertPreventureEvent(db, {
+          level: "error",
+          actor: "server",
+          type: "preventure_research.initialization_withheld",
+          entityId: preventureRuntime.authority.authorityHash,
+          message: "Pantheon withheld the bounded-research controls because their exact ledger or approval state could not be verified.",
+          metadata: { reason: preventureInitialization.reason },
+        });
+      } catch (eventError) {
+        preventureInitialization.eventRecording = {
+          status: "failed",
+          message: String(eventError?.message || "The withheld-state event could not be recorded."),
+        };
+      }
+    }
+  }
   const instanceId = String(
     options.instanceId
       || process.env.PANTHEON_RUNTIME_INSTANCE_ID
@@ -656,13 +2571,19 @@ function createApp(options = {}) {
       status: schedulerEnabled ? "pending" : "disabled",
       reason: schedulerEnabled ? null : "scheduler_disabled",
     },
+    preventureResearch: {
+      initialization: preventureInitialization,
+      execution: preventureExecutionReadinessProjection(db, preventureRuntime),
+    },
   };
-  const security = createLocalSecurity({
+  const security = options.localSecurity || createLocalSecurity({
     enabled: options.security !== false,
     secret: options.sessionSecret,
     bootstrapSecret: options.bootstrapSecret,
     sessionTtlMs: options.sessionTtlMs,
   });
+  bindAuthenticatedOwnerSessionAttestationIssuer(db, security);
+  bindAuthenticatedOwnerBillingObservationIssuer(db, security);
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     res.setHeader("x-content-type-options", "nosniff");
@@ -785,6 +2706,11 @@ function createApp(options = {}) {
           payload.dbPath = options.dbPath || CONFIG.dbPath;
           payload.liveResearch = liveResearch;
           payload.liveAiWorkers = liveAiWorkers;
+          payload.preventureResearch = {
+            ownerState: getCanonicalPreventureResearchState(db, preventureRuntime),
+            runtime: preventureExecutionReadinessProjection(db, preventureRuntime),
+            initialization: runtimeState.preventureResearch.initialization,
+          };
         }
         jsonResponse(res, 200, payload);
         return;
@@ -842,6 +2768,15 @@ function createApp(options = {}) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/api/preventure-research") {
+        jsonResponse(res, 200, {
+          ...getCanonicalPreventureResearchState(db, preventureRuntime),
+          runtime: preventureExecutionReadinessProjection(db, preventureRuntime),
+          initialization: runtimeState.preventureResearch.initialization,
+        });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/runtime/standby") {
         const result = await returnToStandby(db);
         jsonResponse(res, 202, result);
@@ -866,7 +2801,11 @@ function createApp(options = {}) {
       }
 
       if (req.method === "GET" && url.pathname === "/api/cockpit") {
-        jsonResponse(res, 200, getCockpitState(db));
+        jsonResponse(res, 200, getCockpitState(db, {
+          preventureResearchClock: preventureRuntime.clock,
+          preventureResearchAuthorityRegistry: preventureRuntime.authorityRegistry,
+          preventureResearchRuntime: preventureExecutionReadinessProjection(db, preventureRuntime),
+        }));
         return;
       }
 
@@ -1059,7 +2998,7 @@ function createApp(options = {}) {
       }
 
       if (req.method === "GET" && url.pathname === "/api/decisions") {
-        jsonResponse(res, 200, getDecisionsState(db));
+        jsonResponse(res, 200, getDecisionsState(db, preventureAuthorityContext));
         return;
       }
 
@@ -1109,12 +3048,20 @@ function createApp(options = {}) {
       }
 
       if (req.method === "GET" && url.pathname === "/api/system") {
-        jsonResponse(res, 200, getSystemState(db));
+        jsonResponse(res, 200, getSystemState(db, {
+          preventureResearchClock: preventureRuntime.clock,
+          preventureResearchAuthorityRegistry: preventureRuntime.authorityRegistry,
+          preventureResearchRuntime: preventureExecutionReadinessProjection(db, preventureRuntime),
+        }));
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/api/system/health") {
-        jsonResponse(res, 200, getSystemState(db).health);
+        jsonResponse(res, 200, getSystemState(db, {
+          preventureResearchClock: preventureRuntime.clock,
+          preventureResearchAuthorityRegistry: preventureRuntime.authorityRegistry,
+          preventureResearchRuntime: preventureExecutionReadinessProjection(db, preventureRuntime),
+        }).health);
         return;
       }
 
@@ -1125,7 +3072,10 @@ function createApp(options = {}) {
           return;
         }
         broadcastState();
-        jsonResponse(res, 201, { result, decisions: getDecisionsState(db) });
+        jsonResponse(res, 201, {
+          result,
+          decisions: getDecisionsState(db, preventureAuthorityContext),
+        });
         return;
       }
 
@@ -1136,9 +3086,25 @@ function createApp(options = {}) {
 
       if (req.method === "POST" && url.pathname === "/api/system/spend/reconcile-provider-usage") {
         const body = await readBody(req);
+        const preventureAllocation = Array.isArray(body?.allocations)
+          ? body.allocations.find((allocation) => (
+              isPreventureAssignmentTarget(db, { taskId: allocation?.taskId })
+            ))
+          : null;
+        if (preventureAllocation) {
+          jsonResponse(res, 409, {
+            error: "Pre-venture provider billing requires its dedicated authority-, assignment-, receipt-, and owner-attestation-bound reconciliation control.",
+            code: "preventure_research_dedicated_reconciliation_required",
+          });
+          return;
+        }
         const result = reconcileProviderUsageBatch(db, body || {});
         broadcastState();
-        jsonResponse(res, 200, { result, system: getSystemState(db) });
+        jsonResponse(res, 200, { result, system: getSystemState(db, {
+          preventureResearchClock: preventureRuntime.clock,
+          preventureResearchAuthorityRegistry: preventureRuntime.authorityRegistry,
+          preventureResearchRuntime: preventureExecutionReadinessProjection(db, preventureRuntime),
+        }) });
         return;
       }
 
@@ -1176,7 +3142,7 @@ function createApp(options = {}) {
 
       const decisionDetail = routeMatch(url.pathname, "/api/decisions/:id");
       if (req.method === "GET" && decisionDetail) {
-        const decisions = getDecisionsState(db);
+        const decisions = getDecisionsState(db, preventureAuthorityContext);
         const result = [...decisions.approvals, ...decisions.reviews, ...decisions.suggestions, ...decisions.history]
           .find((item) => item.id === decisionDetail.id);
         if (!result) notFound(res);
@@ -1369,7 +3335,10 @@ function createApp(options = {}) {
 
       if (req.method === "POST" && url.pathname === "/api/monitor/run") {
         const body = await readBody(req);
-        const result = runMonitorCycle(db, body || {});
+        const result = runMonitorCycle(db, {
+          ...(body || {}),
+          ...preventureAuthorityContext,
+        });
         broadcastState();
         jsonResponse(res, 200, { result });
         return;
@@ -1401,6 +3370,19 @@ function createApp(options = {}) {
         );
         const runs = [];
         for (const job of dueJobs) {
+          if (job.id === PREVENTURE_RESEARCH_JOB_ID || job.kind === "preventure_research") {
+            runs.push({
+              id: null,
+              jobId: job.id,
+              status: "skipped",
+              result: {
+                status: "safety_blocked",
+                reason: "exact_preventure_research_control_required",
+                message: "Provider-capable diligence can run only through its exact authority-bound control, never generic maintenance.",
+              },
+            });
+            continue;
+          }
           if (job.kind === "pantheon_supervisor") {
             runs.push({
               id: null,
@@ -1431,10 +3413,15 @@ function createApp(options = {}) {
             runs.push(await runSchedulerJob(db, job.id, {
               workflowId: selection.task.workflow_id,
               maxSteps: body.maxSteps,
+              preventureResearchExecutor,
+              monitorOptions: preventureAuthorityContext,
             }));
             continue;
           }
-          runs.push(await runSchedulerJob(db, job.id));
+          runs.push(await runSchedulerJob(db, job.id, {
+            preventureResearchExecutor,
+            monitorOptions: preventureAuthorityContext,
+          }));
         }
         const result = {
           status: "completed",
@@ -1487,6 +3474,8 @@ function createApp(options = {}) {
           force: body.force === true,
           maxSteps: body.maxSteps,
           workflowId,
+          preventureResearchExecutor,
+          monitorOptions: preventureAuthorityContext,
         });
         broadcastState();
         jsonResponse(res, 200, { result });
@@ -1632,11 +3621,293 @@ function createApp(options = {}) {
         return;
       }
 
+      const preventureAssignmentRun = routeMatch(
+        url.pathname,
+        "/api/preventure-research/assignments/:id/run",
+      );
+      if (req.method === "POST" && preventureAssignmentRun) {
+        const body = assertExactRequestBody(
+          await readBody(req),
+          ["authorityHash", "assignmentHash", "descriptorHash", "requestBodyHash"],
+          ["authorityHash", "assignmentHash", "descriptorHash", "requestBodyHash"],
+        );
+        const assignment = assertPreventureAssignmentBinding(
+          db,
+          preventureRuntime,
+          preventureAssignmentRun.id,
+          body,
+        );
+        assertPreventureHash(body.requestBodyHash, "provider request body hash");
+        let readiness = preventureExecutionReadiness(preventureRuntime, {
+          authorityHash: body.authorityHash,
+          assignmentId: assignment.id,
+          assignmentHash: assignment.assignmentHash,
+        });
+        if (
+          readiness.descriptorHash
+          && (
+            readiness.descriptorHash !== body.descriptorHash
+            || readiness.requestBodyHash !== body.requestBodyHash
+          )
+        ) {
+          throw preventureApiError(
+            "preventure_research_execution_scope_stale",
+            "Refresh this assignment before running it; its exact local execution descriptor changed.",
+          );
+        }
+        if (!readiness.assignmentRunReady) {
+          jsonResponse(res, 503, {
+            error: "The dedicated bounded-research runner is not connected. No provider call was made and no cost was incurred.",
+            code: "preventure_research_runtime_not_ready",
+            readiness,
+          });
+          return;
+        }
+        if (readiness.requiresPreparation) {
+          await preventureRuntime.prepareAssignment({
+            db,
+            authority: preventureRuntime.authority,
+            readinessSpec: preventureRuntime.readinessSpec,
+            authorityHash: body.authorityHash,
+            assignmentId: preventureAssignmentRun.id,
+            expectedAssignmentHash: body.assignmentHash,
+            expectedDescriptorHash: body.descriptorHash,
+            expectedRequestBodyHash: body.requestBodyHash,
+            actor: "owner",
+            clock: preventureRuntime.clock,
+          });
+          assertPreventureAssignmentBinding(
+            db,
+            preventureRuntime,
+            preventureAssignmentRun.id,
+            body,
+          );
+          readiness = preventureExecutionReadiness(preventureRuntime, {
+            authorityHash: body.authorityHash,
+            assignmentId: assignment.id,
+            assignmentHash: assignment.assignmentHash,
+          });
+          if (
+            readiness.descriptorHash !== body.descriptorHash
+            || readiness.requestBodyHash !== body.requestBodyHash
+          ) {
+            throw preventureApiError(
+              "preventure_research_execution_scope_stale",
+              "The exact assignment descriptor changed during local preparation. No provider call was made.",
+            );
+          }
+          if (!readiness.providerCallReady) {
+            jsonResponse(res, 503, {
+              error: "The assignment could not be made locally ready. No provider call was made and no cost was incurred.",
+              code: "preventure_research_preparation_not_ready",
+              readiness,
+            });
+            return;
+          }
+        }
+        const result = await preventureRuntime.runAssignment({
+          db,
+          authority: preventureRuntime.authority,
+          readinessSpec: preventureRuntime.readinessSpec,
+          authorityHash: body.authorityHash,
+          assignmentId: preventureAssignmentRun.id,
+          expectedAssignmentHash: body.assignmentHash,
+          expectedDescriptorHash: body.descriptorHash,
+          expectedRequestBodyHash: body.requestBodyHash,
+          actor: "owner",
+          clock: preventureRuntime.clock,
+        });
+        broadcastState();
+        jsonResponse(res, 200, { result });
+        return;
+      }
+
+      const preventureAssignmentReprocess = routeMatch(
+        url.pathname,
+        "/api/preventure-research/assignments/:id/reprocess",
+      );
+      if (req.method === "POST" && preventureAssignmentReprocess) {
+        const body = assertExactRequestBody(
+          await readBody(req),
+          ["authorityHash", "assignmentHash", "descriptorHash", "retainedOutputHash"],
+          ["authorityHash", "assignmentHash", "descriptorHash", "retainedOutputHash"],
+        );
+        const assignment = assertPreventureAssignmentBinding(
+          db,
+          preventureRuntime,
+          preventureAssignmentReprocess.id,
+          body,
+        );
+        assertPreventureHash(body.retainedOutputHash, "retained output hash");
+        const reprocessStore = createPreventureResearchStore(
+          db,
+          preventureStoreOptions(preventureRuntime),
+        );
+        const reprocessState = reprocessStore.readState(body.authorityHash);
+        if (
+          !preventureRuntimeIsCandidate(preventureRuntime)
+          || reprocessState.state !== "activated"
+          || reprocessState.terminal === true
+          || reprocessState.expired === true
+        ) {
+          throw preventureApiError(
+            "preventure_research_terminal_custody_required",
+            "Terminal or historical retained output may be preserved only through the custody/accounting path; normal evidence and decision reprocessing is closed.",
+          );
+        }
+        const readiness = preventureExecutionReadiness(preventureRuntime, {
+          authorityHash: body.authorityHash,
+          assignmentId: assignment.id,
+          assignmentHash: assignment.assignmentHash,
+        });
+        if (!readiness.canReprocess) {
+          jsonResponse(res, 503, {
+            error: "The exact retained output is not locally ready for deterministic reprocessing. No provider call was made and no cost was incurred.",
+            code: "preventure_research_reprocess_not_ready",
+            readiness,
+          });
+          return;
+        }
+        if (
+          body.descriptorHash !== readiness.descriptorHash
+          || body.retainedOutputHash !== readiness.retainedOutputHash
+        ) {
+          throw preventureApiError(
+            "preventure_research_reprocess_scope_stale",
+            "Refresh this recovery control; its exact retained output or execution descriptor changed.",
+          );
+        }
+        const result = await preventureRuntime.reprocessAssignment({
+          db,
+          authority: preventureRuntime.authority,
+          readinessSpec: preventureRuntime.readinessSpec,
+          authorityHash: body.authorityHash,
+          assignmentId: preventureAssignmentReprocess.id,
+          expectedAssignmentHash: body.assignmentHash,
+          expectedDescriptorHash: body.descriptorHash,
+          retainedOutputHash: body.retainedOutputHash,
+          actor: "owner",
+          clock: preventureRuntime.clock,
+        });
+        broadcastState();
+        jsonResponse(res, 200, { result });
+        return;
+      }
+
+      const preventureAssignmentCustody = routeMatch(
+        url.pathname,
+        "/api/preventure-research/assignments/:id/recover-custody",
+      );
+      if (req.method === "POST" && preventureAssignmentCustody) {
+        const body = assertExactRequestBody(
+          await readBody(req),
+          ["authorityHash", "assignmentHash", "descriptorHash", "retainedOutputHash"],
+          ["authorityHash", "assignmentHash", "descriptorHash", "retainedOutputHash"],
+        );
+        const assignment = assertPreventureAssignmentBinding(
+          db,
+          preventureRuntime,
+          preventureAssignmentCustody.id,
+          body,
+        );
+        assertPreventureHash(body.retainedOutputHash, "retained output hash");
+        const custodyStore = createPreventureResearchStore(
+          db,
+          preventureStoreOptions(preventureRuntime),
+        );
+        const custodyState = custodyStore.readState(body.authorityHash);
+        const terminalOrEmergency = custodyState.terminal === true
+          || custodyState.expired === true
+          || ["revoked", "expired"].includes(custodyState.state)
+          || Number(custodyState.unknownProviderOutcomeCount) > 0
+          || Number(custodyState.unknownCostCount) > 0;
+        if (!terminalOrEmergency) {
+          throw preventureApiError(
+            "preventure_research_terminal_custody_not_terminal",
+            "Active retained output cannot use terminal custody; it remains eligible only for the exact normal local recovery path.",
+          );
+        }
+        const readiness = preventureExecutionReadiness(preventureRuntime, {
+          authorityHash: body.authorityHash,
+          assignmentId: assignment.id,
+          assignmentHash: assignment.assignmentHash,
+        });
+        const exactRecordedReplay = readiness.adapterStatus
+          === "terminal_retained_output_custody_recorded";
+        if (!readiness.canRecoverCustody && !exactRecordedReplay) {
+          jsonResponse(res, 503, {
+            error: "The exact terminal provider output is not locally ready for custody accounting. No provider call, evidence, decision, or retry was created.",
+            code: "preventure_research_terminal_custody_not_ready",
+            readiness,
+          });
+          return;
+        }
+        if (
+          body.descriptorHash !== readiness.descriptorHash
+          || body.retainedOutputHash !== readiness.retainedOutputHash
+        ) {
+          throw preventureApiError(
+            "preventure_research_terminal_custody_scope_stale",
+            "Refresh this custody control; its exact retained provider artifact changed.",
+          );
+        }
+        const result = await preventureRuntime.recoverTerminalRetainedOutput({
+          db,
+          authority: preventureRuntime.authority,
+          readinessSpec: preventureRuntime.readinessSpec,
+          authorityHash: body.authorityHash,
+          assignmentId: assignment.id,
+          expectedAssignmentHash: assignment.assignmentHash,
+          expectedDescriptorHash: body.descriptorHash,
+          retainedOutputHash: body.retainedOutputHash,
+          actor: "owner",
+          clock: preventureRuntime.clock,
+        });
+        if (result?.status !== "terminal_provider_artifact_retained_pending_reconciliation") {
+          throw preventureApiError(
+            "preventure_research_terminal_custody_incomplete",
+            "The exact retained response did not produce its required custody/accounting record.",
+            500,
+          );
+        }
+        setPreventureSchedulerStatus(db, "disabled");
+        if (result.created !== false) {
+          insertPreventureEvent(db, {
+            level: "warn",
+            actor: "owner",
+            type: "preventure_research.terminal_artifact_custody_recorded",
+            entityId: assignment.id,
+            message: "Pantheon held the already-dispatched provider response for accounting only. It created no commercial evidence, decision, retry, or new provider call.",
+            metadata: {
+              authorityHash: assignment.authorityHash,
+              assignmentHash: assignment.assignmentHash,
+              retainedOutputHash: body.retainedOutputHash,
+              terminalState: result.terminalState,
+              accountingState: result.accountingState,
+              additionalAiCostAudCents: 0,
+            },
+          });
+        }
+        broadcastState();
+        jsonResponse(res, 200, { result });
+        return;
+      }
+
       const taskRun = routeMatch(url.pathname, "/api/tasks/:id/run");
       if (req.method === "POST" && taskRun) {
         const task = get(db, "SELECT * FROM tasks WHERE id = ?", [taskRun.id]);
         if (!task) {
           jsonResponse(res, 404, { error: "Work item not found." });
+          return;
+        }
+        if (
+          isPreventureAssignmentTarget(db, { taskId: task.id })
+          || task.kind === "preventure_research"
+        ) {
+          jsonResponse(res, 409, {
+            error: "This bounded-research assignment can run only through its dedicated exact runner.",
+            code: "preventure_research_dedicated_runner_required",
+          });
           return;
         }
         if (!requireCommercialTaskWhenNeeded(db, res, task)) return;
@@ -1665,6 +3936,7 @@ function createApp(options = {}) {
           jsonResponse(res, 404, { error: "Work item not found." });
           return;
         }
+        if (rejectGenericPreventureTarget(db, res, { taskId: task.id })) return;
         if (!requireCommercialTaskWhenNeeded(db, res, task)) return;
         const result = prepareReviewedLiveAiWorkerRetry(db, taskKnownRetry.id, {
           proofMode: CONFIG.systemProofMode === true,
@@ -1689,6 +3961,15 @@ function createApp(options = {}) {
 
       const workflowRun = routeMatch(url.pathname, "/api/workflows/:id/run");
       if (req.method === "POST" && workflowRun) {
+        if (rejectGenericPreventureTarget(db, res, { workflowId: workflowRun.id })) return;
+        const workflow = get(db, "SELECT type FROM workflows WHERE id = ?", [workflowRun.id]);
+        if (workflow?.type === "preventure_research") {
+          jsonResponse(res, 409, {
+            error: "This bounded-research workflow cannot use the generic workflow runner.",
+            code: "preventure_research_dedicated_runner_required",
+          });
+          return;
+        }
         if (!requireCommercialWorkflowWhenNeeded(db, res, workflowRun.id)) return;
         const result = await runOnce(db, { workflowId: workflowRun.id });
         broadcastState();
@@ -1699,6 +3980,21 @@ function createApp(options = {}) {
       const workflowRunUntilBlocked = routeMatch(url.pathname, "/api/workflows/:id/run-until-blocked");
       if (req.method === "POST" && workflowRunUntilBlocked) {
         const body = await readBody(req);
+        if (
+          rejectGenericPreventureTarget(
+            db,
+            res,
+            { workflowId: workflowRunUntilBlocked.id },
+          )
+        ) return;
+        const workflow = get(db, "SELECT type FROM workflows WHERE id = ?", [workflowRunUntilBlocked.id]);
+        if (workflow?.type === "preventure_research") {
+          jsonResponse(res, 409, {
+            error: "This bounded-research workflow cannot use the generic workflow loop.",
+            code: "preventure_research_dedicated_runner_required",
+          });
+          return;
+        }
         if (!requireCommercialWorkflowWhenNeeded(db, res, workflowRunUntilBlocked.id)) return;
         const result = await runUntilBlocked(db, { workflowId: workflowRunUntilBlocked.id, maxSteps: body.maxSteps });
         broadcastState();
@@ -1708,6 +4004,7 @@ function createApp(options = {}) {
 
       const approvalPack = routeMatch(url.pathname, "/api/workflows/:id/approval-pack");
       if (req.method === "POST" && approvalPack) {
+        if (rejectGenericPreventureTarget(db, res, { workflowId: approvalPack.id })) return;
         if (!requireCommercialWorkflowWhenNeeded(db, res, approvalPack.id)) return;
         const result = generateApprovalPack(db, approvalPack.id);
         broadcastState();
@@ -1718,6 +4015,9 @@ function createApp(options = {}) {
       const liveResearchRequest = routeMatch(url.pathname, "/api/workflows/:id/request-live-research");
       if (req.method === "POST" && liveResearchRequest) {
         const body = await readBody(req);
+        if (
+          rejectGenericPreventureTarget(db, res, { workflowId: liveResearchRequest.id })
+        ) return;
         if (!requireCommercialWorkflowWhenNeeded(db, res, liveResearchRequest.id)) return;
         const result = requestLiveResearch(db, liveResearchRequest.id, body || {});
         broadcastState();
@@ -1737,6 +4037,9 @@ function createApp(options = {}) {
       const liveAiWorkerRequest = routeMatch(url.pathname, "/api/workflows/:id/request-live-ai-worker");
       if (req.method === "POST" && liveAiWorkerRequest) {
         const body = await readBody(req);
+        if (
+          rejectGenericPreventureTarget(db, res, { workflowId: liveAiWorkerRequest.id })
+        ) return;
         if (!requireCommercialWorkflowWhenNeeded(db, res, liveAiWorkerRequest.id)) return;
         const result = requestLiveAiWorker(db, liveAiWorkerRequest.id, body || {});
         broadcastState();
@@ -1747,6 +4050,9 @@ function createApp(options = {}) {
       const productBuilderAsset = routeMatch(url.pathname, "/api/workflows/:id/product-builder/prepare-asset");
       if (req.method === "POST" && productBuilderAsset) {
         const body = await readBody(req);
+        if (
+          rejectGenericPreventureTarget(db, res, { workflowId: productBuilderAsset.id })
+        ) return;
         if (!requireCommercialWorkflowWhenNeeded(db, res, productBuilderAsset.id)) return;
         const result = prepareProductBuilderAsset(db, productBuilderAsset.id, body || {});
         broadcastState();
@@ -1846,6 +4152,232 @@ function createApp(options = {}) {
         return;
       }
 
+      const preventureLifecycleDecision = routeMatch(
+        url.pathname,
+        "/api/preventure-research/lifecycle-decisions/:id/:decision",
+      );
+      if (
+        req.method === "POST"
+        && url.pathname === "/api/preventure-research/provider-billing-observations"
+      ) {
+        const rawBody = await readBody(req);
+        const store = createPreventureResearchStore(
+          db,
+          preventureStoreOptions(preventureRuntime),
+        );
+        let assignmentHash;
+        let input;
+        if (Object.prototype.hasOwnProperty.call(rawBody || {}, "actionKind")) {
+          const body = assertExactRequestBody(
+            rawBody,
+            [
+              "assignmentHash",
+              "actionKind",
+              "authorityHash",
+              "assignmentTemplateHash",
+              "taskId",
+              "predecessor",
+              "costKey",
+              "taskAttemptId",
+              "modelCallId",
+              "agentRunReceiptId",
+              "agentRunReceiptHash",
+              "budgetReservationId",
+              "costId",
+              "clientRequestId",
+              "providerRequestId",
+              "providerResponseId",
+              "provider",
+              "providerDispatchedAt",
+              "providerAccountReferenceHash",
+              "billingRecordReferenceHash",
+              "currency",
+              "amountAudCents",
+              "observedAt",
+              "originalCostOccurredAt",
+              "allocationBasis",
+              "limitations",
+            ],
+            ["assignmentHash"],
+          );
+          ({ assignmentHash, ...input } = body);
+        } else {
+          const body = assertExactRequestBody(
+            rawBody,
+            [
+              "assignmentHash",
+              "amountAudCents",
+              "observedAt",
+              "providerAccountReference",
+              "billingRecordReference",
+              "confirm",
+            ],
+            [
+              "assignmentHash",
+              "observedAt",
+              "providerAccountReference",
+              "billingRecordReference",
+              "confirm",
+            ],
+          );
+          assignmentHash = body.assignmentHash;
+          input = deriveOwnerBillingObservationInput(
+            db,
+            store,
+            assignmentHash,
+            body,
+          );
+        }
+        let ownerSessionAttestation;
+        try {
+          ownerSessionAttestation = security
+            .issueAuthenticatedOwnerBillingObservationAttestation(
+              req,
+              session,
+              {
+                actionKind: input.actionKind,
+                authorityHash: input.authorityHash,
+                assignmentHash,
+                predecessorKind: input.predecessor?.kind,
+                predecessorHash: input.predecessor?.hash,
+                expectedPreviousReceiptHash:
+                  input.predecessor?.expectedPreviousReceiptHash,
+                observationIntentHash: sha256(input),
+                observedAt: input.observedAt,
+              },
+            );
+        } catch (cause) {
+          throw preventureApiError(
+            "preventure_owner_billing_observation_attestation_invalid",
+            String(
+              cause?.message
+              || "This billing observation requires an authenticated local owner session.",
+            ),
+            403,
+          );
+        }
+        const result = store.recordOwnerAttestedProviderBillingObservation(
+          assignmentHash,
+          input,
+          { ownerSessionAttestation },
+        );
+        broadcastState();
+        jsonResponse(res, 201, {
+          result,
+          message: "Owner-attested billing observation recorded; not provider-settled.",
+        });
+        return;
+      }
+      if (req.method === "POST" && preventureLifecycleDecision) {
+        const body = assertExactRequestBody(
+          await readBody(req),
+          ["scopeHash", "note"],
+          ["scopeHash"],
+        );
+        const decided = decidePreventureLifecycleFromServer(
+          db,
+          preventureRuntime,
+          preventureLifecycleDecision.id,
+          preventureLifecycleDecision.decision,
+          body,
+          { req, security, session },
+        );
+        broadcastState();
+        jsonResponse(res, 200, {
+          ...decided,
+          preventureResearch: getCanonicalPreventureResearchState(db, preventureRuntime),
+        });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/preventure-research/revoke") {
+        const body = assertExactRequestBody(
+          await readBody(req),
+          ["authorityHash", "expectedLatestEventHash", "confirm", "note"],
+          ["authorityHash", "expectedLatestEventHash", "confirm"],
+        );
+        const result = revokePreventureResearchFromServer(db, preventureRuntime, body);
+        const terminalCustody = await recoverPendingTerminalCustodyFromServer(
+          db,
+          preventureRuntime,
+          { actor: "owner" },
+        );
+        broadcastState();
+        jsonResponse(res, 200, {
+          result,
+          terminalCustody,
+          preventureResearch: getCanonicalPreventureResearchState(db, preventureRuntime),
+        });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/preventure-research/finalize") {
+        const body = assertExactRequestBody(
+          await readBody(req),
+          ["authorityHash", "evidenceSetHash", "receiptSetHash", "resultingReadinessHash"],
+          ["authorityHash", "evidenceSetHash", "receiptSetHash", "resultingReadinessHash"],
+        );
+        assertPreventureHash(body.authorityHash, "authority hash");
+        assertPreventureHash(body.evidenceSetHash, "evidence set hash");
+        assertPreventureHash(body.receiptSetHash, "receipt set hash");
+        assertPreventureHash(body.resultingReadinessHash, "resulting readiness hash");
+        if (body.authorityHash !== preventureRuntime.authority.authorityHash) {
+          throw preventureApiError(
+            "preventure_research_decision_scope_changed",
+            "The diligence result no longer matches the exact configured authority. Refresh before trying again.",
+          );
+        }
+        const finalizationControl = preventureFinalizationControl(db, preventureRuntime);
+        if (!finalizationControl.ready) {
+          jsonResponse(res, 503, {
+            error: "The retained evidence is not ready for a deterministic diligence decision. No decision was invented or sealed.",
+            code: "preventure_research_decision_runtime_not_ready",
+            readiness: finalizationControl,
+          });
+          return;
+        }
+        if (
+          body.evidenceSetHash !== finalizationControl.evidenceSetHash
+          || body.receiptSetHash !== finalizationControl.receiptSetHash
+          || body.resultingReadinessHash !== finalizationControl.resultingReadinessHash
+        ) {
+          throw preventureApiError(
+            "preventure_research_decision_scope_stale",
+            "Refresh the diligence summary control; its exact retained evidence or receipt set changed.",
+          );
+        }
+        const result = await preventureRuntime.finalizeDecision({
+          db,
+          authority: preventureRuntime.authority,
+          readinessSpec: preventureRuntime.readinessSpec,
+          authorityHash: body.authorityHash,
+          expectedEvidenceSetHash: body.evidenceSetHash,
+          expectedReceiptSetHash: body.receiptSetHash,
+          expectedResultingReadinessHash: body.resultingReadinessHash,
+          actor: "owner",
+          clock: preventureRuntime.clock,
+        });
+        if (result?.created) {
+          insertPreventureEvent(db, {
+            actor: "pantheon",
+            type: "preventure_research.decision_completed",
+            entityId: body.authorityHash,
+            message: "The bounded diligence round is complete. Its recommendation grants no build, publishing, customer-contact, account, advertising, or spending authority.",
+            metadata: {
+              outcome: result.decision?.outcome || null,
+              decisionHash: result.decision?.decisionHash || null,
+            },
+          });
+        }
+        setPreventureSchedulerStatus(db, "disabled");
+        broadcastState();
+        jsonResponse(res, 200, {
+          result,
+          preventureResearch: getCanonicalPreventureResearchState(db, preventureRuntime),
+        });
+        return;
+      }
+
       const commercialLifecycleDecision = routeMatch(
         url.pathname,
         "/api/commercial/lifecycle-decisions/:id/:decision",
@@ -1889,9 +4421,23 @@ function createApp(options = {}) {
         }
         const approvalRecord = get(
           db,
-          "SELECT payload FROM approvals WHERE id = ?",
+          "SELECT * FROM approvals WHERE id = ?",
           [approvalDecision.id],
         );
+        if (approvalRecord && hasPreventureLifecycleApprovalPayload(approvalRecord, {
+          db,
+          authority: preventureRuntime.authority,
+          storeOptions: {
+            authorityRegistry: preventureRuntime.authorityRegistry,
+            clock: preventureRuntime.clock,
+          },
+        })) {
+          jsonResponse(res, 409, {
+            code: "preventure_research_lifecycle_decision_required",
+            error: "Use the exact bounded-research lifecycle control for this decision.",
+          });
+          return;
+        }
         if (approvalRecord && hasCommercialLifecycleApprovalPayload(approvalRecord)) {
           jsonResponse(res, 409, {
             code: "commercial_lifecycle_decision_required",
@@ -2089,6 +4635,13 @@ function createApp(options = {}) {
 
       notFound(res);
     } catch (error) {
+      if (
+        !error.statusCode
+        && /^preventure_research_/.test(String(error.code || ""))
+        && !/(?:ledger_invalid|ledger_integrity|store_invalid|clock_invalid)/.test(String(error.code))
+      ) {
+        error.statusCode = 409;
+      }
       if (Number(error.statusCode) >= 400 && Number(error.statusCode) < 500) {
         if (error.assessment) {
           jsonResponse(
@@ -2184,11 +4737,25 @@ function createApp(options = {}) {
   };
 
   server.runtimeState = runtimeState;
-  return { server, db, wss, security, instanceId, workspaceId, runtimeState };
+  return {
+    server,
+    db,
+    wss,
+    security,
+    instanceId,
+    workspaceId,
+    runtimeState,
+    preventureResearchExecutor,
+    preventureResearchMonitorOptions: preventureAuthorityContext,
+  };
 }
 
 function startServer(options = {}) {
-  const app = createApp(options);
+  const app = createApp({
+    ...options,
+    initializePreventureResearch: options.initializePreventureResearch
+      ?? !options.db,
+  });
   const port = options.port ?? CONFIG.port;
   return new Promise((resolve, reject) => {
     const onError = (error) => reject(error);
@@ -2200,7 +4767,11 @@ function startServer(options = {}) {
       let schedulerLoop = null;
       if (app.runtimeState.schedulerEnabled) {
         try {
-          schedulerLoop = startSchedulerLoop(app.db, options.scheduler || {});
+          schedulerLoop = startSchedulerLoop(app.db, {
+            ...(options.scheduler || {}),
+            preventureResearchExecutor: app.preventureResearchExecutor,
+            monitorOptions: app.preventureResearchMonitorOptions,
+          });
           app.runtimeState.schedulerRunning = true;
           app.runtimeState.schedulerPollMs = schedulerLoop.pollMs;
         } catch (error) {
@@ -2227,6 +4798,7 @@ function startServer(options = {}) {
             const startupRun = await runSchedulerJob(app.db, MONITOR_JOB_ID, {
               manual: true,
               actor: "server-startup",
+              monitorOptions: app.preventureResearchMonitorOptions,
             });
             app.runtimeState.startupMonitoring = {
               status: startupRun.status,
@@ -2274,5 +4846,6 @@ if (require.main === module) {
 module.exports = {
   createApp,
   createRuntime,
+  ensurePreventureResearchFoundation,
   startServer,
 };

@@ -31,12 +31,80 @@ const {
 const {
   getCommercialOwnerTestsState,
 } = require("./commercial-owner-state");
+const {
+  PREVENTURE_RESEARCH_APPROVAL_SCOPE_SCHEMA,
+  PREVENTURE_RESEARCH_APPROVAL_SCOPE_V2_SCHEMA,
+} = require("./preventure-research-contract");
+const {
+  getPreventureResearchOwnerState,
+  validatePendingPreventureLifecycleApproval,
+} = require("./preventure-research-owner-state");
+const {
+  createPreventureResearchStore,
+} = require("./preventure-research-store");
+
+const PREVENTURE_RESEARCH_APPROVAL_SCOPE_SCHEMAS = new Set([
+  PREVENTURE_RESEARCH_APPROVAL_SCOPE_SCHEMA,
+  PREVENTURE_RESEARCH_APPROVAL_SCOPE_V2_SCHEMA,
+]);
 
 function parseRows(rows, fields = ["metadata"]) {
   return rows.map((row) => {
     const parsed = { ...row };
     for (const field of fields) parsed[field] = fromJson(parsed[field], field.endsWith("s") ? [] : {});
     return parsed;
+  });
+}
+
+function preventureRuntimeProjection(options = {}) {
+  const runtime = options.preventureResearchRuntime || {};
+  const finalization = runtime.finalizationControl || {};
+  const assignmentControls = Array.isArray(runtime.assignmentControls)
+    ? runtime.assignmentControls.filter((item) => item && typeof item === "object").map((item) => ({
+      authorityHash: item.authorityHash || null,
+      assignmentId: item.assignmentId || null,
+      assignmentHash: item.assignmentHash || null,
+      descriptorHash: item.descriptorHash || null,
+      requestBodyHash: item.requestBodyHash || null,
+      ready: item.ready === true,
+      providerCallReady: item.providerCallReady === true,
+      requiresPreparation: item.requiresPreparation === true,
+      canReprocess: item.canReprocess === true,
+      retainedOutputHash: item.retainedOutputHash || null,
+      status: item.status || "not_ready",
+      blockers: Array.isArray(item.blockers) ? item.blockers : [],
+    }))
+    : [];
+  return {
+    status: runtime.status || "not_ready",
+    assignmentRunReady: runtime.assignmentRunReady === true,
+    retainedOutputReprocessReady: runtime.retainedOutputReprocessReady === true,
+    deterministicDecisionReady: runtime.deterministicDecisionReady === true,
+    providerContactAllowed: runtime.providerContactAllowed === true,
+    assignmentControls,
+    finalizationControl: {
+      ready: finalization.ready === true,
+      authorityHash: finalization.authorityHash || null,
+      evidenceSetHash: finalization.evidenceSetHash || null,
+      receiptSetHash: finalization.receiptSetHash || null,
+      resultingReadinessHash: finalization.resultingReadinessHash || null,
+      outcome: finalization.outcome || null,
+      blockers: Array.isArray(finalization.blockers) ? finalization.blockers : [],
+      message: finalization.message || null,
+    },
+    message: runtime.message
+      || "The dedicated bounded-research runner is not connected, so no provider call can start.",
+  };
+}
+
+function preventureOwnerProjection(db, options = {}) {
+  return getPreventureResearchOwnerState(db, {
+    authorityRegistry: options.preventureResearchAuthorityRegistry,
+    clock: options.preventureResearchClock,
+    storeOptions: {
+      clock: options.preventureResearchClock,
+      authorityRegistry: options.preventureResearchAuthorityRegistry,
+    },
   });
 }
 
@@ -119,8 +187,49 @@ function operatorProductionText(db, value, payload = {}) {
   ), text);
 }
 
-function pendingApprovals(db) {
+function pendingApprovals(db, options = {}) {
+  let authorities = [];
+  try {
+    const store = createPreventureResearchStore(db, {
+      clock: options.preventureResearchClock,
+      authorityRegistry: options.preventureResearchAuthorityRegistry,
+    });
+    if (store.verifyLedger()?.ok === true) authorities = store.listAuthorities();
+  } catch {
+    authorities = [];
+  }
+  const approvalKind = (row) => {
+    const payload = fromJson(row.payload, {});
+    const scope = fromJson(row.scope, {});
+    const hasPreventureMarker = PREVENTURE_RESEARCH_APPROVAL_SCOPE_SCHEMAS.has(scope?.schema)
+      || [
+        "preventureResearchApprovalScope",
+        "preventureLifecycleApprovalScope",
+      ].some((key) => Object.hasOwn(payload, key))
+      || [
+        payload.preventureResearchApprovalScope,
+        payload.preventureLifecycleApprovalScope,
+        payload.approvalScope,
+        payload.scope,
+      ].some((candidate) => (
+        PREVENTURE_RESEARCH_APPROVAL_SCOPE_SCHEMAS.has(candidate?.schema)
+      ));
+    let linked = false;
+    for (const authority of authorities) {
+      for (const eventType of ["accepted", "activated"]) {
+        const validation = validatePendingPreventureLifecycleApproval(
+          row,
+          authority,
+          eventType,
+        );
+        if (validation.valid) return "valid_preventure";
+        if (row.scope_hash === validation.scopeHash) linked = true;
+      }
+    }
+    return hasPreventureMarker || linked ? "invalid_preventure" : "other";
+  };
   return all(db, "SELECT * FROM approvals WHERE status = 'pending' ORDER BY CASE risk_level WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, requested_at")
+    .filter((row) => approvalKind(row) !== "invalid_preventure")
     .map((row) => {
       const scoped = ensureApprovalScope(db, row.id);
       return {
@@ -146,6 +255,9 @@ function decisionCard(approval, db = null) {
   const controlledDemandCheck = workerId === "demand_validator" && Boolean(fixture);
   const production = liveRequest.parameters?.pantheonProduction || null;
   const productBuildSpec = liveRequest.parameters?.productBuildSpec || null;
+  const preventureLifecycleApprovalScope = payload.preventureResearchApprovalScope
+    || payload.preventureLifecycleApprovalScope
+    || null;
   const lifecycleApprovalScope = payload.commercialTestApprovalScope
     || payload.commercialLifecycleApprovalScope
     || payload.approvalScope
@@ -155,9 +267,15 @@ function decisionCard(approval, db = null) {
     lifecycleApprovalScope?.schema === COMMERCIAL_LIFECYCLE_APPROVAL_SCOPE_SCHEMA
     && ["accepted", "activated"].includes(lifecycleApprovalScope.eventType)
   );
-  const lifecycleEventType = commercialLifecycleDecision
-    ? lifecycleApprovalScope.eventType
-    : null;
+  const preventureLifecycleDecision = (
+    PREVENTURE_RESEARCH_APPROVAL_SCOPE_SCHEMAS.has(
+      preventureLifecycleApprovalScope?.schema,
+    )
+    && ["accepted", "activated"].includes(preventureLifecycleApprovalScope.eventType)
+  );
+  const lifecycleEventType = preventureLifecycleDecision
+    ? preventureLifecycleApprovalScope.eventType
+    : commercialLifecycleDecision ? lifecycleApprovalScope.eventType : null;
   const dataProtectionPlan = approval.scope === "data_retention_policy";
   const catalogueBuild = production?.stage === "product_build"
     && production.operatorChoiceRequired === true;
@@ -172,13 +290,20 @@ function decisionCard(approval, db = null) {
   const finalQualityRecheck = qualityReview
     && (correctionNumber > 0 || explicitOperatorFinalReview || inspectionEvidenceRecheck);
   const maxCostCents = Number(payload.maxCostCents || payload.estimatedCostCents || 0);
+  const preventureAuthorityCapCents = Number(
+    preventureLifecycleApprovalScope?.internalAiSpendCapAudCents || 0,
+  );
   return {
     id: approval.id,
     type: "decision",
-    decisionKind: commercialLifecycleDecision
-      ? "commercial_lifecycle"
-      : "approval",
-    title: commercialLifecycleDecision
+    decisionKind: preventureLifecycleDecision
+      ? "preventure_research_lifecycle"
+      : commercialLifecycleDecision ? "commercial_lifecycle" : "approval",
+    title: preventureLifecycleDecision
+      ? lifecycleEventType === "accepted"
+        ? "Accept this exact bounded research proposal?"
+        : "Activate this exact internal diligence round?"
+      : commercialLifecycleDecision
       ? lifecycleEventType === "accepted"
         ? "Accept this exact commercial test?"
         : "Activate this exact commercial test?"
@@ -199,7 +324,11 @@ function decisionCard(approval, db = null) {
     requestedAt: approval.requested_at,
     scopeHash: approval.scope_hash,
     expiresAt: approval.expires_at,
-    recommendation: commercialLifecycleDecision
+    recommendation: preventureLifecycleDecision
+      ? lifecycleEventType === "accepted"
+        ? "Accept only the fixed questions, public-data rules, three assignments, A$2 internal ceiling, A$0 external spend, expiry, and stop conditions."
+        : "Activate only the already accepted preparation-only round. Product work, buyer contact, marketplace access, publishing, advertising, and external spend remain prohibited."
+      : commercialLifecycleDecision
       ? lifecycleEventType === "accepted"
         ? "Accept the exact buyer, offer, channel, price, evidence period, and stop rules as the commercial decision on record."
         : "Activate only this accepted test so Pantheon can prepare contract-bound internal work and evidence collection."
@@ -216,7 +345,11 @@ function decisionCard(approval, db = null) {
       : controlledDemandCheck
         ? "Demand Validator will assess the supplied test evidence and return one recommendation for your review."
         : payload.reason || payload.commercialPurpose || "Review the evidence and choose whether this exact action should continue.",
-    expectedUpside: commercialLifecycleDecision
+    expectedUpside: preventureLifecycleDecision
+      ? lifecycleEventType === "accepted"
+        ? "Creates an accountable diligence record without starting AI work or changing the business externally."
+        : "Allows only three bounded internal evidence assignments so Pantheon can decide whether retaining cash or preparing a separate build proposal is better."
+      : commercialLifecycleDecision
       ? lifecycleEventType === "accepted"
         ? "Creates one accountable commercial decision without starting a test, publishing, contacting buyers, or spending money."
         : "Makes one exact test the active commercial authority while every external action remains separately protected."
@@ -233,16 +366,23 @@ function decisionCard(approval, db = null) {
       : controlledDemandCheck
         ? "This checks whether the AI can produce a useful business recommendation while staying inside its exact limits."
         : payload.expectedMetric || payload.expectedUpside || "The expected benefit has not been quantified yet.",
-    maxCostCents,
+    maxCostCents: preventureLifecycleDecision ? 0 : maxCostCents,
+    authorityCapCents: preventureLifecycleDecision ? preventureAuthorityCapCents : null,
     pricedWorstCaseCostCents: Number(
       liveRequest.pricedWorstCaseCostCents
       || liveRequest.executionDescriptor?.worstCaseCost?.amountCents
       || 0,
     ),
-    provider: payload.provider || null,
-    model: liveRequest.model || scope.model || payload.model || null,
+    provider: preventureLifecycleDecision
+      ? preventureLifecycleApprovalScope.provider?.id || null
+      : payload.provider || null,
+    model: preventureLifecycleDecision
+      ? preventureLifecycleApprovalScope.provider?.model || null
+      : liveRequest.model || scope.model || payload.model || null,
     modelRoute,
-    worker: payload.worker?.name || liveRequest.worker?.name || payload.requestedWorker || null,
+    worker: preventureLifecycleDecision
+      ? "Demand Validator"
+      : payload.worker?.name || liveRequest.worker?.name || payload.requestedWorker || null,
     productionStage: production?.stage || null,
     correctionNumber,
     finalQualityRecheck,
@@ -256,8 +396,8 @@ function decisionCard(approval, db = null) {
         )
         : currentBuyerIntentValidation(db, approval.venture_id, production?.planId)?.files || []
       : [],
-    effects: approval.expectedEffects,
-    tools,
+    effects: preventureLifecycleDecision ? [] : approval.expectedEffects,
+    tools: preventureLifecycleDecision ? ["web_search"] : tools,
     maxTurns: Number(scope.maxTurns || liveRequest.maxTurns || 0),
     maxOutputTokens: Number(scope.maxOutputTokens || liveRequest.maxOutputTokens || 0),
     assignment: fixture ? {
@@ -276,9 +416,13 @@ function decisionCard(approval, db = null) {
     tracePolicy: payload.tracePolicy || null,
     policySummary: Array.isArray(payload.policySummary) ? payload.policySummary : null,
     noDeletion: payload.noDeletion === true,
-    attentionLabel: commercialLifecycleDecision ? "Commercial decision ready" : inspectionEvidenceRecheck ? "Complete inspection ready" : explicitOperatorFinalReview ? "Corrected workbook ready" : validationProductBuild ? "Validation product ready" : catalogueBuild ? "Product build ready" : finalQualityRecheck ? "Final quality recheck ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
-    primaryActionLabel: commercialLifecycleDecision ? "Review the exact commercial decision" : inspectionEvidenceRecheck ? "Review the evidence recheck" : explicitOperatorFinalReview ? "Review the corrected workbook" : validationProductBuild ? "Review validation product" : catalogueBuild ? "Review catalogue build" : finalQualityRecheck ? "Review final quality recheck" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
-    approveLabel: commercialLifecycleDecision
+    attentionLabel: preventureLifecycleDecision ? "Bounded research decision ready" : commercialLifecycleDecision ? "Commercial decision ready" : inspectionEvidenceRecheck ? "Complete inspection ready" : explicitOperatorFinalReview ? "Corrected workbook ready" : validationProductBuild ? "Validation product ready" : catalogueBuild ? "Product build ready" : finalQualityRecheck ? "Final quality recheck ready" : demandResearch ? "Market research ready" : controlledDemandCheck ? "AI check ready" : "Decision ready",
+    primaryActionLabel: preventureLifecycleDecision ? "Review the bounded research decision" : commercialLifecycleDecision ? "Review the exact commercial decision" : inspectionEvidenceRecheck ? "Review the evidence recheck" : explicitOperatorFinalReview ? "Review the corrected workbook" : validationProductBuild ? "Review validation product" : catalogueBuild ? "Review catalogue build" : finalQualityRecheck ? "Review final quality recheck" : demandResearch ? "Review research plan" : controlledDemandCheck ? "Review AI check" : "Review and decide",
+    approveLabel: preventureLifecycleDecision
+      ? lifecycleEventType === "accepted"
+        ? "Accept this exact research scope"
+        : "Activate this bounded research round"
+      : commercialLifecycleDecision
       ? lifecycleEventType === "accepted"
         ? "Accept this exact test"
         : "Activate this exact test"
@@ -295,7 +439,9 @@ function decisionCard(approval, db = null) {
       : dataProtectionPlan
         ? "Activate this protection plan"
         : null,
-    decisionActionKind: commercialLifecycleDecision
+    decisionActionKind: preventureLifecycleDecision
+      ? "preventure_research_lifecycle"
+      : commercialLifecycleDecision
       ? "commercial_lifecycle"
       : catalogueBuild
       ? "catalogue_build"
@@ -318,7 +464,11 @@ function decisionCard(approval, db = null) {
       })),
     } : null,
     lifecycleEventType,
-    decisionPrompt: commercialLifecycleDecision
+    decisionPrompt: preventureLifecycleDecision
+      ? lifecycleEventType === "accepted"
+        ? "Review the fixed questions, public-data limits, three assignments, A$2 internal ceiling, A$0 external spend, expiry, and stop conditions. Accepting does not start AI work."
+        : "Confirm that the already accepted preparation-only round may start its three exact internal assignments. It still cannot build, contact buyers, access accounts, publish, advertise, or spend externally."
+      : commercialLifecycleDecision
       ? lifecycleEventType === "accepted"
         ? "Review the exact buyer, offer, channel, price, evidence rules, and boundaries before accepting the test."
         : "Confirm that this accepted test should become Pantheon's one active controlled commercial test."
@@ -333,7 +483,9 @@ function decisionCard(approval, db = null) {
       : controlledDemandCheck
         ? "See the evidence, limit, and exact action before starting the AI."
         : "Review what will happen before you choose.",
-    actions: ["approve", "changes", "reject"],
+    actions: preventureLifecycleDecision
+      ? ["approve", "reject"]
+      : ["approve", "changes", "reject"],
   };
 }
 
@@ -511,7 +663,125 @@ function journeyExecutionState(db, journey, task, currentTest) {
   };
 }
 
-function taskExecutionPresentation(db, task, queueEligible = true) {
+function preventureTaskExecutionPresentation(db, task, queueEligible, options = {}) {
+  const runtime = preventureRuntimeProjection(options);
+  try {
+    const row = get(
+      db,
+      `SELECT authority_hash, assignment_hash, assignment_id, assignment_json
+       FROM preventure_research_assignments
+       WHERE task_id = ?`,
+      [task.id],
+    );
+    if (!row) {
+      return {
+        can_run: false,
+        safe_to_run: false,
+        execution_kind: "preventure_research",
+        safety_reason: "preventure_research_assignment_binding_missing",
+        run_label: "Resolve research record",
+      };
+    }
+    const assignment = fromJson(row.assignment_json, {});
+    const store = createPreventureResearchStore(db, {
+      clock: options.preventureResearchClock,
+      authorityRegistry: options.preventureResearchAuthorityRegistry,
+    });
+    const verified = store.verifyLedger();
+    const state = store.readState(row.authority_hash);
+    const exactControl = runtime.assignmentControls.find((item) => (
+      item.authorityHash === row.authority_hash
+      && item.assignmentId === row.assignment_id
+      && item.assignmentHash === row.assignment_hash
+      && /^sha256:[a-f0-9]{64}$/.test(String(item.descriptorHash || ""))
+      && /^sha256:[a-f0-9]{64}$/.test(String(item.requestBodyHash || ""))
+    ));
+    const bindingValid = verified?.ok === true
+      && assignment.assignmentHash === row.assignment_hash
+      && assignment.id === row.assignment_id
+      && assignment.taskId === task.id;
+    const authorityAllowsRun = bindingValid && state.dispatchAllowed === true;
+    const requiresPreparation = task.status === "blocked"
+      && exactControl?.requiresPreparation === true;
+    const runnableStatus = ["planned", "queued"].includes(task.status)
+      || requiresPreparation;
+    const positionAllowsRun = queueEligible || requiresPreparation;
+    const canRun = Boolean(
+      positionAllowsRun
+        && runnableStatus
+        && authorityAllowsRun
+        && runtime.assignmentRunReady
+        && exactControl?.ready === true
+    );
+    const canReprocess = Boolean(
+      bindingValid
+        && exactControl?.canReprocess === true
+        && /^sha256:[a-f0-9]{64}$/.test(String(exactControl.retainedOutputHash || ""))
+    );
+    const safetyReason = !bindingValid
+      ? "preventure_research_assignment_binding_invalid"
+      : !authorityAllowsRun
+        ? state.expired
+          ? "preventure_research_authority_expired"
+          : "preventure_research_authority_not_dispatchable"
+        : !runtime.assignmentRunReady
+          ? "preventure_research_runtime_not_ready"
+          : !exactControl?.ready
+            ? "preventure_research_execution_descriptor_not_ready"
+            : !runnableStatus
+              ? `preventure_research_task_not_runnable:${task.status}`
+              : null;
+    return {
+      can_run: canRun,
+      safe_to_run: canRun,
+      execution_kind: "preventure_research",
+      safety_reason: safetyReason,
+      safety_classification: "dedicated_bounded_research",
+      workflow_safety_classification: "dedicated_bounded_research",
+      commercial_authority_required: false,
+      authority_hash: row.authority_hash,
+      assignment_id: row.assignment_id,
+      assignment_hash: row.assignment_hash,
+      descriptor_hash: exactControl?.descriptorHash || null,
+      request_body_hash: exactControl?.requestBodyHash || null,
+      requires_preparation: requiresPreparation,
+      can_reprocess: canReprocess,
+      retained_output_hash: canReprocess ? exactControl.retainedOutputHash : null,
+      max_cost_cents: Number(assignment.maxCostAudCents || task.cost_budget_cents || 0),
+      run_label: canRun
+        ? requiresPreparation
+          ? "Start exact research assignment"
+          : "Run exact research assignment"
+        : "Dedicated runner not ready",
+      reprocess_label: canReprocess ? "Reprocess retained result locally" : null,
+    };
+  } catch {
+    return {
+      can_run: false,
+      safe_to_run: false,
+      execution_kind: "preventure_research",
+      safety_reason: "preventure_research_integrity_unavailable",
+      safety_classification: "dedicated_bounded_research",
+      workflow_safety_classification: "dedicated_bounded_research",
+      commercial_authority_required: false,
+      max_cost_cents: Number(task.cost_budget_cents || 0),
+      run_label: "Resolve research record",
+    };
+  }
+}
+
+function taskExecutionPresentation(db, task, queueEligible = true, options = {}) {
+  const immutablePreventureBinding = get(
+    db,
+    "SELECT 1 AS bound FROM preventure_research_assignments WHERE task_id = ? LIMIT 1",
+    [task.id],
+  );
+  if (
+    immutablePreventureBinding
+    || String(task.kind || "").toLowerCase() === "preventure_research"
+  ) {
+    return preventureTaskExecutionPresentation(db, task, queueEligible, options);
+  }
   const payload = task.payload && typeof task.payload === "object"
     ? task.payload
     : fromJson(task.payload, {});
@@ -568,10 +838,10 @@ function taskExecutionPresentation(db, task, queueEligible = true) {
   };
 }
 
-function importantWork(db, currentJourneyId = latestOperatorJourneyId(db)) {
+function importantWork(db, currentJourneyId = latestOperatorJourneyId(db), options = {}) {
   const riskRank = { high: 0, medium: 1, low: 2 };
   const consequentialChoices = [
-    ...pendingApprovals(db)
+    ...pendingApprovals(db, options)
       .filter((approval) => belongsToCurrentJourney(approval.taskPayload, currentJourneyId))
       .map((approval) => decisionCard(approval, db)),
     ...pendingHandoffs(db)
@@ -1327,10 +1597,15 @@ function canonicalCockpitCommercialState(ownerTests) {
   };
 }
 
-function getCockpitState(db) {
+function getCockpitState(db, options = {}) {
   const commercial = commercialFoundationState(db);
   const commercialTests = getCommercialOwnerTestsState(db);
   const canonicalCommercial = canonicalCockpitCommercialState(commercialTests);
+  const preventureResearch = preventureOwnerProjection(db, options);
+  const preventureResearchRuntime = preventureRuntimeProjection(options);
+  const preventureOwnerGate = preventureResearch.current
+    || preventureResearch.history?.items?.[0]
+    || null;
   const opportunity = getOpportunityState(db);
   const production = getProductionState(db);
   const currentJourney = currentOperatorJourney(db);
@@ -1367,7 +1642,7 @@ function getCockpitState(db) {
     currentJourneyId,
     currentJourney?.metadata?.currentTaskId || null,
   );
-  const work = importantWork(db, currentJourneyId);
+  const work = importantWork(db, currentJourneyId, options);
   const legacyBuyerIntentValidation = currentBuyerIntentValidation(db);
   const buyerIntentValidation = null;
   const test = canonicalCommercial.currentTest;
@@ -1401,6 +1676,8 @@ function getCockpitState(db) {
     importantWork: work,
     currentTest: test,
     commercialTests,
+    preventureResearch,
+    preventureResearchRuntime,
     buyerIntentValidation,
     historicalCommercialContext: legacyBuyerIntentValidation ? {
       exists: true,
@@ -1410,6 +1687,7 @@ function getCockpitState(db) {
     } : null,
     activeRuns,
     nextMoneyMove: commercialTests.current?.moneyMove?.title
+      || preventureOwnerGate?.nextAction
       || commercialTests.emptyState?.title
       || "No commercial test is authorised.",
     economics: canonicalCommercial.economics,
@@ -1431,6 +1709,12 @@ function getCockpitState(db) {
       queuedWork: queueCount,
       importantItems: work.length,
       proofMode: CONFIG.systemProofMode === true,
+      monitoring: runtimeMonitoringHealth(db),
+      preventureResearch: {
+        status: preventureResearch.integrity?.status || "attention",
+        authorityStatus: preventureResearch.integrity?.authorityStatus || "unavailable",
+        executionStatus: preventureResearchRuntime.status,
+      },
     },
     weeklyDigest: digestWithCurrentAttention(
       db,
@@ -1469,9 +1753,9 @@ function getCockpitState(db) {
   };
 }
 
-function getDecisionsState(db) {
+function getDecisionsState(db, options = {}) {
   const approvals = [
-    ...pendingApprovals(db).map((approval) => decisionCard(approval, db)),
+    ...pendingApprovals(db, options).map((approval) => decisionCard(approval, db)),
     ...pendingHandoffs(db).map(handoffCard),
   ];
   const reviews = parseRows(all(
@@ -2207,6 +2491,34 @@ function getAiTeamState(db) {
 
 function humanActivityMessage(event) {
   const metadata = event.metadata || {};
+  const preventureMessages = {
+    "preventure_research.proposed": "A fixed preparation-only research proposal was recorded. No AI work, external action, or spend started.",
+    "preventure_research.acceptance_requested": "The exact bounded research proposal is ready for your acceptance decision. Accepting it does not start AI work.",
+    "preventure_research.accepted": "You accepted the exact research boundaries. A separate activation decision is still required before internal AI work can start.",
+    "preventure_research.activation_requested": "The accepted preparation-only research round is ready for your separate activation decision.",
+    "preventure_research.activated": "You activated the bounded internal diligence round. Its three exact assignments remain subject to expiry, cost, and integrity controls.",
+    "preventure_research.assignments_materialized": "Pantheon created the three exact internal research assignments. The dedicated runner must be ready before any provider call can start.",
+    "preventure_research.assignment_started": "One bounded internal research assignment started within its exact provider, model, tool, time, and cost limits.",
+    "preventure_research.assignment_completed": "One bounded internal research assignment finished and its cost, receipt, sources, and evidence are being checked.",
+    "preventure_research.assignment_needs_reprocess": "A provider result was retained, but its local evidence conversion needs a deterministic recheck. No provider retry is allowed.",
+    "preventure_research.outcome_unknown": "A research provider result or cost is uncertain. Pantheon froze further dispatch until it is reconciled.",
+    "preventure_research.revoked": "You stopped the bounded research round. Remaining internal assignments were cancelled and no new provider call may start.",
+    "preventure_research.expired": "The bounded research deadline passed. No further assignment may start under this authority.",
+    "preventure_research.decision_completed": "The diligence recommendation was sealed. It grants no build, publishing, buyer-contact, account, advertising, or spending authority.",
+    "preventure_research.initialization_withheld": "Pantheon withheld the bounded-research controls because their exact record could not be verified.",
+  };
+  if (preventureMessages[event.type]) return preventureMessages[event.type];
+  if (event.type === "preventure_research_lifecycle.approved") {
+    return metadata.lifecycleStatus === "activated"
+      ? "You activated the accepted preparation-only research round."
+      : "You accepted the exact bounded research proposal; no AI work started from acceptance alone.";
+  }
+  if (event.type === "preventure_research_lifecycle.rejected") {
+    return "You declined the bounded research decision. No work may continue from that decision.";
+  }
+  if (event.type === "preventure_research_lifecycle.needs_changes") {
+    return "You requested a different research scope. This immutable version cannot continue and must be replaced explicitly.";
+  }
   if (event.type === "spend_approval.requested") {
     const subject = String(event.message || "").match(/for (.+?)\.\s*No spend/i)?.[1] || "The exact paid AI task";
     return `${subject} is ready for your decision. No charge has occurred.`;
@@ -2541,7 +2853,9 @@ function runtimeMonitoringHealth(db) {
   };
 }
 
-function getSystemState(db) {
+function getSystemState(db, options = {}) {
+  const preventureResearch = preventureOwnerProjection(db, options);
+  const preventureResearchRuntime = preventureRuntimeProjection(options);
   const queue = parseRows(all(
     db,
     `SELECT tasks.*,
@@ -2565,9 +2879,11 @@ function getSystemState(db) {
               tasks.updated_at DESC LIMIT 50`,
   ), ["payload", "result"]).map((task) => ({
     ...task,
-    ...taskExecutionPresentation(db, task, Boolean(task.can_run)),
+    ...taskExecutionPresentation(db, task, Boolean(task.can_run), options),
   }));
   return {
+    preventureResearch,
+    preventureResearchRuntime,
     health: {
       database: get(db, "PRAGMA integrity_check").integrity_check,
       monitoring: runtimeMonitoringHealth(db),
@@ -2575,6 +2891,11 @@ function getSystemState(db) {
       liveResearch: getLiveResearchReadiness(db),
       retention: getRetentionPolicyState(db),
       proofMode: CONFIG.systemProofMode === true,
+      preventureResearch: {
+        status: preventureResearch.integrity?.status || "attention",
+        authorityStatus: preventureResearch.integrity?.authorityStatus || "unavailable",
+        executionStatus: preventureResearchRuntime.status,
+      },
     },
     queue,
     spend: spendState(db),

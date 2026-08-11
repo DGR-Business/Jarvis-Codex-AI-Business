@@ -34,8 +34,13 @@ const {
   verifyFirstUseDatabase,
 } = require("../src/runtime/first-use-reset");
 const { importGumroadCsv } = require("../src/runtime/gumroad-import");
+const {
+  createPreventureResearchStore,
+} = require("../src/runtime/preventure-research-store");
 const { ensureRetentionPolicy } = require("../src/runtime/retention-policy");
 const { commercialFoundationState, recordEvidence } = require("../src/runtime/venture-case");
+const preventureAuthority = require("../config/preventure-research-authority-smm-scope-guard-v1");
+const preventureReadiness = require("../config/commercial-readiness-social-media-manager-scope-guard-v1");
 
 function testRuntime(name, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `jarvis-clean-slate-${name}-`));
@@ -55,6 +60,21 @@ const GUMROAD_CSV = [
   "sale-001,Cash Control Checklist,2026-07-14,12.00,1.70,10.30,buyer@example.com,direct,false",
 ].join("\n");
 
+const SCHEMA_27_PREVENTURE_OPERATIONAL_TABLES = Object.freeze([
+  "preventure_research_approval_decisions",
+  "preventure_research_assignment_skips",
+  "preventure_research_assignments",
+  "preventure_research_authorities",
+  "preventure_research_cost_events",
+  "preventure_research_decisions",
+  "preventure_research_evidence_records",
+  "preventure_research_lifecycle_events",
+  "preventure_research_provider_billing_observations",
+  "preventure_research_source_snapshots",
+  "preventure_research_terminal_recoveries",
+  "preventure_research_terminal_stops",
+]);
+
 test("first-use reset removes proof evaluations before their immutable parent contracts", () => {
   const evaluationIndex = EMPTY_OPERATIONAL_TABLES.indexOf(
     "commercial_test_proof_evaluations",
@@ -68,6 +88,24 @@ test("first-use reset removes proof evaluations before their immutable parent co
   assert.ok(evaluationIndex >= 0);
   assert.ok(evidenceIndex > evaluationIndex);
   assert.ok(contractIndex > evidenceIndex);
+});
+
+test("first-use reset explicitly empties every schema-27 preventure operational table", () => {
+  const runtime = testRuntime("schema-27-reset-contract");
+  try {
+    const actualTables = all(
+      runtime.db,
+      `SELECT name FROM sqlite_schema
+       WHERE type = 'table' AND name GLOB 'preventure_research_*'
+       ORDER BY name`,
+    ).map((row) => row.name);
+    assert.deepEqual(actualTables, [...SCHEMA_27_PREVENTURE_OPERATIONAL_TABLES].sort());
+    for (const table of SCHEMA_27_PREVENTURE_OPERATIONAL_TABLES) {
+      assert.ok(EMPTY_OPERATIONAL_TABLES.includes(table), table);
+    }
+  } finally {
+    closeRuntime(runtime);
+  }
 });
 
 test("database startup enforces the current schema and one active venture", () => {
@@ -427,6 +465,115 @@ test("first-use builder preserves exact accounting and usage while removing ever
       for (const [table, expected] of Object.entries(STATIC_COUNTS)) {
         assert.equal(get(candidate, `SELECT COUNT(*) AS count FROM ${table}`).count, expected);
       }
+      assert.deepEqual(
+        all(candidate, "SELECT id FROM scheduler_jobs ORDER BY id").map((row) => row.id),
+        [
+          "job-monitor-cycle",
+          "job-pantheon-supervisor",
+          "job-preventure-research",
+          "job-safe-work-loop",
+          "job-weekly-executive-digest",
+        ],
+      );
+      const preventureJob = get(
+        candidate,
+        `SELECT kind, status, next_run_at, last_run_at, locked_at, lock_owner, metadata
+         FROM scheduler_jobs
+         WHERE id = 'job-preventure-research'`,
+      );
+      assert.equal(preventureJob.kind, "preventure_research");
+      assert.equal(preventureJob.status, "disabled");
+      assert.equal(preventureJob.next_run_at, null);
+      assert.equal(preventureJob.last_run_at, null);
+      assert.equal(preventureJob.locked_at, null);
+      assert.equal(preventureJob.lock_owner, null);
+      assert.equal(JSON.parse(preventureJob.metadata).exactAuthorityOnly, true);
+      assert.equal(JSON.parse(preventureJob.metadata).externalCommercialEffectsAllowed, false);
+
+      const assertSchedulerMutationRejected = (mutate, restore, expectedError) => {
+        mutate();
+        assert.throws(
+          () => verifyFirstUseDatabase(candidate, { resetId: built.resetId }),
+          expectedError,
+        );
+        restore();
+      };
+      assertSchedulerMutationRejected(
+        () => run(
+          candidate,
+          "UPDATE scheduler_jobs SET id = 'job-pilot-leak' WHERE id = 'job-safe-work-loop'",
+        ),
+        () => run(
+          candidate,
+          "UPDATE scheduler_jobs SET id = 'job-safe-work-loop' WHERE id = 'job-pilot-leak'",
+        ),
+        /only the canonical scheduler controls/i,
+      );
+      assertSchedulerMutationRejected(
+        () => run(
+          candidate,
+          "UPDATE scheduler_jobs SET status = 'enabled' WHERE id = 'job-preventure-research'",
+        ),
+        () => run(
+          candidate,
+          "UPDATE scheduler_jobs SET status = 'disabled' WHERE id = 'job-preventure-research'",
+        ),
+        /bounded-diligence scheduler must remain disabled/i,
+      );
+      assertSchedulerMutationRejected(
+        () => run(
+          candidate,
+          "UPDATE scheduler_jobs SET next_run_at = ? WHERE id = 'job-preventure-research'",
+          ["2026-08-11T00:00:00.000Z"],
+        ),
+        () => run(
+          candidate,
+          "UPDATE scheduler_jobs SET next_run_at = NULL WHERE id = 'job-preventure-research'",
+        ),
+        /bounded-diligence scheduler must remain disabled/i,
+      );
+      assertSchedulerMutationRejected(
+        () => run(
+          candidate,
+          `UPDATE scheduler_jobs
+           SET metadata = json_set(metadata, '$.exactAuthorityOnly', json('false'))
+           WHERE id = 'job-preventure-research'`,
+        ),
+        () => run(
+          candidate,
+          "UPDATE scheduler_jobs SET metadata = ? WHERE id = 'job-preventure-research'",
+          [preventureJob.metadata],
+        ),
+        /bounded-diligence scheduler must remain disabled/i,
+      );
+      assertSchedulerMutationRejected(
+        () => run(
+          candidate,
+          `UPDATE scheduler_jobs
+           SET metadata = json_set(metadata, '$.externalCommercialEffectsAllowed', json('true'))
+           WHERE id = 'job-preventure-research'`,
+        ),
+        () => run(
+          candidate,
+          "UPDATE scheduler_jobs SET metadata = ? WHERE id = 'job-preventure-research'",
+          [preventureJob.metadata],
+        ),
+        /bounded-diligence scheduler must remain disabled/i,
+      );
+      assertSchedulerMutationRejected(
+        () => run(
+          candidate,
+          `UPDATE scheduler_jobs SET locked_at = ?, lock_owner = 'pilot-leak'
+           WHERE id = 'job-preventure-research'`,
+          ["2026-08-11T00:00:00.000Z"],
+        ),
+        () => run(
+          candidate,
+          `UPDATE scheduler_jobs SET locked_at = NULL, lock_owner = NULL
+           WHERE id = 'job-preventure-research'`,
+        ),
+        /bounded-diligence scheduler must remain disabled/i,
+      );
       for (const table of EMPTY_OPERATIONAL_TABLES) {
         assert.equal(get(candidate, `SELECT COUNT(*) AS count FROM ${table}`).count, 0, table);
       }
@@ -438,6 +585,16 @@ test("first-use builder preserves exact accounting and usage while removing ever
       assert.equal(get(candidate, "SELECT SUM(amount_cents) AS amount FROM costs").amount, 118);
       assert.equal(get(candidate, "SELECT COUNT(DISTINCT model_call_id) AS count FROM costs").count, 3);
       assert.equal(get(candidate, "SELECT COUNT(*) AS count FROM runtime_resets WHERE status = 'built'").count, 1);
+
+      const preventureStore = createPreventureResearchStore(candidate, {
+        clock: () => "2026-08-02T12:30:00.000+10:00",
+      });
+      preventureStore.registerAuthority(preventureAuthority, preventureReadiness);
+      assert.equal(get(candidate, "SELECT COUNT(*) AS count FROM preventure_research_authorities").count, 1);
+      assert.throws(
+        () => verifyFirstUseDatabase(candidate, { resetId: built.resetId }),
+        /preventure_research_authorities must be empty/i,
+      );
     } finally {
       candidate.close();
     }

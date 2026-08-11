@@ -1,6 +1,13 @@
 # Gumroad Launch Gate
 
 Last checked: 2026-07-14
+Status: conditional historical reference; not a selected current channel gate
+
+> Do not use this document as current launch authority. Its Gumroad-first,
+> sole-venture, measurement, operator-work, and importer assumptions are
+> superseded. If future diligence selects Gumroad, recheck the platform facts
+> and create a new contract-bound v2 channel gate before any build or external
+> action.
 
 ## Purpose
 

@@ -4,9 +4,12 @@ const {
   environmentDisabled,
   environmentEnabled,
 } = require("./pantheon-environment");
+const { inspectOpenAiEgressPolicy } = require("./openai-egress-policy");
 
 function integrationDefinitions() {
-  const openaiReady = Boolean(process.env.OPENAI_API_KEY);
+  const openaiConfigured = Boolean(process.env.OPENAI_API_KEY);
+  const openaiEgress = inspectOpenAiEgressPolicy();
+  const openaiReady = openaiConfigured && openaiEgress.ready;
   const liveResearchReady = openaiReady
     && environmentEnabled("enableLiveResearch")
     && !environmentDisabled("disableLiveResearchAdapter");
@@ -27,10 +30,21 @@ function integrationDefinitions() {
       id: "openai",
       name: "OpenAI API",
       kind: "ai",
-      status: openaiReady ? "configured" : "needs_credentials",
+      status: openaiReady
+        ? "configured"
+        : openaiConfigured
+          ? "blocked"
+          : "needs_credentials",
       mode: "api",
-      health: openaiReady ? "ok" : "not_configured",
-      metadata: { use: "Pantheon agent work, research, tracing, and approved asset generation" },
+      health: openaiReady
+        ? "ok"
+        : openaiConfigured
+          ? "blocked"
+          : "not_configured",
+      metadata: {
+        use: "Pantheon agent work, research, tracing, and approved asset generation",
+        egressPolicy: openaiEgress,
+      },
     },
     {
       id: "live_research",
@@ -52,12 +66,17 @@ function integrationDefinitions() {
     },
     {
       id: "digital_products",
-      name: "Digital Product Publishing",
-      kind: "marketplace",
+      name: "Local Product File Preparation",
+      kind: "local-capability",
       status: "ready",
-      mode: "dry-run",
+      mode: "local-dry-run",
       health: "ok",
-      metadata: { use: "digital product listing, file-delivery, and approval-pack proof path" },
+      metadata: {
+        use: "Prepares local product files, listing drafts, and approval packs without publishing or changing a marketplace account.",
+        localOnly: true,
+        externalEffect: false,
+        liveMarketplacePublishing: false,
+      },
     },
     {
       id: "gelato",
@@ -72,10 +91,17 @@ function integrationDefinitions() {
       id: "etsy",
       name: "Etsy",
       kind: "marketplace",
-      status: "via_gelato",
-      mode: "partner",
-      health: "limited",
-      metadata: { directApi: "denied; do not retry", liveActionRisk: "seller account visible action" },
+      status: "unselected",
+      mode: "not-implemented",
+      health: "not_verified",
+      metadata: {
+        use: "Unselected marketplace hypothesis. Pantheon has not inspected, connected, or verified an Etsy seller account.",
+        accountInspection: "not_performed",
+        technicalConnection: "not_connected",
+        livePublishingAdapter: "not_implemented",
+        publishingAuthority: "none",
+        liveActionRisk: "seller account visible action",
+      },
     },
     {
       id: "xero",
@@ -155,5 +181,6 @@ function refreshIntegrationHealth(db) {
 }
 
 module.exports = {
+  integrationDefinitions,
   refreshIntegrationHealth,
 };

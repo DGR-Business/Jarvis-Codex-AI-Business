@@ -5,13 +5,34 @@ This folder indexes the current architecture records for Pantheon.
 Use this folder for current system design, component boundaries, data flow,
 integration contracts, deployment notes, and runtime diagrams.
 
+## Product Form And Current Gate
+
+Pantheon's destination is a reusable multi-business operating machine. A
+Portfolio controller compares opportunities and allocates owner attention and
+capital; the Venture Factory creates an inactive venture from a registered,
+versioned Venture Kit; and each activated venture runs in its own isolated lane
+with venture-bound contracts, queue, workers, approvals, evidence, costs,
+artifacts, adapters, monitoring, and recovery. The shared kernel remains
+venture-neutral so adding a business model does not hardcode its channel or
+production rules into Pantheon itself.
+
+The current one-active-venture rule is a temporary proof and capital-risk gate,
+not a single-business architecture. Pantheon must first find and prove one
+venture through three independent paying buyers and positive actual net cash
+contribution in AUD. After that gate, Daniel may authorise up to three isolated
+venture lanes to operate concurrently. Wider portfolio automation remains a
+later evidence-gated expansion of the same architecture.
+
 ## Current Steering
 
 - `docs/Pantheon Master Plan.md`: business and system source of truth.
 - `docs/plans/PANTHEON-COMMERCIAL-TRUTH-AND-OWNER-ABSENT-KIT-READINESS-2026-07-29.md`:
   completed canonical-release, truth-reconciliation, attributable-evidence,
   owner-journey, and next-kit readiness directive.
-- `docs/decisions/0009-owner-absent-low-touch-digital-kit-reentry.md`: current
+- `docs/plans/PANTHEON-PREVENTURE-RESEARCH-AUTHORITY-AND-DILIGENCE-2026-08-02.md`:
+  bounded pre-venture authority, terminal-custody, billing-truth, recovery, and
+  no-commercial-action directive; its v1 authority is now expired.
+- `docs/decisions/0009-owner-absent-low-touch-digital-kit-reentry.md`: preceding
   owner-absent, truthful brand-operated, A$0 preparation, dual-evidence, and new
   low-touch-kit decision.
 - `docs/plans/PANTHEON-AGENT-ASSURANCE-AND-OPENAI-INTEGRATION-HARDENING-2026-07-28.md`:
@@ -42,8 +63,8 @@ integration contracts, deployment notes, and runtime diagrams.
   first-class live worker runner inside Pantheon controls.
 - `docs/decisions/0005-one-venture-to-first-revenue.md`: commercial scope stays
   on one venture through three independent paying buyers and positive actual
-  net cash contribution in AUD; its old Gumroad and owner-work assumptions are
-  superseded.
+  net cash contribution in AUD as a temporary proof gate before parallel
+  venture lanes; its old Gumroad and owner-work assumptions are superseded.
 - `docs/decisions/0006-autonomous-agent-operations-foundation.md`: fixed
   11-worker supervised foundation and deferred boundaries.
 - `docs/decisions/0007-agent-assurance-before-capability-expansion.md`:
@@ -51,8 +72,15 @@ integration contracts, deployment notes, and runtime diagrams.
   capabilities.
 - `docs/decisions/0008-buyer-intent-before-full-catalogue.md`: completed
   buyer-intent attempt, closed by its terminal non-pass branch.
-- `docs/decisions/0009-owner-absent-low-touch-digital-kit-reentry.md`: current
+- `docs/decisions/0009-owner-absent-low-touch-digital-kit-reentry.md`: preceding
   commercial preparation and operating-policy decision.
+- `docs/decisions/0010-bounded-preventure-research-and-recovery-key-custody.md`:
+  accepted bounded research and recovery-custody decision. Its approved
+  schema-27 live recovery is complete; any fresh v2 research authority remains
+  separately gated.
+- `docs/proofs/2026-08-11-preventure-research-schema27-offline-recovery-proof.md`:
+  authenticated-source, lossless candidate, approved guarded live replacement,
+  rollback custody, locked validation, monitor, and signed-browser evidence.
 - `docs/proofs/2026-07-29-buyer-intent-terminal-quality-proof.md`: exact stopped
   build, unchanged package, terminal result, browser, recovery, and release
   evidence.
@@ -68,8 +96,8 @@ integration contracts, deployment notes, and runtime diagrams.
 
 ## Current Commercial Truth Path
 
-The released schema-26 baseline implements one canonical path for a future
-commercial test:
+The commercial-truth path released at schema 26 and preserved by the current
+schema-27 runtime implements one canonical path for a future commercial test:
 
 `v2 contract → proposed → owner-accepted → owner-activated → contract-bound work → immutable receipts and evidence → deterministic evaluation → read-only Tests & Results`
 
@@ -121,6 +149,42 @@ signed owner-browser gate locally. Documentation-only release head `cc14ae6`
 preserved that runtime implementation, passed all eight pull-request jobs in run
 `30451251704`, and merged to private GitHub `main` as `abf6f0d`. The immediate
 `main` run `30452100846` independently passed all eight jobs.
+
+## 2026-08-11 Schema-27 Live Recovery And Boundary
+
+Daniel approved the reviewed recovery, and the production database was
+replaced with the exact lossless schema-27 candidate under a cold, guarded
+swap. The operation first retained and authenticated a fresh encrypted rollback
+copy of the exact live state. Post-replacement database integrity, migration
+identity, logical custody, authority truth, health, monitor, and signed-owner
+browser checks passed while scheduling and every provider path remained locked.
+Pantheon then created an encrypted full recovery set under the active protected
+Windows-user key; it authenticated and completed a disposable restore drill.
+Doctor reports that Pantheon's installation and recovery set are ready.
+
+The durable recovery chain is: authenticated source backup, privately restored
+payload, pinned corroboration, new candidate and immutable manifest, exact
+pre-swap rollback custody, cold guarded replacement, locked post-swap proof, and
+an active-key full recovery set. The recovery builder itself remains
+candidate-only and writes only to new paths. The approved replacement was a
+reviewed recovery operation with a verified reverse path, not a generic
+in-place repair or an everyday operator command.
+
+The technical recovery gate is closed, but no commercial authority was created.
+The one exact v1 acceptance-and-activation pair remains readable only as
+historical evidence; v1 expired on 2026-08-09 and cannot be replayed, extended,
+or used to dispatch. No v2 authority exists. Paid or live provider use,
+research dispatch, external action, and spend therefore remain unapproved and
+fail closed until Daniel creates the required fresh, authenticated,
+scope-specific authority.
+
+Terminal custody can retain an already-dispatched late response only for exact
+accounting and immutable owner-attested billing against its original cost head.
+It cannot manufacture commercial evidence, a decision, a retry, or renewed
+authority. Recovery and validation added no provider call, cost, research
+artifact, commercial evidence, decision, or approval. No buyer contact,
+publication, advertising, account action, money movement, sale, or revenue
+occurred. This was restoration of support infrastructure, not venture proof.
 
 ## Historical Reference
 

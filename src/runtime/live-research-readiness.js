@@ -7,6 +7,7 @@ const {
   environmentEnabled,
   preferredEnvironmentName,
 } = require("../adapters/pantheon-environment");
+const { inspectOpenAiEgressPolicy } = require("../adapters/openai-egress-policy");
 
 function parseRows(rows, fields = ["metadata", "payload", "result"]) {
   return rows.map((row) => {
@@ -42,7 +43,6 @@ function getLiveResearchReadiness(db) {
   const budgetExposure = monthlyBudgetExposure(db);
   const monthlySpendCents = budgetExposure.totalCents;
   const remainingBudgetCents = Number(budget.monthlyBudgetCents || CONFIG.monthlyBudgetCents) - budgetExposure.totalCents;
-  const openaiIntegration = integrations.find((integration) => integration.id === "openai");
   const liveResearchIntegration = integrations.find((integration) => integration.id === "live_research");
   const liveResearchTasks = tasks.filter((task) => task.kind === "live_market_research");
   const pendingApprovals = approvals.filter((approval) => approval.scope === "live_research_spend" && approval.status === "pending");
@@ -53,15 +53,23 @@ function getLiveResearchReadiness(db) {
   const completedRuns = all(db, "SELECT COUNT(*) AS count FROM research_runs WHERE status = 'completed_live'")[0]?.count || 0;
   const failedRuns = all(db, "SELECT COUNT(*) AS count FROM research_runs WHERE status = 'failed_live'")[0]?.count || 0;
 
-  const credentialsConfigured = Boolean(process.env.OPENAI_API_KEY) && openaiIntegration?.health === "ok";
+  const credentialsConfigured = Boolean(process.env.OPENAI_API_KEY);
+  const egressPolicy = inspectOpenAiEgressPolicy();
+  const egressReady = egressPolicy.ready;
   const liveFlagEnabled = environmentEnabled("enableLiveResearch");
   const adapterReady = !environmentDisabled("disableLiveResearchAdapter");
   const pricingReady = Boolean(modelPricing(CONFIG.liveResearchModel));
   const budgetReady = remainingBudgetCents >= Number(CONFIG.liveResearchDefaultBudgetCents || 0);
-  const ready = credentialsConfigured && liveFlagEnabled && adapterReady && pricingReady && budgetReady;
+  const ready = credentialsConfigured
+    && egressReady
+    && liveFlagEnabled
+    && adapterReady
+    && pricingReady
+    && budgetReady;
 
   const blockers = [];
   if (!credentialsConfigured) blockers.push("Pantheon is not connected to an OpenAI API key in this running session.");
+  if (!egressReady) blockers.push("The OpenAI network destination or TLS policy is not the approved secure configuration.");
   if (!liveFlagEnabled) blockers.push("Live research is turned off for this Pantheon runtime.");
   if (!adapterReady) blockers.push(`Pantheon's research connection is disabled by ${preferredEnvironmentName("disableLiveResearchAdapter")}.`);
   if (!pricingReady) blockers.push("The selected research model has no registered AUD safety pricing.");
@@ -79,6 +87,8 @@ function getLiveResearchReadiness(db) {
     budgetExposure,
     remainingBudgetCents,
     credentialsConfigured,
+    egressReady,
+    egressPolicy,
     liveFlagEnabled,
     adapterReady,
     pricingReady,
@@ -104,6 +114,15 @@ function getLiveResearchReadiness(db) {
         credentialsConfigured,
         credentialsConfigured ? "Pantheon can authenticate with OpenAI." : "Pantheon has no OpenAI API key in this running session.",
         "Connect OPENAI_API_KEY outside the repository, then restart Pantheon.",
+      ),
+      checklistItem(
+        "openai_egress",
+        "Secure OpenAI destination",
+        egressReady,
+        egressReady
+          ? "Pantheon will send approved work only to the exact official OpenAI endpoint and will refuse redirects."
+          : "Pantheon detected a changed OpenAI destination or disabled TLS certificate checking.",
+        "Remove OpenAI endpoint overrides and restore normal TLS certificate verification, then restart Pantheon.",
       ),
       checklistItem(
         "live_flag",

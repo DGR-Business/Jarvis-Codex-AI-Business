@@ -46,6 +46,21 @@ const DEFAULT_JOBS = [
     },
   },
   {
+    id: "job-preventure-research",
+    name: "Bounded diligence continuation",
+    kind: "preventure_research",
+    status: "disabled",
+    intervalSeconds: 60,
+    priority: 2,
+    metadata: {
+      purpose: "Continue only the exact owner-activated bounded diligence round through its dedicated runner.",
+      exactAuthorityOnly: true,
+      externalCommercialEffectsAllowed: false,
+      leaseSeconds: 15 * 60,
+      enableWhen: "The exact authority is activated and at least one assignment passes dedicated local readiness.",
+    },
+  },
+  {
     id: "job-weekly-executive-digest",
     name: "Weekly executive brief",
     kind: "weekly_executive_digest",
@@ -245,6 +260,7 @@ function dueSchedulerJobs(db, options = {}) {
 function unsafeTaskReason(task) {
   const kind = String(task.kind || "").toLowerCase();
   const payload = fromJson(task.payload);
+  if (kind === "preventure_research") return "preventure_research_dedicated_runner";
   if (task.approval_id) return "approval_bound_task";
   if (/(^|_)live($|_)|provider|spend|payment|purchase|account_creation|customer_contact|legal_agreement/.test(kind)) {
     return "live_or_external_task";
@@ -266,6 +282,22 @@ function inspectSafeWorkflow(db, workflowId) {
   const workflowRow = get(db, "SELECT * FROM workflows WHERE id = ?", [workflowId]);
   if (!workflowRow) return { safe: false, reason: "workflow_missing", workflow: null, tasks: [] };
   const workflow = { ...workflowRow, metadata: fromJson(workflowRow.metadata) };
+  const immutablePreventureBinding = get(
+    db,
+    "SELECT 1 AS bound FROM preventure_research_assignments WHERE workflow_id = ? LIMIT 1",
+    [workflowId],
+  );
+  if (
+    immutablePreventureBinding
+    || String(workflow.type || "").toLowerCase() === "preventure_research"
+  ) {
+    return {
+      safe: false,
+      reason: "preventure_research_dedicated_runner",
+      workflow,
+      tasks: [],
+    };
+  }
   const commercialSafety = classifyCommercialWorkflowSafety(db, workflow);
   if (!commercialSafety.safe) {
     return {
@@ -438,7 +470,10 @@ async function runProtectedWorkflow(db, workflowId, options = {}) {
 
 async function executeSchedulerJob(db, job, options = {}) {
   if (job.kind === "monitor_cycle") {
-    const result = runMonitorCycle(db, job.metadata.options || {});
+    const result = runMonitorCycle(db, {
+      ...(job.metadata.options || {}),
+      ...(options.monitorOptions || {}),
+    });
     return {
       kind: job.kind,
       monitorRunId: result.id,
@@ -481,6 +516,23 @@ async function executeSchedulerJob(db, job, options = {}) {
       stepsRun: result.stepsRun,
       safetyReason: result.safetyReason || null,
     };
+  }
+
+  if (job.kind === "preventure_research") {
+    if (typeof options.preventureResearchExecutor !== "function") {
+      return {
+        kind: job.kind,
+        status: "safety_blocked",
+        reason: "dedicated_preventure_executor_not_connected",
+        message: "The bounded diligence scheduler is installed but its exact runner is not connected.",
+      };
+    }
+    const result = await options.preventureResearchExecutor({
+      db,
+      schedulerRunId: options.schedulerRunId,
+      actor: "preventure_scheduler",
+    });
+    return { kind: job.kind, ...result };
   }
 
   if (job.kind === "weekly_executive_digest") {
@@ -728,6 +780,8 @@ function startSchedulerLoop(db, options = {}) {
           limit: options.limit || CONFIG.schedulerMaxJobsPerTick || 2,
           leaseSeconds: options.leaseSeconds || DEFAULT_LEASE_SECONDS,
           actor: "scheduler-loop",
+          preventureResearchExecutor: options.preventureResearchExecutor,
+          monitorOptions: options.monitorOptions,
         });
       } catch (error) {
         insertEvent(db, {

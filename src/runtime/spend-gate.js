@@ -18,6 +18,7 @@ const {
   retentionRequirementsForTask,
 } = require("./retention-policy");
 const { spendCostId, stableIdSegment } = require("./stable-id");
+const { inspectOpenAiEgressPolicy } = require("../adapters/openai-egress-policy");
 
 function safeId(value) {
   return stableIdSegment(value, 88, "task");
@@ -88,6 +89,17 @@ function missingPreflightRequirements(request = {}) {
       name: "worst_case_cost",
       message: "The priced worst-case execution cost is above the approved per-run cap.",
     });
+  }
+
+  if (["live_ai_worker", "live_research"].includes(request.type)) {
+    const egressPolicy = inspectOpenAiEgressPolicy();
+    if (!egressPolicy.ready) {
+      missing.push({
+        kind: "safety",
+        name: "openai_egress_policy",
+        message: "OpenAI work is blocked until the official endpoint and TLS policy are restored.",
+      });
+    }
   }
 
   for (const name of asArray(request.requiresProviderEnv)) {

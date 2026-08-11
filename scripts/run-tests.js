@@ -4,6 +4,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const {
   LOCAL_ORDINARY_SHARD_COUNT,
+  ordinaryTestWeight,
   planTestInvocations,
 } = require("./test-shards");
 
@@ -85,7 +86,10 @@ function requestedTestInvocations(args) {
       shardIndex,
       localShardCount: LOCAL_ORDINARY_SHARD_COUNT,
     },
-    (value) => fs.statSync(path.join(workspaceRoot, value)).size,
+    (value) => ordinaryTestWeight(
+      value,
+      fs.statSync(path.join(workspaceRoot, value)).size,
+    ),
   );
 }
 
@@ -93,6 +97,11 @@ function requestedTestInvocations(args) {
 // leak credentials or live-mode flags into Pantheon's isolated test process.
 const blockedEnvironment = new Set([
   "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_CUSTOM_HEADERS",
+  "OPENAI_LOG",
+  "OPENAI_RESPONSES_URL",
+  "NODE_TLS_REJECT_UNAUTHORIZED",
   "PANTHEON_API_CREDIT_AUD_PER_USD",
   "PANTHEON_ENABLE_LIVE_MODELS",
   "PANTHEON_ENABLE_LIVE_RESEARCH",

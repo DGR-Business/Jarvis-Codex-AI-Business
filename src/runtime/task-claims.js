@@ -28,6 +28,95 @@ function withSavepoint(db, prefix, operation) {
   }
 }
 
+function taskClaimLostError(claim, operation = "continuation") {
+  const taskId = claim?.task?.id || "unknown-task";
+  const error = new Error(`Task claim was lost before ${operation}: ${taskId}`);
+  error.code = "task_claim_lost";
+  error.taskId = taskId;
+  error.attemptId = claim?.attemptId || null;
+  return error;
+}
+
+function assertTaskClaimOwned(db, claim, operation = "continuation") {
+  const owned = claim && get(
+    db,
+    `SELECT tasks.id
+     FROM tasks
+     JOIN task_attempts
+       ON task_attempts.id = ?
+      AND task_attempts.task_id = tasks.id
+      AND task_attempts.claim_token = ?
+      AND task_attempts.status = 'running'
+     WHERE tasks.id = ?
+       AND tasks.claim_token = ?`,
+    [claim.attemptId, claim.claimToken, claim.task?.id, claim.claimToken],
+  );
+  if (!owned) throw taskClaimLostError(claim, operation);
+  return true;
+}
+
+function assertTaskClaimActive(db, claim, operation = "continuation") {
+  const active = claim && get(
+    db,
+    `SELECT tasks.id
+     FROM tasks
+     JOIN task_attempts
+       ON task_attempts.id = ?
+      AND task_attempts.task_id = tasks.id
+      AND task_attempts.claim_token = ?
+      AND task_attempts.status = 'running'
+     WHERE tasks.id = ?
+       AND tasks.claim_token = ?
+       AND tasks.status = 'running'`,
+    [claim.attemptId, claim.claimToken, claim.task?.id, claim.claimToken],
+  );
+  if (!active) throw taskClaimLostError(claim, operation);
+  return true;
+}
+
+function isTaskClaimLostError(error) {
+  return error?.code === "task_claim_lost";
+}
+
+function preventureGenericClaimError(taskId) {
+  const error = new Error(
+    "Pre-venture research can only run through its exact dedicated authority bridge.",
+  );
+  error.code = "preventure_research_generic_claim_forbidden";
+  error.statusCode = 409;
+  error.taskId = taskId || null;
+  return error;
+}
+
+function assertGenericClaimTargetAllowed(db, options = {}) {
+  if (!options.taskId && !options.workflowId) return;
+  const params = [];
+  const clauses = [];
+  if (options.taskId) {
+    clauses.push("id = ?");
+    params.push(options.taskId);
+  }
+  if (options.workflowId) {
+    clauses.push("workflow_id = ?");
+    params.push(options.workflowId);
+  }
+  const protectedTask = get(
+    db,
+    `SELECT tasks.id FROM tasks
+     WHERE (
+       tasks.kind = 'preventure_research'
+       OR EXISTS (
+         SELECT 1 FROM preventure_research_assignments AS protected_assignment
+         WHERE protected_assignment.task_id = tasks.id
+       )
+     )
+       ${clauses.length ? `AND ${clauses.join(" AND ")}` : ""}
+     LIMIT 1`,
+    params,
+  );
+  if (protectedTask) throw preventureGenericClaimError(protectedTask.id);
+}
+
 function claimCandidateFilter(options = {}) {
   const filters = [];
   const params = [];
@@ -50,6 +139,11 @@ function claimCandidateQuery(projection, filterClause = "") {
     FROM tasks AS candidate
     JOIN workflows AS workflow ON workflow.id = candidate.workflow_id
     WHERE candidate.status IN ('queued', 'planned') ${filterClause}
+      AND candidate.kind <> 'preventure_research'
+      AND NOT EXISTS (
+        SELECT 1 FROM preventure_research_assignments AS protected_assignment
+        WHERE protected_assignment.task_id = candidate.id
+      )
       AND workflow.status IN ('planned', 'ready', 'agent_running', 'agent_retrying')
       AND NOT EXISTS (
         SELECT 1 FROM tasks AS earlier
@@ -218,6 +312,7 @@ function recoverStaleTaskClaims(db, options = {}) {
 }
 
 function claimNextTask(db, options = {}) {
+  assertGenericClaimTargetAllowed(db, options);
   if (options.recoverStale !== false) recoverStaleTaskClaims(db, options);
   const token = `claim_${randomId()}`;
   const attemptId = `attempt_${randomId()}`;
@@ -251,6 +346,11 @@ function claimNextTask(db, options = {}) {
        SET status = 'running', claim_token = ?, claimed_at = ?, started_at = COALESCE(started_at, ?),
            attempt_count = attempt_count + 1, outcome_status = 'not_started', updated_at = ?
        WHERE id = ? AND status IN ('queued', 'planned')
+         AND kind <> 'preventure_research'
+         AND NOT EXISTS (
+           SELECT 1 FROM preventure_research_assignments AS protected_assignment
+           WHERE protected_assignment.task_id = tasks.id
+         )
        RETURNING *`,
     ).get(token, claimedAt, claimedAt, claimedAt, candidate.id);
     if (!task) {
@@ -361,24 +461,34 @@ function releaseTaskClaim(db, claim, status, options = {}) {
     const resolvedAt = now();
     const currentAttempt = get(
       db,
-      "SELECT metadata FROM task_attempts WHERE id = ? AND claim_token = ?",
+      "SELECT metadata FROM task_attempts WHERE id = ? AND claim_token = ? AND status = 'running'",
       [claim.attemptId, claim.claimToken],
     );
+    if (!currentAttempt) throw taskClaimLostError(claim, "release");
     const result = run(
       db,
       `UPDATE tasks
        SET status = ?, claim_token = NULL, claimed_at = NULL, outcome_status = ?,
            setup_block_reason = ?, error = COALESCE(?, error), updated_at = ?
-       WHERE id = ? AND claim_token = ?`,
-      [status, options.outcomeStatus || status, options.setupBlockReason || null, options.error || null, resolvedAt, claim.task.id, claim.claimToken],
+       WHERE id = ? AND claim_token = ? AND status IN ('running', ?)`,
+      [
+        status,
+        options.outcomeStatus || status,
+        options.setupBlockReason || null,
+        options.error || null,
+        resolvedAt,
+        claim.task.id,
+        claim.claimToken,
+        status,
+      ],
     );
-    if (result.changes !== 1) throw new Error(`Task claim was lost before release: ${claim.task.id}`);
+    if (result.changes !== 1) throw taskClaimLostError(claim, "release");
     const attempt = run(
       db,
       `UPDATE task_attempts
        SET status = ?, outcome_status = ?, provider_request_id = COALESCE(?, provider_request_id),
            error_kind = ?, error = ?, completed_at = ?, metadata = ?
-       WHERE id = ? AND claim_token = ?`,
+       WHERE id = ? AND claim_token = ? AND status = 'running'`,
       [
         status,
         options.outcomeStatus || status,
@@ -391,7 +501,7 @@ function releaseTaskClaim(db, claim, status, options = {}) {
         claim.claimToken,
       ],
     );
-    if (attempt.changes !== 1) throw new Error(`Task attempt was lost before release: ${claim.attemptId}`);
+    if (attempt.changes !== 1) throw taskClaimLostError(claim, "attempt release");
     return true;
   });
 }
@@ -401,15 +511,16 @@ function completeTaskClaim(db, claim, options = {}) {
     const completedAt = options.completedAt || now();
     const currentAttempt = get(
       db,
-      "SELECT metadata FROM task_attempts WHERE id = ? AND claim_token = ?",
+      "SELECT metadata FROM task_attempts WHERE id = ? AND claim_token = ? AND status = 'running'",
       [claim.attemptId, claim.claimToken],
     );
+    if (!currentAttempt) throw taskClaimLostError(claim, "completion");
     const result = run(
       db,
       `UPDATE tasks
        SET status = ?, result = ?, cost_actual_cents = ?, error = ?, completed_at = ?,
            claim_token = NULL, claimed_at = NULL, outcome_status = ?, updated_at = ?
-       WHERE id = ? AND claim_token = ?`,
+       WHERE id = ? AND claim_token = ? AND status IN ('running', ?)`,
       [
         options.status || "completed",
         toJson(options.result),
@@ -420,14 +531,15 @@ function completeTaskClaim(db, claim, options = {}) {
         completedAt,
         claim.task.id,
         claim.claimToken,
+        options.status || "completed",
       ],
     );
-    if (result.changes !== 1) throw new Error(`Task claim was lost before completion: ${claim.task.id}`);
+    if (result.changes !== 1) throw taskClaimLostError(claim, "completion");
     const attempt = run(
       db,
       `UPDATE task_attempts
        SET status = ?, outcome_status = ?, provider_request_id = ?, error_kind = ?, error = ?, completed_at = ?, metadata = ?
-       WHERE id = ? AND claim_token = ?`,
+       WHERE id = ? AND claim_token = ? AND status = 'running'`,
       [
         options.status || "completed",
         options.outcomeStatus || "known",
@@ -440,7 +552,7 @@ function completeTaskClaim(db, claim, options = {}) {
         claim.claimToken,
       ],
     );
-    if (attempt.changes !== 1) throw new Error(`Task attempt was lost before completion: ${claim.attemptId}`);
+    if (attempt.changes !== 1) throw taskClaimLostError(claim, "attempt completion");
     return get(db, "SELECT * FROM tasks WHERE id = ?", [claim.task.id]);
   });
 }
@@ -448,8 +560,11 @@ function completeTaskClaim(db, claim, options = {}) {
 module.exports = {
   DEFAULT_CLAIM_LEASE_MS,
   RUNNABLE_WORKFLOW_STATUSES,
+  assertTaskClaimActive,
+  assertTaskClaimOwned,
   claimNextTask,
   completeTaskClaim,
+  isTaskClaimLostError,
   markTaskAttemptProviderDispatched,
   recoverStaleTaskClaims,
   releaseTaskClaim,

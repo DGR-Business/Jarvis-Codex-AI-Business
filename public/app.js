@@ -362,9 +362,14 @@ function approvalButtons(item, compactButtons = false, options = {}) {
   const sizeClass = compactButtons ? "" : "";
   const action = item.decisionKind === "handoff"
     ? "handoff-decision"
+    : item.decisionKind === "preventure_research_lifecycle"
+      ? "preventure-lifecycle-decision"
     : item.decisionKind === "commercial_lifecycle"
       ? "commercial-lifecycle-decision"
       : "approval";
+  const actions = Array.isArray(item.actions) && item.actions.length
+    ? item.actions
+    : ["approve", "changes", "reject"];
   const liveResearch = item.tools?.some((tool) => ["research_adapter", "live_web_with_approval"].includes(tool));
   const approvalLabel = item.approveLabel || (item.decisionKind === "handoff"
     ? "Prepare next step"
@@ -373,13 +378,13 @@ function approvalButtons(item, compactButtons = false, options = {}) {
       : Number(item.maxCostCents || 0) > 0 || item.provider
         ? "Start this AI check"
         : "Approve");
-  const approveButton = options.allowApprove === false
+  const approveButton = options.allowApprove === false || !actions.includes("approve")
     ? ""
     : `<button class="primary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="approve" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("check")}${escapeHtml(approvalLabel)}</button>`;
   return `<div class="work-actions ${sizeClass}">
     ${approveButton}
-    <button class="secondary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="changes" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("pencil-line")}Ask for changes</button>
-    <button class="danger-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="reject" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("x")}Do not continue</button>
+    ${actions.includes("changes") ? `<button class="secondary-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="changes" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("pencil-line")}Ask for changes</button>` : ""}
+    ${actions.includes("reject") ? `<button class="danger-button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-decision="reject" data-scope-hash="${escapeHtml(item.scopeHash)}">${icon("x")}Do not continue</button>` : ""}
   </div>`;
 }
 
@@ -404,10 +409,13 @@ function workItemHasRunAuthorityState(item) {
 }
 
 function workItemIsSafeInternal(item) {
-  return workItemCanRun(item) && item?.safe_to_run === true;
+  return workItemCanRun(item)
+    && item?.safe_to_run === true
+    && item?.execution_kind !== "preventure_research";
 }
 
 function workItemNeedsCommercialAuthority(item) {
+  if (item?.execution_kind === "preventure_research") return false;
   const classification = String(item?.safety_classification || "").toLowerCase();
   const reason = String(item?.safety_reason || "").toLowerCase();
   return classification.includes("commercial")
@@ -416,6 +424,14 @@ function workItemNeedsCommercialAuthority(item) {
 
 function workItemUnavailableReason(item) {
   const reason = String(item?.safety_reason || "");
+  if (item?.execution_kind === "preventure_research") {
+    if (/runtime_not_ready|dedicated_runner/i.test(reason)) {
+      return "The dedicated bounded-research runner is not connected";
+    }
+    if (/expired/i.test(reason)) return "This bounded research authority expired";
+    if (/integrity|binding/i.test(reason)) return "The bounded research record needs repair";
+    return "This bounded research assignment is not ready to run";
+  }
   if (workItemNeedsCommercialAuthority(item)) {
     return "Current commercial authority does not allow this step";
   }
@@ -430,15 +446,365 @@ function workItemUnavailableReason(item) {
 
 function workItemRunControl(item, className = "primary-button") {
   if (workItemCanRun(item)) {
-    return `<button class="${className}" data-action="run-task" data-id="${escapeHtml(item.id)}" data-execution-kind="${escapeHtml(item.execution_kind || "internal")}">${icon("play")}${escapeHtml(item.run_label || "Run internal step")}${Number(item.max_cost_cents || 0) > 0 ? ` / up to ${money(item.max_cost_cents)}` : ""}</button>`;
+    const preventure = item.execution_kind === "preventure_research";
+    const button = `<button class="${className}" data-action="run-task" data-id="${escapeHtml(item.id)}" data-execution-kind="${escapeHtml(item.execution_kind || "internal")}"${item.authority_hash ? ` data-authority-hash="${escapeHtml(item.authority_hash)}"` : ""}${item.assignment_id ? ` data-assignment-id="${escapeHtml(item.assignment_id)}"` : ""}${item.assignment_hash ? ` data-assignment-hash="${escapeHtml(item.assignment_hash)}"` : ""}${item.descriptor_hash ? ` data-descriptor-hash="${escapeHtml(item.descriptor_hash)}"` : ""}${item.request_body_hash ? ` data-request-body-hash="${escapeHtml(item.request_body_hash)}"` : ""}>${icon("play")}${escapeHtml(item.run_label || (preventure ? "Run exact bounded research" : "Run internal step"))}${Number(item.max_cost_cents || 0) > 0 ? ` / up to ${money(item.max_cost_cents)}` : ""}</button>`;
+    return preventure
+      ? `<div class="work-actions bounded-research-control">${button}<small>One exact authority-bound provider attempt. The maximum exposure may remain pending even when the initial estimate is A$0.</small></div>`
+      : button;
+  }
+  if (
+    item?.execution_kind === "preventure_research"
+    && item.can_reprocess === true
+    && item.authority_hash
+    && item.assignment_id
+    && item.assignment_hash
+    && item.descriptor_hash
+    && item.retained_output_hash
+  ) {
+    return `<button class="${className}" data-action="reprocess-preventure" data-authority-hash="${escapeHtml(item.authority_hash)}" data-assignment-id="${escapeHtml(item.assignment_id)}" data-assignment-hash="${escapeHtml(item.assignment_hash)}" data-descriptor-hash="${escapeHtml(item.descriptor_hash)}" data-retained-output-hash="${escapeHtml(item.retained_output_hash)}">${icon("refresh-cw")}${escapeHtml(item.reprocess_label || "Reprocess retained result locally")}</button>`;
   }
   const reason = workItemUnavailableReason(item);
   const review = workItemNeedsCommercialAuthority(item)
     ? `<button class="text-button" data-view="tests">Review authority</button>`
+    : item?.execution_kind === "preventure_research"
+      ? `<button class="text-button" data-view="system">Open system status</button>`
     : ["blocked", "waiting_approval", "needs_attention"].includes(item?.status)
       ? `<button class="text-button" data-view="decisions">Review</button>`
       : "";
   return `<div class="work-actions run-unavailable"><span class="muted-text"${item?.safety_reason ? ` title="${escapeHtml(item.safety_reason)}"` : ""}>${escapeHtml(reason)}</span>${review}</div>`;
+}
+
+const OWNER_PREVENTURE_RESEARCH_SCHEMA = "pantheon.owner-preventure-research.v1";
+
+function preventureOwnerState(data) {
+  const state = data?.preventureResearch;
+  return state?.schema === OWNER_PREVENTURE_RESEARCH_SCHEMA ? state : null;
+}
+
+function currentPreventureGate(data) {
+  const state = preventureOwnerState(data);
+  return state?.integrity?.status === "ok" && state.current ? state.current : null;
+}
+
+function latestPreventureGate(data) {
+  const state = preventureOwnerState(data);
+  if (!state) return null;
+  return state.current || state.history?.items?.[0] || null;
+}
+
+function renderPreventureCostTruth(gate) {
+  const budget = gate?.budget || {};
+  if (!Number.isSafeInteger(budget.authorityCapAudCents)) return "";
+  const currency = "AUD";
+  const estimated = Number.isSafeInteger(budget.estimatedAudCents)
+    ? budget.estimatedAudCents
+    : 0;
+  const exposure = Number.isSafeInteger(budget.exposureAudCents)
+    ? budget.exposureAudCents
+    : 0;
+  const reconciled = Number.isSafeInteger(budget.reconciledAudCents)
+    ? budget.reconciledAudCents
+    : 0;
+  const unknown = Number.isSafeInteger(budget.unknownCostCount)
+    ? budget.unknownCostCount
+    : 0;
+  const exactBillingPending = budget.exactBillingPending === true;
+  const terminalCustodyPending = gate?.terminalCustody?.status
+    === "terminal_custody_pending_billing";
+  const terminalCustodyOwnerAttested = gate?.terminalCustody?.status
+    === "terminal_custody_owner_attested";
+  const ownerAttestedBilling = gate?.providerBilling?.status
+    === "owner_attested_not_provider_settled";
+  const terminal = ["completed", "revoked", "expired", "cancelled"].includes(
+    gate?.lifecycle?.status,
+  );
+  const reconciliation = terminalCustodyPending
+    ? "Terminal custody - exact billing pending"
+    : ownerAttestedBilling
+      ? "Owner-attested billing recorded - not provider-settled"
+    : unknown > 0
+    ? "Cost unknown - further dispatch frozen"
+    : exactBillingPending
+      ? terminal
+        ? "Post-decision provider billing pending"
+        : "Exact provider billing pending"
+      : reconciled > 0
+        ? "Recorded provider cost"
+        : exposure > 0
+          ? "Exposure retained; billing needs review"
+          : "No provider charge or exposure recorded";
+  return `<div class="metric-grid owner-gate-grid">
+    <div class="metric sky"><span>Approved ceiling</span><strong>${money(budget.authorityCapAudCents, currency)}</strong><small>This is a maximum, not money spent.</small></div>
+    <div class="metric ${estimated > 0 ? "amber" : "sky"}"><span>Estimated provider cost</span><strong>${money(estimated, currency)}</strong><small>An estimate is not a settled charge and is not the maximum exposure.</small></div>
+    <div class="metric ${exposure > 0 ? "amber" : "mint"}"><span>Maximum charge exposure</span><strong>${money(exposure, currency)}</strong><small>${exposure > estimated ? "This can remain above the estimate while exact billing is pending." : "The amount currently used for the authority and monthly risk limit."}</small></div>
+    <div class="metric mint"><span>${ownerAttestedBilling ? "Owner-attested provider cost" : "Recorded provider cost"}</span><strong>${money(reconciled, currency)}</strong><small>${ownerAttestedBilling ? "Authenticated owner observation; not a provider-settled receipt." : "A recorded amount remains distinct from provider settlement."}</small></div>
+    <div class="metric ${unknown > 0 || exactBillingPending || exposure > reconciled || ownerAttestedBilling ? "amber" : "mint"}"><span>Billing status</span><strong>${escapeHtml(reconciliation)}</strong><small>${terminalCustodyPending ? "The provider result is sealed. Record the owner-observed bill; do not retry or make another network call." : terminalCustodyOwnerAttested ? "The custody record and owner observation are sealed. Provider settlement is not claimed." : unknown > 0 ? `${unknown} cost record${unknown === 1 ? "" : "s"} need reconciliation.` : exactBillingPending ? "A zero estimate does not mean there is no possible charge." : ownerAttestedBilling ? "The owner observation preserves accounting truth without claiming provider settlement." : "Estimates and exposure remain separate from recorded cost."}</small></div>
+  </div>`;
+}
+
+function currentGateChannels(gate) {
+  const raw = Array.isArray(gate?.channelHypotheses)
+    ? gate.channelHypotheses
+    : Array.isArray(gate?.channels)
+      ? gate.channels
+      : [];
+  return raw.map((item) => {
+    const value = typeof item === "string" ? item : item?.id || item?.name || "unknown";
+    return {
+      id: String(value),
+      label: typeof item === "object" && item?.label
+        ? item.label
+        : humanStatus(value),
+      state: typeof item === "object" && item?.selectionState
+        ? item.selectionState
+        : value === "retain_cash"
+          ? "available_alternative"
+          : "unselected",
+    };
+  });
+}
+
+function renderPreventureTerminalStop(gate) {
+  const stop = gate?.terminalStop;
+  if (!stop?.trigger) return "";
+  const skipped = Array.isArray(stop.skippedSuffix?.assignments)
+    ? stop.skippedSuffix.assignments
+    : [];
+  const gaps = Array.isArray(stop.trigger.gapCodes) ? stop.trigger.gapCodes : [];
+  return `<section class="gate-result-block gate-stop" aria-label="Recorded research stop">
+    <div><span class="eyebrow">Where this round stopped</span><h3>${escapeHtml(stop.trigger.title || stop.trigger.assignmentId || "Bounded evidence assignment")}</h3><p>${escapeHtml(humanStatus(stop.trigger.outcomeClass || "validated stop"))}${gaps.length ? `: ${escapeHtml(gaps.map(humanStatus).join(", "))}` : ""}.</p></div>
+    <div><span class="eyebrow">Exact work not run</span>${skipped.length
+      ? `<ol class="gate-skip-list">${skipped.map((item) => `<li><strong>${escapeHtml(item.title || item.assignmentId || "Assignment")}</strong><span>Not dispatched; 0 attempts; 0 provider calls; ${money(Number.isSafeInteger(item.totalAudCostCents) ? item.totalAudCostCents : 0)} cost.</span></li>`).join("")}</ol>`
+      : "<p>No later assignment remained in the approved sequence.</p>"}</div>
+  </section>`;
+}
+
+function renderPreventureTerminalCustody(gate) {
+  const custody = gate?.terminalCustody;
+  if (![
+    "terminal_custody_pending_billing",
+    "terminal_custody_owner_attested",
+  ].includes(custody?.status)) return "";
+  const ownerAttested = custody.status === "terminal_custody_owner_attested";
+  const items = Array.isArray(custody.items) ? custody.items : [];
+  const ownerBillingControl = custody.ownerBillingControl;
+  const recordControl = !ownerAttested
+    && ownerBillingControl?.allowed === true
+    && ownerBillingControl.assignmentHash
+    ? `<button type="button" class="secondary-button" data-action="record-owner-billing-observation" data-assignment-hash="${escapeHtml(ownerBillingControl.assignmentHash)}">${icon("receipt-text")}Record owner-observed bill</button>`
+    : "";
+  return `<section class="gate-result-block gate-stop" aria-label="Terminal provider custody">
+    <div><span class="eyebrow">Provider result safely held</span><h3>${ownerAttested ? "Owner-attested billing recorded; not provider-settled" : "Finished locally; exact billing is pending"}</h3><p>The retained result is for custody and accounting only. It is not commercial evidence, a diligence decision, or permission to retry.</p></div>
+    <div class="review-facts simple gate-result-facts">
+      <div><span>Custody status</span><strong>Verified and sealed</strong></div>
+      <div><span>${ownerAttested ? "Owner-attested amount" : "Maximum exposure"}</span><strong>${items.length ? money(items.reduce((total, item) => total + Number(item?.billing?.exposureAudCents || 0), 0)) : "Not recorded"}</strong></div>
+      <div><span>Execution rows still active</span><strong>${Number(gate?.execution?.activeExecutionRowCount || 0)}</strong></div>
+      <div><span>Further provider calls</span><strong>${Number(custody.additionalNetworkCalls || 0)}</strong></div>
+      <div><span>Retry authorised</span><strong>${custody.retryAuthorized === true ? "Yes" : "No"}</strong></div>
+      <div><span>Commercial decision recorded</span><strong>${custody.decisionRecorded === true ? "Yes" : "No"}</strong></div>
+    </div>
+    <p><strong>Next:</strong> ${ownerAttested ? "retain the authenticated observation with the custody history; it does not prove provider settlement." : "record the exact owner-observed provider bill against the sealed full-cap exposure."} No raw provider response is shown here.</p>
+    ${recordControl ? `<div class="work-actions">${recordControl}</div>` : ""}
+  </section>`;
+}
+
+function renderPreventureTextList(title, values) {
+  const items = Array.isArray(values)
+    ? values.filter((item) => typeof item === "string" && item.trim())
+    : [];
+  if (!items.length) return "";
+  return `<div class="gate-evidence-group"><h4>${escapeHtml(title)}</h4><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`;
+}
+
+function renderPreventureContraryEvidence(values) {
+  const items = Array.isArray(values)
+    ? values.filter((item) => (
+      item
+      && typeof item === "object"
+      && typeof item.id === "string"
+      && typeof item.status === "string"
+    ))
+    : [];
+  if (!items.length) return "";
+  return `<div class="gate-evidence-group"><h4>Contrary evidence retained</h4><ul>${items.map((item) => `<li><strong>${escapeHtml(humanStatus(item.id))}</strong>: ${escapeHtml(humanStatus(item.status))}</li>`).join("")}</ul></div>`;
+}
+
+function renderPreventureDecisionTruth(gate) {
+  const decision = gate?.decision;
+  if (!decision) return "";
+  const formatCases = Array.isArray(decision.formatCases) ? decision.formatCases : [];
+  const channelCases = Array.isArray(decision.channelCases) ? decision.channelCases : [];
+  const economicsCases = Array.isArray(decision.economicsCases) ? decision.economicsCases : [];
+  const readinessGates = Array.isArray(decision.readinessGates) ? decision.readinessGates : [];
+  const resulting = decision.resultingReadiness || {};
+  const truth = gate.commercialTruth || {};
+  const resultVersion = resulting.version || decision.version || "Version not available";
+  const resultDate = decision.decidedAt ? shortDate(decision.decidedAt) : "Date not available";
+  const economics = economicsCases.length
+    ? `<div class="gate-evidence-group"><h4>Price and contribution cases</h4><ul>${economicsCases.map((item) => {
+      const price = Number.isSafeInteger(item?.priceAudCents)
+        ? money(item.priceAudCents)
+        : "Price not recorded";
+      const contribution = Number.isSafeInteger(item?.estimatedNetCashContributionAudCents)
+        ? `; estimated net cash ${money(item.estimatedNetCashContributionAudCents)}`
+        : "; net cash remains unknown";
+      return `<li><strong>${escapeHtml(humanStatus(item?.channelId || "unknown channel"))} at ${escapeHtml(price)}</strong>: ${escapeHtml(humanStatus(item?.state || "unknown"))}${escapeHtml(contribution)}</li>`;
+    }).join("")}</ul></div>`
+    : "";
+  return `<section class="gate-result-block gate-decision" aria-label="Recorded diligence result">
+    <header><div><span class="eyebrow">Versioned diligence result</span><h3>${escapeHtml(humanStatus(decision.outcome || "unknown"))}</h3></div><span class="badge sky">${escapeHtml(resultVersion)}</span></header>
+    <p>${escapeHtml(decision.summary || "The bounded diligence result was recorded without granting commercial authority.")}</p>
+    <div class="review-facts simple gate-result-facts">
+      <div><span>Recorded</span><strong>${escapeHtml(resultDate)}</strong></div>
+      <div><span>Buyer hypothesis</span><strong>${escapeHtml(decision.buyer || gate.opportunity?.buyer || "Not proved")}</strong></div>
+      <div><span>Problem hypothesis</span><strong>${escapeHtml(decision.problem || gate.opportunity?.problem || "Not proved")}</strong></div>
+      <div><span>Offer hypothesis</span><strong>${escapeHtml(decision.offer || gate.opportunity?.offer || "Not selected")}</strong></div>
+      <div><span>Channel</span><strong>${escapeHtml(decision.channel || "No commercial channel selected")}</strong></div>
+      <div><span>Price or margin</span><strong>${escapeHtml(decision.priceOrMargin || "Not proved")}</strong></div>
+      <div><span>Evidence standard</span><strong>${escapeHtml(decision.evidenceStandard || "Not recorded")}</strong></div>
+      <div><span>Comparators retained</span><strong>${Number.isSafeInteger(decision.comparatorCount) ? decision.comparatorCount : 0}</strong></div>
+      <div><span>Recorded money move</span><strong>${escapeHtml(decision.nextMoneyMove || "Retain cash pending a new exact decision.")}</strong></div>
+    </div>
+    <div class="gate-truth-strip" aria-label="Commercial non-occurrence truth">
+      <span>0 verified buyers; ${Number.isSafeInteger(truth.orders) ? truth.orders : 0} orders</span>
+      <span>${money(Number.isSafeInteger(truth.revenueAudCents) ? truth.revenueAudCents : 0)} revenue</span>
+      <span>No product build, buyer contact, publishing, advertising, account action, or external commercial spend</span>
+    </div>
+    ${renderPreventureTerminalStop(gate)}
+    <details class="gate-evidence"><summary>Evidence, comparisons, and limitations</summary>
+      <div class="gate-evidence-grid">
+        ${formatCases.length ? `<div class="gate-evidence-group"><h4>Low-touch formats</h4><ul>${formatCases.map((item) => `<li><strong>${escapeHtml(humanStatus(item?.id || "format"))}</strong>: ${escapeHtml(humanStatus(item?.disposition || "unknown"))}</li>`).join("")}</ul></div>` : ""}
+        ${channelCases.length ? `<div class="gate-evidence-group"><h4>Channel and retain-cash cases</h4><ul>${channelCases.map((item) => `<li><strong>${escapeHtml(humanStatus(item?.id || "channel"))}</strong>: ${escapeHtml(humanStatus(item?.state || "unknown"))}</li>`).join("")}</ul></div>` : ""}
+        ${economics}
+        ${readinessGates.length ? `<div class="gate-evidence-group"><h4>Commercial readiness gates</h4><ul>${readinessGates.map((item) => `<li><strong>${escapeHtml(humanStatus(item?.id || "gate"))}</strong>: ${escapeHtml(humanStatus(item?.status || "unknown"))}</li>`).join("")}</ul></div>` : ""}
+        ${renderPreventureContraryEvidence(decision.contraryEvidence)}
+        ${renderPreventureTextList("Material contradictions", decision.materialContradictions)}
+        ${renderPreventureTextList("Limitations", decision.limitations)}
+        ${renderPreventureTextList("Revise or stop rules", decision.reviseOrStopCriteria)}
+      </div>
+    </details>
+  </section>`;
+}
+
+function cockpitMonitoringState(data) {
+  const monitoring = data?.health?.monitoring || data?.systemHealth?.monitoring || null;
+  if (!monitoring) {
+    return {
+      label: "Open System for status",
+      detail: "No independent monitor result was included in this business summary.",
+      tone: "sky",
+    };
+  }
+  const findingCount = Number(monitoring.latestFindingCount || 0);
+  return {
+    label: monitoring.label || humanStatus(monitoring.status),
+    detail: monitoring.lastCheckAt
+      ? `Last checked ${shortDate(monitoring.lastCheckAt)}; ${findingCount} item${findingCount === 1 ? "" : "s"} surfaced.`
+      : monitoring.summary || "The independent monitor is waiting for its first completed check.",
+    tone: monitoring.status === "operating"
+      ? "mint"
+      : monitoring.status === "starting"
+        ? "sky"
+        : "amber",
+  };
+}
+
+function renderCurrentCommercialGate(data) {
+  const ownerState = preventureOwnerState(data);
+  if (!ownerState) return "";
+  if (ownerState.integrity?.status !== "ok") {
+    return `<section class="commercial-gate commercial-gate-attention" aria-labelledby="commercial-gate-title">
+      <header><div><span class="eyebrow">Current commercial gate</span><h2 id="commercial-gate-title">The research authority record needs attention</h2></div>${badge("Needs attention", "coral")}</header>
+      <p>${escapeHtml(ownerState.integrity?.message || "Pantheon withheld the current gate because its durable record could not be verified.")}</p>
+      <small>No research, build, test, publishing, account action, or external spend is authorised from an uncertain record.</small>
+    </section>`;
+  }
+  const gate = ownerState.current;
+  if (!gate) {
+    const latest = ownerState.history?.items?.[0] || null;
+    const etsyOwnerReported = latest?.etsy?.accountExistence === "owner_reported_unverified";
+    if (latest?.decision) {
+      return `<section class="commercial-gate commercial-gate-complete" aria-labelledby="commercial-gate-title">
+        <header><div><span class="eyebrow">Latest commercial gate</span><h2 id="commercial-gate-title">Bounded diligence result recorded</h2></div>${badge(humanStatus(latest.decision.outcome || "completed"), "amber")}</header>
+        <p>The authority is closed. The result is a recommendation record, not permission to build, test, publish, contact buyers, access an account, advertise, or spend externally.</p>
+        ${renderPreventureDecisionTruth(latest)}
+        ${renderPreventureCostTruth(latest)}
+        <div class="gate-channel-note"><strong>Etsy account context</strong><span>${escapeHtml(etsyOwnerReported
+          ? "Owner-reported account exists; Pantheon has not inspected, connected, or technically verified it."
+          : "No inspected or connected Etsy account is established by this result.")}</span></div>
+        <div class="gate-next">
+          <div><span class="eyebrow">Exact next evidence action</span><strong>${escapeHtml(latest.nextAction || latest.decision.nextMoneyMove || "No further action is authorised by this record.")}</strong><p>${escapeHtml(latest.moneyMove?.current || "Cash remains retained after the completed diligence round.")}</p></div>
+          <div class="gate-boundary"><span>No active research authority</span><span>A$0 external commercial spend</span><span>No buyers or revenue recorded</span></div>
+        </div>
+      </section>`;
+    }
+    if ([
+      "terminal_custody_pending_billing",
+      "terminal_custody_owner_attested",
+    ].includes(latest?.terminalCustody?.status)) {
+      const billingPending = latest.terminalCustody.status
+        === "terminal_custody_pending_billing";
+      return `<section class="commercial-gate commercial-gate-complete" aria-labelledby="commercial-gate-title">
+        <header><div><span class="eyebrow">Latest commercial gate</span><h2 id="commercial-gate-title">${billingPending ? "Provider result safely held; billing pending" : "Provider result safely held; owner billing recorded"}</h2></div>${badge("No retry", "amber")}</header>
+        <p>The authority is closed and the provider result is sealed for custody and accounting only. No diligence decision, commercial evidence, buyer validation, or permission for more provider work was created.</p>
+        ${renderPreventureTerminalCustody(latest)}
+        ${renderPreventureCostTruth(latest)}
+        <div class="gate-next">
+          <div><span class="eyebrow">Exact next accounting action</span><strong>${escapeHtml(latest.nextAction || (billingPending ? "Record the owner-observed provider bill; do not retry." : "Retain the owner-attested record; provider settlement is not claimed."))}</strong><p>${escapeHtml(latest.moneyMove?.current || (billingPending ? "Cash remains retained while exact provider billing is pending." : "Cash remains retained; the billing amount is owner-attested, not provider-settled."))}</p></div>
+          <div class="gate-boundary"><span>No active research authority</span><span>No retry or network call</span><span>No commercial decision or external action</span></div>
+        </div>
+      </section>`;
+    }
+    return `<section class="commercial-gate" aria-labelledby="commercial-gate-title">
+      <header><div><span class="eyebrow">Current commercial gate</span><h2 id="commercial-gate-title">No bounded research authority is active</h2></div>${badge("Not authorised", "amber")}</header>
+      <p>${escapeHtml(latest
+        ? `The latest bounded research round is ${humanStatus(latest.lifecycle?.status || "closed").toLowerCase()}. Its history remains available for audit.`
+        : ownerState.integrity?.message || "Pantheon has no current pre-venture research record.")}</p>
+      ${latest ? renderPreventureCostTruth(latest) : ""}
+      <small>No selling channel, product build, market test, publishing action, or external spend is selected or authorised.</small>
+    </section>`;
+  }
+
+  const readiness = gate.startingReadiness || {};
+  const monitoring = cockpitMonitoringState(data);
+  const channels = currentGateChannels(gate);
+  const etsyOwnerReported = gate.etsy?.accountExistence === "owner_reported_unverified";
+  const lifecycle = gate.lifecycle || {};
+  const lifecycleStatus = lifecycle.status || ownerState.integrity?.authorityStatus || "unknown";
+  const ownerDecisionWaiting = (ownerState.controls?.allowed || []).some(
+    (control) => ["review_acceptance", "review_activation"].includes(control),
+  );
+  const nextGateLabel = ownerDecisionWaiting ? "Next owner gate" : "Next controlled step";
+  const channelDetail = etsyOwnerReported
+    ? "All listed options are unselected. Daniel confirmed that an Etsy seller account exists; Pantheon has not inspected, connected, or technically verified it."
+    : "No marketplace account or live publishing route is selected by this research authority.";
+  const channelSummary = "No selling channel selected";
+  const budget = gate.budget || {};
+  const budgetSummary = Number.isSafeInteger(budget.authorityCapAudCents)
+    ? `${money(budget.authorityCapAudCents, budget.currency || "AUD")} internal cap; A$0 external commercial spend`
+    : "A$0 external commercial spend";
+  const canRevoke = (ownerState.controls?.allowed || []).includes("revoke")
+    && gate.authority?.hash
+    && lifecycle.latestEventHash;
+  const revokeControl = canRevoke
+    ? `<button type="button" class="danger-button" data-action="revoke-preventure" data-authority-hash="${escapeHtml(gate.authority.hash)}" data-latest-event-hash="${escapeHtml(lifecycle.latestEventHash)}">${icon("square")}Stop this research round</button>`
+    : "";
+
+  return `<section class="commercial-gate" aria-labelledby="commercial-gate-title">
+    <header><div><span class="eyebrow">Current commercial gate</span><h2 id="commercial-gate-title">${escapeHtml(gate.opportunity?.name || "Bounded pre-venture diligence")}</h2></div>${badge(gate.lifecycle?.label || lifecycleStatus)}</header>
+    <p>${escapeHtml(readiness.recommendation || "Pantheon is gathering decision-critical evidence before any build or market test.")}</p>
+    <div class="metric-grid owner-gate-grid">
+      <div class="metric amber"><span>Commercial readiness</span><strong>${escapeHtml(humanStatus(readiness.status || "unknown"))}</strong><small>No buyer demand or commercial result is being claimed.</small></div>
+      <div class="metric amber"><span>Offer decision</span><strong>${escapeHtml(readiness.offerDisposition === "revise" ? "Offer needs revision" : humanStatus(readiness.offerDisposition || "unknown"))}</strong><small>Build and external-test authority remain off.</small></div>
+      <div class="metric sky"><span>Channel position</span><strong>${escapeHtml(channelSummary)}</strong><small>${escapeHtml(channelDetail)}</small>${channels.length ? `<div class="gate-channel-list">${channels.map((item) => `<span>${escapeHtml(item.label)}: ${escapeHtml(humanStatus(item.state))}</span>`).join("")}</div>` : ""}</div>
+      <div class="metric ${escapeHtml(monitoring.tone)}"><span>System health</span><strong>${escapeHtml(monitoring.label)}</strong><small>${escapeHtml(monitoring.detail)}</small></div>
+    </div>
+    ${renderPreventureCostTruth(gate)}
+    <div class="gate-next">
+      <div><span class="eyebrow">${escapeHtml(nextGateLabel)}</span><strong>${escapeHtml(gate.nextAction || gate.moneyMove?.next || "Review the exact recorded authority before work continues.")}</strong><p>${escapeHtml(gate.moneyMove?.current || "Retaining cash remains available while the evidence is incomplete.")}</p></div>
+      <div class="gate-boundary"><span>${escapeHtml(budgetSummary)}</span><span>Research only</span><span>No external commercial effects</span>${revokeControl}</div>
+    </div>
+  </section>`;
 }
 
 function renderCommandBand(data) {
@@ -461,6 +827,32 @@ function renderCommandBand(data) {
     : journeyBlocked
       ? "needs-attention"
       : "waiting-to-start";
+  const researchGate = !data.currentTest && !journeyRunProved
+    ? currentPreventureGate(data)
+    : null;
+  if (researchGate) {
+    const researchState = preventureOwnerState(data);
+    const ownerDecisionWaiting = (researchState?.controls?.allowed || []).some(
+      (control) => ["review_acceptance", "review_activation"].includes(control),
+    );
+    const lifecycle = researchGate.lifecycle || {};
+    const researchRunning = researchGate.execution?.running === true;
+    return `<section class="command-band">
+      <div>
+        <span class="section-label">Bounded commercial diligence</span>
+        <h2>${escapeHtml(lifecycle.label || "The exact research gate is recorded")}</h2>
+        <p>${escapeHtml(researchGate.nextAction || researchGate.moneyMove?.next || "Review the recorded gate before Pantheon continues.")}</p>
+      </div>
+      <div class="command-controls">
+        <button type="button" class="${ownerDecisionWaiting ? "primary-button" : "secondary-button"}" data-view="${ownerDecisionWaiting ? "decisions" : "system"}">${icon(ownerDecisionWaiting ? "shield-check" : "activity")}${ownerDecisionWaiting ? "Review this decision" : "Open system status"}</button>
+      </div>
+      <div class="discovery-progress">
+        <span class="status-dot ${researchRunning ? "working" : "waiting-to-start"}"></span>
+        <div><strong>${escapeHtml(researchGate.opportunity?.name || "Pre-venture research")}</strong><p>${escapeHtml(researchGate.moneyMove?.current || "Cash remains retained while the evidence is incomplete.")}</p></div>
+        ${badge(researchRunning ? "Running" : lifecycle.label || lifecycle.status || "Recorded")}
+      </div>
+    </section>`;
+  }
   const active = discovery.activeRound;
   const portfolioComplete = !active
     && Number(portfolio.evidenceRoundCount || 0) >= 2
@@ -602,6 +994,12 @@ function renderCockpit() {
   const journey = data.currentJourney;
   const productionPlan = discovery.production?.plans?.[0] || null;
   const verifiedJourneyRun = journey?.execution?.running === true;
+  const researchGate = !test && !verifiedJourneyRun
+    ? currentPreventureGate(data)
+    : null;
+  const latestResearchGate = !test && !verifiedJourneyRun
+    ? latestPreventureGate(data)
+    : null;
   const retainedLegacyCommercialRecord = Boolean(
     journey
     || productionPlan
@@ -610,10 +1008,23 @@ function renderCockpit() {
   );
   const nextMoneyMove = verifiedJourneyRun
     ? `A contract-bound internal task is running for ${humanStatus(journey.activeStage).toLowerCase()}.`
-    : data.nextMoneyMove
+    : researchGate?.nextAction
+      || researchGate?.moneyMove?.next
+      || data.nextMoneyMove
       || (retainedLegacyCommercialRecord
         ? "Review the retained commercial history; it does not provide current build, test, or publication authority."
         : "No current commercial test is authorised.");
+  const nextMoneyMoveDetail = researchGate?.moneyMove?.current
+    || latestResearchGate?.moneyMove?.current
+    || "Internal work runs only when its recorded state and authority allow it. Protected external actions remain separate owner decisions.";
+  const researchNeedsOwnerDecision = researchGate && (preventureOwnerState(data)?.controls?.allowed || []).some(
+    (control) => ["review_acceptance", "review_activation"].includes(control),
+  );
+  const nextMoneyMoveControl = researchGate
+    ? `<button class="secondary-button" data-view="${researchNeedsOwnerDecision ? "decisions" : "system"}">${icon(researchNeedsOwnerDecision ? "shield-check" : "activity")}${researchNeedsOwnerDecision ? "Review decision" : "Open system status"}</button>`
+    : latestResearchGate?.decision
+      ? `<button class="secondary-button" data-view="system">${icon("activity")}Review recorded result</button>`
+      : `<button class="secondary-button" data-view="portfolio">${icon("briefcase-business")}Open portfolio</button>`;
   const importantDecisions = data.importantWork.filter((item) => item.type === "decision").length;
   const decisionCount = $("#decision-count");
   decisionCount.textContent = importantDecisions;
@@ -624,6 +1035,7 @@ function renderCockpit() {
 
   $("#view").innerHTML = `<div class="view-stack">
     ${data.health?.proofMode ? `<section class="surface-block accent"><span class="eyebrow">System proof mode</span><h2>Luna-only testing is active</h2><p>Pantheon is checking workflow mechanics with the lowest-cost model. These results cannot authorize consequential or external work.</p></section>` : ""}
+    ${renderCurrentCommercialGate(data)}
     ${renderCommandBand(data)}
     ${renderImportantWork(
       data.importantWork,
@@ -633,8 +1045,8 @@ function renderCockpit() {
     )}
     <section class="money-move">
       <span class="move-icon">${icon("move-right")}</span>
-      <div><span class="eyebrow">Next money move</span><h2>${escapeHtml(nextMoneyMove)}</h2><p>Internal work runs only when its recorded state and authority allow it. Protected external actions remain separate owner decisions.</p></div>
-      <button class="secondary-button" data-view="portfolio">${icon("briefcase-business")}Open portfolio</button>
+      <div><span class="eyebrow">Next money move</span><h2>${escapeHtml(nextMoneyMove)}</h2><p>${escapeHtml(nextMoneyMoveDetail)}</p></div>
+      ${nextMoneyMoveControl}
     </section>
     ${data.activeRuns?.length ? `<section class="active-run-strip">${sectionHeading("AI working now", "A genuine worker is running. Open the record to follow its plain-language progress.")}${data.activeRuns.map(renderAgentRunRow).join("")}</section>` : ""}
     <section>
@@ -1283,11 +1695,99 @@ function outputRows(items) {
   return `<div class="plain-list">${items.map((item) => `<article class="plain-row"><div><h3>${escapeHtml(item.human_name)}</h3><p>${escapeHtml(item.summary)}</p></div><div class="work-actions">${canPreview(item.format, item.file_path) ? `<button class="secondary-button" data-action="open-pdf" data-id="${escapeHtml(item.id)}" data-title="${escapeHtml(item.human_name)}">${icon("file-search")}Preview</button>` : ""}${badge(item.status)}</div></article>`).join("")}</div>`;
 }
 
+function ownerConnectionRows(data) {
+  const gate = latestPreventureGate(data);
+  const etsyOwnerReported = gate?.etsy?.accountExistence === "owner_reported_unverified";
+  const rows = (Array.isArray(data?.connections) ? data.connections : []).map((item) => {
+    if (item.id === "digital_products") {
+      return {
+        ...item,
+        name: "Local Product File Preparation",
+        kind: "local-capability",
+        status: "local_only",
+        health: "ok",
+        metadata: {
+          ...item.metadata,
+          use: "Prepares local product files, listing drafts, and approval packs. It cannot publish or change a marketplace account.",
+        },
+      };
+    }
+    if (item.id === "etsy") {
+      return {
+        ...item,
+        name: "Etsy seller account",
+        kind: "owner-account-context",
+        status: etsyOwnerReported ? "owner_reported_unverified" : "unselected",
+        health: "not_verified",
+        metadata: {
+          ...item.metadata,
+          use: etsyOwnerReported
+            ? "Daniel confirmed that the seller account exists. Pantheon has not inspected, connected, or technically verified it; payout and publishing readiness are not established."
+            : "Etsy is an unselected channel hypothesis. No inspected or connected seller account is recorded here.",
+        },
+      };
+    }
+    if (item.id === "gumroad") {
+      return {
+        ...item,
+        status: "unselected",
+        health: "not_verified",
+        metadata: {
+          ...item.metadata,
+          use: "Gumroad is an unselected channel hypothesis. No connected account, live adapter, or publishing authority is recorded.",
+        },
+      };
+    }
+    return item;
+  });
+  if (etsyOwnerReported && !rows.some((item) => item.id === "etsy")) {
+    rows.push({
+      id: "etsy",
+      name: "Etsy seller account",
+      kind: "owner-account-context",
+      status: "owner_reported_unverified",
+      health: "not_verified",
+      last_checked_at: null,
+      metadata: {
+        use: "Daniel confirmed that the seller account exists. Pantheon has not inspected, connected, or technically verified it; payout and publishing readiness are not established.",
+      },
+    });
+  }
+  return rows;
+}
+
+function ownerConnectionBadge(item) {
+  if (item.id === "digital_products") return badge("Local only", "mint");
+  if (item.status === "owner_reported_unverified") {
+    return badge("Owner-confirmed; not technically verified", "amber");
+  }
+  if (["etsy", "gumroad"].includes(item.id)) {
+    return badge("Unselected; not connected", "amber");
+  }
+  return badge(item.status === "configured" ? "Configured" : item.health);
+}
+
 function renderSystemPanel(data) {
   if (store.systemTab === "health") {
     const ai = data.health.liveAi;
     const research = data.health.liveResearch;
     const retention = data.health.retention;
+    const boundedResearch = data.preventureResearchRuntime || {};
+    const finalization = boundedResearch.finalizationControl || {};
+    const boundedOwner = preventureOwnerState(data);
+    const boundedCurrent = boundedOwner?.current || null;
+    const boundedReady = boundedResearch.assignmentRunReady === true;
+    const boundedProviderReady = boundedResearch.providerContactAllowed === true;
+    const boundedLabel = !boundedCurrent
+      ? "No active authority"
+      : boundedReady ? "Ready for exact work" : "Runner not ready";
+    const boundedDetail = !boundedCurrent
+      ? "No preparation-only research round is currently active."
+      : boundedReady
+        ? boundedProviderReady
+          ? "The dedicated path passed its exact local descriptor, credential, egress, artifact, and cost checks. Each assignment still runs only from its own recorded control."
+          : "The next exact assignment passed its local checks and can be prepared atomically before any provider call. No provider contact is allowed until that preparation succeeds."
+        : boundedResearch.message || "The dedicated bounded-research path is withheld, so no provider call can start.";
     const monitoring = data.health.monitoring || {
       status: "starting",
       label: "Starting",
@@ -1306,9 +1806,13 @@ function renderSystemPanel(data) {
     const retentionAction = retention.canPrepareDecision
       ? `<button class="secondary-button" data-action="prepare-retention-decision">${icon("shield-check")}Review this plan</button>`
       : "";
+    const finalizationAction = finalization.ready
+      ? `<button class="primary-button" data-action="finalize-preventure" data-authority-hash="${escapeHtml(finalization.authorityHash)}" data-evidence-set-hash="${escapeHtml(finalization.evidenceSetHash)}" data-receipt-set-hash="${escapeHtml(finalization.receiptSetHash)}" data-resulting-readiness-hash="${escapeHtml(finalization.resultingReadinessHash)}">${icon("file-check-2")}Complete diligence summary</button>`
+      : "";
     return `<div class="card-grid">
       ${data.health.proofMode ? `<article class="item-card"><header><h3>System proof mode</h3>${badge("Luna only", "sky")}</header><p>Temporary low-cost testing is active. Consequential work and external effects are blocked.</p></article>` : ""}
       <article class="item-card"><header><h3>Pantheon monitoring</h3>${badge(monitoring.label, monitoringTone)}</header><p>${escapeHtml(monitoring.summary)} ${escapeHtml(monitoringDetail)} ${escapeHtml(data.health.database === "ok" ? "The operating record also passed its integrity check." : "The operating record needs an integrity review.")}</p></article>
+      <article class="item-card"><header><h3>Bounded diligence runner</h3>${badge(boundedLabel, boundedReady ? "mint" : "amber")}</header><p>${escapeHtml(boundedDetail)}</p>${boundedCurrent ? `<button class="secondary-button" data-action="system-tab" data-tab="queue">${icon("list-checks")}Open exact research queue</button>` : ""}${finalizationAction}</article>
       <article class="item-card"><header><h3>AI worker connection</h3>${badge(ai.ready ? "Ready for approved work" : "Setup needed")}</header><p>${escapeHtml(ai.ready ? "The local Agents SDK path is configured. One exact capped approval is still required for each paid worker run." : compact(ai.blockers?.join(" ") || "Credentials and live permission are not configured."))}</p></article>
       <article class="item-card"><header><h3>Live research</h3>${badge(research.ready ? "Ready for approved test" : "Setup needed")}</header><p>${escapeHtml(research.ready ? "The read-only research path is configured. Provider reachability is proven only by an approved live test." : compact(research.blockers?.join(" ") || "The research connection is not configured."))}</p></article>
       <article class="item-card"><header><h3>Product visuals</h3>${badge(ai.imageGeneration?.ready ? "Ready for approved test" : "Setup needed")}</header><p>${escapeHtml(ai.imageGeneration?.ready ? "Product Builder's reviewed visual path is configured. A paid test and separate quality review are still required." : compact(ai.imageGeneration?.blockers?.join(" ") || "The reviewed product-visual capability is not connected."))}</p></article>
@@ -1364,7 +1868,8 @@ function renderSystemPanel(data) {
     </div>`;
   }
   if (store.systemTab === "connections") {
-    return `<div class="connection-list">${data.connections.map((item) => `<article class="connection-row"><div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.metadata?.use || "Runtime connection")} ${item.last_checked_at ? `Configuration checked ${shortDate(item.last_checked_at)}.` : ""}</p></div>${badge(item.status === "configured" ? "Configured" : item.health)}</article>`).join("")}</div>`;
+    const connections = ownerConnectionRows(data);
+    return `<div class="connection-list">${connections.map((item) => `<article class="connection-row"><div><small class="connection-kind">${escapeHtml(humanStatus(item.kind || "runtime connection"))}</small><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.metadata?.use || "Runtime connection")} ${item.last_checked_at ? `Configuration checked ${shortDate(item.last_checked_at)}.` : ""}</p></div>${ownerConnectionBadge(item)}</article>`).join("")}</div>`;
   }
   if (store.systemTab === "outputs") {
     const current = data.outputs.filter((item) => item.status !== "archived");
@@ -1383,7 +1888,11 @@ function renderSystemPanel(data) {
 function renderSystem() {
   const data = store.data.system;
   const runnableWork = data.queue.some(workItemIsSafeInternal);
-  $("#view").innerHTML = `<div class="view-stack">${systemTabs()}<section><div class="system-toolbar"><button class="secondary-button" data-action="run-next"${runnableWork ? "" : " disabled"}>${icon("play")}${runnableWork ? "Run next internal step" : "No internal step ready"}</button><button class="secondary-button" data-action="maintenance">${icon("wrench")}Run due maintenance</button></div>${renderSystemPanel(data)}</section></div>`;
+  const boundedProviderWorkReady = data.queue.some((item) => (
+    item?.execution_kind === "preventure_research" && workItemCanRun(item)
+  )) || data.preventureResearchRuntime?.assignmentRunReady === true
+    || data.preventureResearchRuntime?.providerContactAllowed === true;
+  $("#view").innerHTML = `<div class="view-stack">${systemTabs()}<section><div class="system-toolbar"><button class="secondary-button" data-action="run-monitor">${icon("shield-check")}Run system check</button><button class="secondary-button" data-action="run-next"${runnableWork ? "" : " disabled"}>${icon("play")}${runnableWork ? "Run next local internal step" : "No local internal step ready"}</button><button class="secondary-button" data-action="maintenance"${boundedProviderWorkReady ? " disabled title=\"Use the exact bounded research control for provider-capable work.\"" : ""}>${icon("wrench")}${boundedProviderWorkReady ? "Maintenance paused for bounded research" : "Run due maintenance"}</button></div>${renderSystemPanel(data)}</section></div>`;
 }
 
 const journeyStageDetails = {
@@ -1395,7 +1904,7 @@ const journeyStageDetails = {
   product_build: ["Customer product files", "Product Builder"],
   storefront_visuals: ["Storefront visuals", "Product Builder"],
   quality_review: ["Independent quality check", "Quality Reviewer"],
-  conversion_copy: ["Gumroad listing", "Copy and Conversion Agent"],
+  conversion_copy: ["Channel listing", "Copy and Conversion Agent"],
   distribution_plan: ["Launch plan", "Distribution Agent"],
   chief_brief: ["Final operator brief", "Chief of Staff"],
   launch_decision: ["Publication decision", "Daniel"],
@@ -2228,6 +2737,7 @@ async function showDetail(kind, id, options = {}) {
     const launchReadiness = item.decisionActionKind === "launch_readiness";
     const dataProtection = item.decisionActionKind === "data_protection";
     const commercialLifecycle = item.decisionActionKind === "commercial_lifecycle";
+    const preventureLifecycle = item.decisionActionKind === "preventure_research_lifecycle";
     const validationBuildPlatform = item.productBuild?.channel?.platformName || "the selected platform";
     const assignment = item.assignment
       ? detailSection("What the AI will review", `<p class="lead-copy">${escapeHtml(item.assignment.question || "The question was not stated.")}</p><div class="review-facts simple"><div><span>Intended buyer</span><strong>${escapeHtml(item.assignment.buyer || "Not stated")}</strong></div><div><span>Evidence supplied</span><strong>${escapeHtml(String(item.assignment.evidenceCount || 0))} item${Number(item.assignment.evidenceCount || 0) === 1 ? "" : "s"}</strong></div></div>`)
@@ -2245,7 +2755,11 @@ async function showDetail(kind, id, options = {}) {
     const pricedBound = item.pricedWorstCaseCostCents
       ? ` The current priced upper estimate is ${money(item.pricedWorstCaseCostCents)}; final usage is recorded after the run.`
       : "";
-    const whatHappens = commercialLifecycle
+    const whatHappens = preventureLifecycle
+      ? item.lifecycleEventType === "accepted"
+        ? "Pantheon will record your acceptance of this exact preparation-only research proposal. No AI assignment starts from acceptance alone; activation remains a separate decision."
+        : "Pantheon will activate only the three accepted internal evidence assignments. Product work, buyer contact, marketplace access, publishing, advertising, and external spending remain prohibited."
+      : commercialLifecycle
       ? item.lifecycleEventType === "accepted"
         ? "Pantheon will record your acceptance of this exact commercial test. The test will not become active yet, and nothing will be published, sent, purchased, or spent."
         : "Pantheon will make this accepted contract its one active controlled commercial test. This grants no publishing, customer-contact, account, advertising, or spending permission."
@@ -2260,7 +2774,7 @@ async function showDetail(kind, id, options = {}) {
       : catalogueBuild
       ? `Pantheon will create and retain the complete ${item.productBuild?.productCount || "planned"}-product catalogue, then run an independent quality review. The files stay local until a later launch decision.`
       : launchReadiness
-        ? "Pantheon will mark the finished package ready for the separate Gumroad publishing action. It will not create an account, complete KYC, publish, post, contact anyone, or spend money."
+        ? "Pantheon will mark the finished package ready for a separate, channel-specific publishing decision. It will not create an account, complete KYC, publish, post, contact anyone, or spend money."
         : handoffDecision
       ? "Pantheon will turn the reviewed result into the next internal work step. Nothing will be published or sent outside Pantheon."
       : liveResearch
@@ -2277,7 +2791,9 @@ async function showDetail(kind, id, options = {}) {
     const limits = item.effects?.length
       ? `Only these approved effects are allowed: ${item.effects.map((effect) => String(effect).replace(/\.*$/, "")).join(", ")}.`
       : "It cannot publish, contact anyone, change an account, sign anything, or move money.";
-    const costStatement = Number(item.maxCostCents || 0) > 0
+    const costStatement = preventureLifecycle
+      ? `This decision itself makes no provider call. If separately activated, the entire three-assignment round is capped at ${money(item.authorityCapCents || 0)} internal AI cost and A$0 external commercial spend.`
+      : Number(item.maxCostCents || 0) > 0
       ? `The absolute cost limit is ${money(item.maxCostCents)}.${pricedBound}`
       : "No provider spend is approved by this decision.";
     const productBuild = item.productBuild
@@ -2445,6 +2961,87 @@ async function handleAction(button) {
         : `Decision ${decisionLabels[button.dataset.decision]}.`);
     return loadView(store.view, { silent: true });
   }
+  if (action === "preventure-lifecycle-decision") {
+    const decisionLabels = {
+      approve: "approved",
+      reject: "not approved",
+    };
+    const payload = await postJson(
+      `/api/preventure-research/lifecycle-decisions/${encodeURIComponent(button.dataset.id)}/${button.dataset.decision}`,
+      {
+        scopeHash: button.dataset.scopeHash,
+        note: `Dashboard bounded-research decision: ${decisionLabels[button.dataset.decision]}.`,
+      },
+    );
+    closeDrawer();
+    const lifecycleStatus = payload.result?.lifecycleStatus
+      || payload.state?.state
+      || payload.preventureResearch?.current?.lifecycle?.status;
+    toast(lifecycleStatus === "accepted"
+      ? "The exact research scope was accepted. No AI work started; activation is a separate decision."
+      : lifecycleStatus === "activated"
+        ? "The preparation-only research round is active. Its dedicated runner is still checked separately before any provider call."
+        : lifecycleStatus === "revoked"
+          ? "This research path was stopped. No new provider call may start."
+          : "Your bounded-research decision was recorded without widening its authority.");
+    return loadView(store.view, { silent: true });
+  }
+  if (action === "revoke-preventure") {
+    const confirmed = window.confirm(
+      "Stop this bounded research round? Remaining assignments will be cancelled and no new provider call may start.",
+    );
+    if (!confirmed) return;
+    await postJson("/api/preventure-research/revoke", {
+      authorityHash: button.dataset.authorityHash,
+      expectedLatestEventHash: button.dataset.latestEventHash,
+      confirm: "REVOKE PREVENTURE RESEARCH",
+      note: "Owner stopped the bounded research round from the Pantheon dashboard.",
+    });
+    toast("The bounded research round was stopped. No new provider call may start.");
+    return loadView(store.view, { silent: true });
+  }
+  if (action === "record-owner-billing-observation") {
+    const amountText = window.prompt(
+      "Enter the exact owner-observed provider charge in AUD (for example 0.00). This will not be labelled provider-settled.",
+      "0.00",
+    );
+    if (amountText === null) return;
+    if (!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(amountText.trim())) {
+      throw new Error("Enter a non-negative AUD amount with no more than two decimal places.");
+    }
+    const amountAudCents = Math.round(Number(amountText) * 100);
+    if (!Number.isSafeInteger(amountAudCents)) {
+      throw new Error("The owner-observed AUD amount is too large.");
+    }
+    const providerAccountReference = window.prompt(
+      "Enter a non-secret provider account label or reference. Pantheon stores only its hash.",
+      "OpenAI billing account",
+    );
+    if (providerAccountReference === null) return;
+    const billingRecordReference = window.prompt(
+      "Enter the exact provider billing record reference you inspected. Pantheon stores only its hash.",
+      "Billing record date or invoice reference",
+    );
+    if (billingRecordReference === null) return;
+    const confirmed = window.confirm(
+      "Record this as an authenticated owner observation? It is not a provider-settled receipt and authorises no retry or commercial action.",
+    );
+    if (!confirmed) return;
+    const payload = await postJson(
+      "/api/preventure-research/provider-billing-observations",
+      {
+        assignmentHash: button.dataset.assignmentHash,
+        amountAudCents,
+        observedAt: new Date().toISOString(),
+        providerAccountReference: providerAccountReference.trim(),
+        billingRecordReference: billingRecordReference.trim(),
+        confirm: "RECORD OWNER-ATTESTED PROVIDER BILLING",
+      },
+    );
+    toast(payload.message
+      || "Owner-attested billing was recorded. Provider settlement is not claimed.");
+    return loadView(store.view, { silent: true });
+  }
   if (action === "commercial-lifecycle-decision") {
     const decisionLabels = {
       approve: "approved",
@@ -2476,7 +3073,7 @@ async function handleAction(button) {
     }));
     closeDrawer();
     toast(payload.pantheonDecision?.decision === "approve"
-      ? "The package is ready for the separate Gumroad publishing action. Nothing was published automatically."
+      ? "The package is ready for a separate, channel-specific publishing decision. Nothing was published automatically."
       : button.dataset.decision === "approve"
         ? payload.execution?.status === "completed"
         ? "Chief of Staff saved the next recommendation. The Test Pack has not been created yet, and nothing was published or sent."
@@ -2504,6 +3101,12 @@ async function handleAction(button) {
     toast(maintenanceRunSummary(payload.result));
     return loadView("system", { silent: true });
   }
+  if (action === "run-monitor") {
+    const payload = await postJson("/api/monitor/run", {});
+    const count = Number(payload.result?.findingCount || 0);
+    toast(`System check complete: ${count} item${count === 1 ? "" : "s"} surfaced.`);
+    return loadView("system", { silent: true });
+  }
   if (action === "prepare-retention-decision") {
     await postJson("/api/system/retention/prepare-decision", {});
     store.decisionTab = "approvals";
@@ -2514,8 +3117,47 @@ async function handleAction(button) {
     toast(result.result?.message || `Internal work: ${humanStatus(result.result?.status || "complete")}.`);
     return loadView("system", { silent: true });
   }
+  if (action === "finalize-preventure") {
+    const payload = await postJson("/api/preventure-research/finalize", {
+      authorityHash: button.dataset.authorityHash,
+      evidenceSetHash: button.dataset.evidenceSetHash,
+      receiptSetHash: button.dataset.receiptSetHash,
+      resultingReadinessHash: button.dataset.resultingReadinessHash,
+    });
+    toast(payload.result?.decisionEffect?.nextProtectedStep
+      || "The evidence round was closed with a deterministic recommendation. No build, customer contact, publishing, advertising, or external spend was authorised.");
+    return loadView("cockpit", { silent: true });
+  }
+  if (action === "reprocess-preventure") {
+    const payload = await postJson(
+      `/api/preventure-research/assignments/${encodeURIComponent(button.dataset.assignmentId)}/reprocess`,
+      {
+        authorityHash: button.dataset.authorityHash,
+        assignmentHash: button.dataset.assignmentHash,
+        descriptorHash: button.dataset.descriptorHash,
+        retainedOutputHash: button.dataset.retainedOutputHash,
+      },
+    );
+    toast(payload.result?.message
+      || "The retained provider result was reprocessed locally. No new provider call or additional provider cost occurred.");
+    return loadView("system", { silent: true });
+  }
   if (action === "run-task") {
-    const payload = await withRunPolling(() => postJson(`/api/tasks/${encodeURIComponent(button.dataset.id)}/run`, {}));
+    const preventureResearch = button.dataset.executionKind === "preventure_research";
+    if (preventureResearch && (!button.dataset.descriptorHash || !button.dataset.requestBodyHash)) {
+      throw new Error("Refresh System before starting this assignment; its exact execution descriptor is not available.");
+    }
+    const payload = await withRunPolling(() => preventureResearch
+      ? postJson(
+        `/api/preventure-research/assignments/${encodeURIComponent(button.dataset.assignmentId)}/run`,
+        {
+          authorityHash: button.dataset.authorityHash,
+          assignmentHash: button.dataset.assignmentHash,
+          descriptorHash: button.dataset.descriptorHash,
+          requestBodyHash: button.dataset.requestBodyHash,
+        },
+      )
+      : postJson(`/api/tasks/${encodeURIComponent(button.dataset.id)}/run`, {}));
     const incorporated = payload.continuation?.actions?.some((item) => item.type === "result_projected");
     toast(payload.result?.status === "completed"
       ? incorporated

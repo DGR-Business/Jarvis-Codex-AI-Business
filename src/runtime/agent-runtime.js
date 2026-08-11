@@ -6,6 +6,7 @@ const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, randomId, run, toJson } = require("../db");
 const {
   LIVE_AI_WORKER_PROVIDER,
+  approvedExposureCents,
   buildOpenAIRequest,
   liveWorkerCostEstimateCents,
   normalizeOutput,
@@ -14,6 +15,13 @@ const {
   recordLiveWorkerModelCall,
   runLiveAiWorkerTask,
 } = require("../adapters/live-ai-worker");
+const {
+  OFFICIAL_OPENAI_API_BASE_URL,
+  assertOpenAiResponsesEgress,
+  isDefinitePreEffectHttpStatus,
+  safeProviderErrorMessage,
+  safeProviderRequestId,
+} = require("../adapters/openai-egress-policy");
 const {
   environmentDisabled,
   environmentEnabled,
@@ -44,7 +52,11 @@ const {
 } = require("./agent-tool-gate");
 const { persistAgentsSdkResearchEvidence } = require("./agent-execution-evidence");
 const { estimateModelUsageAud, estimateObservedHostedToolUsageAud } = require("./model-pricing");
-const { markTaskAttemptProviderDispatched } = require("./task-claims");
+const {
+  assertTaskClaimActive,
+  isTaskClaimLostError,
+  markTaskAttemptProviderDispatched,
+} = require("./task-claims");
 const {
   assertDigitalProductFactoryReady,
   composeStorefrontCover,
@@ -61,7 +73,6 @@ const { cacheUsageFromTokenEvidence } = require("./agent-cost-observability");
 const AGENTS_SDK_PROVIDER = "openai-agents-sdk";
 
 let testSdkRunner = null;
-let defaultSdkRunner = null;
 let testContainerFileDownloader = null;
 let testDigitalProductFactory = null;
 
@@ -136,6 +147,22 @@ function sdkHttpStatus(error) {
 
 function classifySdkRunError(error, dispatchStarted, traceId) {
   error.agentSdkTraceId = traceId;
+  const httpStatus = sdkHttpStatus(error);
+  if (dispatchStarted) {
+    error.httpStatus = httpStatus;
+    error.providerRequestId = safeProviderRequestId(
+      error.providerRequestId || error.requestID || error.requestId || null,
+    );
+    try {
+      error.message = safeProviderErrorMessage(
+        { message: error?.message },
+        httpStatus,
+        { secrets: [process.env.OPENAI_API_KEY] },
+      );
+    } catch {
+      // Preserve classification even if a third-party error exposes a read-only message.
+    }
+  }
   if (error?.constructor?.name === "OutputGuardrailTripwireTriggered") {
     error.providerCallOccurred = true;
     error.providerResponseReceived = true;
@@ -155,17 +182,17 @@ function classifySdkRunError(error, dispatchStarted, traceId) {
     error.errorKind = "provider_output_invalid";
     return error;
   }
-  const httpStatus = sdkHttpStatus(error);
-  if (dispatchStarted && httpStatus >= 400 && httpStatus < 500) {
+  if (dispatchStarted && isDefinitePreEffectHttpStatus(httpStatus)) {
     error.httpStatus = httpStatus;
     error.providerCallOccurred = true;
     error.providerResponseReceived = true;
     error.definiteProviderRejection = true;
     error.outcomeUnknown = false;
     error.needsAttention = false;
+    error.billingOutcomeUnknown = true;
+    error.exactBillingPending = true;
     error.providerDispatchStatus = "definite_rejection";
     error.errorKind = "provider_rejected";
-    error.providerRequestId = error.requestID || error.requestId || null;
     error.incurredEstimateCents = 0;
     return error;
   }
@@ -536,7 +563,7 @@ function validateProductFile(bytes, filename) {
 async function defaultContainerFileDownloader(citation) {
   const OpenAIModule = require("openai");
   const OpenAI = OpenAIModule.default || OpenAIModule;
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const client = createSecureOpenAiClient(OpenAI, 60_000);
   const [metadata, response] = await Promise.all([
     client.containers.files.retrieve(citation.fileId, { container_id: citation.containerId }),
     client.containers.files.content.retrieve(citation.fileId, { container_id: citation.containerId }),
@@ -2139,9 +2166,12 @@ function getAgentRuntimeReadiness() {
 
 function loadAgentsSdk() {
   const sdk = require("@openai/agents");
+  const OpenAIModule = require("openai");
   const { z } = require("zod");
   return {
     Agent: sdk.Agent,
+    OpenAI: OpenAIModule.default || OpenAIModule,
+    OpenAIProvider: sdk.OpenAIProvider,
     Runner: sdk.Runner,
     RunState: sdk.RunState,
     codeInterpreterTool: sdk.codeInterpreterTool,
@@ -2152,9 +2182,54 @@ function loadAgentsSdk() {
   };
 }
 
-function getDefaultSdkRunner(Runner) {
-  if (!defaultSdkRunner) defaultSdkRunner = new Runner();
-  return defaultSdkRunner;
+function secureOpenAiClientOptions(deadlineMs, options = {}) {
+  assertOpenAiResponsesEgress({
+    responsesUrl: options.responsesUrl,
+    baseUrl: options.baseUrl,
+  });
+  const apiKey = options.apiKey || process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    const error = new Error("OPENAI_API_KEY is required for approved OpenAI work.");
+    error.code = "OPENAI_API_KEY_REQUIRED";
+    error.errorKind = "openai_api_key_required";
+    error.providerDispatchStatus = "not_dispatched";
+    error.providerCallOccurred = false;
+    error.outcomeUnknown = false;
+    throw error;
+  }
+  const requestedTimeout = Number(deadlineMs || 60_000);
+  const timeout = Math.min(
+    10 * 60 * 1000,
+    Math.max(5_000, Number.isFinite(requestedTimeout) ? requestedTimeout : 60_000),
+  );
+  return {
+    apiKey,
+    baseURL: OFFICIAL_OPENAI_API_BASE_URL,
+    timeout,
+    maxRetries: 0,
+    fetch: options.fetchImpl,
+    fetchOptions: {
+      ...(options.fetchOptions || {}),
+      redirect: "error",
+    },
+    logLevel: "warn",
+  };
+}
+
+function createSecureOpenAiClient(OpenAI, deadlineMs, options = {}) {
+  return new OpenAI(secureOpenAiClientOptions(deadlineMs, options));
+}
+
+function createSecureSdkRunner(constructors, options = {}) {
+  const { OpenAI, OpenAIProvider, Runner } = constructors;
+  const openAIClient = createSecureOpenAiClient(OpenAI, options.deadlineMs, options);
+  const modelProvider = new OpenAIProvider({
+    openAIClient,
+    useResponses: true,
+    useResponsesWebSocket: false,
+    cacheResponsesWebSocketModels: false,
+  });
+  return new Runner({ modelProvider });
 }
 
 function zodOutputSchema(z) {
@@ -2377,8 +2452,20 @@ function attachSdkLifecycleHooks(runner, task, callback) {
 }
 
 async function runSdkAgent(requestBody, task, agentDefinition, policy, options = {}) {
+  assertOpenAiResponsesEgress({
+    responsesUrl: options.responsesUrl,
+    baseUrl: options.baseUrl,
+  });
   const sdk = loadAgentsSdk();
-  const { Agent, Runner, RunState, generateTraceId, z } = sdk;
+  const {
+    Agent,
+    OpenAI,
+    OpenAIProvider,
+    Runner,
+    RunState,
+    generateTraceId,
+    z,
+  } = sdk;
   const traceId = options.traceId || generateTraceId();
   const tracePolicy = approvedTracePolicy(task);
   const agentHarness = task.payload?.liveSpendRequest?.agentHarness || null;
@@ -2469,7 +2556,16 @@ async function runSdkAgent(requestBody, task, agentDefinition, policy, options =
         ? productBuilderVisualOutputZodSchema(z)
         : workerOutputZodSchema(z, agentDefinition.id);
   const agent = new Agent(agentOptions);
-  const runner = options.runner || getDefaultSdkRunner(Runner);
+  const runner = options.runner || createSecureSdkRunner(
+    { OpenAI, OpenAIProvider, Runner },
+    {
+      apiKey: options.apiKey,
+      baseUrl: options.baseUrl,
+      deadlineMs: capabilityPlan.deadlineMs,
+      fetchImpl: options.fetchImpl,
+      responsesUrl: options.responsesUrl,
+    },
+  );
   let sdkInput = options.modelInput || requestBody.input[1].content;
   if (options.resumeState) {
     try {
@@ -2548,7 +2644,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   }
 
   const requestBody = buildOpenAIRequest(db, task, agentDefinition, policy);
-  const approvedCapCents = liveWorkerCostEstimateCents(task);
+  const approvedCapCents = approvedExposureCents(task);
   const tracePolicy = approvedTracePolicy(task);
   const capabilityPlan = buildAgentsSdkCapabilityPlan(task, agentDefinition);
   const executionIdentity = {
@@ -2640,16 +2736,25 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         }
       },
     });
+    if (options.taskClaim) {
+      assertTaskClaimActive(db, options.taskClaim, "Agents SDK provider response finalization");
+    }
     result = sdkRun.result;
     traceId = sdkRun.traceId;
     executionIdentity.sdkGuardrails = sdkRun.guardrailActivity || null;
   } catch (error) {
+    if (isTaskClaimLostError(error)) throw error;
+    if (options.taskClaim) {
+      assertTaskClaimActive(db, options.taskClaim, "Agents SDK provider failure finalization");
+    }
     const dispatched = Boolean(dispatchCall);
     if (error.outcomeUnknown === undefined) error.outcomeUnknown = dispatched && error.providerCallOccurred !== false;
     if (error.providerCallOccurred === undefined) error.providerCallOccurred = dispatched;
     if (!error.providerDispatchStatus) error.providerDispatchStatus = error.outcomeUnknown ? "outcome_unknown" : "not_dispatched";
     const providerResponseReceived = error.providerResponseReceived === true;
     const definiteProviderRejection = error.definiteProviderRejection === true;
+    const billingOutcomeUnknown = error.providerCallOccurred === true
+      && (error.outcomeUnknown === true || definiteProviderRejection);
     const pricedWorstCaseCents = Math.min(
       approvedCapCents,
       Math.max(
@@ -2671,21 +2776,9 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     error.agentRunId = options.agentRunId || null;
     error.taskAttemptId = options.taskClaim?.attemptId || null;
     error.modelCallId = dispatchCall?.id || error.modelCallId || null;
-    for (const invocation of toolInvocations) {
-      recordAgentToolObservation(db, invocation.gate.id, {
-        attemptId: options.taskClaim?.attemptId || null,
-        status: definiteProviderRejection ? "failed" : error.outcomeUnknown === true ? "unknown" : "missing",
-        toolName: invocation.spec.sdkName,
-        toolId: invocation.spec.toolId,
-        activity: null,
-        outputSummary: definiteProviderRejection
-          ? `${invocation.spec.sdkName} did not run because OpenAI definitively rejected the request before model or tool execution.`
-          : error.outcomeUnknown === true
-          ? `${invocation.spec.sdkName} was approved, but provider activity is unknown because the provider outcome is unresolved.`
-          : `${invocation.spec.sdkName} was approved, but no matching provider activity was observed before the run failed.`,
-      });
-    }
-    recordLiveWorkerFailureCost(db, task, error);
+    error.billingOutcomeUnknown = billingOutcomeUnknown;
+    error.exactBillingPending = billingOutcomeUnknown || providerResponseReceived;
+    error.reservedExposureCents = billingOutcomeUnknown ? approvedCapCents : 0;
     const failedCall = recordLiveWorkerModelCall(
       db,
       task,
@@ -2703,6 +2796,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       agentSdkTraceId: traceId,
       error: error.message,
       outcomeUnknown: error.outcomeUnknown === true,
+      billingOutcomeUnknown,
       providerResponseReceived,
       definiteProviderRejection,
       providerRequestId: error.providerRequestId || error.requestID || null,
@@ -2716,6 +2810,21 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       },
     );
     error.modelCallId = failedCall.id;
+    for (const invocation of toolInvocations) {
+      recordAgentToolObservation(db, invocation.gate.id, {
+        attemptId: options.taskClaim?.attemptId || null,
+        status: definiteProviderRejection ? "failed" : error.outcomeUnknown === true ? "unknown" : "missing",
+        toolName: invocation.spec.sdkName,
+        toolId: invocation.spec.toolId,
+        activity: null,
+        outputSummary: definiteProviderRejection
+          ? `${invocation.spec.sdkName} did not run because OpenAI definitively rejected the request before model or tool execution.`
+          : error.outcomeUnknown === true
+          ? `${invocation.spec.sdkName} was approved, but provider activity is unknown because the provider outcome is unresolved.`
+          : `${invocation.spec.sdkName} was approved, but no matching provider activity was observed before the run failed.`,
+      });
+    }
+    recordLiveWorkerFailureCost(db, task, error);
     error.providerReceipt = {
       modelCallId: failedCall.id,
       providerRequestId: error.providerRequestId || error.requestID || null,
@@ -2723,6 +2832,9 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
       status: error.providerDispatchStatus,
       traceId,
       deadlineMs: capabilityPlan.deadlineMs,
+      billingOutcomeUnknown,
+      exactBillingPending: error.exactBillingPending === true,
+      reservedExposureCents: error.reservedExposureCents,
     };
     error.incurredEstimateCents = Math.max(0, Number(error.incurredEstimateCents || 0));
     insertEvent(db, {
@@ -2739,6 +2851,10 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
         provider: AGENTS_SDK_PROVIDER,
         agentSdkTraceId: traceId,
         outcomeUnknown: error.outcomeUnknown === true,
+        definiteProviderRejection,
+        billingOutcomeUnknown,
+        exactBillingPending: error.exactBillingPending === true,
+        reservedExposureCents: error.reservedExposureCents,
         providerResponseReceived,
         providerDispatchStatus: error.providerDispatchStatus,
       },
@@ -2927,6 +3043,9 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
   const generatedAssets = persistGeneratedAssets(db, task, capabilityPlan, result);
   const rawText = sdkOutputText(result.finalOutput);
   const generatedFiles = await persistGeneratedProductFiles(db, task, capabilityPlan, result);
+  if (options.taskClaim) {
+    assertTaskClaimActive(db, options.taskClaim, "Agents SDK local result finalization");
+  }
   if (generatedFiles?.sourceType === "pantheon-local-digital-product-factory-v1") {
     toolActivity.push({
       id: `local_product_factory_${safeId(task.id)}`,
@@ -3134,6 +3253,7 @@ async function runAgentsSdkWorkerTask(db, task, agentDefinition, policy, options
     },
   };
   } catch (error) {
+    if (isTaskClaimLostError(error)) throw error;
     const localStructuredOutput = result?.finalOutput
       && typeof result.finalOutput === "object"
       && !Array.isArray(result.finalOutput)
@@ -3226,6 +3346,9 @@ function __setDigitalProductFactoryForTests(factory) {
 module.exports = {
   AGENTS_SDK_PROVIDER,
   PRODUCT_MANIFEST_SCHEMA,
+  __classifySdkRunErrorForTests: classifySdkRunError,
+  __createSecureOpenAiClientForTests: createSecureOpenAiClient,
+  __secureOpenAiClientOptionsForTests: secureOpenAiClientOptions,
   __sdkUsageForTests: sdkUsage,
   __setAgentRuntimeSdkRunnerForTests,
   __setContainerFileDownloaderForTests,

@@ -91,19 +91,23 @@ test("source, database and artifact backups contain distinct managed data", asyn
   }
 });
 
-test("retention authenticates candidates, preserves keep sidecars and never trusts corrupt newest files", async () => {
+test("retention fully verifies candidates, preserves keep sidecars and never trusts corrupt newest files", async () => {
   const root = tempRoot("authenticated-retention");
   try {
-    const payload = path.join(root, "payload.txt");
-    fs.writeFileSync(payload, "authenticated payload");
-    const newest = path.join(root, "jarvis-source-newest.jbackup");
-    const pinned = path.join(root, "jarvis-source-pinned.jbackup");
-    const expired = path.join(root, "jarvis-source-expired.jbackup");
-    const corrupt = path.join(root, "jarvis-source-corrupt.jbackup");
-    await encryptFile(payload, newest, { kind: "source", passphrase: PASSPHRASE, createdAt: "2026-07-17T00:00:00.000Z" });
-    await encryptFile(payload, pinned, { kind: "source", passphrase: PASSPHRASE, createdAt: "2026-06-01T00:00:00.000Z" });
-    await encryptFile(payload, expired, { kind: "source", passphrase: PASSPHRASE, createdAt: "2026-05-01T00:00:00.000Z" });
-    await encryptFile(payload, corrupt, { kind: "source", passphrase: PASSPHRASE, createdAt: "2026-07-18T00:00:00.000Z" });
+    const sourceRoot = path.join(root, "source");
+    fs.mkdirSync(sourceRoot, { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, "app.js"), "module.exports = true;\n");
+    const createSource = (createdAt) => createBackup({
+      kind: "source",
+      sourceRoot,
+      destinationRoot: root,
+      passphrase: PASSPHRASE,
+      createdAt,
+    });
+    const newest = (await createSource("2026-07-17T00:00:00.000Z")).destinationPath;
+    const pinned = (await createSource("2026-06-01T00:00:00.000Z")).destinationPath;
+    const expired = (await createSource("2026-05-01T00:00:00.000Z")).destinationPath;
+    const corrupt = (await createSource("2026-07-18T00:00:00.000Z")).destinationPath;
     fs.writeFileSync(`${pinned}.keep`, "operator-retained\n");
     const tampered = fs.readFileSync(corrupt);
     tampered[tampered.length - 20] ^= 1;
@@ -126,13 +130,55 @@ test("retention authenticates candidates, preserves keep sidecars and never trus
   }
 });
 
+test("retention cannot let a newer authenticated but un-restorable backup evict a verified backup", async () => {
+  const root = tempRoot("semantic-retention");
+  try {
+    const sourceRoot = path.join(root, "source");
+    fs.mkdirSync(sourceRoot, { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, "app.js"), "module.exports = true;\n");
+    const restorable = await createBackup({
+      kind: "source",
+      sourceRoot,
+      destinationRoot: root,
+      passphrase: PASSPHRASE,
+      createdAt: "2026-07-17T00:00:00.000Z",
+    });
+    const malformedPayload = path.join(root, "not-an-archive.txt");
+    const authenticatedButInvalid = path.join(root, "newer-invalid-source.jbackup");
+    fs.writeFileSync(malformedPayload, "authenticated bytes that are not a source archive");
+    await encryptFile(malformedPayload, authenticatedButInvalid, {
+      kind: "source",
+      passphrase: PASSPHRASE,
+      createdAt: "2026-07-18T00:00:00.000Z",
+    });
+
+    const retention = pruneBackups(root, {
+      passphrase: PASSPHRASE,
+      dailyLimit: 1,
+      weeklyLimit: 0,
+    });
+    assert.equal(fs.existsSync(restorable.destinationPath), true);
+    assert.equal(fs.existsSync(authenticatedButInvalid), true);
+    assert.equal(retention.removed.includes(restorable.destinationPath), false);
+    assert.equal(
+      retention.invalid.some((item) => item.filePath === authenticatedButInvalid),
+      true,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("database restore is staged, integrity checked and refused for the active runtime path", async () => {
   const root = tempRoot("database-restore");
   try {
     const sourceDbPath = path.join(root, "source.sqlite");
     const sourceDb = openDatabase(sourceDbPath);
     seedDatabase(sourceDb);
-    sourceDb.exec("CREATE TABLE proof (value TEXT NOT NULL); INSERT INTO proof VALUES ('restored');");
+    sourceDb.prepare("UPDATE ventures SET name = ? WHERE id = ?").run(
+      "Staged restore proof",
+      "venture-digital-products",
+    );
     sourceDb.close();
     const backup = await createBackup({
       kind: "database",
@@ -144,7 +190,11 @@ test("database restore is staged, integrity checked and refused for the active r
     const restored = await restoreBackup(backup.destinationPath, restoredPath, { passphrase: PASSPHRASE });
     assert.equal(restored.sqlite.quickCheck, "ok");
     const restoredDb = new DatabaseSync(restoredPath, { readOnly: true });
-    assert.equal(restoredDb.prepare("SELECT value FROM proof").get().value, "restored");
+    assert.equal(
+      restoredDb.prepare("SELECT name FROM ventures WHERE id = ?")
+        .get("venture-digital-products").name,
+      "Staged restore proof",
+    );
     assert.equal(Object.values(restoredDb.prepare("PRAGMA journal_mode").get())[0], "delete");
     restoredDb.close();
     assert.equal(fs.existsSync(`${restoredPath}-wal`), false);

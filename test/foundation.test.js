@@ -76,7 +76,7 @@ function runtimeDb(name) {
 }
 
 function closeRuntime(runtime) {
-  runtime.db.close();
+  if (runtime.db?.isOpen) runtime.db.close();
   fs.rmSync(runtime.root, { recursive: true, force: true });
 }
 
@@ -288,19 +288,27 @@ test("source backup excludes reproducible and transient directories", async () =
   const destinationRoot = path.join(root, "backups");
   const sourceRoot = path.join(root, "workspace");
   const restoreRoot = path.join(root, "restore");
+  const configuredPrivateRoot = path.join(sourceRoot, "configured-operator-vault");
+  const configuredApprovalPackRoot = path.join(sourceRoot, "configured-approval-packs");
   try {
     fs.mkdirSync(path.join(sourceRoot, "src"), { recursive: true });
     fs.mkdirSync(path.join(sourceRoot, "node_modules", "pkg"), { recursive: true });
     fs.mkdirSync(path.join(sourceRoot, "tmp"), { recursive: true });
     fs.mkdirSync(path.join(sourceRoot, "private"), { recursive: true });
+    fs.mkdirSync(configuredPrivateRoot, { recursive: true });
+    fs.mkdirSync(configuredApprovalPackRoot, { recursive: true });
     fs.writeFileSync(path.join(sourceRoot, "src", "app.js"), "module.exports = true;\n");
     fs.writeFileSync(path.join(sourceRoot, "node_modules", "pkg", "index.js"), "ignored\n");
     fs.writeFileSync(path.join(sourceRoot, "tmp", "scratch.txt"), "ignored\n");
     fs.writeFileSync(path.join(sourceRoot, "private", "runtime-credentials.json"), "ignored\n");
+    fs.writeFileSync(path.join(configuredPrivateRoot, "runtime-credentials.json"), "ignored\n");
+    fs.writeFileSync(path.join(configuredApprovalPackRoot, "approval.pdf"), "ignored\n");
     const result = await createBackup({
       kind: "source",
       sourceRoot,
       destinationRoot,
+      privateOperatorRoot: configuredPrivateRoot,
+      approvalPackRoot: configuredApprovalPackRoot,
       passphrase: PASSPHRASE,
     });
     await restoreBackup(result.destinationPath, restoreRoot, { passphrase: PASSPHRASE });
@@ -308,6 +316,8 @@ test("source backup excludes reproducible and transient directories", async () =
     assert.equal(fs.existsSync(path.join(restoreRoot, "node_modules")), false);
     assert.equal(fs.existsSync(path.join(restoreRoot, "tmp")), false);
     assert.equal(fs.existsSync(path.join(restoreRoot, "private")), false);
+    assert.equal(fs.existsSync(path.join(restoreRoot, "configured-operator-vault")), false);
+    assert.equal(fs.existsSync(path.join(restoreRoot, "configured-approval-packs")), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -321,7 +331,10 @@ test("SQLite runtime backup restores a readable consistent database", async () =
     const restoredPath = path.join(root, "restored", "runtime.sqlite");
     const db = openDatabase(dbPath);
     seedDatabase(db);
-    db.exec("CREATE TABLE proof (value TEXT NOT NULL); INSERT INTO proof VALUES ('restorable');");
+    db.prepare("UPDATE ventures SET name = ? WHERE id = ?").run(
+      "Foundation restore proof",
+      "venture-digital-products",
+    );
     db.close();
     const result = await createBackup({
       kind: "database",
@@ -331,7 +344,11 @@ test("SQLite runtime backup restores a readable consistent database", async () =
     });
     await restoreBackup(result.destinationPath, restoredPath, { passphrase: PASSPHRASE });
     const restored = new DatabaseSync(restoredPath, { readOnly: true });
-    assert.equal(restored.prepare("SELECT value FROM proof").get().value, "restorable");
+    assert.equal(
+      restored.prepare("SELECT name FROM ventures WHERE id = ?")
+        .get("venture-digital-products").name,
+      "Foundation restore proof",
+    );
     restored.close();
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -654,7 +671,7 @@ test("retention gate permits the controlled fixture and blocks wider storage or 
   }
 });
 
-test("foundation reset archives unsupported demo state without deleting its audit history", () => {
+test("archived pre-foundation records remain audit-only across a canonical reopen", () => {
   const runtime = runtimeDb("legacy-demo-reset");
   const ts = "2026-07-07T09:00:00.000Z";
   try {
@@ -752,12 +769,85 @@ test("foundation reset archives unsupported demo state without deleting its audi
       [ts],
     );
 
-    run(runtime.db, "DELETE FROM schema_migrations WHERE version = 6");
-    run(runtime.db, "DELETE FROM schema_migrations WHERE version = 7");
-    run(runtime.db, "DELETE FROM schema_migrations WHERE version = 8");
-    run(runtime.db, "DELETE FROM schema_migrations WHERE version = 9");
+    // This fixture represents history already sanitised by released migrations
+    // 6-9. Current schema history must remain canonical; deleting historical
+    // migration rows is corruption, not a supported way to replay them.
+    run(
+      runtime.db,
+      `UPDATE commercial_experiments
+       SET status = 'cancelled', started_at = NULL, ended_at = ?, updated_at = ?, metadata = ?
+       WHERE id = ?`,
+      [
+        ts,
+        ts,
+        toJson({
+          dryRunOnly: true,
+          archivedReason: "Pre-foundation protected or demo state; no verified real-world start.",
+          realStartConfirmed: false,
+        }),
+        experiment.id,
+      ],
+    );
+    run(
+      runtime.db,
+      `UPDATE approvals
+       SET status = 'superseded', decided_at = ?,
+           decision_note = 'Superseded by the released foundation reset; no live provider outcome or spend was recorded.'
+       WHERE id = 'appr-stale-live-proof'`,
+      [ts],
+    );
+    run(
+      runtime.db,
+      `UPDATE tasks
+       SET status = 'cancelled', outcome_status = 'cancelled', setup_block_reason = NULL,
+           claim_token = NULL, claimed_at = NULL, completed_at = ?, updated_at = ?
+       WHERE id = 'task-stale-live-proof'`,
+      [ts, ts],
+    );
+    run(
+      runtime.db,
+      `UPDATE workflows
+       SET status = 'archived', current_step = 'historical pre-foundation work', updated_at = ?
+       WHERE id IN ('wf-stale-live-proof', 'wf-old-proof-mode')`,
+      [ts],
+    );
+    run(
+      runtime.db,
+      `UPDATE messages
+       SET status = 'resolved', resolved_at = ?
+       WHERE id IN ('msg-stale-live-proof', 'msg-old-workflow-plan')`,
+      [ts],
+    );
+    run(
+      runtime.db,
+      `UPDATE deliverables
+       SET status = 'archived', updated_at = ?,
+           metadata = json_set(metadata, '$.archivedReason',
+             'Historical pre-foundation work; retained in System history.')
+       WHERE id IN ('deliv-stale-live-proof', 'deliv-old-planned-output', 'deliv-old-proof-mode')`,
+      [ts],
+    );
+    run(
+      runtime.db,
+      `UPDATE deliverables
+       SET file_path = ?
+       WHERE id = 'deliv-old-planned-output'`,
+      ["archive/historical/local-artifacts/legacy-generated-deliverables-pre-foundation/old-planned-output.md"],
+    );
+    const migrationHistoryBefore = all(
+      runtime.db,
+      "SELECT version, name FROM schema_migrations ORDER BY version",
+    );
+    assert.deepEqual(
+      migrationHistoryBefore.map((row) => row.version),
+      Array.from({ length: LATEST_SCHEMA_VERSION }, (_, index) => index + 1),
+    );
     runtime.db.close();
     runtime.db = openDatabase(runtime.dbPath);
+    assert.deepEqual(
+      all(runtime.db, "SELECT version, name FROM schema_migrations ORDER BY version"),
+      migrationHistoryBefore,
+    );
 
     const archived = get(runtime.db, "SELECT * FROM commercial_experiments WHERE id = ?", [experiment.id]);
     assert.equal(archived.status, "cancelled");
@@ -777,6 +867,22 @@ test("foundation reset archives unsupported demo state without deleting its audi
       "archive/historical/local-artifacts/legacy-generated-deliverables-pre-foundation/old-planned-output.md",
     );
     assert.equal(get(runtime.db, "SELECT status FROM messages WHERE id = 'msg-old-workflow-plan'").status, "resolved");
+    assert.equal(
+      get(
+        runtime.db,
+        `SELECT COUNT(*) AS count FROM approvals
+         WHERE workflow_id = 'wf-stale-live-proof' AND status IN ('pending', 'approved')`,
+      ).count,
+      0,
+    );
+    assert.equal(
+      get(
+        runtime.db,
+        `SELECT COUNT(*) AS count FROM tasks
+         WHERE workflow_id = 'wf-stale-live-proof' AND status NOT IN ('completed', 'cancelled')`,
+      ).count,
+      0,
+    );
     assert.equal(get(runtime.db, "SELECT status FROM approvals WHERE id = 'appr-digital-product-dry-run'").status, "pending");
     assert.equal(get(runtime.db, "SELECT name FROM commercial_experiments WHERE id = ?", [experiment.id]).name, "Protected demo incorrectly shown as live");
   } finally {
