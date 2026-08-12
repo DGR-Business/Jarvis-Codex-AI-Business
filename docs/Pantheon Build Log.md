@@ -56,7 +56,7 @@ locally and online; that current truth does not erase the historical record.
   provider call, and authorises no provider cost or spend.
 - Recovery-key custody: Google Password Manager human custody is deferred until
   Daniel returns to the host PC. The fresh active-key recovery set is verified,
-  so the deferral is non-blocking for current Standby operation. Do not create a
+  so the deferral is non-blocking for current local operation. Do not create a
   weaker remote secret path.
 - Owner position: schema 27 is the canonical local and online release. The prior
   schema-26 commercial-truth release remains historical. Production state and
@@ -2086,12 +2086,11 @@ registered Venture Kit.
 
 The ordered next work is:
 
-1. apply and prove a small support hotfix for the retained legacy-key fallback
-   in `restore-pantheon.ps1`; do not disturb or overstate the already proved
-   active-key recovery path;
+1. retain the proved `restore-pantheon.ps1` active- and legacy-key recovery
+   paths without weakening their fail-closed behavior;
 2. refresh the draft authority's provider, model, pricing, channel, comparable,
    and economics facts at A$0 without making a provider call or activating v2;
-3. after fallback proof and the A$0 fact refresh, present Daniel with the exact
+3. after the A$0 fact refresh, present Daniel with the exact
    seven-day authority text for review; fresh acceptance and separate activation
    are required before any bounded diligence or provider cost;
 4. if later approved and activated, test the low-touch Social Media Manager
@@ -2280,17 +2279,52 @@ action, spend, commercial decision, new approval, or outbound action.
   bounded deltas were two zero-finding monitor runs, one scheduler run, and three
   events.
 
-### Remaining support item and next gate
+### Recovery-wrapper closeout and next gate
 
-One P2 remains. `restore-pantheon.ps1` has not yet proved its retained
-legacy-key fallback because native stderr can interact with
-`$ErrorActionPreference = "Stop"` before its candidate loop evaluates the native
-exit code. Do not claim the legacy wrapper path. The current active-key recovery
-restore is proved and healthy, so this P2 is not a canonical-release or Standby
-blocker.
+The `restore-pantheon.ps1` retained legacy-key fallback is repaired and proved.
+The wrapper now captures each native verification exit code under a narrowly
+scoped non-terminating stderr policy, then immediately restores fail-closed
+PowerShell behavior. Three isolated Windows tests passed: active key first,
+retained legacy key after an active-key failure, and safe rejection when no key
+matches. A protected verify-only run then selected the real retained legacy key
+for recovery set `8e8c973e-8a7f-4996-9c14-4e43b76768fd`, reporting schema 27
+current-ready, quick and full integrity checks passed, and zero foreign-key
+violations. No restore or live database replacement occurred.
 
-Next, apply and prove the small fallback hotfix, refresh the provider, model,
-pricing, channel, comparable, and economics facts at A$0, and present the exact
-v2 authority to Daniel for fresh approval and separate activation. Neither this
-release nor the draft plan activates v2. Google Password Manager custody remains
-deferred and non-blocking until Daniel returns to the host PC.
+The current retained active-key set is
+`36c78f77-897b-435b-b34f-8a74c84b186e`; a fresh supported owner-context Doctor
+authenticated its disposable restore and passed. The earlier `bdfab6e4...` set
+remains historical proof and was pruned by normal same-day retention after the
+newer set was created.
+
+Next, refresh the provider, model, pricing, channel, comparable, and economics
+facts at A$0, and present the exact v2 authority to Daniel for fresh approval
+and separate activation. Neither this release nor the draft plan activates v2.
+Google Password Manager custody remains deferred and non-blocking until Daniel
+returns to the host PC.
+
+## 2026-08-12 Repository And Live Operations Review
+
+Daniel asked Jarvis to review the full repository and branches and leave
+Pantheon running. Local and online `main` were exact at schema-27 release commit
+`ff5306c87d6a8776721b4fa3766d6e6091e544fe`; the worktree was clean, all closed
+pull requests were merged, and the latest eight-job `main` run
+`31522693937` was green. Fresh local lint passed, and all 85 ordinary test files
+passed across five isolated shards. Windows lifecycle proof remains correctly
+quarantined to its two green hosted jobs.
+
+Pantheon Control was already healthy in Standby. Jarvis used the signed owner
+dashboard to start Working, confirmed health `ok`, operations readiness,
+scheduler and monitor readiness, ran one manual system check with zero findings,
+and observed an empty queue and no active authority. Model-call, cost, approval,
+pre-venture evidence, pre-venture decision, and artifact counts did not change.
+External actions remained locked, and zero Pantheon-origin browser console
+entries were recorded. Working was returned to Standby only for source-safe
+maintenance and is to be restarted after the verified hotfix is released.
+
+Repository housekeeping remains separate from commercial progress. Twelve
+remote `codex/*` branches are fully merged with zero unique commits and may be
+deleted. Two divergent local archive refs contain history absent from `main` and
+must be preserved before consolidation. `main` has no branch-protection rule or
+release tag; those governance improvements do not create v2 authority or
+commercial permission.
