@@ -2319,8 +2319,9 @@ scheduler and monitor readiness, ran one manual system check with zero findings,
 and observed an empty queue and no active authority. Model-call, cost, approval,
 pre-venture evidence, pre-venture decision, and artifact counts did not change.
 External actions remained locked, and zero Pantheon-origin browser console
-entries were recorded. Working was returned to Standby only for source-safe
-maintenance and is to be restarted after the verified hotfix is released.
+entries were recorded. Working was returned to Standby for source-safe
+maintenance and was restarted after the verified hotfix release, as recorded
+below.
 
 Repository housekeeping remains separate from commercial progress. Twelve
 remote `codex/*` branches are fully merged with zero unique commits and may be
@@ -2328,3 +2329,33 @@ deleted. Two divergent local archive refs contain history absent from `main` and
 must be preserved before consolidation. `main` has no branch-protection rule or
 release tag; those governance improvements do not create v2 authority or
 commercial permission.
+
+### Final canonical hotfix and Working state
+
+The retained-key fix completed the normal release path. Pull request #12 exact
+head `bb70b1adcc99fe2a5ea37fa8629bf39ac8c7f9ef` passed 8 of 8 hosted jobs in
+run `31554326329`. It merged to `main` as
+`582cb03583f848589472158db745fefb4f205854`; push-triggered run
+`31555002515` then passed all eight jobs, including both Windows lifecycle
+lanes. Local focused proof passed 4 of 4 and the complete ordinary suite passed
+848 of 848 tests across 86 files and five shards. Independent adversarial review
+found no remaining P0, P1, or P2 issue in the hotfix scope.
+
+Jarvis started Pantheon Control and then Working from the exact canonical
+`main`. Health is `ok`; runtime and operations readiness are true; the scheduler
+is running; startup monitoring and a signed manual system check both completed
+with zero findings; and external actions remain locked. The owner screen shows
+no active bounded authority, no runnable queue item, and no current decision.
+There are zero active tasks, zero running attempts, and zero open monitor
+findings. The live ledger remains schema 27 with 50 historical model-call rows,
+54 cost rows, 53 approval rows, one expired pre-venture authority, no unexpired
+authority, no pre-venture evidence or decision, and the unchanged 189-artifact
+tree totalling 15,894,507 bytes. Browser diagnostics contain no Pantheon-origin
+error or warning; unrelated extension messages remain outside Pantheon.
+
+This leaves the system technically operational but commercially inactive. No
+provider or model call, buyer contact, publishing, account action, external
+spend, revenue, v2 authority, or v2 activation occurred. The next commercial
+step remains the A$0 fact refresh followed by Daniel's review of one exact v2
+authority; no provider work may run before fresh acceptance and separate
+activation.

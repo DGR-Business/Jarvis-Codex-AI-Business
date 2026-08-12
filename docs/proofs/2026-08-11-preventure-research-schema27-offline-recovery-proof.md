@@ -260,3 +260,24 @@ Pantheon's permanent destination remains a portfolio-controlled multi-business
 machine; the first-venture gate still requires three independent paying buyers
 and positive actual AUD net cash contribution before Pantheon may propose up to
 three isolated venture lanes.
+
+## 2026-08-12 Canonical Hotfix And Working Addendum
+
+The recovery-wrapper closeout is now canonical. Pull request #12 exact head
+`bb70b1adcc99fe2a5ea37fa8629bf39ac8c7f9ef` passed all eight jobs in hosted
+run `31554326329`, merged as
+`582cb03583f848589472158db745fefb4f205854`, and the exact merge passed all
+eight push-triggered `main` jobs in run `31555002515`. Local proof passed 4 of 4
+focused wrapper tests and 848 of 848 ordinary tests across 86 files. Independent
+adversarial review reported no remaining P0, P1, or P2 finding.
+
+Pantheon Control and Working were then started from that exact `main`. Health,
+runtime readiness, operations readiness, scheduler readiness, startup monitor,
+and one signed manual system check all passed; the manual check surfaced zero
+items. The live owner view showed no active authority or runnable work, and
+external actions remained locked. There were zero active tasks, running
+attempts, or open monitor findings. The 50 model-call, 54 cost, 53 approval, and
+189-artifact baselines remained unchanged; pre-venture evidence and decision
+rows remained zero. No v2 authority, provider call, cost, buyer contact,
+publishing, account action, revenue, or external spend was created by this
+operational proof.
