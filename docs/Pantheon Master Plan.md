@@ -802,6 +802,23 @@ Foundation is releasable only when:
   remains available in its appropriate audit and historical views;
 - real accounting remains exact and recoverable.
 
+### 2026-08-12 Operational closeout
+
+The retained-recovery-key support fix is canonical. Pull request #12 head
+`bb70b1adcc99fe2a5ea37fa8629bf39ac8c7f9ef` passed all eight hosted checks in
+run `31554326329`, merged as
+`582cb03583f848589472158db745fefb4f205854`, and the exact merge passed all
+eight push-triggered `main` checks in run `31555002515`.
+
+Pantheon is now in **Working** from that canonical source. The runtime reports
+health `ok`, runtime and operations ready, scheduler and monitor ready, external
+actions locked, and a zero-finding manual system check. The visible queue,
+running attempts, and open monitor findings are zero. V1 remains the only
+pre-venture authority and is expired; no v2 authority exists. Model-call, cost,
+approval, artifact, pre-venture evidence, and pre-venture decision counts did
+not change during the final start proof. This is operational readiness, not
+buyer validation or commercial progress.
+
 ## Durable Records
 
 - `docs/Pantheon Build Log.md`: current decisions, proof, and next work.
