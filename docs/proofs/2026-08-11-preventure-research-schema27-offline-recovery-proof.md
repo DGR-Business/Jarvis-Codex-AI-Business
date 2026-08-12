@@ -98,7 +98,7 @@ recovery required to make Pantheon operational. Jarvis then:
   `bdfab6e4-e765-47d0-830d-bfbef0532fe7`, restored it into a disposable
   location, and passed Doctor.
 
-The current recovery set contains 770 files and is retained as
+That recovery set contained 770 files and was retained as
 `pantheon-recovery-set-2026-08-11T08-50-37-927Z.jbackup`. Its archive SHA-256 is
 `1f3f6c39035be44529e438aa4437e49a999554654a3ed3ab951f7973e51f1727`,
 its manifest SHA-256 is
@@ -110,6 +110,21 @@ It authenticated under protected key identifier
 disposable restore reported schema 27 current-ready, SQLite quick and full
 integrity checks passed, and zero foreign-key violations. The protected
 Pantheon check passed every operations-readiness check.
+
+A later same-day active-key backup superseded that archive under the normal
+retention policy. The current retained set is
+`pantheon-recovery-set-2026-08-11T18-38-34-668Z.jbackup`, set ID
+`36c78f77-897b-435b-b34f-8a74c84b186e`. Its archive SHA-256 is
+`85bb633dd88c9ed46bcb76fddd37122c55d427f3a68652292a1d9b05c1c99ecc`,
+its manifest SHA-256 is
+`d864a7a0867461e53ea9c920be41a942bd35e5fca563609def694c0d506364af`,
+and its payload SHA-256 is
+`1a89684be7b6329d8dfbb2817d6bb071e183f1535c3bc97d2d9d503c60f87a66`.
+On 2026-08-12 the supported owner-context Doctor again authenticated a
+disposable restore from the recent active-key set and passed schema 27,
+integrity, foreign-key, ownership, dependency, renderer, and recovery checks.
+The older `bdfab6e4...` record remains valid historical proof, not a claim that
+retention must preserve that exact file forever.
 
 The locked monitor and browser proof showed the v1 authority as expired and
 terminal, with provider contact and dispatch unavailable. The proof caused no
@@ -218,7 +233,7 @@ three events. They created no provider or model call, cost, buyer contact,
 publishing, account action, spend, commercial decision, new approval, or
 outbound action.
 
-### Commercial truth and remaining support item
+### Commercial truth and recovery-wrapper closeout
 
 This closes support and release gates only. V1 remains expired and terminal;
 its assignments remain cancelled and unattempted. The v2 successor plan remains
@@ -226,18 +241,22 @@ an inactive draft and creates no authority, task, provider permission, cost, or
 commercial action. There was no buyer, order, revenue, external test, or actual
 net cash contribution.
 
-One P2 support item remains. The retained legacy-key fallback in
-`restore-pantheon.ps1` is not yet proved because native stderr can interact with
-`$ErrorActionPreference = "Stop"` before the wrapper's candidate loop evaluates
-the native exit code. This addendum does not claim that legacy wrapper path. The
-current active-key recovery restore is proved and healthy, so the P2 is not a
-canonical-release or Standby blocker.
+The retained legacy-key fallback in `restore-pantheon.ps1` now scopes native
+verification probes so a wrong active key cannot abort the candidate loop
+before its exit code is evaluated. Three isolated Windows regressions proved
+active-key success, retained-key fallback after native stderr, and fail-closed
+no-key behavior without printing synthetic secrets. A protected verify-only
+run then authenticated retained recovery set
+`8e8c973e-8a7f-4996-9c14-4e43b76768fd` with key ID
+`pbk-3a9510e1e98dd23887f2` as `legacy-restore-only`. It reported schema 27
+current-ready, SQLite quick and full integrity checks passed, zero foreign-key
+violations, and made no restore or live-state change.
 
-Next, Pantheon should apply and prove the small fallback hotfix, refresh the
-provider, model, pricing, channel, comparable, and economics facts at A$0, and
-then present the exact v2 authority to Daniel for fresh approval and separate
-activation. Google Password Manager custody remains deferred and non-blocking
-until Daniel returns to the host PC. Pantheon's permanent destination remains a
-portfolio-controlled multi-business machine; the first-venture gate still
-requires three independent paying buyers and positive actual AUD net cash
-contribution before Pantheon may propose up to three isolated venture lanes.
+Next, Pantheon should refresh the provider, model, pricing, channel, comparable,
+and economics facts at A$0, and then present the exact v2 authority to Daniel
+for fresh approval and separate activation. Google Password Manager custody
+remains deferred and non-blocking until Daniel returns to the host PC.
+Pantheon's permanent destination remains a portfolio-controlled multi-business
+machine; the first-venture gate still requires three independent paying buyers
+and positive actual AUD net cash contribution before Pantheon may propose up to
+three isolated venture lanes.

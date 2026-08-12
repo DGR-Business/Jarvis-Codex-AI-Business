@@ -140,9 +140,10 @@ recovery work is complete, but its commercial round expired unrun on
 preparation-only successor is
 `docs/plans/PANTHEON-FIRST-VENTURE-DILIGENCE-V2-2026-08-11.md`. That document is
 a draft plan, not a live authority: it creates no v2 database record or
-approval, permits no provider call, and authorises no cost or spend. After
-fallback proof and an A$0 refresh of the relevant provider, pricing, channel,
-and comparable facts, Daniel's next commercial gate is review of the exact
+approval, permits no provider call, and authorises no cost or spend. With the
+recovery fallback proof complete, Daniel's next commercial gate after an A$0
+refresh of the relevant provider, pricing, channel, and comparable facts is
+review of the exact
 proposed authority. If Daniel later approves and separately activates it, the
 bounded diligence would test the distinct, low-touch Social Media Manager Client
 Approval & Scope Guard Kit, initially hypothesised at A$29 with Etsy as the
@@ -534,7 +535,9 @@ buyer-intent work closed. The current plan below supersedes it.
   active-key restore, owner-context Doctor, pull request #10, eight-job PR run
   `31516719014`, merge `fcda9d472b0dcd6dceb53b0afd3b8cd4241fe017`, and
   eight-job post-merge run `31517691274` close the release gate.
-- Keep Pantheon Control in Standby; the working runtime on port 5051 is stopped.
+- Keep Pantheon Control available. At Daniel's 2026-08-12 direction the Working
+  runtime may remain active for monitoring and owner visibility, but no
+  commercial or provider work may run without an exact current authority.
 - Keep production research closed. The v1 research goal remains blocked and
   historical: its support and recovery work is complete, but the commercial
   round expired unrun on 2026-08-09. Its two receipts remain immutable history,
@@ -550,7 +553,7 @@ buyer-intent work closed. The current plan below supersedes it.
   offer hypothesis; it is not a registered Venture Kit.
 - Defer Google Password Manager recovery-key custody until Daniel returns to the
   host PC. The verified active-key recovery set keeps this residual human-custody
-  item non-blocking for current Standby operation; do not weaken the human-only
+  item non-blocking for current local operation; do not weaken the human-only
   secret boundary to complete it remotely.
 - Treat the remaining bullets in this subsection as the prior released
   commercial baseline. They remain relevant history, while the recovered local
@@ -569,10 +572,11 @@ buyer-intent work closed. The current plan below supersedes it.
 - Use the implemented platform-import and manual receipt-backed routes for future
   attributable buyer-and-cash evidence. Keep estimates, cash paid, provider
   costs, revenue, refunds, and actual net cash contribution distinct.
-- Apply a small support hotfix to prove the `restore-pantheon.ps1` retained
-  legacy-key fallback, then refresh the draft plan's provider, pricing, channel,
-  and comparable facts at A$0 before asking Daniel to review any exact seven-day
-  v2 authority. If later approved and separately activated, scope the
+- Treat the `restore-pantheon.ps1` retained legacy-key fallback as repaired and
+  proved through isolated Windows regressions plus a protected verify-only
+  retained-set check. Refresh the draft plan's provider, pricing, channel, and
+  comparable facts at A$0 before asking Daniel to review any exact seven-day v2
+  authority. If later approved and separately activated, scope the
   commercial work to bounded pre-venture diligence for the new Social Media
   Manager Client Approval & Scope Guard Kit. Revalidate the buyer, problem,
   low-touch offer, format, A$29 price, Etsy-primary route, Gumroad fallback,
@@ -583,9 +587,6 @@ buyer-intent work closed. The current plan below supersedes it.
 
 ### Next
 
-- Repair and prove the P2 legacy-key fallback without weakening the already
-  proved active-key recovery path. The current active-key recovery set and
-  authenticated restore remain healthy.
 - After the A$0 fact refresh, present Daniel with the exact draft
   seven-day v2 authority for review. Require fresh explicit acceptance and
   separate activation before any successor pre-venture authority, provider
@@ -777,11 +778,14 @@ deltas were two zero-finding monitor runs, one scheduler run, and three events.
 No provider or model call, cost, buyer contact, publishing, account action, new
 approval, decision, outbound action, or spend occurred.
 
-One P2 support item remains: `restore-pantheon.ps1` has not yet proved its
-retained legacy-key fallback because native stderr can interact with
-`$ErrorActionPreference = "Stop"` before the candidate loop evaluates the exit
-code. Do not claim that wrapper path. The current active-key recovery restore is
-proved and healthy, so this does not reopen the release gate.
+The `restore-pantheon.ps1` retained legacy-key fallback is now proved. Native
+verification stderr is scoped non-terminating only while each candidate exit
+code is captured, after which fail-closed behavior is restored. Three isolated
+Windows regressions passed, and a protected verify-only run selected the
+retained legacy key for recovery set
+`8e8c973e-8a7f-4996-9c14-4e43b76768fd` without changing live state. The
+current active-key recovery set remains healthy and passed a fresh disposable
+restore through the supported owner-context Doctor.
 
 Foundation is releasable only when:
 

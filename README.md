@@ -62,13 +62,15 @@ and storefront rendering use the pinned Python packages in
 `requirements-runtime.txt`. Doctor verifies the complete renderer rather than
 assuming a Python installation is usable.
 
-As of 2026-08-11, the owner-approved technical recovery is complete: the live
+As of 2026-08-12, the owner-approved technical recovery is complete: the live
 database is current schema 27, the locked runtime and owner dashboard proof
-passed, and active-key recovery set
-`bdfab6e4-e765-47d0-830d-bfbef0532fe7` passed verification, disposable
-restore, and Doctor. Pre-Venture Research Authority v1 is expired. Recovery did
-not create v2 authority or permit provider use; any live research still needs a
-new exact, time-bounded owner approval and authenticated attestation.
+passed, and the current retained active-key recovery set
+`36c78f77-897b-435b-b34f-8a74c84b186e` passed verification, disposable
+restore, and Doctor. The supported restore wrapper also proved selection of a
+retained legacy restore-only key without exposing a credential. Pre-Venture
+Research Authority v1 is expired. Recovery did not create v2 authority or
+permit provider use; any live research still needs a new exact, time-bounded
+owner approval and authenticated attestation.
 
 ## Project Direction
 

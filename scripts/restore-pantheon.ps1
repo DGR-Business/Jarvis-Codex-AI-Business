@@ -19,6 +19,12 @@ if (-not $VerifyOnly -and [string]::IsNullOrWhiteSpace($Destination)) {
 
 $sourcePath = [IO.Path]::GetFullPath($Source)
 $restoreScript = Join-Path $PSScriptRoot "restore-runtime.js"
+try {
+  $nodeCommand = @(Get-Command -Name "node" -CommandType Application -ErrorAction Stop)[0]
+  $nodeExecutable = [IO.Path]::GetFullPath([string]$nodeCommand.Source)
+} catch {
+  throw "Pantheon could not locate the Node.js application required for recovery verification."
+}
 $keyCandidates = @(
   [pscustomobject]@{
     keyId = [string]$profile.activeKeyId
@@ -44,8 +50,22 @@ try {
   foreach ($candidate in $keyCandidates) {
     [Environment]::SetEnvironmentVariable("PANTHEON_BACKUP_PASSPHRASE", [string]$candidate.passphrase, "Process")
     [Environment]::SetEnvironmentVariable("JARVIS_BACKUP_PASSPHRASE", $null, "Process")
-    $candidateOutput = & node $restoreScript --source $sourcePath --verify-only 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $candidateOutput = $null
+    $candidateExitCode = $null
+    $candidateInvocationSucceeded = $false
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+      # Windows PowerShell 5.1 promotes redirected native stderr to an ErrorRecord.
+      # Keep the probe non-terminating so a wrong active key can advance to a
+      # retained restore-only key, then immediately restore fail-closed behavior.
+      $ErrorActionPreference = "Continue"
+      $candidateOutput = & $nodeExecutable $restoreScript --source $sourcePath --verify-only 2>&1
+      $candidateInvocationSucceeded = $?
+      $candidateExitCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($candidateInvocationSucceeded -and $candidateExitCode -eq 0) {
       $selectedKey = $candidate
       $verificationOutput = $candidateOutput
       break
@@ -62,8 +82,8 @@ try {
   }
 
   [Environment]::SetEnvironmentVariable("PANTHEON_BACKUP_PASSPHRASE", [string]$selectedKey.passphrase, "Process")
-  & node $restoreScript --source $sourcePath --destination ([IO.Path]::GetFullPath($Destination))
-  if ($LASTEXITCODE -ne 0) { throw "Pantheon restore failed." }
+  & $nodeExecutable $restoreScript --source $sourcePath --destination ([IO.Path]::GetFullPath($Destination))
+  if (-not $? -or $LASTEXITCODE -ne 0) { throw "Pantheon restore failed." }
   Write-Host "Restored with recovery key ID $($selectedKey.keyId) ($($selectedKey.role))."
 } finally {
   [Environment]::SetEnvironmentVariable("PANTHEON_BACKUP_PASSPHRASE", $previousPantheon, "Process")
