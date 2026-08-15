@@ -4,15 +4,25 @@
 
 This protocol makes Pantheon development independent of one model's conversation memory. Codex and Claude Code execute the same repository-owned programme.
 
-## Work hierarchy
+## Governing hierarchy
 
-1. Master Plan
-2. Phase Execution Pack
-3. Work Package
-4. Active Handoff
-5. Completion evidence
+The stable Master Plan defines programme constraints. An owner-approved Phase
+Execution Pack may explicitly specialize Master execution for that phase. An
+approved Work Package is the most-specific implementation contract within its
+Pack, but it cannot silently amend or contradict the Pack, relevant ADRs or
+non-specialized Master constraints. A material conflict requires an
+owner-reviewed amendment.
 
-Only an approved Work Package authorizes implementation.
+`ACTIVE_HANDOFF.md` and completion evidence record execution; they do not grant
+authority. Only an approved Work Package authorizes implementation.
+
+## Phase 0 specializations
+
+`decisions/ADR-0001-P0-EXECUTION-CONTRACT.md` records the owner-approved P0
+specializations: hooks are optional and evidence-based; browser/T3/Playwright
+is not applicable because P0 permits no UI change; P1 planning occurs just in
+time after verified P0 integration; and Claude continuity remains
+`prepared_not_verified` until a real sequential rehearsal proves it.
 
 ## Package lifecycle
 
@@ -66,6 +76,8 @@ Completion evidence can include:
 - commercial evidence.
 
 Evidence paths belong in the Work Package completion report and `PROGRESS.json`.
+Verification follows the current Package and Pack; a generic protocol never
+adds a full suite, browser check or provider operation that they do not require.
 
 ## Provider discipline
 

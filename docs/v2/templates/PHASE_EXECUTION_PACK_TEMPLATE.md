@@ -1,7 +1,7 @@
 # Phase [ID] Execution Pack
 
 **Phase:** [ID and name]  
-**Master Plan version:** 2.1  
+**Master Plan version:** 2.1.1
 **Prepared from commit:** [SHA]  
 **Prepared on:** [date]  
 **Status:** Draft / Approved / In progress / Complete
@@ -69,6 +69,9 @@
 
 ## 10. Phase gate
 
+- decision vocabulary: [use the exact values approved by the Pack; P0 uses
+  binary `PASS` / `FAIL`]
+- exact review ending: `PHASE GATE REVIEW COMPLETE: OWNER DECISION REQUIRED`
 - [ ] phase objective is real
 - [ ] required verification passes
 - [ ] rollback remains available

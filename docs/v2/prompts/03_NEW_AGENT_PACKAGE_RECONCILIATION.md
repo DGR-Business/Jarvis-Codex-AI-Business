@@ -16,5 +16,7 @@ Report:
 6. exact first safe action.
 
 Stop after the reconciliation report unless this session was explicitly opened
-as the implementation session for the package.
+as the implementation session for the package. A standalone reconciliation
+ends exactly:
+PACKAGE RECONCILIATION COMPLETE: IMPLEMENTATION AUTHORITY REQUIRED
 ```

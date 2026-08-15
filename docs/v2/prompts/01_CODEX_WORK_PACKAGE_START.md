@@ -14,6 +14,11 @@ docs/v2/PROGRESS.json, docs/v2/BLOCKERS.md and docs/v2/ACTIVE_HANDOFF.md.
 Inspect git status, git diff and recent commits. Restate the objective, current
 baseline, remaining acceptance criteria and first action before editing.
 
+Treat the approved Work Package as the most-specific contract within its
+owner-approved Phase Pack. The Pack may explicitly specialize Master execution
+for its phase, but the Package cannot silently amend the Pack, relevant ADRs or
+non-specialized Master constraints.
+
 Work only on this package. Maintain ACTIVE_HANDOFF.md after meaningful
 checkpoints. Use targeted verification. For material UI changes, inspect the
 running application interactively; use Playwright only where the Work Package

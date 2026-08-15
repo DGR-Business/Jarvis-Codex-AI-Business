@@ -1,7 +1,10 @@
 node_modules/
 .superpowers/
 .playwright-cli/
-.agents/
+# Only repository-owned shared skills are cloneable; other agent-local state
+# remains ignored.
+.agents/*
+!.agents/skills/
 *.pid
 *.lock
 *.tmp

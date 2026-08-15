@@ -5,7 +5,7 @@
   "activeAgent": null,
   "activeWorktree": null,
   "sessionOutcome": "complete",
-  "updatedAt": "2026-08-15T20:29:38+10:00",
+  "updatedAt": "2026-08-15T21:26:49+10:00",
   "phases": [
     {
       "id": "P0",
@@ -25,23 +25,28 @@
           ],
           "blockers": [],
           "commits": [
-            "612a35c8b1d881f638570373d06f99d26bfb280e"
+            "612a35c8b1d881f638570373d06f99d26bfb280e",
+            "c6fe4380f9480d885446599bcbb4f0ccffa028a2"
           ]
         },
         {
           "id": "P0-W02",
           "title": "Reconcile programme authority and the cross-agent contract",
-          "status": "ready",
+          "status": "complete",
           "preferredAgent": "codex",
           "handoffAllowed": true,
-          "evidence": [],
+          "evidence": [
+            "docs/v2/phases/P0-EXECUTION-PACK.md",
+            "docs/v2/decisions/ADR-0001-P0-EXECUTION-CONTRACT.md",
+            "docs/v2/evidence/packages/P0-W02/COMPLETION.md"
+          ],
           "blockers": [],
           "commits": []
         },
         {
           "id": "P0-W03",
           "title": "Add lightweight continuity tooling",
-          "status": "backlog",
+          "status": "ready",
           "preferredAgent": "codex",
           "handoffAllowed": true,
           "evidence": [],

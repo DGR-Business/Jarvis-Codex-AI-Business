@@ -3,7 +3,7 @@
 **Phase:** [phase]  
 **Status:** backlog / ready / in_progress / blocked / review / complete  
 **Branch/worktree:** [name]  
-**Master Plan version:** 2.1  
+**Master Plan version:** 2.1.1
 **Execution Pack version:** [version]  
 **Session type:** planning / implementation / handoff continuation / review  
 **Preferred agent:** Codex / Claude Code / either  
@@ -127,3 +127,7 @@ Stop and update handoff/blockers when:
 - next ready package:
 - Git status:
 - final session instruction:
+
+Package implementation/handoff sessions use exactly one package outcome from
+`AGENTS.md`. Planning, amendment, standalone reconciliation and phase-gate
+sessions use the distinct exact ending in `docs/v2/SESSION_PROTOCOL.md`.

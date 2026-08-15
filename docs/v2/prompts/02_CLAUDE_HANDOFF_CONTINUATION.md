@@ -17,6 +17,10 @@ actually complete against the package acceptance criteria. Preserve valid
 Codex work. Do not reset, clean, revert or redesign until you understand the
 current state.
 
+Apply the approved Pack/Package specialization chain in AGENTS.md. Do not treat
+the Work Package as authority to amend its Pack, relevant ADRs or
+non-specialized Master constraints.
+
 Continue the same Work Package only. Maintain ACTIVE_HANDOFF.md, run the
 specified targeted verification, and complete the package contract rather than
 trying to infer Codex's private intention. For material UI changes, inspect the

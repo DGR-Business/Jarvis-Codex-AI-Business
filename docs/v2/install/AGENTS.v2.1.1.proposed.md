@@ -1,5 +1,9 @@
 # Pantheon Engineering Agent Instructions
 
+> **Historical installation proposal only.** This file is retained as installer
+> provenance, is not active authority and must not be imported. The reconciled
+> root `/AGENTS.md` is the current Pantheon v2.1.1 instruction contract.
+
 These instructions apply to OpenAI Codex, Claude Code through `CLAUDE.md`, and any future coding agent working on Pantheon.
 
 ## Authority order

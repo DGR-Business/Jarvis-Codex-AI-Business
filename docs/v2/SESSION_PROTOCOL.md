@@ -45,9 +45,12 @@ Update it after:
 
 This is deliberately more frequent than final logging so an abrupt usage limit is survivable.
 
-## 4. End-of-session outcomes
+## 4. Package-session outcomes
 
-Every session ends with exactly one:
+Package implementation, continuation, independent package review, handoff and
+blocker sessions end with exactly one of the following. These four endings do
+not apply to standalone planning, amendment, reconciliation or phase-gate
+sessions.
 
 ### A. Package complete
 
@@ -86,7 +89,19 @@ Required before saying it where possible:
 
 State the exact action, why it cannot be delegated and what work can continue independently.
 
-## 5. Codex to Claude Code
+## 5. Non-implementation session outcomes
+
+Read-only or proposal sessions retain their own exact endings and do not imply
+implementation authority:
+
+- phase planning: `PHASE PLAN READY: OWNER REVIEW REQUIRED`
+- plan amendment: `PLAN AMENDMENT READY: OWNER REVIEW REQUIRED`
+- standalone package reconciliation:
+  `PACKAGE RECONCILIATION COMPLETE: IMPLEMENTATION AUTHORITY REQUIRED`
+- independent phase gate:
+  `PHASE GATE REVIEW COMPLETE: OWNER DECISION REQUIRED`
+
+## 6. Codex to Claude Code
 
 1. Stop all Codex editing in the package worktree.
 2. Preserve uncommitted changes.
@@ -96,11 +111,15 @@ State the exact action, why it cannot be delegated and what work can continue in
 6. Claude reconciles package scope, Git state and evidence before editing.
 7. Claude continues the same package only.
 
-## 6. Claude Code to Codex
+Until a real sequential rehearsal is completed and recorded, Claude
+compatibility is `prepared_not_verified`. Unavailability does not block
+unrelated P0 work and must never be converted into a verification claim.
+
+## 7. Claude Code to Codex
 
 Use the same process. Start a fresh Codex session rather than reopening an old Codex conversation as authority.
 
-## 7. Abrupt usage exhaustion
+## 8. Abrupt usage exhaustion
 
 When the outgoing agent cannot write a final handoff:
 
@@ -110,6 +129,6 @@ When the outgoing agent cannot write a final handoff:
 - run targeted characterization before changing ambiguous work;
 - record the reconstructed state before continuing.
 
-## 8. Concurrency prohibition
+## 9. Concurrency prohibition
 
 Codex and Claude Code must never write to the same worktree simultaneously. Read-only research may run in parallel only when it cannot mutate shared state.

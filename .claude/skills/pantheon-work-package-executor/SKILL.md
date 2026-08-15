@@ -5,13 +5,14 @@ description: Implement, continue, verify, review, or complete one approved Panth
 
 # Pantheon Work Package Executor
 
-1. Read the governing package chain and current handoff.
-2. Inspect Git state before editing.
-3. Restate objective, remaining criteria and first action.
-4. Work only on the approved package.
-5. Update `docs/v2/ACTIVE_HANDOFF.md` after meaningful checkpoints.
-6. Use targeted tests during implementation.
-7. For material UI changes, inspect the running app interactively. Use Playwright only when the package requires or justifies durable regression.
-8. Classify unrelated failures instead of chasing them.
-9. Archive a completion report and update progress before claiming completion.
-10. End with exactly one session outcome required by `AGENTS.md`.
+1. Apply the authority chain in `AGENTS.md`: an approved Pack may explicitly specialize Master execution; its approved Work Package is most specific but cannot silently amend the Pack, relevant ADRs or non-specialized Master constraints.
+2. Read that governing chain and the current handoff.
+3. Inspect Git state before editing.
+4. Restate objective, remaining criteria and first action.
+5. Work only on the approved package.
+6. Update `docs/v2/ACTIVE_HANDOFF.md` after meaningful checkpoints.
+7. Use only approved Package- and Pack-specified verification during implementation and completion.
+8. For material UI changes, inspect the running app interactively. Use Playwright only when the package requires or justifies durable regression.
+9. Classify unrelated failures instead of chasing them.
+10. Archive a completion report and update progress before claiming completion.
+11. Use a package outcome from `AGENTS.md` only for a package session; planning, amendment, standalone reconciliation and phase-gate sessions use their distinct exact endings.

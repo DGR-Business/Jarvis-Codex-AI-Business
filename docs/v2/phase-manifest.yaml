@@ -21,7 +21,7 @@ provider_model:
 phases:
   - id: P0
     name: V2.1.1 engineering operating system
-    status: planning
+    status: in_progress
     execution_pack_required: true
     owner_approval_required_before_implementation: true
   - id: P1

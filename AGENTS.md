@@ -1,20 +1,27 @@
-# Pantheon Engineering Agent Instructions
+# Pantheon v2.1.1 Engineering Agent Instructions
 
 These instructions apply to OpenAI Codex, Claude Code through `CLAUDE.md`, and any future coding agent working on Pantheon.
 
-## Authority order
+## Governing authority
 
-When sources conflict, use this order and stop for an amendment if the conflict is material:
+Read the programme contract as a specialization chain, not as permission for a
+lower-level document to rewrite a higher-level one:
 
-1. approved current work package;
-2. approved current Phase Execution Pack;
-3. approved ADRs;
-4. `docs/v2/PANTHEON_V2_MASTER_PLAN.md`;
+1. the approved current Work Package is the most-specific implementation
+   contract within its owner-approved Phase Execution Pack;
+2. that Phase Execution Pack may explicitly specialize Master Plan execution
+   for its phase;
+3. relevant approved ADRs record authorized decisions;
+4. `docs/v2/PANTHEON_V2_MASTER_PLAN.md` supplies the stable programme contract;
 5. `docs/v2/PROGRESS.json`, `BLOCKERS.md` and `ACTIVE_HANDOFF.md`;
 6. current source code, tests and provider contracts;
 7. conversation history or model memory.
 
-Conversations are never the programme source of truth.
+A Work Package cannot silently amend or contradict its Pack, relevant ADRs or
+non-specialized Master constraints. Stop for an owner-reviewed amendment when
+a material conflict remains. State files report execution state; they do not
+create implementation authority. Conversations are never the programme source
+of truth.
 
 ## Repository root and path portability
 
@@ -38,11 +45,19 @@ Conversations are never the programme source of truth.
 - Continue the same session for local debugging that remains within the same package.
 - Do not begin another work package automatically.
 - Maintain `docs/v2/ACTIVE_HANDOFF.md` while a package is in progress.
-- At the end of every session, state exactly one:
+- At the end of a package implementation, continuation, review, handoff or
+  blocker session, state exactly one:
   - `PACKAGE COMPLETE: START A NEW SESSION FOR [NEXT-ID]`
   - `PACKAGE IN PROGRESS: CONTINUE THIS SESSION`
   - `HANDOFF READY: OPEN THE SAME WORKTREE IN [CODEX/CLAUDE]`
   - `BLOCKED: OWNER ACTION REQUIRED`
+- Distinct non-implementation sessions use their own exact endings:
+  - phase planning: `PHASE PLAN READY: OWNER REVIEW REQUIRED`
+  - plan amendment: `PLAN AMENDMENT READY: OWNER REVIEW REQUIRED`
+  - standalone package reconciliation:
+    `PACKAGE RECONCILIATION COMPLETE: IMPLEMENTATION AUTHORITY REQUIRED`
+  - independent phase gate:
+    `PHASE GATE REVIEW COMPLETE: OWNER DECISION REQUIRED`
 
 ## Cross-agent continuity
 
@@ -60,6 +75,28 @@ Conversations are never the programme source of truth.
 - Do not alter commercial truth, approval, accounting, evidence or authority semantics without package authority and an ADR where required.
 - Do not introduce frameworks, production dependencies, MCP servers or providers without explicit package authority.
 - Preserve rollback for migrations and external integrations.
+
+## Safety boundaries
+
+- Never print or commit secrets. Inspect environment controls by name or with
+  synthetic sentinels, not by exposing values.
+- Do not run destructive Git commands, rewrite history, discard another
+  agent's work or mutate remotes unless the approved package explicitly permits
+  the exact operation.
+- Do not inspect, modify, delete or recover owner data, production databases,
+  artifacts or recovery sets unless the package explicitly authorizes it and
+  supplies a safe rollback.
+- Run tests and verification only as the approved Package and Pack specify,
+  through their required isolated wrappers. Never enable a hosted/lifecycle
+  test locally to obtain a passing result.
+- Keep technical completion and test evidence separate from buyer, revenue or
+  commercial proof. Never present fixtures, dry runs or passing tests as market
+  validation or business success.
+- Do not bypass authentication, CAPTCHAs, paywalls, robots controls, rate limits,
+  private endpoints or other technical access controls.
+- Publishing, customer contact, account/KYC/OAuth/MFA work, legal acceptance,
+  money movement and undelegated spend remain protected actions requiring the
+  recorded authority.
 
 ## Provider discipline
 

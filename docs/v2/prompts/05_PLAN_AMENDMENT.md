@@ -9,5 +9,6 @@ Assess evidence, alternatives, migration cost, provider lock-in, security,
 maintainability, owner visibility and effect on commercial viability.
 
 Produce a proposed ADR and exact Master Plan/Phase Pack changes, or recommend
-rejection. Stop for owner approval.
+rejection. Do not implement the proposal. End exactly:
+PLAN AMENDMENT READY: OWNER REVIEW REQUIRED
 ```
