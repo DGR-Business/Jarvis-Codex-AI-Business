@@ -5,7 +5,7 @@
   "activeAgent": null,
   "activeWorktree": null,
   "sessionOutcome": "complete",
-  "updatedAt": "2026-08-15T21:26:49+10:00",
+  "updatedAt": "2026-08-15T22:05:20+10:00",
   "phases": [
     {
       "id": "P0",
@@ -41,22 +41,27 @@
             "docs/v2/evidence/packages/P0-W02/COMPLETION.md"
           ],
           "blockers": [],
-          "commits": []
+          "commits": [
+            "3233aae17fa06c075d43c1c181a5502527ebf8c6"
+          ]
         },
         {
           "id": "P0-W03",
           "title": "Add lightweight continuity tooling",
-          "status": "ready",
+          "status": "complete",
           "preferredAgent": "codex",
           "handoffAllowed": true,
-          "evidence": [],
+          "evidence": [
+            "docs/v2/phases/P0-EXECUTION-PACK.md",
+            "docs/v2/evidence/packages/P0-W03/COMPLETION.md"
+          ],
           "blockers": [],
           "commits": []
         },
         {
           "id": "P0-W04",
           "title": "Harden tests and rehearse fresh-session continuity",
-          "status": "backlog",
+          "status": "ready",
           "preferredAgent": "codex",
           "handoffAllowed": true,
           "evidence": [],

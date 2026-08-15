@@ -4,82 +4,59 @@
 **Status:** no_active_package
 **Current writing agent:** none
 **Worktree/branch:** none
-**Updated:** 2026-08-15T21:26:49+10:00
+**Updated:** 2026-08-15T22:05:20+10:00
 
 ## Completed package
 
-P0-W02 is complete. It reconciled the programme authority chain, active
-cross-agent/session contract, version/schema metadata, P0 gate vocabulary,
-cloneable shared skills and truthful Phase 0 state without changing the stable
-Master or any Pantheon production, test, UI, provider or commercial behaviour.
+P0-W03 is complete. It added one dependency-free, read-only status/check helper
+and one focused test so a fresh agent can see the active Git and v2.1.1 package
+state without another ledger, writer or orchestration system.
 
-## Authority and contract outcome
+## Implementation outcome
 
-- The governing Phase 0 Execution Pack is owner-approved; its approved pack
-  identifier remains `0.2-draft`.
-- `docs/v2/decisions/ADR-0001-P0-EXECUTION-CONTRACT.md` records the approved P0
-  authority interpretation, single-writer lane, normal Git/state continuity,
-  optional hooks, no P0 browser/T3/Playwright, post-P0 just-in-time P1 planning
-  and honest Claude deferral.
-- Root `AGENTS.md` is the concise v2.1.1 authority. Root `CLAUDE.md` imports it
-  and remains a concise Claude-specific addition. Historical/archived agent
-  instructions and Claude configuration remain non-authoritative and retired.
-- Package outcomes now apply to package implementation, continuation, review,
-  handoff and blocker sessions; planning, amendment, standalone reconciliation
-  and phase-gate sessions keep their distinct exact endings.
-- The P0 gate prompt uses binary `PASS` / `FAIL` as required by the approved
-  Pack and does not broaden that vocabulary to other phases.
-
-## Version and skill outcome
-
-- Active programme contracts use 2.1.1. The npm runtime package remains
-  independently versioned `1.0.0` and no package/dependency file changed.
-- All seven `.agents/skills/` and `.claude/skills/` pairs are tracked and
-  materially identical. Only `.agents/skills/` is unignored; other immediate
-  `.agents/*` state remains ignored.
-- The intentional Codex-only commercial-steward skill is explicitly subordinate
-  to the shared authority/safety contract. Its commercial-truth safeguards
-  remain, while stale legacy-authority and blanket-verification clauses do not.
+- `scripts/v2/status.js` roots itself from the invoking Git repository and uses
+  only no-optional-lock Git reads plus selected existing v2 records.
+- It reports root, branch/HEAD, dirty state, phase/package, active agent/
+  worktree, blockers, handoff metadata, dependency/completion consistency and
+  the exact recorded next action.
+- `--check` fails contradictory v2.1.1 state but correctly treats dirty work and
+  nonblocking P0-B01 as reportable conditions rather than failures.
+- `test/v2-status.test.js` covers the six approved fixture categories,
+  including closed/active and Codex/Claude-compatible states, redaction and
+  repository/Git no-write proof.
+- `SESSION_PROTOCOL.md` documents start, reconciliation, direct handoff editing
+  and closeout usage. `ACTIVE_HANDOFF.md` remains the only handoff record.
 
 ## Verification
 
-- `git diff --check`: PASS.
-- Required programme-version scan: ten reviewed residual matches, all intentional approved
-  specification/history, stable-Master text/section numbers or tool versions;
-  no active schema/template/version defect remains.
-- Required shared-skill ignore check: negative as required (exit 1).
-- `git ls-files .agents/skills .claude/skills`: 14 tracked skill bodies.
-- Required shared-skill directory comparison: PASS (exit 0).
-- Required ledger/schema Node assertion: PASS (exit 0).
+- `node scripts/v2/status.js --check`: PASS in closed W03/W04-ready state.
+- `npm.cmd test -- test/v2-status.test.js`: PASS, 6/6.
+- `npm.cmd run lint`: PASS.
+- `git diff --check`: PASS; no whitespace finding.
 - Browser/E2E/application/lifecycle/full ordinary suite: N/A and not run.
 - Completion evidence:
-  `docs/v2/evidence/packages/P0-W02/COMPLETION.md`.
+  `docs/v2/evidence/packages/P0-W03/COMPLETION.md`.
 
 ## Durable state and limitations
 
+- Completion predecessor:
+  `3233aae17fa06c075d43c1c181a5502527ebf8c6`.
 - Baseline `B`: `718e50670812ad5da7210bd9f183521328cccf93`.
-- P0-W01 completion predecessor:
-  `c6fe4380f9480d885446599bcbb4f0ccffa028a2`.
 - Preserved unverified WIP: `pantheon-v2.1.1-programme` at
   `612a35c8b1d881f638570373d06f99d26bfb280e`.
-- The P0-W02 completion commit is the coherent commit containing this handoff,
-  the state updates and the completion report; normal Git history supplies its
-  SHA without a self-referential manifest.
-- `P0-B01` remains active and owned by P0-W04. The ordinary result remains
-  exactly 702/703 across four entered shards, with shard five unexecuted; no
-  green baseline is claimed.
-- The ambient bundled renderer still has Pillow 12.3.0 while the repository
-  pins 12.2.0. W02 did not change the renderer, requirements or environment.
-- Hooks remain unimplemented pending W04's evidence-based investigation.
-  Claude continuity remains `prepared_not_verified` pending a real W04
-  rehearsal. Neither is a W02 blocker or completion claim.
+- P0-B01 remains active and owned by P0-W04. The ordinary result remains
+  exactly 702/703 across four entered shards, with shard five unexecuted.
+- The ambient renderer remains Pillow 12.3.0 against the repository's 12.2.0
+  pin. P0-W03 changed neither the renderer nor `scripts/run-tests.js`.
+- Hooks remain pending P0-W04 investigation. Claude continuity remains
+  `prepared_not_verified` until W04 performs a real sequential rehearsal.
 - Remote freshness remains unproved; no fetch, push, PR or remote mutation
   occurred.
 
 ## Exact next action
 
-Start a fresh P0-W03 implementation session in
-`C:\Pantheon-worktrees\P0-engineering-os` on `codex/p0-engineering-os`. Read the
-approved P0-W03 package and current repository records, reconstruct Git/package
-state, and add only its bounded lightweight continuity tooling. Preserve
-P0-B01 and the renderer limitation for P0-W04. Do not begin P0-W04.
+Start a fresh P0-W04 implementation session in
+`C:\Pantheon-worktrees\P0-engineering-os` on `codex/p0-engineering-os`. Preserve
+P0-B01 and the renderer limitation, use the W03 helper for reconstruction, and
+complete only the approved P0-W04 isolation/rehearsal package. Do not begin
+P0-W05.

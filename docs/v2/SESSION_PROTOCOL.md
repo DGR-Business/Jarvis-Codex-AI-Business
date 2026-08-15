@@ -30,6 +30,25 @@ Before editing, the agent reads:
 
 The agent then states the package objective, current state, remaining criteria and first action.
 
+### 2.1 Read-only v2 status helper
+
+P0-W03 adds one small helper because the installed v2 records were previously
+stale or contradictory and fresh sessions had no concise read-only view. It
+reuses repository Node and Git; it is not a handoff writer, daemon, ledger,
+provider client, environment audit or session orchestrator.
+
+- **Start:** run `node scripts/v2/status.js` for the concise repository view.
+- **Reconciliation:** run `node scripts/v2/status.js --check` and resolve any
+  reported inconsistency against the governing records before editing.
+- **Handoff:** edit `ACTIVE_HANDOFF.md` directly, then rerun `--check` before
+  transferring the same worktree to the receiving agent.
+- **Closeout:** directly update `PROGRESS.json`, `BLOCKERS.md`,
+  `ACTIVE_HANDOFF.md` and the package completion report, then rerun `--check`.
+
+The helper supplements the required reading above. It reports only selected
+Git and v2.1.1 state, never writes the records, commits, switches branches,
+creates persistent state, contacts a provider or prints environment values.
+
 ## 3. Live checkpointing
 
 While work is incomplete, keep `ACTIVE_HANDOFF.md` current.
