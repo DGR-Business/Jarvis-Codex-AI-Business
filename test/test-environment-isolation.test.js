@@ -54,11 +54,17 @@ test("ordinary children receive only deliberate tools, controls, and disposable 
   const secret = "synthetic-owner-secret-must-not-cross";
   const rendererPython = path.join(runtimeRoot, "validated-renderer", "python.exe");
   const hostileToolRoot = path.join(runtimeRoot, "hostile-tools");
+  const coherentHostileRoot = path.join(runtimeRoot, "coherent-hostile-windows");
+  const systemRoot = valueFor(process.env, "SYSTEMROOT") || "C:\\Windows";
   fs.mkdirSync(hostileToolRoot, { recursive: true });
   const parentEnvironment = {
     ComSpec: process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe",
     Path: `${hostileToolRoot}${path.delimiter}${valueFor(process.env, "PATH") || ""}`,
-    SystemRoot: process.env.SystemRoot || "C:\\Windows",
+    PATHEXT: `.${secret}.EXE`,
+    SystemDrive: valueFor(process.env, "SYSTEMDRIVE")
+      || path.parse(systemRoot).root.replace(/[\\/]$/, ""),
+    SystemRoot: systemRoot,
+    windir: valueFor(process.env, "WINDIR") || systemRoot,
     OPENAI_API_KEY: secret,
     CLICKUP_API_TOKEN: secret,
     GELATO_API_KEY: secret,
@@ -113,6 +119,55 @@ test("ordinary children receive only deliberate tools, controls, and disposable 
   };
 
   try {
+    if (process.platform === "win32") {
+      const coherentHostileSystem32 = path.join(coherentHostileRoot, "System32");
+      const coherentHostileComSpec = path.join(coherentHostileSystem32, "cmd.exe");
+      fs.mkdirSync(
+        path.join(coherentHostileSystem32, "WindowsPowerShell", "v1.0"),
+        { recursive: true },
+      );
+      fs.mkdirSync(path.join(coherentHostileSystem32, "Wbem"), { recursive: true });
+      fs.writeFileSync(coherentHostileComSpec, "synthetic hostile executable");
+      assert.throws(
+        () => createTestEnvironment({
+          parentEnvironment: { ...parentEnvironment, ComSpec: outside },
+          runtimeRoot,
+          mode: { ci: false, lifecycleCi: false, lifecyclePhase: null },
+        }),
+        /inconsistent Windows system-tool inputs/,
+      );
+      assert.throws(
+        () => createTestEnvironment({
+          parentEnvironment: { ...parentEnvironment, SystemDrive: "Z:" },
+          runtimeRoot,
+          mode: { ci: false, lifecycleCi: false, lifecyclePhase: null },
+        }),
+        /inconsistent Windows system-tool inputs/,
+      );
+      assert.throws(
+        () => createTestEnvironment({
+          parentEnvironment: { ...parentEnvironment, SystemRoot: outside },
+          runtimeRoot,
+          mode: { ci: false, lifecycleCi: false, lifecyclePhase: null },
+        }),
+        /inconsistent Windows system-tool inputs/,
+      );
+      assert.throws(
+        () => createTestEnvironment({
+          parentEnvironment: {
+            ...parentEnvironment,
+            ComSpec: coherentHostileComSpec,
+            SystemDrive: path.parse(coherentHostileRoot).root.replace(/[\\/]$/, ""),
+            SystemRoot: coherentHostileRoot,
+            windir: coherentHostileRoot,
+          },
+          runtimeRoot,
+          mode: { ci: false, lifecycleCi: false, lifecyclePhase: null },
+        }),
+        /inconsistent Windows system-tool inputs/,
+      );
+    }
+
     const mode = testModeFromEnvironment(parentEnvironment);
     const child = createTestEnvironment({
       parentEnvironment,
@@ -124,6 +179,14 @@ test("ordinary children receive only deliberate tools, controls, and disposable 
     assert.deepEqual(mode, { ci: false, lifecycleCi: false, lifecyclePhase: null });
     assert.notEqual(valueFor(child, "PATH"), valueFor(parentEnvironment, "PATH"));
     assert.equal(valueFor(child, "PATH").split(path.delimiter).includes(hostileToolRoot), false);
+    if (process.platform === "win32") {
+      assert.equal(valueFor(child, "PATHEXT"), ".COM;.EXE;.BAT;.CMD");
+      assert.equal(String(valueFor(child, "ComSpec")).includes(coherentHostileRoot), false);
+      assert.equal(
+        valueFor(child, "PATH").split(path.delimiter).includes(coherentHostileRoot),
+        false,
+      );
+    }
     assert.equal(child.PANTHEON_PYTHON, rendererPython);
     assert.equal(child.JARVIS_PYTHON, rendererPython);
     assert.equal(child.PANTHEON_PRIVACY_HASH_KEY, TEST_PRIVACY_HASH_KEY);
@@ -305,6 +368,8 @@ test("local, ordinary CI, and hosted lifecycle modes retain their bounds", () =>
     PANTHEON_LIFECYCLE_CI: "1",
     PANTHEON_LIFECYCLE_PHASE: "containment",
     RUNNER_OS: "Windows",
+    npm_lifecycle_event: "test:lifecycle:ci",
+    npm_lifecycle_script: "node scripts/run-tests.js test/windows-launcher.test.js",
   };
   const lifecycle = testModeFromEnvironment(
     hostedLifecycleEnvironment,
@@ -329,6 +394,8 @@ test("local, ordinary CI, and hosted lifecycle modes retain their bounds", () =>
       PANTHEON_LIFECYCLE_CI: "1",
       PANTHEON_LIFECYCLE_PHASE: "unsafe",
       RUNNER_OS: "Windows",
+      npm_lifecycle_event: "test:lifecycle:ci",
+      npm_lifecycle_script: "node scripts/run-tests.js test/windows-launcher.test.js",
     }, ["test/windows-launcher.test.js"]),
     /Unsupported Windows lifecycle phase/,
   );
@@ -347,6 +414,16 @@ test("local, ordinary CI, and hosted lifecycle modes retain their bounds", () =>
   );
   assert.throws(
     () => requestedTestInvocations(["test/windows-launcher.test.js"], {}),
+    /Windows lifecycle integration is quarantined/,
+  );
+  const lifecycleFlagsWithoutExactCommand = { ...hostedLifecycleEnvironment };
+  delete lifecycleFlagsWithoutExactCommand.npm_lifecycle_event;
+  delete lifecycleFlagsWithoutExactCommand.npm_lifecycle_script;
+  assert.throws(
+    () => requestedTestInvocations(
+      ["test/windows-launcher.test.js"],
+      lifecycleFlagsWithoutExactCommand,
+    ),
     /Windows lifecycle integration is quarantined/,
   );
   assert.throws(
@@ -385,34 +462,44 @@ test("local, ordinary CI, and hosted lifecycle modes retain their bounds", () =>
   assert.equal(rendererProbed, false);
 });
 
-test("renderer overrides are rejected unless coherent and renderer-capable", () => {
+test("renderer candidates require explicit coherent provenance before probing", () => {
   const missing = path.join(os.tmpdir(), "missing-renderer-python.exe");
-  assert.equal(resolveRendererPython({ PANTHEON_PYTHON: "relative-python" }), null);
+  const explicit = path.join(os.tmpdir(), "validated-renderer", "python.exe");
+  const expectedExplicit = path.resolve(explicit);
+  const acceptExplicit = (candidate) => (
+    candidate.toLowerCase() === expectedExplicit.toLowerCase() ? candidate : null
+  );
+  assert.equal(resolveRendererPython(
+    { PANTHEON_PYTHON: "relative-python" },
+    workspaceRoot,
+    acceptExplicit,
+  ), null);
   assert.equal(resolveRendererPython({
     PANTHEON_PYTHON: process.execPath,
     JARVIS_PYTHON: missing,
-  }), null);
+  }, workspaceRoot, acceptExplicit), null);
 
-  const resolved = resolveRendererPython(process.env);
-  assert.ok(resolved, "the wrapper-provided renderer must remain discoverable");
-  assert.equal(path.isAbsolute(resolved), true);
-  assert.equal(fs.statSync(resolved).isFile(), true);
-
-  const hostilePath = path.join(os.tmpdir(), "ambient-python-path-must-not-be-used");
+  const hostilePath = path.join(os.tmpdir(), "ambient-python-inputs-must-not-be-used");
   assert.equal(
-    pythonPathCandidates({ PATH: hostilePath })
+    pythonPathCandidates({
+      GITHUB_ACTIONS: "true",
+      HOME: hostilePath,
+      PATH: hostilePath,
+      USERPROFILE: hostilePath,
+      pythonLocation: hostilePath,
+    })
       .some((candidate) => isInside(hostilePath, candidate)),
     false,
   );
-  assert.ok(resolveRendererPython({
-    PANTHEON_PYTHON: resolved,
-    JARVIS_PYTHON: resolved,
-  }));
+  assert.equal(resolveRendererPython({
+    PANTHEON_PYTHON: explicit,
+    JARVIS_PYTHON: explicit,
+  }, workspaceRoot, acceptExplicit), expectedExplicit);
   if (process.platform === "win32") {
     assert.ok(resolveRendererPython({
-      PANTHEON_PYTHON: resolved.toUpperCase(),
-      JARVIS_PYTHON: resolved.toLowerCase(),
-    }));
+      PANTHEON_PYTHON: explicit.toUpperCase(),
+      JARVIS_PYTHON: explicit.toLowerCase(),
+    }, workspaceRoot, acceptExplicit));
   }
 });
 
@@ -450,19 +537,78 @@ test("PDF temp restoration and wrapper failure cleanup retain their boundaries",
       /unexpected PDF temp path/,
     );
 
-    const invalidRun = spawnSync(
-      process.execPath,
-      [path.join(workspaceRoot, "scripts", "run-tests.js"), "test/support/invalid.test.js"],
+    let failedInvocationRoot = null;
+    let observedExitCode = null;
+    runTests(
+      ["test/test-environment-isolation.test.js"],
+      process.env,
       {
-        cwd: workspaceRoot,
-        env: process.env,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 30_000,
+        resolveRendererPython: () => null,
+        setExitCode: (code) => {
+          observedExitCode = code;
+        },
+        spawnTestProcess(executable, _arguments, options) {
+          failedInvocationRoot = options.env.PANTHEON_TEST_RUNTIME_ROOT;
+          fs.mkdirSync(realPdfRoot, { recursive: true });
+          fs.writeFileSync(
+            path.join(realPdfRoot, "synthetic-wrapper-failure.txt"),
+            "must be restored away",
+          );
+          return spawnSync(executable, ["-e", "process.exit(23)"], {
+            ...options,
+            encoding: "utf8",
+            stdio: "pipe",
+          });
+        },
       },
     );
-    assert.notEqual(invalidRun.status, 0);
-    assert.match(`${invalidRun.stdout || ""}${invalidRun.stderr || ""}`, /Unsupported test path/);
+    assert.equal(observedExitCode, 23);
+    assert.ok(failedInvocationRoot);
+    assert.equal(fs.existsSync(path.dirname(failedInvocationRoot)), false);
+    assert.deepEqual(directorySnapshot(realPdfRoot), realPdfBefore);
+
+    let restoreFailureRoot = null;
+    try {
+      assert.throws(
+        () => runTests(
+          ["test/test-environment-isolation.test.js"],
+          process.env,
+          {
+            resolveRendererPython: () => null,
+            restorePdfTemp: (target) => {
+              fs.rmSync(target, { recursive: true, force: true });
+              fs.mkdirSync(target, { recursive: true });
+              fs.writeFileSync(
+                path.join(target, "partial-restore-corruption.txt"),
+                "synthetic partial restore",
+              );
+              throw new Error("synthetic PDF restore failure after target mutation");
+            },
+            spawnTestProcess(_executable, _arguments, options) {
+              restoreFailureRoot = path.dirname(options.env.PANTHEON_TEST_RUNTIME_ROOT);
+              return { status: 0 };
+            },
+          },
+        ),
+        /synthetic PDF restore failure after target mutation/,
+      );
+      assert.ok(restoreFailureRoot);
+      assert.equal(fs.existsSync(restoreFailureRoot), true);
+      assert.deepEqual(
+        directorySnapshot(path.join(restoreFailureRoot, "pre-test-pdfs")),
+        realPdfBefore,
+      );
+      assert.notDeepEqual(directorySnapshot(realPdfRoot), realPdfBefore);
+    } finally {
+      if (restoreFailureRoot) {
+        restorePdfTemp(
+          realPdfRoot,
+          path.join(restoreFailureRoot, "pre-test-pdfs"),
+        );
+        fs.rmSync(restoreFailureRoot, { recursive: true, force: true });
+      }
+    }
+
     const wrapperRootsAfter = fs.readdirSync(os.tmpdir())
       .filter((name) => name.startsWith(runtimePrefix));
     assert.deepEqual(

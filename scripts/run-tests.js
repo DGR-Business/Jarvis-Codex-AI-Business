@@ -12,18 +12,14 @@ const workspaceRoot = path.resolve(__dirname, "..");
 const pdfTempRoot = path.join(workspaceRoot, "tmp", "pdfs");
 const processIntegrationTests = new Set(["windows-launcher.test.js"]);
 const RESTORED_BOOT_OS_ENVIRONMENT_ALLOWLIST = new Set([
-  "COMSPEC",
   "LANG",
   "LC_ALL",
   "NUMBER_OF_PROCESSORS",
   "OS",
-  "PATHEXT",
   "PROCESSOR_ARCHITECTURE",
-  "SYSTEMDRIVE",
-  "SYSTEMROOT",
   "TZ",
-  "WINDIR",
 ]);
+const WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD";
 const TEST_PRIVACY_HASH_KEY = "test-only-privacy-hash-key-32-bytes";
 
 function isInside(parent, candidate) {
@@ -88,12 +84,64 @@ function pathsEquivalent(first, second) {
   return comparablePath(first) === comparablePath(second);
 }
 
+function canonicalWindowsEnvironment(parentEnvironment) {
+  if (process.platform !== "win32") return {};
+  const executableDrive = path.parse(process.execPath).root;
+  const trustedRoot = path.join(executableDrive, "Windows");
+
+  let systemRoot;
+  let system32;
+  let comSpec;
+  try {
+    systemRoot = fs.realpathSync(trustedRoot);
+    system32 = fs.realpathSync(path.join(systemRoot, "System32"));
+    comSpec = fs.realpathSync(path.join(system32, "cmd.exe"));
+    if (
+      !fs.statSync(systemRoot).isDirectory()
+      || !fs.statSync(system32).isDirectory()
+      || !fs.statSync(comSpec).isFile()
+    ) {
+      throw new Error("invalid Windows system tools");
+    }
+  } catch {
+    throw new Error("Pantheon could not validate the Windows system tools.");
+  }
+
+  const suppliedSystemRoot = environmentValue(parentEnvironment, "SYSTEMROOT");
+  const suppliedWindir = environmentValue(parentEnvironment, "WINDIR");
+  const suppliedComSpec = environmentValue(parentEnvironment, "COMSPEC");
+  const expectedDrive = path.parse(systemRoot).root.replace(/[\\/]$/, "");
+  const suppliedDrive = environmentValue(parentEnvironment, "SYSTEMDRIVE");
+  if (
+    (suppliedSystemRoot && !pathsEquivalent(suppliedSystemRoot, systemRoot))
+    || (suppliedWindir && !pathsEquivalent(suppliedWindir, systemRoot))
+    || (suppliedComSpec && !pathsEquivalent(suppliedComSpec, comSpec))
+    || (suppliedDrive && suppliedDrive.toLowerCase() !== expectedDrive.toLowerCase())
+  ) {
+    throw new Error("Pantheon rejected inconsistent Windows system-tool inputs.");
+  }
+
+  return {
+    ComSpec: comSpec,
+    PATHEXT: WINDOWS_PATHEXT,
+    SystemDrive: expectedDrive,
+    SystemRoot: systemRoot,
+    windir: systemRoot,
+  };
+}
+
+function createBootEnvironment(parentEnvironment) {
+  return {
+    ...copyAllowedOsEnvironment(parentEnvironment),
+    ...canonicalWindowsEnvironment(parentEnvironment),
+  };
+}
+
 function minimalToolPath(parentEnvironment, rendererPython = null) {
   const candidates = [path.dirname(process.execPath)];
-  const systemRoot = environmentValue(parentEnvironment, "SYSTEMROOT")
-    || environmentValue(parentEnvironment, "WINDIR");
-  const systemDrive = environmentValue(parentEnvironment, "SYSTEMDRIVE")
-    || (systemRoot ? path.parse(systemRoot).root.replace(/[\\/]$/, "") : null);
+  const bootEnvironment = canonicalWindowsEnvironment(parentEnvironment);
+  const systemRoot = bootEnvironment.SystemRoot;
+  const systemDrive = bootEnvironment.SystemDrive;
   if (process.platform === "win32") {
     if (systemRoot && path.isAbsolute(systemRoot)) {
       candidates.push(
@@ -112,14 +160,6 @@ function minimalToolPath(parentEnvironment, rendererPython = null) {
     }
   } else {
     candidates.push("/usr/local/bin", "/usr/bin", "/bin");
-  }
-  const githubPythonRoot = environmentValue(parentEnvironment, "pythonLocation");
-  if (
-    environmentValue(parentEnvironment, "GITHUB_ACTIONS") === "true"
-    && githubPythonRoot
-    && path.isAbsolute(githubPythonRoot)
-  ) {
-    candidates.push(githubPythonRoot);
   }
   if (rendererPython) candidates.push(path.dirname(rendererPython));
 
@@ -146,6 +186,9 @@ function isHostedLifecycleEnvironment(environment) {
   return environmentValue(environment, "CI") === "true"
     && environmentValue(environment, "GITHUB_ACTIONS") === "true"
     && environmentValue(environment, "RUNNER_OS") === "Windows"
+    && environmentValue(environment, "npm_lifecycle_event") === "test:lifecycle:ci"
+    && String(environmentValue(environment, "npm_lifecycle_script") || "")
+      .replace(/\\/g, "/") === "node scripts/run-tests.js test/windows-launcher.test.js"
     && Boolean(workspace)
     && pathsEquivalent(workspace, workspaceRoot);
 }
@@ -251,31 +294,6 @@ function pythonPathCandidates(parentEnvironment) {
     "python",
     process.platform === "win32" ? "python.exe" : "python",
   ));
-  for (const homeName of ["USERPROFILE", "HOME"]) {
-    const home = environmentValue(parentEnvironment, homeName);
-    if (home) {
-      candidates.push(path.join(
-        home,
-        ".cache",
-        "codex-runtimes",
-        "codex-primary-runtime",
-        "dependencies",
-        "python",
-        process.platform === "win32" ? "python.exe" : "python",
-      ));
-    }
-  }
-  const githubPythonRoot = environmentValue(parentEnvironment, "pythonLocation");
-  if (
-    environmentValue(parentEnvironment, "GITHUB_ACTIONS") === "true"
-    && githubPythonRoot
-    && path.isAbsolute(githubPythonRoot)
-  ) {
-    candidates.push(path.join(
-      githubPythonRoot,
-      process.platform === "win32" ? "python.exe" : "bin/python",
-    ));
-  }
   const seen = new Set();
   return candidates
     .map((candidate) => path.resolve(candidate))
@@ -302,7 +320,7 @@ function rendererPythonReady(candidate, parentEnvironment, rootDir = workspaceRo
     fs.mkdirSync(profileRoot, { recursive: true });
     fs.mkdirSync(tempRoot, { recursive: true });
     const probeEnvironment = {
-      ...copyAllowedOsEnvironment(parentEnvironment),
+      ...createBootEnvironment(parentEnvironment),
       HOME: profileRoot,
       PATH: minimalToolPath(parentEnvironment, canonical),
       PYTHONNOUSERSITE: "1",
@@ -338,9 +356,13 @@ function rendererPythonReady(candidate, parentEnvironment, rootDir = workspaceRo
   }
 }
 
-function resolveRendererPython(parentEnvironment = process.env, rootDir = workspaceRoot) {
+function resolveRendererPython(
+  parentEnvironment = process.env,
+  rootDir = workspaceRoot,
+  candidateReady = rendererPythonReady,
+) {
   for (const candidate of pythonPathCandidates(parentEnvironment)) {
-    const ready = rendererPythonReady(candidate, parentEnvironment, rootDir);
+    const ready = candidateReady(candidate, parentEnvironment, rootDir);
     if (ready) return ready;
   }
   return null;
@@ -362,7 +384,7 @@ function createTestEnvironment({
   const profileRoot = path.join(resolvedRoot, "profile");
   const dataRoot = path.join(resolvedRoot, "data");
   const environment = {
-    ...copyAllowedOsEnvironment(parentEnvironment),
+    ...createBootEnvironment(parentEnvironment),
     APPDATA: path.join(profileRoot, "AppData", "Roaming"),
     HOME: profileRoot,
     LOCALAPPDATA: path.join(profileRoot, "AppData", "Local"),
@@ -428,11 +450,19 @@ function runTests(
   const mode = testModeFromEnvironment(parentEnvironment, args);
   const invocations = requestedTestInvocations(args, parentEnvironment, mode);
   const rendererResolver = dependencies.resolveRendererPython || resolveRendererPython;
+  const spawnTestProcess = dependencies.spawnTestProcess || spawnSync;
+  const snapshotFunction = dependencies.snapshotPdfTemp || snapshotPdfTemp;
+  const restoreFunction = dependencies.restorePdfTemp || restorePdfTemp;
+  const setExitCode = dependencies.setExitCode || ((code) => {
+    process.exitCode = code;
+  });
   const rendererPython = rendererResolver(parentEnvironment);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-test-runtime-"));
   const pdfSnapshot = path.join(root, "pre-test-pdfs");
+  let pdfSnapshotReady = false;
   try {
-    snapshotPdfTemp(pdfTempRoot, pdfSnapshot);
+    snapshotFunction(pdfTempRoot, pdfSnapshot);
+    pdfSnapshotReady = true;
     const deadline = testDeadlineMs(mode);
     for (let index = 0; index < invocations.length; index += 1) {
       const files = invocations[index];
@@ -454,7 +484,7 @@ function runTests(
         mode,
         rendererPython,
       });
-      const result = spawnSync(
+      const result = spawnTestProcess(
         process.execPath,
         nodeTestArguments,
         {
@@ -473,18 +503,31 @@ function runTests(
       }
       if (result.error) throw result.error;
       if (result.status !== 0) {
-        process.exitCode = result.status ?? 1;
+        setExitCode(result.status ?? 1);
         break;
       }
     }
   } finally {
-    restorePdfTemp(pdfTempRoot, pdfSnapshot);
-    fs.rmSync(root, {
-      recursive: true,
-      force: true,
-      maxRetries: 50,
-      retryDelay: 100,
-    });
+    let pdfRestored = !pdfSnapshotReady;
+    try {
+      if (pdfSnapshotReady) {
+        restoreFunction(pdfTempRoot, pdfSnapshot);
+        pdfRestored = true;
+      }
+    } finally {
+      if (pdfRestored) {
+        fs.rmSync(root, {
+          recursive: true,
+          force: true,
+          maxRetries: 50,
+          retryDelay: 100,
+        });
+      } else {
+        process.stderr.write(
+          `Pantheon retained the PDF recovery snapshot after restore failure: ${pdfSnapshot}\n`,
+        );
+      }
+    }
   }
 }
 
@@ -500,6 +543,7 @@ if (require.main === module) {
 module.exports = {
   RESTORED_BOOT_OS_ENVIRONMENT_ALLOWLIST,
   TEST_PRIVACY_HASH_KEY,
+  canonicalWindowsEnvironment,
   createTestEnvironment,
   isInside,
   pythonPathCandidates,

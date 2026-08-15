@@ -4,7 +4,7 @@
 **Status:** blocked
 **Current writing agent:** Codex
 **Worktree/branch:** `C:\Pantheon-worktrees\P0-engineering-os` / `codex/p0-engineering-os`
-**Updated:** 2026-08-15T23:12:58+10:00
+**Updated:** 2026-08-16T09:25:51+10:00
 
 ## Objective
 
@@ -49,8 +49,32 @@ copy/paste-prompt rule required by the owner for future package sessions.
 - Independent review found scheduler, raw PATH, lifecycle-entry,
   renderer-probe-order and launcher-path gaps in the first implementation.
   Those were repaired before checkpoint evidence was frozen.
+- A post-checkpoint strict audit then found raw Windows boot-tool inputs,
+  profile-derived renderer discovery and failure cleanup that did not survive a
+  restore exception. The wrapper now anchors Windows tools to the drive of the
+  already-running Node executable, rejects even a coherent ambient replacement
+  tree, and accepts only explicit-pair or process-bundled renderer provenance.
+  Its regression launches a real failing child. If restoration fails after
+  target mutation, the wrapper retains and reports the baseline recovery
+  snapshot; the regression proves recovery before cleaning its synthetic case.
+- The hosted ordinary-CI workflow is configured to supply the setup-python
+  executable through both coherent renderer aliases; no hosted run is claimed.
+  Lifecycle entry additionally requires the exact npm lifecycle command
+  identity as well as the exact target and bounded hosted job identity; flags
+  alone cannot select lifecycle mode.
+- Recorded the explicit owner-directed prompt contract durably in ADR-0002;
+  this additive protocol decision creates no product scope or continuity
+  subsystem.
 - Final-code focused checks pass: isolation 5/5; journey/wrapper 11/11;
   runtime 83/83; product/full-journey 2/2; status fixtures 6/6; lint clean.
+- The no-alias runtime characterization passed 67/83 and failed 16 renderer-
+  dependent cases with `python` absent. This is expected after removing ambient
+  profile discovery, not a green compatibility claim. Supplying the same
+  validated absolute process-bundled interpreter through both aliases produced
+  the recorded 83/83 result.
+- A final independent wrapper re-audit found no actionable issue after the
+  boot-tool provenance and retained-recovery fixes. It ran no lifecycle or full
+  suite and made no changes.
 - A no-history read-only Codex task reconstructed the exact root, branch, HEAD,
   dirty paths, dependency chain, completed/remaining criteria, P0-B01/P0-B02
   and the stop before P0-W05. It made no changes and exposed three evidence
@@ -81,19 +105,22 @@ copy/paste-prompt rule required by the owner for future package sessions.
 
 ## Current working state
 
-- Files actively changed: `scripts/run-tests.js`,
-  `test/test-environment-isolation.test.js`, `AGENTS.md`,
-  `docs/v2/PROGRESS.json`, `docs/v2/BLOCKERS.md` and
-  `docs/v2/ACTIVE_HANDOFF.md`, plus the W04 blocked checkpoint report.
-- Checkpoint state: the coherent W04 blocked checkpoint is the commit containing
-  this handoff; its SHA is available through normal Git history.
-- Checkpoint predecessor:
-  `9c29d19b140c648f8100605b6479f790320be695`; the checkpoint commit is the
-  commit containing the final handoff/evidence and is not self-recorded.
+- Continuation-checkpoint files after the first checkpoint:
+  `.github/workflows/ci.yml`,
+  `scripts/run-tests.js`, `test/test-environment-isolation.test.js`,
+  `docs/v2/decisions/ADR-0002-NEXT-SESSION-PROMPT-CONTRACT.md`, the three normal
+  state files and this checkpoint report.
+- Prior coherent blocked checkpoint:
+  `acd466410154049bfcb207a5bc85416c999517b1`. The continuation checkpoint is
+  the coherent commit containing this handoff; its own SHA is discoverable in
+  normal Git history and intentionally not self-recorded.
+- Initial W04 predecessor:
+  `9c29d19b140c648f8100605b6479f790320be695`.
 - Current diagnosis: P0-B01's source defect is repaired without changing
-  production semantics; the focused journey failure is green. The known
-  independent renderer precondition remains Pillow 12.3.0 versus the exact
-  12.2.0 pin, with no second interpreter currently provisioned.
+  production semantics; the focused journey failure is green. Two pre-existing
+  interpreters were inspected read-only: the process-bundled renderer differs
+  on Pillow 12.3.0 versus 12.2.0, while the separate local Python differs on
+  Pillow, pypdfium2 and reportlab. No exact interpreter is provisioned.
 
 ## Verification
 
@@ -103,7 +130,8 @@ copy/paste-prompt rule required by the owner for future package sessions.
 | W03 closed-state `node scripts/v2/status.js --check` | PASS | dependency/completion consistency passed before activation |
 | Focused W04 isolation tests | PASS | 5/5 |
 | Journey + wrapper regressions | PASS | 11/11 |
-| Runtime compatibility | PASS | final candidate 83/83 |
+| Runtime compatibility | PASS | final candidate 83/83 with both explicit aliases set to the validated process-bundled renderer |
+| Runtime without explicit renderer provenance | EXPECTED PRECONDITION | 67/83; 16 renderer-dependent failures because ambient profile discovery is prohibited |
 | Product/full-journey focused files | PASS | 2/2 |
 | Status-helper fixtures | PASS | 6/6; sanitized PATH retains Git |
 | `npm.cmd run lint` | PASS | zero warnings |
@@ -116,11 +144,14 @@ copy/paste-prompt rule required by the owner for future package sessions.
 
 - P0-B01's wrapper repair and exact focused regression are green, but formal
   closure awaits a complete green ordinary run.
-- P0-B02 is active: the only discovered renderer is Pillow 12.3.0 against the
-  repository's exact 12.2.0 pin, and `checkRenderer()` fails this precondition.
+- P0-B02 is active: neither discovered interpreter satisfies the exact package
+  pins. Default `checkRenderer()` finds the process-bundled renderer and fails
+  Pillow 12.3.0 against the repository's exact 12.2.0 pin.
   W04 may not install tooling or change the production dependency contract.
-  Owner action must authorize a disposable exact renderer or a separate pin
-  decision; the check must not be weakened, faked or bypassed.
+  Because W04 prohibits installation and dependency-contract changes, owner
+  action must approve a narrow Pack/W04 amendment for a one-use disposable exact
+  renderer or a separately scoped pin amendment. The check must not be weakened,
+  faked or bypassed.
 - Claude is unavailable, so a real cross-model rehearsal cannot currently be
   performed. This is nonblocking under the approved Pack and must remain
   `prepared_not_verified`.
@@ -137,9 +168,9 @@ copy/paste-prompt rule required by the owner for future package sessions.
   spend, global/user configuration, push, merge, P0-W05 or P1 work.
 - Keep `scripts/v2/status.js` read-only and bounded; no prompt generator,
   handoff writer, daemon, database or orchestration subsystem.
-- The permanent prompt rule is an additive direct owner instruction for this
-  session, recorded in the W04 evidence. It does not amend product/package
-  scope, readiness or verification criteria.
+- ADR-0002 durably records the permanent prompt rule as an additive direct
+  owner instruction. It does not amend product/package scope, readiness or
+  verification criteria.
 
 ## Receiving-agent instructions
 
@@ -152,8 +183,8 @@ copy/paste-prompt rule required by the owner for future package sessions.
 
 ## Exact next action
 
-Obtain owner authorization for one disposable exact renderer environment using
-the existing pins (setting both Python aliases to the same validated absolute
-interpreter), or a separately approved dependency-pin decision. Continue only
-P0-W04 and do not rerun the full suite or begin P0-W05 until that precondition
-is resolved.
+Obtain a narrow owner-approved Pack/W04 amendment permitting one disposable
+exact renderer environment using the existing pins (setting both Python aliases
+to the same validated absolute interpreter), or a separately scoped
+dependency-pin amendment. Continue only P0-W04 and do not rerun the full suite
+or begin P0-W05 until that precondition is resolved.

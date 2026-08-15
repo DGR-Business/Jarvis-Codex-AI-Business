@@ -61,6 +61,8 @@ jobs:
       - name: Run isolated test shard
         shell: powershell
         env:
+          JARVIS_PYTHON: ${{ env.pythonLocation }}\python.exe
+          PANTHEON_PYTHON: ${{ env.pythonLocation }}\python.exe
           PANTHEON_TEST_SHARD_COUNT: "5"
           PANTHEON_TEST_SHARD_INDEX: ${{ matrix.shard }}
         run: npm.cmd test

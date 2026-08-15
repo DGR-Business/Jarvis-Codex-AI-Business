@@ -4,11 +4,13 @@
 **Status:** blocked — acceptance criterion 4 is incomplete; this is not a
 package-completion claim, so `COMPLETION.md` is intentionally absent
 **Checkpointed by:** Codex
-**Checkpointed:** 2026-08-15T23:05:07+10:00 (Australia/Brisbane)
+**Checkpointed:** 2026-08-16T09:25:51+10:00 (Australia/Brisbane)
 **Branch/worktree:** `codex/p0-engineering-os` /
 `C:\Pantheon-worktrees\P0-engineering-os`
-**Checkpoint predecessor:**
+**Initial W04 predecessor:**
 `9c29d19b140c648f8100605b6479f790320be695`
+**Prior blocked checkpoint:**
+`acd466410154049bfcb207a5bc85416c999517b1`
 **Baseline B:** `718e50670812ad5da7210bd9f183521328cccf93`
 **Preserved unverified WIP:**
 `612a35c8b1d881f638570373d06f99d26bfb280e`
@@ -25,16 +27,19 @@ P0-W04 remains blocked and P0-W05 remains backlog.
 - `docs/v2/decisions/ADR-0001-P0-EXECUTION-CONTRACT.md` for one writer, normal
   Git/state continuity, honest Claude status, optional evidence-based hooks and
   no P0 browser work.
+- `docs/v2/decisions/ADR-0002-NEXT-SESSION-PROMPT-CONTRACT.md` records the
+  explicit owner-directed additive shared prompt rule without changing package
+  readiness, product scope or provider authority.
 - Completed dependency chain: P0-W01, P0-W02 and P0-W03, with P0-W03 completed
   at predecessor `9c29d19b140c648f8100605b6479f790320be695`.
 
-The initiating owner instruction for this W04 session also expressly required
-one concise permanent `NEXT SESSION — COPY/PASTE PROMPT` rule in the smallest
-shared instruction surface and required the actual final prompt to follow the
-repository's true terminal state. This is direct owner authority for an
-additive continuity instruction. It changes no Pack objective, product scope,
-provider authority, dependency contract or package readiness rule, so no Phase
-Pack amendment or new subsystem was created.
+The initiating owner instruction for this W04 session expressly required one
+concise permanent `NEXT SESSION — COPY/PASTE PROMPT` rule in the smallest shared
+instruction surface and required the actual final prompt to follow the
+repository's true terminal state. ADR-0002 makes that direct additive authority
+repository-discoverable. It changes no Pack objective, product scope, provider
+authority, dependency contract or package readiness rule and creates no new
+subsystem.
 
 ## Objective result
 
@@ -45,11 +50,13 @@ required OS/tool inputs, and preserves the production proof ledger's
 DB-relative isolation semantics. Focused checks prove the original P0-B01
 journey regression and adjacent wrapper/runtime behavior are green.
 
-The package is not complete. The only provisioned renderer still contains
-Pillow 12.3.0 while `requirements-runtime.txt` requires exactly 12.2.0. The
-production renderer check fails that precondition, and W04 does not authorize a
-tool installation or dependency-pin change. P0-B02 therefore prevents the one
-required green final-code ordinary suite.
+The package is not complete. Two pre-existing interpreters were inspected
+read-only and neither satisfies `requirements-runtime.txt`. The process-bundled
+renderer contains Pillow 12.3.0 while the repository requires exactly 12.2.0;
+the separate local Python has three package mismatches. The production renderer
+check therefore fails its precondition, and W04 does not authorize a tool
+installation or dependency-pin change. P0-B02 prevents the one required green
+final-code ordinary suite.
 
 ## Name-only and synthetic-sentinel findings
 
@@ -70,12 +77,16 @@ ledger. A fixed proof file per shard would still have been unsafe.
 
 ## Implemented isolation contract
 
-- Parent inputs are selected case-insensitively from a small OS allowlist; raw
+- Non-tool parent inputs are selected case-insensitively from a small OS
+  allowlist. Windows tools are anchored to the drive of the already-running
+  Node executable. Ambient system root, drive and command-processor inputs must
+  match that canonical set or the wrapper fails closed; PATHEXT is fixed. Raw
   PATH, Node/Python injection variables, provider credentials and arbitrary
   application controls are not copied.
 - PATH is rebuilt from canonical existing Node, Windows system, PowerShell, Git
-  and validated renderer directories. Duplicate case aliases and hostile first
-  PATH entries cannot select child tools.
+  and validated renderer directories. Duplicate case aliases, hostile first
+  PATH entries, ambient command-processor overrides, coherent fake Windows
+  trees and profile-derived tools cannot select child executables.
 - Each invocation receives its own data, DB, artifact, approval, backup,
   credential, launcher, private-operator, runtime-metadata, assurance, profile,
   npm cache and OS temp paths.
@@ -88,15 +99,23 @@ ledger. A fixed proof file per shard would still have been unsafe.
   own local stubs after startup. Scheduler behavior retains its deterministic
   production default.
 - Local and ordinary CI requests cannot enter the lifecycle test. Hosted
-  lifecycle mode requires the exact quarantined target plus the bounded GitHub
-  Windows job identity and retains concurrency 1 and the nine-minute deadline.
+  lifecycle mode requires the exact quarantined target, exact npm lifecycle
+  command identity and bounded GitHub Windows job identity; flags alone are
+  insufficient. It retains concurrency 1 and the nine-minute deadline.
 - Test-path grammar and lifecycle quarantine are validated before any renderer
   probe. A renderer override requires a coherent absolute current/legacy pair;
-  raw PATH Python candidates are ignored, candidates are canonicalized and
-  probes use disposable profile/temp roots.
+  the only fallback is the bundled interpreter relative to the running Node
+  runtime. Raw PATH, profile and hosted-runner hint candidates are ignored,
+  candidates are canonicalized, and probes use disposable profile/temp roots.
+- The hosted ordinary-CI workflow is configured to pass setup-python through
+  both explicit aliases; no hosted execution is claimed. No Python installation
+  or dependency change is performed by the wrapper.
 - Local five-way weighted sharding, ordinary CI sharding, focused singular
   execution, 4/12/9-minute deadlines, `--test-isolation=none`, fail-fast
-  behavior, bounded cleanup and PDF snapshot/restore remain intact.
+  behavior, bounded cleanup and PDF snapshot/restore remain intact. A real
+  child exit regression proves restore and cleanup. If restoration fails after
+  mutating the target, the wrapper retains and reports the baseline recovery
+  snapshot instead of deleting the only recovery copy.
 - Repository `tmp/pdfs` remains the only explicit repository-write exception
   and is restored identically after success and failure.
 
@@ -128,13 +147,18 @@ ledger. A fixed proof file per shard would still have been unsafe.
 - Shared completion behavior: `AGENTS.md`.
 - Wrapper implementation: `scripts/run-tests.js`.
 - Focused regressions: `test/test-environment-isolation.test.js`.
+- Hosted ordinary-test renderer handoff: `.github/workflows/ci.yml`.
+- Durable owner-directed protocol authority:
+  `docs/v2/decisions/ADR-0002-NEXT-SESSION-PROMPT-CONTRACT.md`.
 - Normal state: `docs/v2/PROGRESS.json`, `docs/v2/BLOCKERS.md` and
   `docs/v2/ACTIVE_HANDOFF.md`.
 - Evidence: this report.
 
 No path under `src/`, `public/`, runtime schema/database, UI, provider adapter,
-commercial truth, package/lock/dependency requirements, workflow, Master,
-approved Pack, Work Package or ADR changed. No repository hook was installed.
+commercial truth, package/lock/dependency requirements, Master, approved Pack
+or Work Package changed. The workflow delta only passes the already provisioned
+setup-python executable through both coherent aliases; ADR-0002 records the
+owner-directed protocol amendment. No repository hook was installed.
 The package specification's `COMPLETION.md` evidence marker is deferred until
 all acceptance criteria pass; creating it while blocked would make the bounded
 status consistency check fail and would falsely declare package completion.
@@ -146,11 +170,12 @@ status consistency check fail and would falsely declare package completion.
 | JavaScript syntax | PASS | `node --check` on wrapper and focused test |
 | `npm.cmd test -- test/test-environment-isolation.test.js` | PASS | 5/5, 0 fail/skip/cancel |
 | journey + wrapper regressions | PASS | 11/11, including original proof-ledger regression and sharding/quarantine |
-| `npm.cmd test -- test/runtime.test.js` | PASS | final candidate 83/83 after repairing scheduler/live-stub compatibility |
+| `npm.cmd test -- test/runtime.test.js` | PASS | final candidate 83/83 with both aliases set to the validated process-bundled renderer |
+| runtime without explicit renderer provenance | EXPECTED PRECONDITION | 67/83; 16 renderer-dependent failures because ambient profile discovery is prohibited |
 | product/full-journey focused files | PASS | 2/2 |
 | `npm.cmd test -- test/v2-status.test.js` | PASS | 6/6; rebuilt PATH retains required Git behavior |
 | `npm.cmd run lint` | PASS | exit 0; zero warnings |
-| production `checkRenderer()` | BLOCKED (D) | fail; one exact package mismatch, Pillow 12.3.0 versus 12.2.0 |
+| production `checkRenderer()` | BLOCKED (D) | default process-bundled renderer fails one exact package mismatch, Pillow 12.3.0 versus 12.2.0 |
 | complete `npm.cmd test` | BLOCKED (D) | required attempt described below; no green final-code claim |
 | fresh Codex reconstruction | PASS | no-history read-only task; concise result below |
 | Claude reconstruction/handoff | `prepared_not_verified` | CLI not discoverable; no session simulated |
@@ -170,6 +195,21 @@ green as recorded above. The final candidate was not put through another full
 run because the same production `checkRenderer()` precondition still fails and
 W04 lacks authority to provision or change it. There is no full-suite green
 claim and no claim about unrun shards.
+
+A post-checkpoint strict audit found three additional evidence-backed wrapper
+gaps: raw Windows boot-tool inputs could still influence child tools, ambient
+profiles could nominate an executable before quarantine, and a PDF restore
+exception could destroy the only recovery copy. The continuation repair anchors
+system tools independently of the parent bundle, narrows renderer provenance,
+requires exact npm lifecycle command identity, and retains a recovery snapshot
+after restore failure. The
+focused isolation, journey/wrapper, runtime, product/full-journey and status
+files plus lint are green after those changes. The runtime command supplied the
+same validated process-bundled interpreter through both explicit aliases.
+A final independent read-only wrapper re-audit found no actionable issue after
+those repairs. It confirmed independent boot-tool anchoring, coherent fake-tree
+rejection, recovery-snapshot retention, renderer provenance and preserved
+wrapper contracts without running lifecycle or the full suite.
 
 Only isolated loopback/local-child traffic used by repository tests occurred.
 No provider or external network action occurred.
@@ -237,18 +277,20 @@ is **no hook**. No active or archived hook was created or revived.
 
 - Used the existing DB-relative production proof resolver instead of changing
   production semantics or imposing one fixed proof file per shard.
-- Rebuilt a narrow canonical PATH instead of inheriting ambient PATH or
-  converting production code to absolute tool paths.
-- Required the exact hosted lifecycle target and GitHub Windows job identity;
-  the prohibited lifecycle command was not run locally.
+- Rebuilt a narrow canonical PATH and validated the coherent Windows boot-tool
+  set instead of inheriting ambient tool controls or changing production code.
+- Required the exact hosted lifecycle target, npm command identity and GitHub
+  Windows job identity; the prohibited lifecycle command was not run locally.
 - Accepted an explicitly supplied renderer only as a coherent current/legacy
-  absolute pair. An already provisioned exact interpreter can therefore be used
-  later without a code change.
+  absolute pair, with a process-bundled-runtime fallback. Hosted ordinary CI is
+  configured to supply both aliases explicitly; an already provisioned exact
+  local interpreter can be used later without another code change.
 - Added the owner-directed prompt rule only to `AGENTS.md`; `CLAUDE.md` inherits
   it. No prompt generator, writer, hook, daemon, database, ledger, state machine
   or orchestration subsystem was added.
-- Made no ADR because these choices implement the approved isolation and
-  continuity contract without changing product architecture or business intent.
+- Added ADR-0002 solely to durably capture the explicit owner protocol
+  amendment. It creates no product architecture, business-intent or package
+  readiness change.
 
 ## Interactive browser / E2E / external actions
 
@@ -264,37 +306,42 @@ is **no hook**. No active or archived hook was created or revived.
 
 - P0-B01's implementation and exact focused regression are green, but formal
   closure awaits the required complete green ordinary suite.
-- P0-B02 is active. Owner action must authorize either one disposable exact
-  renderer environment using the repository pins or a separately scoped
-  dependency-pin decision. The wrapper requires both `PANTHEON_PYTHON` and
-  `JARVIS_PYTHON` to identify the same validated absolute interpreter.
+- P0-B02 is active. Owner action must approve a narrow Pack/W04 amendment for
+  one disposable exact renderer environment using the repository pins, or a
+  separately scoped dependency-pin amendment. The wrapper requires both `PANTHEON_PYTHON` and
+  `JARVIS_PYTHON` to identify the same validated absolute interpreter. Neither
+  the process-bundled nor separate local interpreter currently matches all
+  pins.
 - Claude continuity is `prepared_not_verified` and cannot become verified
   without a real provisioned sequential same-worktree rehearsal.
 - Remote freshness and inaccessible external-tool surfaces remain unproved.
 
 ## Rollback
 
-Before integration, revert the single blocked-checkpoint commit after review.
-That restores the previous wrapper but also reopens the demonstrated P0-B01
-environment/proof risk; rollback must not be described as adequate isolation.
-Do not delete custody refs, rewrite history, restore archived hooks/settings or
-touch global/user configuration.
+Before integration, revert the coherent W04 checkpoint commits back to the
+initial W04 predecessor after review. That restores the previous wrapper but
+also reopens the demonstrated P0-B01 environment/proof risk; rollback must not
+be described as adequate isolation. Do not delete custody refs, rewrite
+history, restore archived hooks/settings or touch global/user configuration.
 
 ## Exact next action
 
-Obtain owner authorization for one disposable exact renderer environment using
-the existing repository pins, or a separately approved dependency-pin change.
-Then continue P0-W04 in this same lane, set both renderer aliases to the same
-validated absolute interpreter, rerun the required focused test, lint and one
-complete ordinary suite, and close P0-B01/P0-B02 only if all results are green.
-Do not begin P0-W05.
+Obtain a narrow owner-approved Pack/W04 amendment permitting one disposable
+exact renderer environment using the existing repository pins, or a separately
+scoped dependency-pin amendment. Then continue P0-W04 in this same lane, set
+both renderer aliases to the same validated absolute interpreter, rerun the
+required focused test, lint and one complete ordinary suite, and close
+P0-B01/P0-B02 only if all results are green. Do not begin P0-W05.
 
 ## Commits and checkpoint Git status
 
 - P0-W03 completion and checkpoint predecessor:
   `9c29d19b140c648f8100605b6479f790320be695`.
-- The P0-W04 blocked-checkpoint commit is the coherent commit containing this
-  report and remains discoverable through normal Git history.
+- First P0-W04 blocked checkpoint:
+  `acd466410154049bfcb207a5bc85416c999517b1`.
+- The continuation-audit checkpoint is the coherent commit containing this
+  updated report and remains discoverable through normal Git history; its own
+  SHA is intentionally not self-recorded.
 - The checkpoint contains only the W04 files listed above; final state checks
-  passed immediately before they were committed together.
+  must pass immediately before they are committed together.
 - Push/PR/merge/remote mutation: none.

@@ -5,7 +5,7 @@
   "activeAgent": "codex",
   "activeWorktree": "C:\\Pantheon-worktrees\\P0-engineering-os",
   "sessionOutcome": "blocked",
-  "updatedAt": "2026-08-15T23:12:58+10:00",
+  "updatedAt": "2026-08-16T09:25:51+10:00",
   "phases": [
     {
       "id": "P0",
@@ -56,7 +56,9 @@
             "docs/v2/evidence/packages/P0-W03/COMPLETION.md"
           ],
           "blockers": [],
-          "commits": []
+          "commits": [
+            "9c29d19b140c648f8100605b6479f790320be695"
+          ]
         },
         {
           "id": "P0-W04",
@@ -66,13 +68,16 @@
           "handoffAllowed": true,
           "evidence": [
             "docs/v2/work-packages/P0-W04.md",
+            "docs/v2/decisions/ADR-0002-NEXT-SESSION-PROMPT-CONTRACT.md",
             "docs/v2/evidence/packages/P0-W04/CHECKPOINT.md"
           ],
           "blockers": [
             "P0-B01",
             "P0-B02"
           ],
-          "commits": []
+          "commits": [
+            "acd466410154049bfcb207a5bc85416c999517b1"
+          ]
         },
         {
           "id": "P0-W05",
