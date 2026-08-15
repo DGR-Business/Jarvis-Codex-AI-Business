@@ -1,0 +1,151 @@
+{
+  "masterPlanVersion": "2.1.1",
+  "currentPhase": "P0",
+  "currentWorkPackage": null,
+  "activeAgent": null,
+  "activeWorktree": null,
+  "sessionOutcome": "complete",
+  "updatedAt": "2026-08-15T20:29:38+10:00",
+  "phases": [
+    {
+      "id": "P0",
+      "name": "V2.1.1 engineering operating system",
+      "status": "in_progress",
+      "executionPack": "docs/v2/phases/P0-EXECUTION-PACK.md",
+      "workPackages": [
+        {
+          "id": "P0-W01",
+          "title": "Preserve WIP and establish the clean Phase 0 baseline",
+          "status": "complete",
+          "preferredAgent": "codex",
+          "handoffAllowed": true,
+          "evidence": [
+            "docs/v2/phases/P0-EXECUTION-PACK.md",
+            "docs/v2/evidence/packages/P0-W01/COMPLETION.md"
+          ],
+          "blockers": [],
+          "commits": [
+            "612a35c8b1d881f638570373d06f99d26bfb280e"
+          ]
+        },
+        {
+          "id": "P0-W02",
+          "title": "Reconcile programme authority and the cross-agent contract",
+          "status": "ready",
+          "preferredAgent": "codex",
+          "handoffAllowed": true,
+          "evidence": [],
+          "blockers": [],
+          "commits": []
+        },
+        {
+          "id": "P0-W03",
+          "title": "Add lightweight continuity tooling",
+          "status": "backlog",
+          "preferredAgent": "codex",
+          "handoffAllowed": true,
+          "evidence": [],
+          "blockers": [],
+          "commits": []
+        },
+        {
+          "id": "P0-W04",
+          "title": "Harden tests and rehearse fresh-session continuity",
+          "status": "backlog",
+          "preferredAgent": "codex",
+          "handoffAllowed": true,
+          "evidence": [],
+          "blockers": [],
+          "commits": []
+        },
+        {
+          "id": "P0-W05",
+          "title": "Independent Phase 0 gate and owner-approved integration",
+          "status": "backlog",
+          "preferredAgent": "either",
+          "handoffAllowed": true,
+          "evidence": [],
+          "blockers": [],
+          "commits": []
+        }
+      ]
+    },
+    {
+      "id": "P1",
+      "name": "Stable application facade and live event stream",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    },
+    {
+      "id": "P2",
+      "name": "Owner Control Plane v2",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    },
+    {
+      "id": "P3",
+      "name": "Modular monolith refactor",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    },
+    {
+      "id": "P4",
+      "name": "Capability Fabric and provider qualification",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    },
+    {
+      "id": "P5",
+      "name": "Dynamic Venture OS and agent teams",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    },
+    {
+      "id": "P6",
+      "name": "Opportunity and research intelligence",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    },
+    {
+      "id": "P7",
+      "name": "Creative, product and web factory",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    },
+    {
+      "id": "P8",
+      "name": "Commerce, customer, analytics and finance",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    },
+    {
+      "id": "P9",
+      "name": "Continuous learning and earned autonomy",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    },
+    {
+      "id": "P10",
+      "name": "First commercial viability programme",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    },
+    {
+      "id": "P11",
+      "name": "Repeatability, parallelism and second Venture Kit",
+      "status": "backlog",
+      "executionPack": null,
+      "workPackages": []
+    }
+  ]
+}

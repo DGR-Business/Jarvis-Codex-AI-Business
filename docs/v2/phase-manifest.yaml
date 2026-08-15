@@ -1,0 +1,81 @@
+master_plan_version: '2.1.1'
+date: '2026-08-15'
+programme: Pantheon v2.1.1
+planning_model:
+  level_1: Stable Master Plan
+  level_2: Just-in-time Phase Execution Pack with 5-8 work packages
+  level_3: One approved work package per fresh implementation session
+session_model:
+  phase_planning: fresh read-only session
+  work_package: fresh implementation session
+  local_debugging: continue same package session
+  cross_model_handoff: fresh receiving-agent session in same worktree
+  phase_gate: fresh independent review session
+coding_agents:
+  primary: codex
+  continuity_and_review: claude_code
+provider_model:
+  discovery: dynamic and evidence-based
+  installation: approval-controlled
+  runtime_execution: approved active registry only
+phases:
+  - id: P0
+    name: V2.1.1 engineering operating system
+    status: planning
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P1
+    name: Stable application facade and live event stream
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P2
+    name: Owner Control Plane v2
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P3
+    name: Modular monolith refactor
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P4
+    name: Capability Fabric and provider qualification
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P5
+    name: Dynamic Venture OS and agent teams
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P6
+    name: Opportunity and research intelligence
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P7
+    name: Creative, product and web factory
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P8
+    name: Commerce, customer, analytics and finance
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P9
+    name: Continuous learning and earned autonomy
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P10
+    name: First commercial viability programme
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true
+  - id: P11
+    name: Repeatability, parallelism and second Venture Kit
+    status: backlog
+    execution_pack_required: true
+    owner_approval_required_before_implementation: true

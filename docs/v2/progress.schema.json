@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pantheon v2.1.1 Progress Ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "masterPlanVersion",
+    "currentPhase",
+    "currentWorkPackage",
+    "activeAgent",
+    "activeWorktree",
+    "sessionOutcome",
+    "phases",
+    "updatedAt"
+  ],
+  "properties": {
+    "masterPlanVersion": {
+      "const": "2.1"
+    },
+    "currentPhase": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "currentWorkPackage": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "activeAgent": {
+      "enum": [
+        null,
+        "codex",
+        "claude"
+      ]
+    },
+    "activeWorktree": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sessionOutcome": {
+      "enum": [
+        "not_started",
+        "planning",
+        "in_progress",
+        "handoff_ready",
+        "blocked",
+        "review",
+        "complete"
+      ]
+    },
+    "updatedAt": {
+      "type": "string"
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "status",
+          "executionPack",
+          "workPackages"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "backlog",
+              "planning",
+              "ready",
+              "in_progress",
+              "blocked",
+              "review",
+              "complete"
+            ]
+          },
+          "executionPack": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workPackages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "title",
+                "status",
+                "preferredAgent",
+                "handoffAllowed",
+                "evidence",
+                "blockers",
+                "commits"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "backlog",
+                    "ready",
+                    "in_progress",
+                    "blocked",
+                    "review",
+                    "complete"
+                  ]
+                },
+                "preferredAgent": {
+                  "enum": [
+                    "codex",
+                    "claude",
+                    "either"
+                  ]
+                },
+                "handoffAllowed": {
+                  "type": "boolean"
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "blockers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "commits": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
