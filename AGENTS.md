@@ -131,3 +131,23 @@ of truth.
 ## Completion
 
 Before stopping, update the required progress, blocker, handoff and evidence records. Never claim completion while acceptance criteria or required verification remain unmet.
+
+## Next-session copy/paste prompt
+
+After final verification and all required `PROGRESS.json`, `BLOCKERS.md`,
+`ACTIVE_HANDOFF.md` and evidence updates, every session must include a
+`NEXT SESSION — COPY/PASTE PROMPT` section immediately before its exact terminal
+outcome. It must contain one complete ready-to-paste prompt derived from the
+actual final repository state for the correct next action. Never blindly select
+the next numbered package when repository state says it is not ready.
+
+Where applicable, include the exact session/package ID and objective, worktree
+and expected branch; verification of root, branch, HEAD and status first;
+authoritative files and materially relevant completion records; blockers,
+limitations, deferred defects, decisions and deviations; exact scope boundaries
+and targeted verification; no later-package scope; relevant Codex/Claude
+handoff duties; restrictions on push, merge, providers, live and commercial
+actions unless expressly authorized; and the exact terminal outcome required
+here. If the correct next action is same-session continuation, cross-model
+handoff, owner action/blocker, independent gate, owner approval, phase planning
+or plan amendment, prompt that action instead of another package.

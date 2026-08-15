@@ -1,11 +1,11 @@
 {
   "masterPlanVersion": "2.1.1",
   "currentPhase": "P0",
-  "currentWorkPackage": null,
-  "activeAgent": null,
-  "activeWorktree": null,
-  "sessionOutcome": "complete",
-  "updatedAt": "2026-08-15T22:05:20+10:00",
+  "currentWorkPackage": "P0-W04",
+  "activeAgent": "codex",
+  "activeWorktree": "C:\\Pantheon-worktrees\\P0-engineering-os",
+  "sessionOutcome": "blocked",
+  "updatedAt": "2026-08-15T23:12:58+10:00",
   "phases": [
     {
       "id": "P0",
@@ -61,11 +61,17 @@
         {
           "id": "P0-W04",
           "title": "Harden tests and rehearse fresh-session continuity",
-          "status": "ready",
+          "status": "blocked",
           "preferredAgent": "codex",
           "handoffAllowed": true,
-          "evidence": [],
-          "blockers": [],
+          "evidence": [
+            "docs/v2/work-packages/P0-W04.md",
+            "docs/v2/evidence/packages/P0-W04/CHECKPOINT.md"
+          ],
+          "blockers": [
+            "P0-B01",
+            "P0-B02"
+          ],
           "commits": []
         },
         {
