@@ -1,84 +1,72 @@
 # Active Handoff
 
-**Package:** P0-W04A
-**Status:** in_progress
-**Current writing agent:** Codex
-**Worktree/branch:** `C:\Pantheon-worktrees\P0-engineering-os` / `codex/p0-engineering-os`
-**Updated:** 2026-08-16T14:37:54+10:00
+**Package:** none
+**Status:** no_active_package
+**Current writing agent:** none
+**Worktree/branch:** none
+**Updated:** 2026-08-16T14:40:42+10:00
 
-## Active package
+## Completed package
 
-P0-W04A — Renderer Environment and Gate Corrections — is the active package
-in `C:\Pantheon-worktrees\P0-engineering-os` on
-`codex/p0-engineering-os`. It is a narrow corrective package authorized after
-the first independent Phase 0 gate recorded `FAIL` in commit
-`75914d954cbf78b7bf4695eed2f135ea1bb627ac`.
+P0-W04A — Renderer Environment and Gate Corrections — is complete at
+implementation checkpoint
+`b15f0042f513b4539feb3e6cbb93b26e8a1f91fe`. The completion/state commit
+containing this handoff is the new candidate `S2`; its SHA is intentionally
+discovered from normal Git history rather than self-recorded.
 
-The package must mechanically remove the 35 candidate-range documentation
-formatting findings without wording changes; establish a durable ignored local
-renderer environment with deterministic bootstrap/exact validation; evaluate
-the official 2026-08-16 stable renderer candidates; and promote only exact pins
-that pass Pantheon's focused renderer/artifact/Doctor checks, lint and complete
-ordinary suite.
+The package mechanically corrected all 35 first-gate formatting findings,
+established the ignored checkout-local renderer environment, promoted the
+newest reviewed stable exact renderer set, and made bootstrap, validation,
+ordinary tests, Doctor, product rendering, approval-pack rendering and recovery
+share one fail-closed contract.
 
-The fixed history anchors are baseline
-`718e50670812ad5da7210bd9f183521328cccf93` (`B`), first candidate
-`9ab7748f1a3443535e1f066b1b3d48efc668aedb` (`S1`) and failed review commit
-`75914d954cbf78b7bf4695eed2f135ea1bb627ac` (`R1`).
+## Verification
 
-## Immutable evidence and blockers
+- Committed blobs prove exactly 30 explicit hard-break substitutions and five
+  surplus EOF blank removals; every other execution-copy byte remains exact.
+- `git diff --check` passes across the complete baseline range.
+- The original failed gate report remains the unchanged R1 blob
+  `6928a40ea2c1f0af493e728e6a71084d13291089`; package-lock remains unchanged.
+- Final clean bootstrap from the verified redacted base CPython 3.13.3 path,
+  standalone validation, `pip check` and second-run reuse all pass.
+- Exact direct pins are openpyxl 3.1.5, Pillow 12.3.0, pypdfium2 5.13.0 and
+  ReportLab 5.0.0. Resolver inventory adds only charset-normalizer 3.5.1,
+  et_xmlfile 2.0.0 and pip 25.0.1.
+- Final focused checks pass 57/57; the changed encrypted recovery suite passes
+  19/19; production rendering passes 28/28; lint is clean.
+- With both Python aliases absent, all five ordinary shards pass 19/19,
+  137/137, 244/244, 308/308 and 163/163: 871/871 total, with zero failure, skip
+  or cancellation.
+- Final independent implementation and state audits report no actionable
+  finding. Repository state consistency passes after closeout.
+- Completion evidence:
+  `docs/v2/evidence/packages/P0-W04A/COMPLETION.md`.
 
-- `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW.md` remains the valid failed
-  review and must not be changed, replaced or deleted.
-- P0-B03 tracks the 35 formatting findings.
-- P0-B04 tracks the missing durable exact renderer environment.
-- P0-B01 remains historically closed but must be revalidated; reopen it only if
-  the isolation/full-suite evidence regresses.
-- P0-B02 remains the historical W04-only disposable-renderer closure and must
-  not be repurposed.
+## Durable state and limitations
 
-## Boundaries and limitations
-
-- P0-W05 is dependency-pending and must not begin in the corrective session.
-- The next independent gate uses a new candidate and writes
-  `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-02.md`; it never overwrites the
-  original report.
-- The ignored environment is checkout-local. A later owner-authorized W05
-  integration must bootstrap and validate the same exact environment in
-  `C:\Pantheon` after fast-forward and before closeout; virtual environments are
-  not copied between roots.
-- Claude remains `prepared_not_verified`; remote freshness remains unproved.
-- No browser/T3/Playwright, local lifecycle, provider/live/commercial,
-  owner-data, global/user configuration, push, PR, merge, local-main
-  integration or P1 action is authorized.
+- P0-B01 remains closed and is revalidated. Historical P0-B02 remains
+  unchanged. P0-B03 and P0-B04 are closed.
+- P0-W05 is ready for a completely fresh independent gate review. It has not
+  begun. The reviewer must create
+  `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-02.md` and must never overwrite
+  the original failed report.
+- The ignored `/.venv-renderer/` remains in the implementation worktree. A
+  later owner-authorized local-main integration must provision and validate the
+  same exact environment in that checkout; virtual environments are not copied.
+- Preserved unverified WIP remains on `pantheon-v2.1.1-programme` at
+  `612a35c8b1d881f638570373d06f99d26bfb280e`; local `main` remains baseline
+  `718e50670812ad5da7210bd9f183521328cccf93`.
+- Claude remains honestly `prepared_not_verified`. Remote freshness remains
+  unproved.
+- Browser/T3/Playwright, local lifecycle, provider/live/commercial, owner-data,
+  global/user configuration, push, PR, merge, rebase, local-main integration
+  and P1 were not performed.
 
 ## Exact next action
 
-Custody, history, branch, worktree, baseline and immutable-report identities
-were verified at the exact owner-approved planning tip. The 35 formatting
-findings are corrected mechanically with cleaned-blob fidelity to `A`; the
-failed report and package lock remain byte-for-byte unchanged. Independent
-read-only audits report no remaining implementation, scope, formatting or
-active-state defect.
-
-The final post-fix clean bootstrap from the explicit base CPython 3.13.3
-installation passes with exact direct pins openpyxl 3.1.5, Pillow 12.3.0,
-pypdfium2 5.13.0 and ReportLab 5.0.0. Exact-one distribution metadata,
-imports, virtual-environment boundaries, disabled user/system sites and
-`pip check` all pass; the three resolver transitives are charset-normalizer
-3.5.1, et_xmlfile 2.0.0 and pip 25.0.1. Standalone validation passes and the
-immediate second bootstrap safely reports `reused: true` from the same base
-prefix.
-
-The final focused package command passes 57/57. The changed encrypted recovery
-suite passes 19/19, production rendering passes 28/28 and lint passes with zero
-warnings. With both Python aliases proved absent, the complete ordinary suite
-passes 19/19, 137/137, 244/244, 308/308 and 163/163: 871/871 total with zero
-failure, skip or cancellation. P0-B01 is revalidated. No browser, lifecycle,
-provider, commercial, owner-data or integration action ran.
-
-Next, create the single implementation checkpoint from this exact candidate,
-then atomically write the P0-W04A completion, blocker, progress and closed
-handoff records using that implementation SHA. Preserve the original failed
-gate report, leave P0-W05 unexecuted, and stop at a clean candidate for a fresh
-independent P0-W05 review.
+Start a fresh P0-W05 session in
+`C:\Pantheon-worktrees\P0-engineering-os` on `codex/p0-engineering-os`. Read the
+approved P0-W05 package, P0-W04A package and completion evidence, derive exact
+candidate `S2` from current HEAD, independently review the full baseline range,
+and write a new `PHASE-GATE-REVIEW-02.md` review. Do not rewrite R1, begin
+integration without separate owner authority, or start P1.
