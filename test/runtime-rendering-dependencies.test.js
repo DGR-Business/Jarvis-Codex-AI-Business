@@ -2,6 +2,9 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const {
+  parseRendererRequirementsText,
+} = require("../src/runtime/renderer-environment");
 
 const workspaceRoot = path.resolve(__dirname, "..");
 
@@ -10,6 +13,8 @@ test("locked runtime requirements cover every local product renderer import", ()
     path.join(workspaceRoot, "requirements-runtime.txt"),
     "utf8",
   );
+  const pins = parseRendererRequirementsText(requirements);
+  assert.deepEqual(Object.keys(pins), ["openpyxl", "Pillow", "pypdfium2", "reportlab"]);
   for (const packageName of ["openpyxl", "Pillow", "pypdfium2", "reportlab"]) {
     assert.match(
       requirements,

@@ -9,7 +9,6 @@ const {
   TEST_PRIVACY_HASH_KEY,
   createTestEnvironment,
   isInside,
-  pythonPathCandidates,
   requestedTestInvocations,
   resolveRendererPython,
   restorePdfTemp,
@@ -469,44 +468,101 @@ test("local, ordinary CI, and hosted lifecycle modes retain their bounds", () =>
   assert.equal(rendererProbed, false);
 });
 
-test("renderer candidates require explicit coherent provenance before probing", () => {
-  const missing = path.join(os.tmpdir(), "missing-renderer-python.exe");
-  const explicit = path.join(os.tmpdir(), "validated-renderer", "python.exe");
-  const expectedExplicit = path.resolve(explicit);
-  const acceptExplicit = (candidate) => (
-    candidate.toLowerCase() === expectedExplicit.toLowerCase() ? candidate : null
+test("ordinary wrapper resolution accepts only the exact validated renderer boundary", () => {
+  const canonical = resolveRendererPython(process.env, workspaceRoot);
+  assert.ok(path.isAbsolute(canonical));
+  assert.throws(
+    () => resolveRendererPython({ PANTHEON_PYTHON: "relative-python" }, workspaceRoot),
+    /must both be absent/i,
   );
-  assert.equal(resolveRendererPython(
-    { PANTHEON_PYTHON: "relative-python" },
-    workspaceRoot,
-    acceptExplicit,
-  ), null);
-  assert.equal(resolveRendererPython({
-    PANTHEON_PYTHON: process.execPath,
-    JARVIS_PYTHON: missing,
-  }, workspaceRoot, acceptExplicit), null);
+  assert.throws(
+    () => resolveRendererPython({
+      PANTHEON_PYTHON: process.execPath,
+      JARVIS_PYTHON: path.join(os.tmpdir(), "missing-renderer-python.exe"),
+    }, workspaceRoot),
+    /different interpreters/i,
+  );
 
   const hostilePath = path.join(os.tmpdir(), "ambient-python-inputs-must-not-be-used");
+  const hostileResolved = resolveRendererPython({
+    ...process.env,
+    HOME: hostilePath,
+    PATH: hostilePath,
+    USERPROFILE: hostilePath,
+    pythonLocation: hostilePath,
+  }, workspaceRoot);
+  assert.equal(hostileResolved, canonical);
   assert.equal(
-    pythonPathCandidates({
-      GITHUB_ACTIONS: "true",
-      HOME: hostilePath,
-      PATH: hostilePath,
-      USERPROFILE: hostilePath,
-      pythonLocation: hostilePath,
-    })
-      .some((candidate) => isInside(hostilePath, candidate)),
+    isInside(hostilePath, hostileResolved),
     false,
   );
-  assert.equal(resolveRendererPython({
-    PANTHEON_PYTHON: explicit,
-    JARVIS_PYTHON: explicit,
-  }, workspaceRoot, acceptExplicit), expectedExplicit);
+  assert.throws(
+    () => resolveRendererPython({
+      PANTHEON_PYTHON: process.execPath,
+      JARVIS_PYTHON: process.execPath,
+    }, workspaceRoot),
+    /foreign renderer interpreter/i,
+  );
+});
+
+test("ordinary hosted provenance is preserved, while lifecycle mode never probes Python", () => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-hosted-child-"));
+  const pythonLocation = path.join(runtimeRoot, "setup-python");
+  const setupPython = process.platform === "win32"
+    ? path.join(pythonLocation, "python.exe")
+    : path.join(pythonLocation, "bin", "python");
+  fs.mkdirSync(path.dirname(setupPython), { recursive: true });
+  fs.writeFileSync(setupPython, "synthetic setup-python interpreter boundary\n");
+  const hostedOrdinary = {
+    ...process.env,
+    CI: "true",
+    GITHUB_ACTIONS: "true",
+    GITHUB_WORKSPACE: workspaceRoot,
+    RUNNER_ENVIRONMENT: "github-hosted",
+    RUNNER_OS: process.platform === "win32" ? "Windows" : process.platform === "darwin" ? "macOS" : "Linux",
+    pythonLocation,
+  };
+  try {
+    const child = createTestEnvironment({
+      parentEnvironment: hostedOrdinary,
+      runtimeRoot,
+      mode: { ci: true, lifecycleCi: false, lifecyclePhase: null },
+      rendererPython: setupPython,
+    });
+    for (const name of ["GITHUB_ACTIONS", "GITHUB_WORKSPACE", "RUNNER_ENVIRONMENT", "RUNNER_OS", "pythonLocation"]) {
+      assert.equal(child[name], hostedOrdinary[name]);
+    }
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+
   if (process.platform === "win32") {
-    assert.ok(resolveRendererPython({
-      PANTHEON_PYTHON: explicit.toUpperCase(),
-      JARVIS_PYTHON: explicit.toLowerCase(),
-    }, workspaceRoot, acceptExplicit));
+    let rendererProbed = false;
+    const lifecycleEnvironment = {
+      ...process.env,
+      CI: "true",
+      GITHUB_ACTIONS: "true",
+      GITHUB_WORKSPACE: workspaceRoot,
+      PANTHEON_LIFECYCLE_CI: "1",
+      PANTHEON_LIFECYCLE_PHASE: "containment",
+      RUNNER_OS: "Windows",
+      npm_lifecycle_event: "test:lifecycle:ci",
+      npm_lifecycle_script: "node scripts/run-tests.js test/windows-launcher.test.js",
+    };
+    runTests(
+      ["test/windows-launcher.test.js"],
+      lifecycleEnvironment,
+      {
+        resolveRendererPython() {
+          rendererProbed = true;
+          throw new Error("lifecycle must not probe renderer");
+        },
+        restorePdfTemp() {},
+        snapshotPdfTemp() {},
+        spawnTestProcess() { return { status: 0 }; },
+      },
+    );
+    assert.equal(rendererProbed, false);
   }
 });
 
@@ -550,7 +606,7 @@ test("PDF temp restoration and wrapper failure cleanup retain their boundaries",
       ["test/test-environment-isolation.test.js"],
       process.env,
       {
-        resolveRendererPython: () => null,
+        resolveRendererPython: () => process.execPath,
         setExitCode: (code) => {
           observedExitCode = code;
         },
@@ -581,7 +637,7 @@ test("PDF temp restoration and wrapper failure cleanup retain their boundaries",
           ["test/test-environment-isolation.test.js"],
           process.env,
           {
-            resolveRendererPython: () => null,
+            resolveRendererPython: () => process.execPath,
             restorePdfTemp: (target) => {
               fs.rmSync(target, { recursive: true, force: true });
               fs.mkdirSync(target, { recursive: true });

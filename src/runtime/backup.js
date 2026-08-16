@@ -307,6 +307,7 @@ function createSourceArchive(sourceRoot, archivePath, options = {}) {
   const root = path.resolve(sourceRoot);
   const excludes = new Set([
     ".git", "*/.git", "node_modules", "*/node_modules", ".playwright-cli",
+    ".venv-renderer", "*/.venv-renderer",
     "tmp", "output", "backups", "data", "private", "*/private", RECOVERY_METADATA_DIR,
   ]);
   const managedPaths = [
@@ -613,6 +614,8 @@ function validateRecoverySourceBundle(restoredRoot) {
     ["public/app.js", path.join(root, "public", "app.js")],
     ["public/styles.css", path.join(root, "public", "styles.css")],
     ["requirements-runtime.txt", path.join(root, "requirements-runtime.txt")],
+    ["scripts/renderer-environment.js", path.join(root, "scripts", "renderer-environment.js")],
+    ["src/runtime/renderer-environment.js", path.join(root, "src", "runtime", "renderer-environment.js")],
     ["scripts/compose-storefront-cover.py", path.join(root, "scripts", "compose-storefront-cover.py")],
     ["scripts/render-approval-pack.py", path.join(root, "scripts", "render-approval-pack.py")],
     ["scripts/render-digital-product-kit.py", path.join(root, "scripts", "render-digital-product-kit.py")],
@@ -627,6 +630,18 @@ function validateRecoverySourceBundle(restoredRoot) {
   }
   const packageJson = readRequiredRecoveryJson(packagePath, "package.json");
   const lock = readRequiredRecoveryJson(lockPath, "package-lock.json");
+  const requiredRendererScripts = {
+    "renderer:bootstrap": "node scripts/renderer-environment.js bootstrap",
+    "renderer:check": "node scripts/renderer-environment.js check",
+  };
+  const invalidRendererScripts = Object.entries(requiredRendererScripts)
+    .filter(([name, command]) => packageJson.scripts?.[name] !== command)
+    .map(([name]) => name);
+  if (invalidRendererScripts.length) {
+    throw new Error(
+      `Recovery source package.json must expose exact renderer scripts (${invalidRendererScripts.join(", ")}).`,
+    );
+  }
   const start = configuredStartPath(packageJson);
   const startPath = path.resolve(root, ...start.path.split("/"));
   if (
@@ -686,10 +701,12 @@ function validateRecoverySourceBundle(restoredRoot) {
       "public/index.html",
       "public/styles.css",
       "requirements-runtime.txt",
+      "scripts/renderer-environment.js",
       "scripts/compose-storefront-cover.py",
       "scripts/render-approval-pack.py",
       "scripts/render-digital-product-kit.py",
       "src/server.js",
+      "src/runtime/renderer-environment.js",
       start.path,
     ])].sort(),
   };

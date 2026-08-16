@@ -94,6 +94,7 @@ function copyBootableSourceContract(destination) {
   );
   fs.mkdirSync(path.join(destination, "scripts"), { recursive: true });
   for (const filename of [
+    "renderer-environment.js",
     "compose-storefront-cover.py",
     "render-approval-pack.py",
     "render-digital-product-kit.py",
@@ -441,6 +442,8 @@ test("one encrypted recovery set restores source, database, artifacts, packs and
         "scripts/compose-storefront-cover.py",
         "scripts/render-approval-pack.py",
         "scripts/render-digital-product-kit.py",
+        "scripts/renderer-environment.js",
+        "src/runtime/renderer-environment.js",
         "src/server.js",
       ],
     );
@@ -1350,6 +1353,23 @@ test("recovery-set creation fails closed when source startup proof is incomplete
         path.join(fixture.sourceRoot, "scripts", "render-digital-product-kit.py"),
       ),
       /missing required file scripts\/render-digital-product-kit\.py/i,
+    ],
+    [
+      "missing-renderer-bootstrap-module",
+      (fixture) => fs.rmSync(
+        path.join(fixture.sourceRoot, "src", "runtime", "renderer-environment.js"),
+      ),
+      /missing required file src\/runtime\/renderer-environment\.js/i,
+    ],
+    [
+      "missing-renderer-check-command",
+      (fixture) => {
+        const packagePath = path.join(fixture.sourceRoot, "package.json");
+        const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+        delete packageJson.scripts["renderer:check"];
+        fs.writeFileSync(packagePath, JSON.stringify(packageJson), "utf8");
+      },
+      /must expose exact renderer scripts \(renderer:check\)/i,
     ],
     [
       "corrupt-lock",

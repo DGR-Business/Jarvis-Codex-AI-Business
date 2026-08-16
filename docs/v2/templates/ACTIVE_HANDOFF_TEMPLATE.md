@@ -1,9 +1,9 @@
 # Active Handoff
 
-**Package:** [ID]  
-**Status:** no_active_package / in_progress / blocked / review / complete  
-**Current writing agent:** Codex / Claude Code / none  
-**Worktree/branch:** [path/name]  
+**Package:** [ID]\
+**Status:** no_active_package / in_progress / blocked / review / complete\
+**Current writing agent:** Codex / Claude Code / none\
+**Worktree/branch:** [path/name]\
 **Updated:** [timestamp]
 
 ## Objective

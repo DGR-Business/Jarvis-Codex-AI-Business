@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const CONFIG = require("../config");
+const { rendererReadiness } = require("./renderer-environment");
 
 const PRODUCT_BLUEPRINT_SCHEMA = "pantheon.product-blueprint.v3";
 const LEGACY_PRODUCT_BLUEPRINT_SCHEMAS = new Set([
@@ -11,9 +12,6 @@ const LEGACY_PRODUCT_BLUEPRINT_SCHEMAS = new Set([
 ]);
 const CALCULATION_OPERATIONS = new Set(["multiply", "sum", "subtract", "percent_of"]);
 const RENDERED_COLUMN_MAX = 18;
-const REQUIRED_PYTHON_MODULES = ["openpyxl", "PIL", "pypdfium2", "reportlab"];
-
-let cachedReadiness = null;
 
 function safeId(value, fallback = "product-kit") {
   return String(value || fallback)
@@ -304,21 +302,6 @@ function normalizeProductBlueprintForFactory(blueprint, spec = {}) {
   return { blueprint: normalized, normalizations };
 }
 
-function resolvePython() {
-  if (process.env.PANTHEON_PYTHON) return process.env.PANTHEON_PYTHON;
-  if (process.env.JARVIS_PYTHON) return process.env.JARVIS_PYTHON;
-  const candidates = [];
-  const dependencyRoot = path.resolve(path.dirname(process.execPath), "..", "..");
-  candidates.push(path.join(dependencyRoot, "python", "python.exe"));
-  for (const home of [process.env.USERPROFILE, process.env.HOME].filter(Boolean)) {
-    candidates.push(path.join(home, ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "python.exe"));
-  }
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return process.platform === "win32" ? "python" : "python3";
-}
-
 function assertBlueprintMatchesSpec(spec, blueprint) {
   if (!spec || spec.schema !== "pantheon.product-build-spec.v1") {
     throw new Error("Product Builder is missing the exact approved product-build specification.");
@@ -481,43 +464,25 @@ function assertBlueprintMatchesSpec(spec, blueprint) {
 }
 
 function factoryReadiness(options = {}) {
-  const python = resolvePython();
-  const renderer = path.join(CONFIG.rootDir, "scripts", "render-digital-product-kit.py");
-  if (
-    cachedReadiness
-    && options.refresh !== true
-    && cachedReadiness.python === python
-    && cachedReadiness.renderer === renderer
-  ) {
-    return cachedReadiness;
-  }
+  const rootDir = path.resolve(options.rootDir || CONFIG.rootDir);
+  const renderer = path.join(rootDir, "scripts", "render-digital-product-kit.py");
   if (!fs.existsSync(renderer)) {
-    cachedReadiness = { ready: false, python, renderer, reason: "The local digital-product renderer is missing." };
-    return cachedReadiness;
-  }
-  const probe = spawnSync(
-    python,
-    ["-c", `import ${REQUIRED_PYTHON_MODULES.join(", ")}`],
-    { cwd: CONFIG.rootDir, encoding: "utf8", timeout: 20_000 },
-  );
-  if (probe.error?.code === "ETIMEDOUT") {
-    cachedReadiness = {
+    return {
       ready: false,
-      python,
+      python: null,
       renderer,
-      reason: "The local file-factory dependency check exceeded its 20-second deadline.",
+      reason: "The local digital-product renderer is missing.",
     };
-    return cachedReadiness;
   }
-  cachedReadiness = probe.status === 0
-    ? { ready: true, python, renderer, reason: null }
-    : {
-      ready: false,
-      python,
-      renderer,
-      reason: `The local file factory is unavailable: ${String(probe.stderr || probe.stdout || "Python dependency check failed.").trim()}`,
-    };
-  return cachedReadiness;
+  return {
+    ...rendererReadiness({
+      rootDir,
+      requirementsPath: options.requirementsPath,
+      environment: options.environment || process.env,
+      spawn: options.spawn,
+    }),
+    renderer,
+  };
 }
 
 function assertDigitalProductFactoryReady() {
@@ -567,7 +532,7 @@ function composeStorefrontCover(task, sourceBytes, options = {}) {
   if (!fs.existsSync(outputPath)) {
     const composed = spawnSync(
       readiness.python,
-      [compositor, sourcePath, outputPath, title, subtitle],
+      ["-I", compositor, sourcePath, outputPath, title, subtitle],
       {
         cwd: CONFIG.rootDir,
         encoding: "utf8",
@@ -647,7 +612,7 @@ function renderDigitalProductKit(task, blueprint, options = {}) {
     );
     const rendered = spawnSync(
       readiness.python,
-      [readiness.renderer, inputPath, outputRoot],
+      ["-I", readiness.renderer, inputPath, outputRoot],
       {
         cwd: CONFIG.rootDir,
         encoding: "utf8",

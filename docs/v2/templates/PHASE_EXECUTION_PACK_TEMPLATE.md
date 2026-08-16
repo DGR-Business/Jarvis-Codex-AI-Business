@@ -1,9 +1,9 @@
 # Phase [ID] Execution Pack
 
-**Phase:** [ID and name]  
+**Phase:** [ID and name]\
 **Master Plan version:** 2.1.1
-**Prepared from commit:** [SHA]  
-**Prepared on:** [date]  
+**Prepared from commit:** [SHA]\
+**Prepared on:** [date]\
 **Status:** Draft / Approved / In progress / Complete
 
 ## 1. Phase objective

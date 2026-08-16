@@ -1,8 +1,8 @@
 # Provider Decision Record [PDR-ID]
 
-**Capability requirement:** [ID]  
-**Prepared:** [date]  
-**Evidence current to:** [date]  
+**Capability requirement:** [ID]\
+**Prepared:** [date]\
+**Evidence current to:** [date]\
 **Status:** draft / approved-sandbox / approved-live / deferred / rejected / superseded
 
 ## Required capability

@@ -3,6 +3,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const CONFIG = require("../config");
 const { all, fromJson, get, insertEvent, now, run, toJson } = require("../db");
+const { assertRendererEnvironment } = require("./renderer-environment");
 const { getWorkflowScorecard } = require("./scorecard");
 
 function safeFileName(value) {
@@ -332,21 +333,6 @@ function buildOperatorPackPayload({
   return transformPresentationStrings(payload, presentationTransform);
 }
 
-function resolvePython() {
-  if (process.env.PANTHEON_PYTHON) return process.env.PANTHEON_PYTHON;
-  if (process.env.JARVIS_PYTHON) return process.env.JARVIS_PYTHON;
-  const candidates = [];
-  const dependencyRoot = path.resolve(path.dirname(process.execPath), "..", "..");
-  candidates.push(path.join(dependencyRoot, "python", "python.exe"));
-  for (const home of [process.env.USERPROFILE, process.env.HOME].filter(Boolean)) {
-    candidates.push(path.join(home, ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "python.exe"));
-  }
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return process.platform === "win32" ? "python" : "python3";
-}
-
 function outputDirectory(options = {}) {
   return options.outputDir
     || process.env.PANTHEON_APPROVAL_PACK_DIR
@@ -413,7 +399,8 @@ function generateApprovalPack(db, workflowId, options = {}) {
   fs.writeFileSync(payloadPath, JSON.stringify(payload, null, 2), "utf8");
 
   const renderer = path.join(CONFIG.rootDir, "scripts", "render-approval-pack.py");
-  const rendered = spawnSync(resolvePython(), [renderer, payloadPath, outputPath], {
+  const readiness = assertRendererEnvironment();
+  const rendered = spawnSync(readiness.python, ["-I", renderer, payloadPath, outputPath], {
     cwd: CONFIG.rootDir,
     encoding: "utf8",
     timeout: 90_000,

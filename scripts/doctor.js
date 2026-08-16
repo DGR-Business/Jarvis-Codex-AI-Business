@@ -7,7 +7,10 @@ const { spawn, spawnSync } = require("node:child_process");
 const { DatabaseSync } = require("node:sqlite");
 const CONFIG = require("../src/config");
 const { verifyDatabase } = require("../src/db");
-const { factoryReadiness } = require("../src/runtime/digital-product-file-factory");
+const {
+  rendererReadiness,
+  sanitizedPythonEnvironment,
+} = require("../src/runtime/renderer-environment");
 const {
   preferredEnvironment,
   readEncryptedHeader,
@@ -178,18 +181,6 @@ function checkTar() {
   return result("Archive tool", "pass", firstLine);
 }
 
-function parsePinnedRuntimeRequirements(requirementsPath) {
-  const pins = {};
-  for (const rawLine of fs.readFileSync(requirementsPath, "utf8").split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const match = line.match(/^([A-Za-z0-9_.-]+)==([^\s]+)$/);
-    if (!match) throw new Error(`Runtime requirement is not exactly pinned: ${line}`);
-    pins[match[1]] = match[2];
-  }
-  return pins;
-}
-
 function checkRenderer(options = {}) {
   const rootDir = path.resolve(options.rootDir || root);
   const requirementsPath = path.resolve(
@@ -213,41 +204,44 @@ function checkRenderer(options = {}) {
     return result("PDF renderer", "fail", "requirements-runtime.txt is missing.");
   }
 
-  const readiness = factoryReadiness({ refresh: true });
+  const readiness = rendererReadiness({
+    rootDir,
+    requirementsPath,
+    environment: options.environment || process.env,
+    spawn: options.spawn,
+  });
   if (!readiness.ready) {
     return result(
       "PDF renderer",
       "fail",
       `Pantheon's exact production Python is not renderer-ready: ${readiness.reason}`,
-      { python: readiness.python, renderer: readiness.renderer },
+        {
+          python: readiness.python,
+          renderer: readiness.renderer,
+          mismatched: readiness.mismatched || [],
+        },
     );
   }
 
+  const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-doctor-renderer-"));
   try {
-    const pins = parsePinnedRuntimeRequirements(requirementsPath);
-    const requiredPackages = ["openpyxl", "Pillow", "pypdfium2", "reportlab"];
-    const missingPins = requiredPackages.filter((name) => !pins[name]);
-    if (missingPins.length) {
-      return result(
-        "PDF renderer",
-        "fail",
-        `Pantheon's renderer requirements are missing ${missingPins.length} exact pin(s).`,
-        { missingPins },
-      );
-    }
     const pythonProbe = [
-      "import importlib.metadata,json,sys",
+      "import sys",
       "from pathlib import Path",
       "scripts=sys.argv[1:]",
       "[compile(Path(item).read_text(encoding='utf-8'),item,'exec') for item in scripts]",
-      `names=${JSON.stringify(requiredPackages)}`,
-      "print(json.dumps({'python':sys.version.split()[0],'packages':{name:importlib.metadata.version(name) for name in names}}))",
+      "print('renderer scripts compile')",
     ].join(";");
     const probe = spawnSync(
       readiness.python,
-      ["-c", pythonProbe, ...scripts],
+      ["-I", "-c", pythonProbe, ...scripts],
       {
         cwd: rootDir,
+        env: sanitizedPythonEnvironment({
+          python: readiness.python,
+          tempRoot: probeRoot,
+          network: false,
+        }),
         encoding: "utf8",
         windowsHide: true,
         timeout: 20_000,
@@ -265,29 +259,24 @@ function checkRenderer(options = {}) {
         { python: readiness.python },
       );
     }
-    const metadata = JSON.parse(String(probe.stdout || "").trim());
-    const mismatched = requiredPackages.filter((name) => String(metadata.packages?.[name] || "") !== pins[name]);
-    if (mismatched.length) {
-      return result(
-        "PDF renderer",
-        "fail",
-        `Installed renderer package versions do not match requirements-runtime.txt (${mismatched.length} mismatch(es)).`,
-        { mismatched, installed: metadata.packages, pinned: pins, python: readiness.python },
-      );
-    }
     return result(
       "PDF renderer",
       "pass",
-      `Pantheon's exact Python ${metadata.python} product renderer and four pinned packages are ready.`,
+      `Pantheon's exact Python ${readiness.pythonVersion} product renderer and four pinned packages are ready.`,
       {
         python: readiness.python,
         scripts: scripts.map((scriptPath) => path.basename(scriptPath)),
-        packages: metadata.packages,
-        pinned: Object.fromEntries(requiredPackages.map((name) => [name, pins[name]])),
+        packages: readiness.packages,
+        pinned: readiness.pinned,
+        inventory: readiness.inventory,
+        pipCheck: readiness.pipCheck,
+        source: readiness.source,
       },
     );
   } catch (error) {
     return result("PDF renderer", "fail", `Pantheon's renderer contract could not be validated: ${error.message}`);
+  } finally {
+    fs.rmSync(probeRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 }
 

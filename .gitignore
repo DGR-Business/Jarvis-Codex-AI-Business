@@ -1,4 +1,5 @@
 node_modules/
+/.venv-renderer/
 .superpowers/
 .playwright-cli/
 # Only repository-owned shared skills are cloneable; other agent-local state

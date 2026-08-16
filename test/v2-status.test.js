@@ -75,6 +75,7 @@ function createFixture(options = {}) {
             closed ? completedEvidence("P0-W03") : [],
           ),
           workPackage("P0-W04", closed ? "ready" : "backlog"),
+          workPackage("P0-W04A", "backlog"),
           workPackage("P0-W05", "backlog"),
         ],
       },
@@ -133,7 +134,7 @@ function createFixture(options = {}) {
       ].join("\n"),
   );
 
-  for (const id of ["P0-W01", "P0-W02", "P0-W03", "P0-W04", "P0-W05"]) {
+  for (const id of ["P0-W01", "P0-W02", "P0-W03", "P0-W04", "P0-W04A", "P0-W05"]) {
     writeFile(root, `docs/v2/work-packages/${id}.md`, `# ${id} fixture\n`);
   }
   for (const id of closed ? ["P0-W01", "P0-W02", "P0-W03"] : ["P0-W01", "P0-W02"]) {
@@ -260,6 +261,73 @@ test("fails when PROGRESS and ACTIVE_HANDOFF identify different packages", (t) =
   const worktreeResult = runStatus(root);
   assert.equal(worktreeResult.status, 1, outputOf(worktreeResult));
   assert.match(outputOf(worktreeResult), /ACTIVE_HANDOFF worktree does not match/);
+});
+
+test("enforces the W04 to W04A to W05 completion-evidence dependency chain", (t) => {
+  const root = createFixture({ closed: true });
+  t.after(() => removeFixture(root));
+  const progressPath = path.join(root, "docs", "v2", "PROGRESS.json");
+  const completion = (id) => `docs/v2/evidence/packages/${id}/COMPLETION.md`;
+  const writeCompletion = (id) => writeFile(
+    root,
+    completion(id),
+    `# ${id} Completion Report\n\n**Status:** complete\n`,
+  );
+  const readProgress = () => JSON.parse(fs.readFileSync(progressPath, "utf8"));
+  const writeProgress = (progress) => fs.writeFileSync(
+    progressPath,
+    `${JSON.stringify(progress, null, 2)}\n`,
+  );
+  const packageById = (progress, id) => progress.phases[0].workPackages.find(
+    (entry) => entry.id === id,
+  );
+
+  const w04aReady = readProgress();
+  packageById(w04aReady, "P0-W04").status = "complete";
+  packageById(w04aReady, "P0-W04").evidence = [completion("P0-W04")];
+  packageById(w04aReady, "P0-W04A").status = "ready";
+  writeCompletion("P0-W04");
+  writeProgress(w04aReady);
+  const readyResult = runStatus(root);
+  assert.equal(readyResult.status, 0, outputOf(readyResult));
+  assert.match(outputOf(readyResult), /Next ready package: P0-W04A \(ready\)/);
+  assert.match(outputOf(readyResult), /Dependencies: P0-W04/);
+
+  const missingW04 = structuredClone(w04aReady);
+  packageById(missingW04, "P0-W04").status = "backlog";
+  packageById(missingW04, "P0-W04").evidence = [];
+  fs.rmSync(path.join(root, completion("P0-W04")));
+  writeProgress(missingW04);
+  const missingW04Result = runStatus(root);
+  assert.equal(missingW04Result.status, 1, outputOf(missingW04Result));
+  assert.match(
+    outputOf(missingW04Result),
+    /P0-W04A dependency P0-W04 is not complete with evidence/,
+  );
+
+  const w05Ready = structuredClone(w04aReady);
+  packageById(w05Ready, "P0-W04A").status = "complete";
+  packageById(w05Ready, "P0-W04A").evidence = [completion("P0-W04A")];
+  packageById(w05Ready, "P0-W05").status = "ready";
+  writeCompletion("P0-W04");
+  writeCompletion("P0-W04A");
+  writeProgress(w05Ready);
+  const w05Result = runStatus(root);
+  assert.equal(w05Result.status, 0, outputOf(w05Result));
+  assert.match(outputOf(w05Result), /Next ready package: P0-W05 \(ready\)/);
+  assert.match(outputOf(w05Result), /Dependencies: P0-W01, P0-W02, P0-W03, P0-W04, P0-W04A/);
+
+  const missingW04a = structuredClone(w05Ready);
+  packageById(missingW04a, "P0-W04A").status = "backlog";
+  packageById(missingW04a, "P0-W04A").evidence = [];
+  fs.rmSync(path.join(root, completion("P0-W04A")));
+  writeProgress(missingW04a);
+  const missingW04aResult = runStatus(root);
+  assert.equal(missingW04aResult.status, 1, outputOf(missingW04aResult));
+  assert.match(
+    outputOf(missingW04aResult),
+    /P0-W05 dependency P0-W04A is not complete with evidence/,
+  );
 });
 
 test("fails when the programme version is not v2.1.1", (t) => {

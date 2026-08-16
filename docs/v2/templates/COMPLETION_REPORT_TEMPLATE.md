@@ -1,8 +1,8 @@
 # Work Package [ID] Completion Report
 
-**Completed by:** Codex / Claude Code / shared handoff  
-**Completed:** [timestamp]  
-**Branch/worktree:** [name]  
+**Completed by:** Codex / Claude Code / shared handoff\
+**Completed:** [timestamp]\
+**Branch/worktree:** [name]\
 **Final commit(s):** [SHA]
 
 ## Objective result

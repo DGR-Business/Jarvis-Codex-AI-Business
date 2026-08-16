@@ -293,12 +293,14 @@ test("source backup excludes reproducible and transient directories", async () =
   try {
     fs.mkdirSync(path.join(sourceRoot, "src"), { recursive: true });
     fs.mkdirSync(path.join(sourceRoot, "node_modules", "pkg"), { recursive: true });
+    fs.mkdirSync(path.join(sourceRoot, ".venv-renderer", "Lib", "site-packages"), { recursive: true });
     fs.mkdirSync(path.join(sourceRoot, "tmp"), { recursive: true });
     fs.mkdirSync(path.join(sourceRoot, "private"), { recursive: true });
     fs.mkdirSync(configuredPrivateRoot, { recursive: true });
     fs.mkdirSync(configuredApprovalPackRoot, { recursive: true });
     fs.writeFileSync(path.join(sourceRoot, "src", "app.js"), "module.exports = true;\n");
     fs.writeFileSync(path.join(sourceRoot, "node_modules", "pkg", "index.js"), "ignored\n");
+    fs.writeFileSync(path.join(sourceRoot, ".venv-renderer", "Lib", "site-packages", "sentinel.py"), "ignored\n");
     fs.writeFileSync(path.join(sourceRoot, "tmp", "scratch.txt"), "ignored\n");
     fs.writeFileSync(path.join(sourceRoot, "private", "runtime-credentials.json"), "ignored\n");
     fs.writeFileSync(path.join(configuredPrivateRoot, "runtime-credentials.json"), "ignored\n");
@@ -314,6 +316,7 @@ test("source backup excludes reproducible and transient directories", async () =
     await restoreBackup(result.destinationPath, restoreRoot, { passphrase: PASSPHRASE });
     assert.equal(fs.readFileSync(path.join(restoreRoot, "src", "app.js"), "utf8"), "module.exports = true;\n");
     assert.equal(fs.existsSync(path.join(restoreRoot, "node_modules")), false);
+    assert.equal(fs.existsSync(path.join(restoreRoot, ".venv-renderer")), false);
     assert.equal(fs.existsSync(path.join(restoreRoot, "tmp")), false);
     assert.equal(fs.existsSync(path.join(restoreRoot, "private")), false);
     assert.equal(fs.existsSync(path.join(restoreRoot, "configured-operator-vault")), false);

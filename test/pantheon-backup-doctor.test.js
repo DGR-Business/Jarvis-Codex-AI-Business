@@ -55,6 +55,7 @@ function copyBootableSourceContract(destination) {
   );
   fs.mkdirSync(path.join(destination, "scripts"), { recursive: true });
   for (const filename of [
+    "renderer-environment.js",
     "compose-storefront-cover.py",
     "render-approval-pack.py",
     "render-digital-product-kit.py",
@@ -226,20 +227,25 @@ test("Doctor checks the exact production Python, renderer scripts, and package p
     );
     const mismatched = checkRenderer({ requirementsPath });
     assert.equal(mismatched.status, "fail");
+    assert.match(mismatched.message, /do not match requirements-runtime/i);
     assert.deepEqual(mismatched.details.mismatched, ["pypdfium2"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 
   const previousPython = process.env.PANTHEON_PYTHON;
+  const previousLegacyPython = process.env.JARVIS_PYTHON;
   try {
     process.env.PANTHEON_PYTHON = process.execPath;
+    process.env.JARVIS_PYTHON = process.execPath;
     const exactInterpreterFailure = checkRenderer();
     assert.equal(exactInterpreterFailure.status, "fail");
     assert.match(exactInterpreterFailure.message, /exact production Python/i);
   } finally {
     if (previousPython === undefined) delete process.env.PANTHEON_PYTHON;
     else process.env.PANTHEON_PYTHON = previousPython;
+    if (previousLegacyPython === undefined) delete process.env.JARVIS_PYTHON;
+    else process.env.JARVIS_PYTHON = previousLegacyPython;
   }
 });
 

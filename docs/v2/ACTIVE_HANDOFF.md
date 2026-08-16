@@ -1,14 +1,14 @@
 # Active Handoff
 
-**Package:** none
-**Status:** no_active_package
-**Current writing agent:** none
-**Worktree/branch:** none
-**Updated:** 2026-08-16T12:35:21+10:00
+**Package:** P0-W04A
+**Status:** in_progress
+**Current writing agent:** Codex
+**Worktree/branch:** `C:\Pantheon-worktrees\P0-engineering-os` / `codex/p0-engineering-os`
+**Updated:** 2026-08-16T14:37:54+10:00
 
-## Owner-approved next package
+## Active package
 
-P0-W04A — Renderer Environment and Gate Corrections — is the sole ready package
+P0-W04A — Renderer Environment and Gate Corrections — is the active package
 in `C:\Pantheon-worktrees\P0-engineering-os` on
 `codex/p0-engineering-os`. It is a narrow corrective package authorized after
 the first independent Phase 0 gate recorded `FAIL` in commit
@@ -54,10 +54,31 @@ The fixed history anchors are baseline
 
 ## Exact next action
 
-Start a fresh P0-W04A implementation session in the same worktree and branch.
-First verify the exact clean planning tip, normal history and worktrees, then
-read the owner-approved package and governing records. Execute only P0-W04A.
-Preserve the failed gate report byte-for-byte, retain exact pins, and close the
-two gate blockers only after every required check passes. On success, commit
-the normal P0-W04A completion/state and stop for a completely fresh independent
-P0-W05 review against the new candidate tip.
+Custody, history, branch, worktree, baseline and immutable-report identities
+were verified at the exact owner-approved planning tip. The 35 formatting
+findings are corrected mechanically with cleaned-blob fidelity to `A`; the
+failed report and package lock remain byte-for-byte unchanged. Independent
+read-only audits report no remaining implementation, scope, formatting or
+active-state defect.
+
+The final post-fix clean bootstrap from the explicit base CPython 3.13.3
+installation passes with exact direct pins openpyxl 3.1.5, Pillow 12.3.0,
+pypdfium2 5.13.0 and ReportLab 5.0.0. Exact-one distribution metadata,
+imports, virtual-environment boundaries, disabled user/system sites and
+`pip check` all pass; the three resolver transitives are charset-normalizer
+3.5.1, et_xmlfile 2.0.0 and pip 25.0.1. Standalone validation passes and the
+immediate second bootstrap safely reports `reused: true` from the same base
+prefix.
+
+The final focused package command passes 57/57. The changed encrypted recovery
+suite passes 19/19, production rendering passes 28/28 and lint passes with zero
+warnings. With both Python aliases proved absent, the complete ordinary suite
+passes 19/19, 137/137, 244/244, 308/308 and 163/163: 871/871 total with zero
+failure, skip or cancellation. P0-B01 is revalidated. No browser, lifecycle,
+provider, commercial, owner-data or integration action ran.
+
+Next, create the single implementation checkpoint from this exact candidate,
+then atomically write the P0-W04A completion, blocker, progress and closed
+handoff records using that implementation SHA. Preserve the original failed
+gate report, leave P0-W05 unexecuted, and stop at a clean candidate for a fresh
+independent P0-W05 review.

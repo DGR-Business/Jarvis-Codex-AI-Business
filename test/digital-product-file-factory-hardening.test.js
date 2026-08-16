@@ -77,20 +77,31 @@ function productCase(overrides = {}) {
   };
 }
 
-test("factory readiness cache follows the currently configured Python interpreter", () => {
+test("factory readiness rejects foreign or incoherent aliases without fallback", () => {
   const previousPython = process.env.PANTHEON_PYTHON;
+  const previousLegacyPython = process.env.JARVIS_PYTHON;
   const restorePython = () => {
     if (previousPython === undefined) delete process.env.PANTHEON_PYTHON;
     else process.env.PANTHEON_PYTHON = previousPython;
+    if (previousLegacyPython === undefined) delete process.env.JARVIS_PYTHON;
+    else process.env.JARVIS_PYTHON = previousLegacyPython;
   };
   try {
     const baseline = factoryReadiness({ refresh: true });
     assert.equal(baseline.ready, true, baseline.reason);
 
     process.env.PANTHEON_PYTHON = process.execPath;
+    delete process.env.JARVIS_PYTHON;
+    const incoherentAliases = factoryReadiness({ refresh: true });
+    assert.equal(incoherentAliases.python, null);
+    assert.equal(incoherentAliases.ready, false);
+    assert.match(incoherentAliases.reason, /must both be absent/i);
+
+    process.env.JARVIS_PYTHON = process.execPath;
     const wrongInterpreter = factoryReadiness({ refresh: true });
-    assert.equal(wrongInterpreter.python, process.execPath);
+    assert.equal(wrongInterpreter.python, null);
     assert.equal(wrongInterpreter.ready, false);
+    assert.match(wrongInterpreter.reason, /foreign renderer interpreter/i);
 
     restorePython();
     const recovered = factoryReadiness();
@@ -199,7 +210,7 @@ test("direct renderer rejects dirty-stage replay and inventories only exact buil
     fs.writeFileSync(stalePath, "must not be trusted as renderer output", "utf8");
     const rejected = spawnSync(
       readiness.python,
-      [readiness.renderer, inputPath, outputRoot],
+      ["-I", readiness.renderer, inputPath, outputRoot],
       { encoding: "utf8", timeout: 30_000 },
     );
     assert.notEqual(rejected.status, 0);
@@ -219,7 +230,7 @@ test("direct renderer rejects dirty-stage replay and inventories only exact buil
     fs.rmSync(outputRoot, { recursive: true, force: true });
     const rendered = spawnSync(
       readiness.python,
-      [readiness.renderer, inputPath, outputRoot],
+      ["-I", readiness.renderer, inputPath, outputRoot],
       { encoding: "utf8", timeout: 120_000 },
     );
     assert.equal(rendered.status, 0, String(rendered.stderr || rendered.stdout));
@@ -349,7 +360,7 @@ test("renderer output names are safe leaves in both JavaScript and Python", () =
       }), "utf8");
       const python = spawnSync(
         readiness.python,
-        [readiness.renderer, inputPath, outputRoot],
+        ["-I", readiness.renderer, inputPath, outputRoot],
         { encoding: "utf8", timeout: 30_000 },
       );
       assert.notEqual(python.status, 0);

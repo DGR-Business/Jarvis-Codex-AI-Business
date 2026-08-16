@@ -54,6 +54,7 @@ function copyBootableSourceContract(destination) {
   );
   fs.mkdirSync(path.join(destination, "scripts"), { recursive: true });
   for (const filename of [
+    "renderer-environment.js",
     "compose-storefront-cover.py",
     "render-approval-pack.py",
     "render-digital-product-kit.py",

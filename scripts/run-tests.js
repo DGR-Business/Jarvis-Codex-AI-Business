@@ -7,6 +7,10 @@ const {
   ordinaryTestWeight,
   planTestInvocations,
 } = require("./test-shards");
+const {
+  assertRendererEnvironment,
+  isHostedGitHubActions,
+} = require("../src/runtime/renderer-environment");
 
 const workspaceRoot = path.resolve(__dirname, "..");
 const pdfTempRoot = path.join(workspaceRoot, "tmp", "pdfs");
@@ -274,98 +278,14 @@ function requestedTestInvocations(args, parentEnvironment = process.env, supplie
   );
 }
 
-function pythonPathCandidates(parentEnvironment) {
-  const candidates = [];
-  const preferred = environmentValue(parentEnvironment, "PANTHEON_PYTHON");
-  const legacy = environmentValue(parentEnvironment, "JARVIS_PYTHON");
-  if (
-    preferred
-    && legacy
-    && path.isAbsolute(preferred)
-    && path.isAbsolute(legacy)
-    && pathsEquivalent(preferred, legacy)
-  ) {
-    candidates.push(preferred);
-  }
-
-  const dependencyRoot = path.resolve(path.dirname(process.execPath), "..", "..");
-  candidates.push(path.join(
-    dependencyRoot,
-    "python",
-    process.platform === "win32" ? "python.exe" : "python",
-  ));
-  const seen = new Set();
-  return candidates
-    .map((candidate) => path.resolve(candidate))
-    .filter((candidate) => {
-      const key = comparablePath(candidate);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
-
-function rendererPythonReady(candidate, parentEnvironment, rootDir = workspaceRoot) {
-  const executablePattern = process.platform === "win32"
-    ? /^python(?:3(?:\.\d+)*)?\.exe$/i
-    : /^python(?:3(?:\.\d+)*)?$/;
-  if (!executablePattern.test(path.basename(candidate))) return null;
-  let probeRoot = null;
-  try {
-    const canonical = fs.realpathSync(candidate);
-    if (!fs.statSync(canonical).isFile()) return null;
-    probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-renderer-probe-"));
-    const profileRoot = path.join(probeRoot, "profile");
-    const tempRoot = path.join(probeRoot, "temp");
-    fs.mkdirSync(profileRoot, { recursive: true });
-    fs.mkdirSync(tempRoot, { recursive: true });
-    const probeEnvironment = {
-      ...createBootEnvironment(parentEnvironment),
-      HOME: profileRoot,
-      PATH: minimalToolPath(parentEnvironment, canonical),
-      PYTHONNOUSERSITE: "1",
-      PYTHONDONTWRITEBYTECODE: "1",
-      TEMP: tempRoot,
-      TMP: tempRoot,
-      TMPDIR: tempRoot,
-      USERPROFILE: profileRoot,
-    };
-    const result = spawnSync(
-      canonical,
-      ["-c", "import openpyxl,PIL,pypdfium2,reportlab"],
-      {
-        cwd: probeRoot || rootDir,
-        env: probeEnvironment,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 20_000,
-      },
-    );
-    return result.status === 0 ? canonical : null;
-  } catch {
-    return null;
-  } finally {
-    if (probeRoot) {
-      fs.rmSync(probeRoot, {
-        recursive: true,
-        force: true,
-        maxRetries: 50,
-        retryDelay: 100,
-      });
-    }
-  }
-}
-
 function resolveRendererPython(
   parentEnvironment = process.env,
   rootDir = workspaceRoot,
-  candidateReady = rendererPythonReady,
 ) {
-  for (const candidate of pythonPathCandidates(parentEnvironment)) {
-    const ready = candidateReady(candidate, parentEnvironment, rootDir);
-    if (ready) return ready;
-  }
-  return null;
+  return assertRendererEnvironment({
+    rootDir,
+    environment: parentEnvironment,
+  }).python;
 }
 
 function assignCurrentAndLegacy(environment, suffix, value) {
@@ -405,6 +325,17 @@ function createTestEnvironment({
     XDG_DATA_HOME: path.join(profileRoot, ".local", "share"),
   };
   if (mode.ci) environment.CI = "true";
+  if (mode.ci && isHostedGitHubActions(parentEnvironment, workspaceRoot)) {
+    for (const name of [
+      "GITHUB_ACTIONS",
+      "GITHUB_WORKSPACE",
+      "RUNNER_ENVIRONMENT",
+      "RUNNER_OS",
+      "pythonLocation",
+    ]) {
+      environment[name] = environmentValue(parentEnvironment, name);
+    }
+  }
   if (mode.lifecycleCi) environment.PANTHEON_LIFECYCLE_PHASE = mode.lifecyclePhase;
   if (rendererPython) assignCurrentAndLegacy(environment, "PYTHON", rendererPython);
 
@@ -456,7 +387,10 @@ function runTests(
   const setExitCode = dependencies.setExitCode || ((code) => {
     process.exitCode = code;
   });
-  const rendererPython = rendererResolver(parentEnvironment);
+  const rendererPython = mode.lifecycleCi ? null : rendererResolver(parentEnvironment);
+  if (!mode.lifecycleCi && !rendererPython) {
+    throw new Error("Pantheon's exact renderer environment is unavailable.");
+  }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-test-runtime-"));
   const pdfSnapshot = path.join(root, "pre-test-pdfs");
   let pdfSnapshotReady = false;
@@ -546,7 +480,6 @@ module.exports = {
   canonicalWindowsEnvironment,
   createTestEnvironment,
   isInside,
-  pythonPathCandidates,
   requestedTestInvocations,
   resolveRendererPython,
   restorePdfTemp,

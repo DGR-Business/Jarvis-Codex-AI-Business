@@ -1,12 +1,12 @@
 # Work Package [ID]: [Title]
 
-**Phase:** [phase]  
-**Status:** backlog / ready / in_progress / blocked / review / complete  
-**Branch/worktree:** [name]  
+**Phase:** [phase]\
+**Status:** backlog / ready / in_progress / blocked / review / complete\
+**Branch/worktree:** [name]\
 **Master Plan version:** 2.1.1
-**Execution Pack version:** [version]  
-**Session type:** planning / implementation / handoff continuation / review  
-**Preferred agent:** Codex / Claude Code / either  
+**Execution Pack version:** [version]\
+**Session type:** planning / implementation / handoff continuation / review\
+**Preferred agent:** Codex / Claude Code / either\
 **Cross-agent handoff permitted:** yes/no
 
 ## Objective
