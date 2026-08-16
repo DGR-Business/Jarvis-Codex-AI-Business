@@ -1,83 +1,65 @@
 # Pantheon v2.1.1 Blockers
 
-## P0-B01 — Ordinary proof-ledger isolation awaits full-suite closure
+There are no active Phase 0 blockers. P0-W01 through P0-W04 are complete;
+P0-W05 is ready but has not started.
 
-- **Status:** implementation repaired and targeted-verified; formal closure blocked by P0-B02.
-- **Package history:** nonblocking for completed P0-W02 and P0-W03.
-- **Owner:** P0-W04 under the approved Phase 0 Execution Pack.
-- **Blocks:** a green ordinary-suite claim, P0-W04 completion and the P0-W05
-  gate. It does not block the approved authority/static work in P0-W02 or the
-  bounded continuity-tool work in P0-W03.
-- **Evidence:** `docs/v2/evidence/packages/P0-W01/COMPLETION.md` and
-  `docs/v2/evidence/packages/P0-W04/CHECKPOINT.md`.
-- **Original finding:** baseline `scripts/run-tests.js` reused one inherited environment
-  for all temporary runtimes and shards. W01's required non-empty current and
-  legacy proof-ledger aliases therefore resolve to one SQLite file. The focused
-  proof test deliberately changes the protected test key and correctly fails
-  closed against metadata created under the earlier key.
-- **Classification:** B — pre-existing failure in the ordinary-test-isolation
-  domain. There is no P0-W01 source or test delta.
-- **Coverage limitation:** the fail-fast command executed 703 tests across four
-  shards (702 pass, one fail); shard five did not run and is not claimed green.
-- **Implemented resolution:** P0-W04 now creates a deliberate disposable child
-  environment per invocation, excludes both hostile proof-path aliases and
-  retains the production DB-relative fallback, redirects current and legacy
-  write paths, excludes inherited live enables and fixes dry-run/privacy
-  controls to safe test values. It anchors Windows tools to the drive of the
-  already-running Node executable, rebuilds PATH from validated canonical tool
-  roots, rejects even coherent ambient replacement trees, and accepts a renderer
-  only from the bundled runtime relative to the running Node executable or a
-  coherent explicit current/legacy absolute pair. Ambient PATH, profiles and
-  hosted-runner Python hints are not renderer provenance.
-- **Focused verification:** the isolation suite passes 5/5 and the original
-  journey regression plus wrapper sharding/quarantine tests pass 11/11. The
-  focused wrapper test includes a real child exit failure, exact PDF restore
-  and disposable-root cleanup. A separate partial-restore failure retains and
-  reports the only baseline recovery snapshot instead of deleting it; the test
-  proves recovery before restoring and cleaning the synthetic failure. The
-  required complete ordinary run cannot close this blocker until P0-B02 is
-  resolved; do not weaken the proof-ledger fail-closed behavior.
+### P0-B01 — Closed by P0-W04 ordinary-test isolation
 
-## P0-B02 — Exact renderer environment is not provisioned
+- **Status:** closed on 2026-08-16 by the final green P0-W04 candidate.
+- **Blocks:** none.
+- **Owner:** completed P0-W04.
+- **Evidence:** `docs/v2/evidence/packages/P0-W04/COMPLETION.md` and the
+  historical `docs/v2/evidence/packages/P0-W04/CHECKPOINT.md`.
+- **Original finding:** the baseline ordinary-test wrapper reused an inherited
+  environment and one proof-ledger alias, so a later synthetic privacy-key
+  change correctly failed closed against proof metadata written earlier.
+- **Resolution:** ordinary children now receive a deliberately constructed
+  per-invocation environment. Current and legacy writes are disposable, proof
+  ledgers retain the production DB-relative fallback, live/lifecycle modes are
+  quarantined, tool and renderer provenance is validated, and `tmp/pdfs` is
+  restored after success and failure. Hash-only regression snapshots ensure a
+  mismatch cannot print pre-existing PDF names or bytes.
+- **Closure verification:** focused isolation passes 5/5. The complete ordinary
+  inventory—88 files in five shards—passes 19/19, 154/154, 261/261, 272/272
+  and 153/153: 859/859 total with no failure, skip or cancellation. The
+  quarantined Windows lifecycle test was excluded and not run.
 
-- **Status:** active D-class precondition; P0-W04-A01 approved, disposable exact environment pending.
-- **Owner:** P0-W04 under approved amendment P0-W04-A01.
-- **Blocks:** the required green complete ordinary suite, formal P0-B01 closure,
-  P0-W04 completion and the P0-W05 gate.
-- **Evidence:** two pre-existing interpreters were discovered read-only and
-  neither satisfies `requirements-runtime.txt`. The Codex-bundled renderer has
-  openpyxl 3.1.5, Pillow 12.3.0, pypdfium2 5.12.1 and reportlab 4.4.9, so its
-  production `checkRenderer()` fails only Pillow against the 12.2.0 pin. The
-  separate local Python 3.13 has openpyxl 3.1.5, Pillow 12.1.1, pypdfium2 5.6.0
-  and reportlab 4.4.10, so it has three mismatches. Neither interpreter was
-  changed or installed by P0-W04.
-- **Required full-run result:** the one required `npm.cmd test` attempt passed
-  shard 1 at 19/19. Shard 2 passed 160/162; its two failures were the doctor's
-  exact renderer-package-pin test and the transitive operations-ready doctor
-  CLI test. Fail-fast then left shards 3 through 5 unrun. That attempt preceded
-  final review fixes; the final candidate's affected focused checks are green,
-  but it has no complete-suite green claim.
-- **Approved resolution path:** P0-W04-A01 permits one disposable environment
-  using the existing pins and requires both Python aliases to identify the same
-  validated absolute interpreter. It permits no pin or production-contract
-  change and no mutation of either existing interpreter. Close this blocker
-  only after exact version validation and the complete ordinary suite pass.
+### P0-B02 — Closed for P0-W04 by the approved disposable renderer
 
-P0-W01 through P0-W03 are complete. W01's required run is a safely isolated,
-truthful observed red result rather than a false green claim. The reviewed
-pre-existing work
-remains preserved on `pantheon-v2.1.1-programme` at unverified checkpoint
+- **Status:** closed on 2026-08-16 under owner-approved amendment P0-W04-A01.
+- **Blocks:** none.
+- **Owner:** completed P0-W04.
+- **Evidence:**
+  `docs/v2/work-packages/P0-W04-A01-DISPOSABLE-RENDERER-AMENDMENT.md` and
+  `docs/v2/evidence/packages/P0-W04/COMPLETION.md`.
+- **Original finding:** neither pre-existing interpreter matched all four exact
+  `requirements-runtime.txt` pins. The process-bundled renderer differed on
+  Pillow; the separate local Python differed on Pillow, pypdfium2 and
+  reportlab.
+- **Resolution:** one disposable environment outside the repository matched
+  openpyxl 3.1.5, Pillow 12.2.0, pypdfium2 5.12.1 and reportlab 4.4.9. Both
+  Python aliases identified the same validated absolute interpreter for the
+  final focused and complete ordinary runs. The fresh-environment bootstrap
+  and resolver-required distributions are fully inventoried in the completion
+  report; no repository pin or existing interpreter changed.
+- **Cleanup:** the exact disposable root was removed after verification and
+  its absence was rechecked. The ambient interpreters remain mismatched; W04
+  made no permanent host repair.
+
+## Current Phase 0 state
+
+P0-W05 requires its own fresh independent gate session, test environment and
+authority. P0-W04-A01 granted no W05 installation authority and its removed
+renderer is not available to the gate. A W05 renderer precondition must be
+satisfied within W05's own authority or recorded as a gate finding; it must not
+borrow the W04 amendment.
+
+The reviewed pre-existing work remains preserved on
+`pantheon-v2.1.1-programme` at unverified checkpoint
 `612a35c8b1d881f638570373d06f99d26bfb280e`; local `main` remains baseline
-`718e50670812ad5da7210bd9f183521328cccf93`.
+`718e50670812ad5da7210bd9f183521328cccf93`. Remote freshness remains unproved
+because P0-W04 performed no fetch, push, PR or merge.
 
-The ambient renderer limitation remains active blocker P0-B02 until the
-P0-W04-A01 disposable environment is validated and used for a green complete
-ordinary suite. W01's earlier disposable environment was deleted after use and
-did not mutate either discovered interpreter.
-
-The governing Phase 0 Execution Pack is owner-approved; its approved pack
-identifier remains `0.2-draft`. P0-W02 reconciled the known programme-version,
-progress-schema, authority, session and shared-skill contract issues; they are
-no longer limitations or blockers. P0-W04 has resumed under P0-W04-A01 but
-P0-B01/P0-B02 remain open until the required suite is green; P0-W05 is not
-ready.
+The governing Phase 0 Execution Pack retains approved identifier `0.2-draft`.
+Claude continuity remains honestly `prepared_not_verified`; no Claude CLI was
+available and no rehearsal was simulated.

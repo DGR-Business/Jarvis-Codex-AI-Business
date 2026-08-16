@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -26,26 +27,32 @@ function valueFor(environment, name) {
 }
 
 function directorySnapshot(root) {
-  if (!fs.existsSync(root)) return [];
-  const entries = [];
+  const digest = crypto.createHash("sha256");
+  let entries = 0;
+  if (!fs.existsSync(root)) {
+    digest.update("missing\0");
+    return { entries, digest: digest.digest("hex") };
+  }
   function visit(current) {
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    const children = fs.readdirSync(current, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of children) {
       const absolute = path.join(current, entry.name);
       const relative = path.relative(root, absolute).replaceAll("\\", "/");
+      entries += 1;
       if (entry.isDirectory()) {
-        entries.push({ relative, type: "directory" });
+        digest.update(`directory\0${relative}\0`);
         visit(absolute);
       } else {
-        entries.push({
-          relative,
-          type: "file",
-          bytes: fs.readFileSync(absolute).toString("base64"),
-        });
+        const contents = fs.readFileSync(absolute);
+        digest.update(`file\0${relative}\0${contents.length}\0`);
+        digest.update(contents);
+        digest.update("\0");
       }
     }
   }
   visit(root);
-  return entries;
+  return { entries, digest: digest.digest("hex") };
 }
 
 test("ordinary children receive only deliberate tools, controls, and disposable paths", () => {
@@ -59,7 +66,7 @@ test("ordinary children receive only deliberate tools, controls, and disposable 
   fs.mkdirSync(hostileToolRoot, { recursive: true });
   const parentEnvironment = {
     ComSpec: process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe",
-    Path: `${hostileToolRoot}${path.delimiter}${valueFor(process.env, "PATH") || ""}`,
+    Path: hostileToolRoot,
     PATHEXT: `.${secret}.EXE`,
     SystemDrive: valueFor(process.env, "SYSTEMDRIVE")
       || path.parse(systemRoot).root.replace(/[\\/]$/, ""),

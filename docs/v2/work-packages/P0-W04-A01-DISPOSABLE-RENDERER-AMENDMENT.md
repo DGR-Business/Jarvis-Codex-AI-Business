@@ -19,13 +19,22 @@ owner-reviewed amendment.
 For the sole purpose of completing P0-W04 verification, one writing agent may:
 
 1. create one disposable Python renderer environment outside the repository;
-2. install into that environment only the exact packages already specified by
-   `requirements-runtime.txt`;
+2. configure that environment to match the existing
+   `requirements-runtime.txt` pins without changing those pins;
 3. use narrowly necessary package-index access to obtain those exact packages;
 4. validate the resulting interpreter and package versions;
 5. set `PANTHEON_PYTHON` and `JARVIS_PYTHON` to that same validated absolute
    interpreter for P0-W04 verification commands; and
 6. remove the disposable environment after verification evidence is captured.
+
+**Implementation clarification (2026-08-16):** item 2 corrects the
+assistant-authored transcription in commit `1303ce5` back to the owner's actual
+approval wording: one disposable renderer environment matching the existing
+pins. It authorizes no additional top-level package request beyond the four
+exact entries in `requirements-runtime.txt`; a fresh environment's bootstrap
+tooling and only resolver-required transitive distributions are recorded as
+observed implementation inventory, not as new dependency pins or independent
+package authority.
 
 This authority specializes only P0-W04 acceptance criterion 8 and its renderer
 stop condition. It does not change any dependency pin, production or business
