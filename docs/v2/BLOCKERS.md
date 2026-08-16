@@ -1,8 +1,8 @@
 # Pantheon v2.1.1 Blockers
 
-P0-W04A resolved the two findings from the first independent Phase 0 gate and
-revalidated the existing ordinary-test isolation closure. P0-W05 is ready for
-one completely fresh independent review.
+The second independent Phase 0 gate found that P0-W04A's four-root renderer
+check does not prove the complete installed package inventory. P0-W04B is the
+active bounded correction. P0-W05 remains stopped until it completes.
 
 ### P0-B01 — Closed by P0-W04 ordinary-test isolation
 
@@ -75,30 +75,38 @@ this historical W04-only closure.
 
 ## P0-B04 — Durable exact renderer environment is unavailable
 
-- **Status:** closed on 2026-08-16 by P0-W04A implementation checkpoint
+- **Status:** open; reopened on 2026-08-16 by exact review commit
+  `d4819528050b42a2dcefea590c106d912fc5e0cf` and active P0-W04B.
+- **Blocks:** P0-W05 review 03, owner-approved integration and any Phase 0 exit.
+- **Owner:** P0-W04B.
+- **Evidence:** `P0-GATE-02-F01` in
+  `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-02.md`, the owner-approved
+  `docs/v2/work-packages/P0-W04B.md`, and the immutable first-gate evidence.
+- **Original finding and historical closure:** P0-W04A correctly replaced the
+  deleted W04 one-use environment with an ignored checkout-local CPython 3.13
+  environment and proved the four exact direct roots, imports, isolation,
+  `pip check`, shared resolver and ordinary regression. That closed the first
+  gate's narrower availability finding at implementation checkpoint
   `b15f0042f513b4539feb3e6cbb93b26e8a1f91fe`.
-- **Blocks:** none; P0-W05 may begin a fresh independent review.
-- **Owner:** completed P0-W04A.
-- **Evidence:** `P0-GATE-F02` in
-  `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW.md` and the owner-approved
-  `docs/v2/work-packages/P0-W04A.md`, with completion evidence in
-  `docs/v2/evidence/packages/P0-W04A/COMPLETION.md`.
-- **Finding:** the W04 one-use environment was deleted, the existing local
-  candidates do not satisfy all exact pins and ordinary test/runtime discovery
-  can depend on managed-Python coincidence. The first gate's full ordinary
-  command therefore could not pass.
-- **Closure verification:** the final clean bootstrap created the ignored
-  canonical CPython 3.13.3 environment from the newest reviewed exact pins;
-  standalone validation, safe reuse, `pip check`, focused 57/57, recovery
-  19/19, production 28/28, lint and the alias-absent ordinary 871/871 suite all
-  pass. No global/user interpreter or configuration changed.
+- **Reopened finding:** validation compares only the four direct roots and
+  ordinary root-only resolution does not govern the observed transitives or
+  seeded pip. Unexpected distributions, changed or missing transitives,
+  duplicate normalized metadata and changed tooling can pass or be reused.
+- **Required closure:** the canonical environment must contain exactly one
+  normalized metadata record for each of openpyxl 3.1.5, Pillow 12.3.0,
+  pypdfium2 5.13.0, reportlab 5.0.0, charset-normalizer 3.5.1, et_xmlfile 2.0.0
+  and pip 26.2.1, with nothing else. Fresh bootstrap and immediate safe reuse,
+  base/interpreter provenance, isolation/import/`pip check`, hosted CI,
+  Doctor/product/approval/recovery resolution, focused regressions and the full
+  alias-absent ordinary suite must all pass before closure.
 
 ## Current Phase 0 state
 
-P0-W04A is complete. P0-W05 is the sole ready package and its review must be
-completely fresh. The original failed gate report and commit
-`75914d954cbf78b7bf4695eed2f135ea1bb627ac` remain valid evidence and must not
-be changed. The new review writes `PHASE-GATE-REVIEW-02.md` instead.
+P0-W04A remains complete. P0-W04B is active and P0-W05 is backlog. Both failed
+gate reports and commits `75914d954cbf78b7bf4695eed2f135ea1bb627ac`
+and `d4819528050b42a2dcefea590c106d912fc5e0cf` remain immutable evidence. After
+successful P0-W04B closeout, the next completely fresh review must write
+`PHASE-GATE-REVIEW-03.md` and preserve reviews 01 and 02.
 
 The reviewed pre-existing work remains preserved on
 `pantheon-v2.1.1-programme` at unverified checkpoint

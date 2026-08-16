@@ -1070,3 +1070,51 @@ committed renderer validation to pass before closeout. This is local
 reprovisioning only: no global/user Python or configuration, unrelated package,
 product behavior, provider/commercial action or full-suite substitution is
 authorized.
+
+### P0-W04B exact-inventory corrective amendment approved 2026-08-16
+
+After the second independent P0-W05 review recorded binary `FAIL` in exact
+review commit `d4819528050b42a2dcefea590c106d912fc5e0cf` (`R2`) against reviewed
+candidate `e37c958a232e139f6216caae66b5b7932b6a6e0b` (`S2`), the owner approved
+one further bounded corrective package: `P0-W04B — Exact Renderer Inventory
+Corrective Package`. Its exact authority and acceptance contract are
+`docs/v2/work-packages/P0-W04B.md`.
+
+This amendment inserts P0-W04B after completed P0-W04A and R2, and before any
+further P0-W05 review. P0-W05 now depends on completed P0-W04B as well as
+W01-W04A. The third completely fresh independent review must preserve both
+existing reports byte-for-byte and write
+`docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-03.md`. Neither failed review is
+rewritten, erased or converted into a pass.
+
+P0-W04B supersedes the P0-W04A specialization only where the later review
+proved it insufficient:
+
+- the renderer contract is the exact normalized seven-distribution inventory
+  openpyxl 3.1.5, Pillow 12.3.0, pypdfium2 5.13.0, reportlab 5.0.0,
+  charset-normalizer 3.5.1, et_xmlfile 2.0.0 and governed pip 26.2.1;
+- `requirements-runtime.txt` remains the four direct runtime roots, while at
+  most one small tracked full-inventory constraints/lock file may govern the
+  complete inventory;
+- bootstrap, validation and reuse must fail closed for every missing, changed,
+  duplicate-normalized or unexpected distribution as well as interpreter,
+  base, isolation, import and `pip check` failure;
+- hosted `actions/setup-python` is a verified bootstrap base only; ordinary CI
+  tests must use the validated checkout-local renderer environment; and
+- the next review is review 03, not review 02. Any later separately authorized
+  integration must reprovision and validate this W04B exact contract in the
+  integrated checkout rather than the earlier observed pip 25.0.1 inventory.
+
+The owner authorizes public PyPI access only for those exact seven releases,
+without credentials, inherited indexes or custom package configuration. After
+the anchored target is resolved and proved to be the ordinary
+`/.venv-renderer/` directory inside this checkout, that exact generated
+directory alone may be deleted and recreated. The generated environment stays
+excluded from Git and recovery source archives; the new tracked contract, if
+added, must be included in recovery-source validation.
+
+All other P0-W04A, Master Plan and Phase Pack constraints remain in force.
+This amendment does not authorize P0-W05 integration, a third gate review in
+the corrective session, remote Git, provider/live/commercial or owner-data
+operations, renderer-algorithm or product-byte changes, the separate diagnostic
+temporary-path repair, UI/runtime-schema/business changes, or P1 work.

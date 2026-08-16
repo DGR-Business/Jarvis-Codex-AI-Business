@@ -1,72 +1,72 @@
 # Active Handoff
 
-**Package:** none
-**Status:** no_active_package
-**Current writing agent:** none
-**Worktree/branch:** none
-**Updated:** 2026-08-16T14:40:42+10:00
+**Package:** P0-W04B
+**Status:** in_progress
+**Current writing agent:** Codex
+**Worktree/branch:** `C:\Pantheon-worktrees\P0-engineering-os` / `codex/p0-engineering-os`
+**Updated:** 2026-08-16T16:10:59+10:00
 
-## Completed package
+## Objective and current checkpoint
 
-P0-W04A — Renderer Environment and Gate Corrections — is complete at
-implementation checkpoint
-`b15f0042f513b4539feb3e6cbb93b26e8a1f91fe`. The completion/state commit
-containing this handoff is the new candidate `S2`; its SHA is intentionally
-discovered from normal Git history rather than self-recorded.
+Correct only `P0-GATE-02-F01` by making the isolated checkout-local renderer
+fail closed against complete installed-distribution drift. The owner-approved
+Phase Pack specialization and focused P0-W04B contract are being recorded in
+the first normal package commit, `A2`, whose parent must be exact R2.
 
-The package mechanically corrected all 35 first-gate formatting findings,
-established the ignored checkout-local renderer environment, promoted the
-newest reviewed stable exact renderer set, and made bootstrap, validation,
-ordinary tests, Doctor, product rendering, approval-pack rendering and recovery
-share one fail-closed contract.
+No renderer implementation or verification result is claimed at this
+checkpoint. P0-B04 is truthfully reopened and P0-W05 remains backlog.
 
-## Verification
+## Proven immutable anchors
 
-- Committed blobs prove exactly 30 explicit hard-break substitutions and five
-  surplus EOF blank removals; every other execution-copy byte remains exact.
-- `git diff --check` passes across the complete baseline range.
-- The original failed gate report remains the unchanged R1 blob
-  `6928a40ea2c1f0af493e728e6a71084d13291089`; package-lock remains unchanged.
-- Final clean bootstrap from the verified redacted base CPython 3.13.3 path,
-  standalone validation, `pip check` and second-run reuse all pass.
-- Exact direct pins are openpyxl 3.1.5, Pillow 12.3.0, pypdfium2 5.13.0 and
-  ReportLab 5.0.0. Resolver inventory adds only charset-normalizer 3.5.1,
-  et_xmlfile 2.0.0 and pip 25.0.1.
-- Final focused checks pass 57/57; the changed encrypted recovery suite passes
-  19/19; production rendering passes 28/28; lint is clean.
-- With both Python aliases absent, all five ordinary shards pass 19/19,
-  137/137, 244/244, 308/308 and 163/163: 871/871 total, with zero failure, skip
-  or cancellation.
-- Final independent implementation and state audits report no actionable
-  finding. Repository state consistency passes after closeout.
-- Completion evidence:
-  `docs/v2/evidence/packages/P0-W04A/COMPLETION.md`.
+- baseline/local `main` (`B`):
+  `718e50670812ad5da7210bd9f183521328cccf93`;
+- preserved clean WIP:
+  `612a35c8b1d881f638570373d06f99d26bfb280e`;
+- reviewed candidate (`S2`):
+  `e37c958a232e139f6216caae66b5b7932b6a6e0b`;
+- second failed review and A2 parent (`R2`):
+  `d4819528050b42a2dcefea590c106d912fc5e0cf`;
+- original review blob:
+  `6928a40ea2c1f0af493e728e6a71084d13291089`; and
+- second review blob:
+  `d5bf6cddde6093126f7fb008d7f112bc214f7eb5`.
 
-## Durable state and limitations
+Both registered worktrees were clean at package start, local `main` remained B,
+R2's parent was exact S2, the canonical ignored `/.venv-renderer/` was a regular
+checkout-local directory, and both Python aliases were absent.
 
-- P0-B01 remains closed and is revalidated. Historical P0-B02 remains
-  unchanged. P0-B03 and P0-B04 are closed.
-- P0-W05 is ready for a completely fresh independent gate review. It has not
-  begun. The reviewer must create
-  `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-02.md` and must never overwrite
-  the original failed report.
-- The ignored `/.venv-renderer/` remains in the implementation worktree. A
-  later owner-authorized local-main integration must provision and validate the
-  same exact environment in that checkout; virtual environments are not copied.
-- Preserved unverified WIP remains on `pantheon-v2.1.1-programme` at
-  `612a35c8b1d881f638570373d06f99d26bfb280e`; local `main` remains baseline
-  `718e50670812ad5da7210bd9f183521328cccf93`.
-- Claude remains honestly `prepared_not_verified`. Remote freshness remains
-  unproved.
-- Browser/T3/Playwright, local lifecycle, provider/live/commercial, owner-data,
-  global/user configuration, push, PR, merge, rebase, local-main integration
-  and P1 were not performed.
+## Exact package contract
+
+`requirements-runtime.txt` stays limited to four direct roots. One small
+tracked full-inventory contract may govern exactly:
+
+- openpyxl 3.1.5;
+- Pillow 12.3.0;
+- pypdfium2 5.13.0;
+- reportlab 5.0.0;
+- charset-normalizer 3.5.1;
+- et_xmlfile 2.0.0; and
+- pip 26.2.1.
+
+Validation and reuse must reject every extra, missing, duplicate-normalized or
+version-drifted distribution as well as foreign interpreters, base mismatch,
+system/user-site exposure, failed imports or failed `pip check`. Hosted
+setup-python is a bootstrap base only; CI and ordinary tests use the validated
+checkout-local environment. Recovery source validation includes the tracked
+contract and backup continues to exclude the generated environment.
+
+## Boundaries
+
+Preserve renderer algorithms, product bytes and business behavior, approval and
+product shared resolution, database/runtime schema, UI, providers, package-lock,
+both failed reports and the historical W04A/P0-W05 records. Do not absorb the
+separate diagnostic temporary-path limitation. Browser/T3/Playwright, local
+lifecycle, provider/live/commercial/owner-data actions, remote Git, integration,
+the third gate review and P1 remain forbidden.
 
 ## Exact next action
 
-Start a fresh P0-W05 session in
-`C:\Pantheon-worktrees\P0-engineering-os` on `codex/p0-engineering-os`. Read the
-approved P0-W05 package, P0-W04A package and completion evidence, derive exact
-candidate `S2` from current HEAD, independently review the full baseline range,
-and write a new `PHASE-GATE-REVIEW-02.md` review. Do not rewrite R1, begin
-integration without separate owner authority, or start P1.
+After committing A2, implement the exact inventory contract and focused tests
+only. Commit that coherent implementation as I2, run the complete authorized
+verification ladder, then write truthful completion evidence/state as S3 or
+stop with P0-B04 open on any failure.

@@ -76,6 +76,7 @@ function createFixture(options = {}) {
           ),
           workPackage("P0-W04", closed ? "ready" : "backlog"),
           workPackage("P0-W04A", "backlog"),
+          workPackage("P0-W04B", "backlog"),
           workPackage("P0-W05", "backlog"),
         ],
       },
@@ -134,7 +135,7 @@ function createFixture(options = {}) {
       ].join("\n"),
   );
 
-  for (const id of ["P0-W01", "P0-W02", "P0-W03", "P0-W04", "P0-W04A", "P0-W05"]) {
+  for (const id of ["P0-W01", "P0-W02", "P0-W03", "P0-W04", "P0-W04A", "P0-W04B", "P0-W05"]) {
     writeFile(root, `docs/v2/work-packages/${id}.md`, `# ${id} fixture\n`);
   }
   for (const id of closed ? ["P0-W01", "P0-W02", "P0-W03"] : ["P0-W01", "P0-W02"]) {
@@ -263,7 +264,7 @@ test("fails when PROGRESS and ACTIVE_HANDOFF identify different packages", (t) =
   assert.match(outputOf(worktreeResult), /ACTIVE_HANDOFF worktree does not match/);
 });
 
-test("enforces the W04 to W04A to W05 completion-evidence dependency chain", (t) => {
+test("enforces the W04 to W04A to W04B to W05 completion-evidence dependency chain", (t) => {
   const root = createFixture({ closed: true });
   t.after(() => removeFixture(root));
   const progressPath = path.join(root, "docs", "v2", "PROGRESS.json");
@@ -305,19 +306,19 @@ test("enforces the W04 to W04A to W05 completion-evidence dependency chain", (t)
     /P0-W04A dependency P0-W04 is not complete with evidence/,
   );
 
-  const w05Ready = structuredClone(w04aReady);
-  packageById(w05Ready, "P0-W04A").status = "complete";
-  packageById(w05Ready, "P0-W04A").evidence = [completion("P0-W04A")];
-  packageById(w05Ready, "P0-W05").status = "ready";
+  const w04bReady = structuredClone(w04aReady);
+  packageById(w04bReady, "P0-W04A").status = "complete";
+  packageById(w04bReady, "P0-W04A").evidence = [completion("P0-W04A")];
+  packageById(w04bReady, "P0-W04B").status = "ready";
   writeCompletion("P0-W04");
   writeCompletion("P0-W04A");
-  writeProgress(w05Ready);
-  const w05Result = runStatus(root);
-  assert.equal(w05Result.status, 0, outputOf(w05Result));
-  assert.match(outputOf(w05Result), /Next ready package: P0-W05 \(ready\)/);
-  assert.match(outputOf(w05Result), /Dependencies: P0-W01, P0-W02, P0-W03, P0-W04, P0-W04A/);
+  writeProgress(w04bReady);
+  const w04bResult = runStatus(root);
+  assert.equal(w04bResult.status, 0, outputOf(w04bResult));
+  assert.match(outputOf(w04bResult), /Next ready package: P0-W04B \(ready\)/);
+  assert.match(outputOf(w04bResult), /Dependencies: P0-W04A/);
 
-  const missingW04a = structuredClone(w05Ready);
+  const missingW04a = structuredClone(w04bReady);
   packageById(missingW04a, "P0-W04A").status = "backlog";
   packageById(missingW04a, "P0-W04A").evidence = [];
   fs.rmSync(path.join(root, completion("P0-W04A")));
@@ -326,7 +327,31 @@ test("enforces the W04 to W04A to W05 completion-evidence dependency chain", (t)
   assert.equal(missingW04aResult.status, 1, outputOf(missingW04aResult));
   assert.match(
     outputOf(missingW04aResult),
-    /P0-W05 dependency P0-W04A is not complete with evidence/,
+    /P0-W04B dependency P0-W04A is not complete with evidence/,
+  );
+
+  const w05Ready = structuredClone(w04bReady);
+  packageById(w05Ready, "P0-W04B").status = "complete";
+  packageById(w05Ready, "P0-W04B").evidence = [completion("P0-W04B")];
+  packageById(w05Ready, "P0-W05").status = "ready";
+  writeCompletion("P0-W04A");
+  writeCompletion("P0-W04B");
+  writeProgress(w05Ready);
+  const w05Result = runStatus(root);
+  assert.equal(w05Result.status, 0, outputOf(w05Result));
+  assert.match(outputOf(w05Result), /Next ready package: P0-W05 \(ready\)/);
+  assert.match(outputOf(w05Result), /Dependencies: P0-W01, P0-W02, P0-W03, P0-W04, P0-W04A, P0-W04B/);
+
+  const missingW04b = structuredClone(w05Ready);
+  packageById(missingW04b, "P0-W04B").status = "backlog";
+  packageById(missingW04b, "P0-W04B").evidence = [];
+  fs.rmSync(path.join(root, completion("P0-W04B")));
+  writeProgress(missingW04b);
+  const missingW04bResult = runStatus(root);
+  assert.equal(missingW04bResult.status, 1, outputOf(missingW04bResult));
+  assert.match(
+    outputOf(missingW04bResult),
+    /P0-W05 dependency P0-W04B is not complete with evidence/,
   );
 });
 

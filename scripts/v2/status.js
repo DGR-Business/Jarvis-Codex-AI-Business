@@ -12,7 +12,8 @@ const P0_DEPENDENCIES = Object.freeze({
   "P0-W03": ["P0-W02"],
   "P0-W04": ["P0-W03"],
   "P0-W04A": ["P0-W04"],
-  "P0-W05": ["P0-W01", "P0-W02", "P0-W03", "P0-W04", "P0-W04A"],
+  "P0-W04B": ["P0-W04A"],
+  "P0-W05": ["P0-W01", "P0-W02", "P0-W03", "P0-W04", "P0-W04A", "P0-W04B"],
 });
 
 function runGit(cwd, args) {
