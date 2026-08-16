@@ -1,10 +1,10 @@
 # Active Handoff
 
 **Package:** P0-W04
-**Status:** blocked
+**Status:** in_progress
 **Current writing agent:** Codex
 **Worktree/branch:** `C:\Pantheon-worktrees\P0-engineering-os` / `codex/p0-engineering-os`
-**Updated:** 2026-08-16T09:25:51+10:00
+**Updated:** 2026-08-16T10:11:48+10:00
 
 ## Objective
 
@@ -16,6 +16,11 @@ repository-hook decision. Also install the concise permanent next-session
 copy/paste-prompt rule required by the owner for future package sessions.
 
 ## Completed and verified
+
+- The owner approved P0-W04-A01 on 2026-08-16. It narrowly permits one
+  disposable environment containing the existing exact renderer pins, the two
+  coherent Python aliases, required W04 verification, and cleanup. It changes
+  no pin, existing interpreter, production semantic or later-package scope.
 
 - Reconstructed the package from `AGENTS.md`, `CLAUDE.md`, the stable Master,
   approved Phase 0 Pack and W04 copy, ADR-0001, W01-W03 completion records, the
@@ -183,8 +188,7 @@ copy/paste-prompt rule required by the owner for future package sessions.
 
 ## Exact next action
 
-Obtain a narrow owner-approved Pack/W04 amendment permitting one disposable
-exact renderer environment using the existing pins (setting both Python aliases
-to the same validated absolute interpreter), or a separately scoped
-dependency-pin amendment. Continue only P0-W04 and do not rerun the full suite
-or begin P0-W05 until that precondition is resolved.
+Create and validate the single disposable exact renderer authorized by
+P0-W04-A01, set both Python aliases to its absolute interpreter, and run the
+required focused isolation test, lint and one complete ordinary suite. Continue
+only P0-W04; do not run lifecycle or begin P0-W05.

@@ -4,8 +4,8 @@
   "currentWorkPackage": "P0-W04",
   "activeAgent": "codex",
   "activeWorktree": "C:\\Pantheon-worktrees\\P0-engineering-os",
-  "sessionOutcome": "blocked",
-  "updatedAt": "2026-08-16T09:25:51+10:00",
+  "sessionOutcome": "in_progress",
+  "updatedAt": "2026-08-16T10:11:48+10:00",
   "phases": [
     {
       "id": "P0",
@@ -63,11 +63,12 @@
         {
           "id": "P0-W04",
           "title": "Harden tests and rehearse fresh-session continuity",
-          "status": "blocked",
+          "status": "in_progress",
           "preferredAgent": "codex",
           "handoffAllowed": true,
           "evidence": [
             "docs/v2/work-packages/P0-W04.md",
+            "docs/v2/work-packages/P0-W04-A01-DISPOSABLE-RENDERER-AMENDMENT.md",
             "docs/v2/decisions/ADR-0002-NEXT-SESSION-PROMPT-CONTRACT.md",
             "docs/v2/evidence/packages/P0-W04/CHECKPOINT.md"
           ],
@@ -76,7 +77,8 @@
             "P0-B02"
           ],
           "commits": [
-            "acd466410154049bfcb207a5bc85416c999517b1"
+            "acd466410154049bfcb207a5bc85416c999517b1",
+            "e88ed00ef0d204e0a33b8a9a4467a8be8657f42d"
           ]
         },
         {

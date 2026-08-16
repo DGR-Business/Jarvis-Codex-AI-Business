@@ -40,9 +40,8 @@
 
 ## P0-B02 — Exact renderer environment is not provisioned
 
-- **Status:** active D-class environment/tool precondition; owner action required.
-- **Owner:** repository owner for a narrow Pack/W04 amendment permitting a
-  one-use renderer setup or a separately scoped dependency-pin amendment.
+- **Status:** active D-class precondition; P0-W04-A01 approved, disposable exact environment pending.
+- **Owner:** P0-W04 under approved amendment P0-W04-A01.
 - **Blocks:** the required green complete ordinary suite, formal P0-B01 closure,
   P0-W04 completion and the P0-W05 gate.
 - **Evidence:** two pre-existing interpreters were discovered read-only and
@@ -58,13 +57,11 @@
   CLI test. Fail-fast then left shards 3 through 5 unrun. That attempt preceded
   final review fixes; the final candidate's affected focused checks are green,
   but it has no complete-suite green claim.
-- **Required owner action:** approve a narrow Pack/W04 amendment permitting
-  creation of one disposable exact renderer environment using the existing
-  repository pins, or a separately scoped dependency-pin amendment. The
-  disposable option must set both Python aliases to the same validated absolute
-  interpreter. Current P0-W04 authority prohibits tool installation and a
-  production dependency-contract change, so it must not loosen, fake or bypass
-  this check.
+- **Approved resolution path:** P0-W04-A01 permits one disposable environment
+  using the existing pins and requires both Python aliases to identify the same
+  validated absolute interpreter. It permits no pin or production-contract
+  change and no mutation of either existing interpreter. Close this blocker
+  only after exact version validation and the complete ordinary suite pass.
 
 P0-W01 through P0-W03 are complete. W01's required run is a safely isolated,
 truthful observed red result rather than a false green claim. The reviewed
@@ -73,12 +70,14 @@ remains preserved on `pantheon-v2.1.1-programme` at unverified checkpoint
 `612a35c8b1d881f638570373d06f99d26bfb280e`; local `main` remains baseline
 `718e50670812ad5da7210bd9f183521328cccf93`.
 
-The ambient renderer limitation is now active blocker P0-B02. W01's disposable
-exact environment was deleted after use and did not mutate either discovered
-interpreter. P0-W04 has neither changed the pin nor installed tooling.
+The ambient renderer limitation remains active blocker P0-B02 until the
+P0-W04-A01 disposable environment is validated and used for a green complete
+ordinary suite. W01's earlier disposable environment was deleted after use and
+did not mutate either discovered interpreter.
 
 The governing Phase 0 Execution Pack is owner-approved; its approved pack
 identifier remains `0.2-draft`. P0-W02 reconciled the known programme-version,
 progress-schema, authority, session and shared-skill contract issues; they are
-no longer limitations or blockers. P0-W04 is blocked only on P0-B02's exact
-renderer precondition; P0-W05 is not ready.
+no longer limitations or blockers. P0-W04 has resumed under P0-W04-A01 but
+P0-B01/P0-B02 remain open until the required suite is green; P0-W05 is not
+ready.
