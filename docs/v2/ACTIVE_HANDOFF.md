@@ -4,61 +4,60 @@
 **Status:** no_active_package
 **Current writing agent:** none
 **Worktree/branch:** none
-**Updated:** 2026-08-16T10:49:34+10:00
+**Updated:** 2026-08-16T12:35:21+10:00
 
-## Completed package
+## Owner-approved next package
 
-P0-W04 — Harden tests and rehearse fresh-session continuity — is complete in
-`C:\Pantheon-worktrees\P0-engineering-os` on
-`codex/p0-engineering-os`. Its initial predecessor is
-`9c29d19b140c648f8100605b6479f790320be695`; the coherent completion commit is
-the commit containing `docs/v2/evidence/packages/P0-W04/COMPLETION.md`.
+P0-W04A — Renderer Environment and Gate Corrections — is the sole ready package
+in `C:\Pantheon-worktrees\P0-engineering-os` on
+`codex/p0-engineering-os`. It is a narrow corrective package authorized after
+the first independent Phase 0 gate recorded `FAIL` in commit
+`75914d954cbf78b7bf4695eed2f135ea1bb627ac`.
 
-The ordinary wrapper now constructs a deliberate per-invocation child
-environment, contains current and legacy writes, retains the DB-relative proof
-fallback, validates tool/renderer provenance, preserves sharding/deadlines/PDF
-restoration and fails closed around lifecycle/live controls. The synthetic
-fixture never incorporates the ambient PATH, and PDF mismatch assertions expose
-only counts and SHA-256 digests rather than names or bytes.
+The package must mechanically remove the 35 candidate-range documentation
+formatting findings without wording changes; establish a durable ignored local
+renderer environment with deterministic bootstrap/exact validation; evaluate
+the official 2026-08-16 stable renderer candidates; and promote only exact pins
+that pass Pantheon's focused renderer/artifact/Doctor checks, lint and complete
+ordinary suite.
 
-## Final verification
+The fixed history anchors are baseline
+`718e50670812ad5da7210bd9f183521328cccf93` (`B`), first candidate
+`9ab7748f1a3443535e1f066b1b3d48efc668aedb` (`S1`) and failed review commit
+`75914d954cbf78b7bf4695eed2f135ea1bb627ac` (`R1`).
 
-- Focused isolation: 5/5 pass, zero fail/skip/cancel.
-- Lint: pass, exit 0, zero warnings.
-- Complete ordinary inventory: 88 files across five shards; 19/19, 154/154,
-  261/261, 272/272 and 153/153, totaling 859/859 with zero
-  fail/skip/cancel.
-- Quarantined Windows lifecycle test: excluded and not run.
-- Exact renderer: production check passed all four existing pins; both Python
-  aliases named the same validated absolute disposable interpreter.
-- P0-W04-A01 cleanup: the one-use renderer root was removed and its absence
-  rechecked; neither pre-existing interpreter or repository pin changed.
-- Fresh Codex continuity: two no-history read-only reconstructions recovered
-  the exact W04 checkpoint state from repository evidence and made no changes.
-- Claude continuity: `prepared_not_verified`; the CLI was unavailable and no
-  rehearsal was simulated.
-- Hooks: official Codex and Claude repository-hook documentation was reviewed
-  on 2026-08-15; no hook was installed because a Stop check would not prevent
-  the demonstrated isolation defect or prove completion readiness.
+## Immutable evidence and blockers
 
-## Durable state and limitations
+- `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW.md` remains the valid failed
+  review and must not be changed, replaced or deleted.
+- P0-B03 tracks the 35 formatting findings.
+- P0-B04 tracks the missing durable exact renderer environment.
+- P0-B01 remains historically closed but must be revalidated; reopen it only if
+  the isolation/full-suite evidence regresses.
+- P0-B02 remains the historical W04-only disposable-renderer closure and must
+  not be repurposed.
 
-- `docs/v2/evidence/packages/P0-W04/CHECKPOINT.md` remains immutable historical
-  blocked evidence; owner-approved P0-W04-A01 and the green final run supersede
-  it for current state.
-- P0-B01 and P0-B02 are closed. W01-W04 are complete; P0 remains in progress.
-- P0-W05 is ready but not started. W04's removed renderer and installation
-  authority do not carry into W05; the independent gate must satisfy or report
-  its own renderer precondition.
+## Boundaries and limitations
+
+- P0-W05 is dependency-pending and must not begin in the corrective session.
+- The next independent gate uses a new candidate and writes
+  `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-02.md`; it never overwrites the
+  original report.
+- The ignored environment is checkout-local. A later owner-authorized W05
+  integration must bootstrap and validate the same exact environment in
+  `C:\Pantheon` after fast-forward and before closeout; virtual environments are
+  not copied between roots.
 - Claude remains `prepared_not_verified`; remote freshness remains unproved.
-- No browser/T3/Playwright, lifecycle, provider/live/commercial, push, PR,
-  merge, integration, P0-W05 or P1 action occurred in W04.
+- No browser/T3/Playwright, local lifecycle, provider/live/commercial,
+  owner-data, global/user configuration, push, PR, merge, local-main
+  integration or P1 action is authorized.
 
 ## Exact next action
 
-Start a fresh independent P0-W05 Phase 0 gate-review session in the same lane.
-Verify the exact clean candidate tip, reconstruct W01-W04 from repository
-evidence, and perform only P0-W05 criteria 1-6 and its specified gate checks
-without making fixes. Do not claim gate completion, owner approval, integration
-or P1 start; stop after the binary review report and review-state-only commit
-for the explicit owner decision.
+Start a fresh P0-W04A implementation session in the same worktree and branch.
+First verify the exact clean planning tip, normal history and worktrees, then
+read the owner-approved package and governing records. Execute only P0-W04A.
+Preserve the failed gate report byte-for-byte, retain exact pins, and close the
+two gate blockers only after every required check passes. On success, commit
+the normal P0-W04A completion/state and stop for a completely fresh independent
+P0-W05 review against the new candidate tip.

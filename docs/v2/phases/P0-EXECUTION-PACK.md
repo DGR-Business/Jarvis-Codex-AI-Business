@@ -1038,6 +1038,35 @@ session. Later local-main integration still requires the separate W05 owner
 approval defined by this pack.
 
 This is a normal repository approval record, not a receipt or hash-binding
-system. No amendment to the approved scope has been made. A future material
-change requires a documented reason, impact, relevant ADR/Master update where
-needed, owner approval and a normal Git commit.
+system. A future material change requires a documented reason, impact, relevant
+ADR/Master update where needed, owner approval and a normal Git commit.
+
+### P0-W04A corrective amendment approved 2026-08-16
+
+After the first independent P0-W05 review recorded binary `FAIL` in commit
+`75914d954cbf78b7bf4695eed2f135ea1bb627ac`, the owner approved one bounded
+corrective package, `P0-W04A — Renderer Environment and Gate Corrections`. Its
+exact authority and acceptance contract are
+`docs/v2/work-packages/P0-W04A.md`.
+
+This amendment inserts P0-W04A after completed P0-W04 and before any P0-W05
+rerun. P0-W05 now depends on completed P0-W04A as well as W01-W04. It does not
+invalidate, rewrite or erase the first failed gate report. After P0-W04A passes,
+the completely fresh independent rerun must use the new candidate tip and write
+`docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-02.md`; the original
+`PHASE-GATE-REVIEW.md` remains immutable historical evidence.
+
+The original five embedded specifications remain the approved historical pack
+text. This later owner-approved specialization governs the correction and rerun
+where they conflict. It does not itself authorize P0-W05 integration and adds
+no provider/commercial, remote Git, product/business-behavior or P1 authority.
+
+The ignored renderer environment is checkout-local and does not transfer by
+fast-forward. If the rerun passes and the owner separately authorizes W05
+integration, the integration session may, after fast-forwarding `C:\Pantheon`
+to the approved report commit, run the committed bootstrap there for the same
+W04A-validated exact pins and resolver-required transitives, then require the
+committed renderer validation to pass before closeout. This is local
+reprovisioning only: no global/user Python or configuration, unrelated package,
+product behavior, provider/commercial action or full-suite substitution is
+authorized.

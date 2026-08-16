@@ -5,7 +5,7 @@
   "activeAgent": null,
   "activeWorktree": null,
   "sessionOutcome": "complete",
-  "updatedAt": "2026-08-16T10:49:34+10:00",
+  "updatedAt": "2026-08-16T12:35:21+10:00",
   "phases": [
     {
       "id": "P0",
@@ -82,14 +82,34 @@
           ]
         },
         {
-          "id": "P0-W05",
-          "title": "Independent Phase 0 gate and owner-approved integration",
+          "id": "P0-W04A",
+          "title": "Renderer Environment and Gate Corrections",
           "status": "ready",
-          "preferredAgent": "either",
+          "preferredAgent": "codex",
           "handoffAllowed": true,
-          "evidence": [],
+          "evidence": [
+            "docs/v2/work-packages/P0-W04A.md",
+            "docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW.md"
+          ],
           "blockers": [],
           "commits": []
+        },
+        {
+          "id": "P0-W05",
+          "title": "Independent Phase 0 gate and owner-approved integration",
+          "status": "backlog",
+          "preferredAgent": "either",
+          "handoffAllowed": true,
+          "evidence": [
+            "docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW.md"
+          ],
+          "blockers": [
+            "P0-B03",
+            "P0-B04"
+          ],
+          "commits": [
+            "75914d954cbf78b7bf4695eed2f135ea1bb627ac"
+          ]
         }
       ]
     },
