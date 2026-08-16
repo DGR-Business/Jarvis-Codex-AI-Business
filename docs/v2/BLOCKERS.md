@@ -1,9 +1,10 @@
 # Pantheon v2.1.1 Blockers
 
-The second independent Phase 0 gate found that P0-W04A's four-root renderer
-check did not prove the complete installed package inventory. P0-W04B has
-closed that bounded finding with an exact seven-distribution contract and
-green verification. P0-W05 is ready only for a fresh review 03.
+The third independent Phase 0 gate passes. P0-W04B's exact seven-distribution
+contract closes the second gate's bounded renderer-inventory finding, and fresh
+Review 03 found no new gate-blocking technical, safety or custody issue. P0-W05
+is in review, awaiting explicit owner approval of exact S3 and R3 before any
+integration.
 
 ### P0-B01 — Closed by P0-W04 ordinary-test isolation
 
@@ -64,7 +65,7 @@ this historical W04-only closure.
 
 - **Status:** closed on 2026-08-16 by P0-W04A implementation checkpoint
   `b15f0042f513b4539feb3e6cbb93b26e8a1f91fe`.
-- **Blocks:** none; P0-W05 may begin a fresh independent review.
+- **Blocks:** none; fresh Review 03 revalidated the formatting closure.
 - **Owner:** completed P0-W04A.
 - **Evidence:** `P0-GATE-F01` in
   `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW.md` and
@@ -83,8 +84,8 @@ this historical W04-only closure.
 - **Status:** closed on 2026-08-16 by P0-W04B implementation checkpoint
   `f0ee7662cc4e6ccb5f81fa0f000998964b740221`; it was reopened by exact review
   commit `d4819528050b42a2dcefea590c106d912fc5e0cf`.
-- **Blocks:** none; P0-W05 review 03 is ready. Integration and Phase 0 exit still
-  require the fresh gate result and separate owner authority.
+- **Blocks:** none; fresh Review 03 passed. Integration and Phase 0 exit still
+  require separate owner approval of exact S3 and R3.
 - **Owner:** completed P0-W04B.
 - **Evidence:** `P0-GATE-02-F01` in
   `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-02.md`, the owner-approved
@@ -119,11 +120,17 @@ this historical W04-only closure.
 
 ## Current Phase 0 state
 
-P0-W04A and P0-W04B are complete. P0-W05 is the sole ready package, for a
-completely fresh review 03. Both failed gate reports and commits
+P0-W04A and P0-W04B are complete. Fresh P0-W05 Review 03 passes against exact
+candidate S3 `79021c548237ee4cdf14f234f382003a0bc6408a`; P0-W05 is now in `review`.
+Both failed gate reports and commits
 `75914d954cbf78b7bf4695eed2f135ea1bb627ac` and
-`d4819528050b42a2dcefea590c106d912fc5e0cf` remain immutable evidence. The next
-review must write `PHASE-GATE-REVIEW-03.md` and preserve reviews 01 and 02.
+`d4819528050b42a2dcefea590c106d912fc5e0cf` remain immutable evidence. Review 03
+is `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-03.md`.
+
+No technical blocker is active. The next boundary is owner review and explicit
+approval of exact S3 and the normal R3 report/review-state commit. Only after
+both approvals may a fresh, separately authorized P0-W05 integration session
+begin. Phase P0 remains `in_progress`; P1 remains unauthorized.
 
 The reviewed pre-existing work remains preserved on
 `pantheon-v2.1.1-programme` at unverified checkpoint

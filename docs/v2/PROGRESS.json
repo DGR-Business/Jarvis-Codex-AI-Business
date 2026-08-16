@@ -5,7 +5,7 @@
   "activeAgent": null,
   "activeWorktree": null,
   "sessionOutcome": "complete",
-  "updatedAt": "2026-08-16T17:01:22+10:00",
+  "updatedAt": "2026-08-16T18:06:56+10:00",
   "phases": [
     {
       "id": "P0",
@@ -120,12 +120,13 @@
         {
           "id": "P0-W05",
           "title": "Independent Phase 0 gate and owner-approved integration",
-          "status": "ready",
+          "status": "review",
           "preferredAgent": "either",
           "handoffAllowed": true,
           "evidence": [
             "docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW.md",
             "docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-02.md",
+            "docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-03.md",
             "docs/v2/work-packages/P0-W04A.md",
             "docs/v2/evidence/packages/P0-W04A/COMPLETION.md",
             "docs/v2/work-packages/P0-W04B.md",
