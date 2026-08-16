@@ -5,12 +5,12 @@
   "activeAgent": null,
   "activeWorktree": null,
   "sessionOutcome": "complete",
-  "updatedAt": "2026-08-16T18:06:56+10:00",
+  "updatedAt": "2026-08-16T18:52:06+10:00",
   "phases": [
     {
       "id": "P0",
       "name": "V2.1.1 engineering operating system",
-      "status": "in_progress",
+      "status": "complete",
       "executionPack": "docs/v2/phases/P0-EXECUTION-PACK.md",
       "workPackages": [
         {
@@ -120,7 +120,7 @@
         {
           "id": "P0-W05",
           "title": "Independent Phase 0 gate and owner-approved integration",
-          "status": "review",
+          "status": "complete",
           "preferredAgent": "either",
           "handoffAllowed": true,
           "evidence": [
@@ -130,12 +130,14 @@
             "docs/v2/work-packages/P0-W04A.md",
             "docs/v2/evidence/packages/P0-W04A/COMPLETION.md",
             "docs/v2/work-packages/P0-W04B.md",
-            "docs/v2/evidence/packages/P0-W04B/COMPLETION.md"
+            "docs/v2/evidence/packages/P0-W04B/COMPLETION.md",
+            "docs/v2/evidence/packages/P0-W05/COMPLETION.md"
           ],
           "blockers": [],
           "commits": [
             "75914d954cbf78b7bf4695eed2f135ea1bb627ac",
-            "d4819528050b42a2dcefea590c106d912fc5e0cf"
+            "d4819528050b42a2dcefea590c106d912fc5e0cf",
+            "cb4a073a7e4ec3dfb53cedb76ea71b070299a1f9"
           ]
         }
       ]
