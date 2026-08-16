@@ -1,19 +1,21 @@
 # Pantheon v2.1.1 Blockers
 
 The second independent Phase 0 gate found that P0-W04A's four-root renderer
-check does not prove the complete installed package inventory. P0-W04B is the
-active bounded correction. P0-W05 remains stopped until it completes.
+check did not prove the complete installed package inventory. P0-W04B has
+closed that bounded finding with an exact seven-distribution contract and
+green verification. P0-W05 is ready only for a fresh review 03.
 
 ### P0-B01 — Closed by P0-W04 ordinary-test isolation
 
 - **Status:** closed on 2026-08-16 by the final green P0-W04 candidate and
-  revalidated on 2026-08-16 by P0-W04A.
+  revalidated on 2026-08-16 by P0-W04A and P0-W04B.
 - **Blocks:** none while focused isolation and the complete ordinary suite
   remain green.
-- **Owner:** completed P0-W04; revalidated by completed P0-W04A.
+- **Owner:** completed P0-W04; revalidated by completed P0-W04A and P0-W04B.
 - **Evidence:** `docs/v2/evidence/packages/P0-W04/COMPLETION.md`, the historical
-  `docs/v2/evidence/packages/P0-W04/CHECKPOINT.md` and
-  `docs/v2/evidence/packages/P0-W04A/COMPLETION.md`.
+  `docs/v2/evidence/packages/P0-W04/CHECKPOINT.md`,
+  `docs/v2/evidence/packages/P0-W04A/COMPLETION.md` and
+  `docs/v2/evidence/packages/P0-W04B/COMPLETION.md`.
 - **Original finding:** the baseline ordinary-test wrapper reused an inherited
   environment and one proof-ledger alias, so a later synthetic privacy-key
   change correctly failed closed against proof metadata written earlier.
@@ -27,7 +29,10 @@ active bounded correction. P0-W05 remains stopped until it completes.
   ordinary inventory passed 859/859. P0-W04A then passed the final focused
   57/57 command and the alias-absent ordinary suite at 19/19, 137/137, 244/244,
   308/308 and 163/163: 871/871 total with no failure, skip or cancellation.
-  The quarantined Windows lifecycle test remained excluded and was not run.
+  P0-W04B then passed focused isolation at 61/61 and the alias-absent ordinary
+  suite at 19/19, 167/167, 236/236, 292/292 and 161/161: 875/875 total with no
+  failure, skip or cancellation. The quarantined Windows lifecycle test
+  remained excluded and was not run.
 
 ### P0-B02 — Closed for P0-W04 by the approved disposable renderer
 
@@ -75,13 +80,17 @@ this historical W04-only closure.
 
 ## P0-B04 — Durable exact renderer environment is unavailable
 
-- **Status:** open; reopened on 2026-08-16 by exact review commit
-  `d4819528050b42a2dcefea590c106d912fc5e0cf` and active P0-W04B.
-- **Blocks:** P0-W05 review 03, owner-approved integration and any Phase 0 exit.
-- **Owner:** P0-W04B.
+- **Status:** closed on 2026-08-16 by P0-W04B implementation checkpoint
+  `f0ee7662cc4e6ccb5f81fa0f000998964b740221`; it was reopened by exact review
+  commit `d4819528050b42a2dcefea590c106d912fc5e0cf`.
+- **Blocks:** none; P0-W05 review 03 is ready. Integration and Phase 0 exit still
+  require the fresh gate result and separate owner authority.
+- **Owner:** completed P0-W04B.
 - **Evidence:** `P0-GATE-02-F01` in
   `docs/v2/evidence/phases/P0/PHASE-GATE-REVIEW-02.md`, the owner-approved
-  `docs/v2/work-packages/P0-W04B.md`, and the immutable first-gate evidence.
+  `docs/v2/work-packages/P0-W04B.md`,
+  `docs/v2/RENDERER_ENVIRONMENT.md` and
+  `docs/v2/evidence/packages/P0-W04B/COMPLETION.md`.
 - **Original finding and historical closure:** P0-W04A correctly replaced the
   deleted W04 one-use environment with an ignored checkout-local CPython 3.13
   environment and proved the four exact direct roots, imports, isolation,
@@ -99,14 +108,22 @@ this historical W04-only closure.
   base/interpreter provenance, isolation/import/`pip check`, hosted CI,
   Doctor/product/approval/recovery resolution, focused regressions and the full
   alias-absent ordinary suite must all pass before closure.
+- **Closure verification:** I2 governs the exact seven-item inventory with root
+  requirements SHA-256 `f7f726ac93a6ccf6a748bce73fa467b39b9e9cc0940153b291d44c3d85208b77`
+  and lock SHA-256 `e89141b3031ce59ee3ce9560378efb7ee6b2dd20b2cd5e95592822565994bd53`.
+  Clean bootstrap reported `reused=false`, standalone validation and
+  `pip check` passed, and immediate reuse reported `reused=true`. Focused checks
+  passed 61/61, encrypted recovery 19/19, production rendering 28/28, lint was
+  clean, and the alias-absent ordinary suite passed 875/875 with zero failure,
+  skip or cancellation.
 
 ## Current Phase 0 state
 
-P0-W04A remains complete. P0-W04B is active and P0-W05 is backlog. Both failed
-gate reports and commits `75914d954cbf78b7bf4695eed2f135ea1bb627ac`
-and `d4819528050b42a2dcefea590c106d912fc5e0cf` remain immutable evidence. After
-successful P0-W04B closeout, the next completely fresh review must write
-`PHASE-GATE-REVIEW-03.md` and preserve reviews 01 and 02.
+P0-W04A and P0-W04B are complete. P0-W05 is the sole ready package, for a
+completely fresh review 03. Both failed gate reports and commits
+`75914d954cbf78b7bf4695eed2f135ea1bb627ac` and
+`d4819528050b42a2dcefea590c106d912fc5e0cf` remain immutable evidence. The next
+review must write `PHASE-GATE-REVIEW-03.md` and preserve reviews 01 and 02.
 
 The reviewed pre-existing work remains preserved on
 `pantheon-v2.1.1-programme` at unverified checkpoint
