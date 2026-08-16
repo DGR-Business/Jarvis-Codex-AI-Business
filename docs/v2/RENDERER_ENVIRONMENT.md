@@ -16,10 +16,11 @@ npm.cmd run renderer:check
 ```
 
 Bootstrap verifies the base interpreter, creates a non-system-site virtual
-environment, and installs `requirements-runtime.txt` through that environment's
-`python -m pip`. Pip runs with isolated configuration, an environment-local
-cache, the public PyPI index, no user site and no inherited custom index
-credentials.
+environment, and installs the complete exact inventory in
+`requirements-renderer-lock.txt` through that environment's `python -m pip`.
+It uses no dependency resolution beyond those seven exact releases. Pip runs
+with isolated configuration, an environment-local cache, the public PyPI
+index, no user site and no inherited custom index credentials.
 Re-running bootstrap safely reuses an exact-ready environment. Add
 `--recreate` only when a clean rebuild is required; deletion is guarded to the
 exact repository `/.venv-renderer/` target.
@@ -28,15 +29,22 @@ Local discovery uses the canonical interpreter derived from the repository
 root. If `PANTHEON_PYTHON` or `JARVIS_PYTHON` is supplied, both must be coherent
 absolute aliases of that exact interpreter. Missing, single, relative,
 conflicting, foreign or version-mismatched aliases fail closed. The only
-external-interpreter exception is a coherent `actions/setup-python` interpreter
-at the exact `pythonLocation` installation entry for the exact GitHub-hosted
-checkout; it receives the same exact-pin and `pip check` validation. There is no
-managed-Python, user-cache or bare-command fallback.
+hosted special case is that `actions/setup-python` supplies the verified base
+interpreter used to bootstrap the checkout-local environment. It is never the
+ordinary renderer runtime. Hosted and local ordinary tests use the same
+canonical checkout-local interpreter. There is no managed-Python, user-cache,
+external-runtime or bare-command fallback.
 
 ## Dependency policy
 
-- Keep all four direct renderer requirements as exact `==` pins. Do not use
-  ranges or add unrelated top-level distributions.
+- Keep `requirements-runtime.txt` limited to the four direct exact roots:
+  openpyxl 3.1.5, Pillow 12.3.0, pypdfium2 5.13.0 and reportlab 5.0.0.
+- Keep `requirements-renderer-lock.txt` equal to exactly those four roots plus
+  charset-normalizer 3.5.1, et_xmlfile 2.0.0 and governed pip 26.2.1. Do not use
+  ranges, add another distribution or create a second dependency-state system.
+- Validation normalizes distribution names and rejects every unexpected,
+  missing, duplicate-normalized or version-drifted metadata record before
+  requiring all seven imports and `pip check` to pass.
 - Review official stable and security releases at least quarterly, and promptly
   when a relevant security release is published.
 - Try the newest stable candidate set in a clean environment. Before promotion,

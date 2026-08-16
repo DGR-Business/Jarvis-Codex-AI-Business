@@ -49,10 +49,9 @@ function copyBootableSourceContract(destination) {
       path.join(destination, "public", filename),
     );
   }
-  fs.copyFileSync(
-    path.join(projectRoot, "requirements-runtime.txt"),
-    path.join(destination, "requirements-runtime.txt"),
-  );
+  for (const filename of ["requirements-runtime.txt", "requirements-renderer-lock.txt"]) {
+    fs.copyFileSync(path.join(projectRoot, filename), path.join(destination, filename));
+  }
   fs.mkdirSync(path.join(destination, "scripts"), { recursive: true });
   for (const filename of [
     "renderer-environment.js",
@@ -204,7 +203,7 @@ test("Doctor verifies exact installed direct dependency versions against the loc
   }
 });
 
-test("Doctor checks the exact production Python, renderer scripts, and package pins", () => {
+test("Doctor checks the exact production Python, renderer scripts, and full inventory", () => {
   const ready = checkRenderer();
   assert.equal(ready.status, "pass", ready.message);
   assert.deepEqual(
@@ -216,6 +215,14 @@ test("Doctor checks the exact production Python, renderer scripts, and package p
     ],
   );
   assert.deepEqual(ready.details.packages, ready.details.pinned);
+  assert.equal(ready.details.inventory.length, 7);
+  assert.deepEqual(
+    ready.details.inventory
+      .map((item) => item.name.toLowerCase().replace(/[-_.]+/g, "-"))
+      .sort(),
+    ["charset-normalizer", "et-xmlfile", "openpyxl", "pillow", "pip", "pypdfium2", "reportlab"],
+  );
+  assert.match(ready.details.lockSha256, /^[a-f0-9]{64}$/);
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-doctor-renderer-pin-"));
   try {
@@ -227,8 +234,19 @@ test("Doctor checks the exact production Python, renderer scripts, and package p
     );
     const mismatched = checkRenderer({ requirementsPath });
     assert.equal(mismatched.status, "fail");
-    assert.match(mismatched.message, /do not match requirements-runtime/i);
+    assert.match(mismatched.message, /requirements-runtime.*requirements-renderer-lock.*disagree/i);
     assert.deepEqual(mismatched.details.mismatched, ["pypdfium2"]);
+
+    const lockPath = path.join(root, "requirements-renderer-lock.txt");
+    fs.writeFileSync(
+      lockPath,
+      fs.readFileSync(path.join(projectRoot, "requirements-renderer-lock.txt"), "utf8")
+        .replace(/^charset-normalizer==.+$/m, "charset-normalizer==0.0.0"),
+    );
+    const transitiveMismatch = checkRenderer({ lockPath });
+    assert.equal(transitiveMismatch.status, "fail");
+    assert.match(transitiveMismatch.message, /inventory does not match requirements-renderer-lock/i);
+    assert.deepEqual(transitiveMismatch.details.mismatched, ["charset-normalizer"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

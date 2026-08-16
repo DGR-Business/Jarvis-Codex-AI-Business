@@ -88,10 +88,9 @@ function copyBootableSourceContract(destination) {
       path.join(destination, "public", filename),
     );
   }
-  fs.copyFileSync(
-    path.join(projectRoot, "requirements-runtime.txt"),
-    path.join(destination, "requirements-runtime.txt"),
-  );
+  for (const filename of ["requirements-runtime.txt", "requirements-renderer-lock.txt"]) {
+    fs.copyFileSync(path.join(projectRoot, filename), path.join(destination, filename));
+  }
   fs.mkdirSync(path.join(destination, "scripts"), { recursive: true });
   for (const filename of [
     "renderer-environment.js",
@@ -438,6 +437,7 @@ test("one encrypted recovery set restores source, database, artifacts, packs and
         "public/app.js",
         "public/index.html",
         "public/styles.css",
+        "requirements-renderer-lock.txt",
         "requirements-runtime.txt",
         "scripts/compose-storefront-cover.py",
         "scripts/render-approval-pack.py",
@@ -472,6 +472,11 @@ test("one encrypted recovery set restores source, database, artifacts, packs and
       "PRIVATE-KYC-REFERENCE-MARKER\n",
     );
     assert.equal(fs.existsSync(path.join(restoredRoot, "private", "runtime-credentials.json")), false);
+    assert.deepEqual(
+      fs.readFileSync(path.join(restoredRoot, "requirements-renderer-lock.txt")),
+      fs.readFileSync(path.join(projectRoot, "requirements-renderer-lock.txt")),
+    );
+    assert.equal(fs.existsSync(path.join(restoredRoot, ".venv-renderer")), false);
     assert.equal(fs.existsSync(path.join(restoredRoot, ".pantheon-recovery", "manifest.json")), true);
     assert.equal(fs.existsSync(path.join(restoredRoot, ".pantheon-recovery", "restore-verification.json")), true);
 
@@ -1336,6 +1341,11 @@ test("recovery-set creation fails closed when source startup proof is incomplete
       "missing-lock",
       (fixture) => fs.rmSync(path.join(fixture.sourceRoot, "package-lock.json")),
       /missing required file package-lock\.json/i,
+    ],
+    [
+      "missing-renderer-lock",
+      (fixture) => fs.rmSync(path.join(fixture.sourceRoot, "requirements-renderer-lock.txt")),
+      /missing required file requirements-renderer-lock\.txt/i,
     ],
     [
       "missing-server",

@@ -12,6 +12,13 @@ const REQUIRED_DISTRIBUTIONS = Object.freeze([
   ["pypdfium2", "pypdfium2"],
   ["reportlab", "reportlab"],
 ]);
+const RENDERER_INVENTORY_DISTRIBUTIONS = Object.freeze([
+  ...REQUIRED_DISTRIBUTIONS,
+  ["charset-normalizer", "charset_normalizer"],
+  ["et_xmlfile", "et_xmlfile"],
+  ["pip", "pip"],
+]);
+const RENDERER_LOCK_FILENAME = "requirements-renderer-lock.txt";
 const VALIDATION_TIMEOUT_MS = 30_000;
 
 function environmentValue(environment, requestedName) {
@@ -86,19 +93,72 @@ function parseRendererRequirementsText(text) {
   ]));
 }
 
+function parseRendererInventoryText(text) {
+  const expected = new Map(RENDERER_INVENTORY_DISTRIBUTIONS.map(([name]) => [
+    normalizeDistributionName(name),
+    name,
+  ]));
+  const supplied = new Map();
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = line.match(/^([A-Za-z0-9_.-]+)==([A-Za-z0-9][A-Za-z0-9._+!-]*)$/);
+    if (!match) {
+      throw new Error(`${RENDERER_LOCK_FILENAME} entries must be exact == pins.`);
+    }
+    const normalized = normalizeDistributionName(match[1]);
+    if (!expected.has(normalized)) {
+      throw new Error(`${RENDERER_LOCK_FILENAME} must contain only the seven governed renderer distributions.`);
+    }
+    if (supplied.has(normalized)) {
+      throw new Error(`${RENDERER_LOCK_FILENAME} contains a duplicate normalized distribution.`);
+    }
+    supplied.set(normalized, match[2]);
+  }
+  if (supplied.size !== expected.size || [...expected.keys()].some((name) => !supplied.has(name))) {
+    throw new Error(`${RENDERER_LOCK_FILENAME} must contain exactly the seven governed renderer distributions.`);
+  }
+  return Object.fromEntries(RENDERER_INVENTORY_DISTRIBUTIONS.map(([name]) => [
+    name,
+    supplied.get(normalizeDistributionName(name)),
+  ]));
+}
+
 function readRendererRequirements(options = {}) {
   const rootDir = path.resolve(options.rootDir || REPOSITORY_ROOT);
   const requirementsPath = path.resolve(
     options.requirementsPath || path.join(rootDir, "requirements-runtime.txt"),
   );
+  const lockPath = path.resolve(
+    options.lockPath || path.join(rootDir, RENDERER_LOCK_FILENAME),
+  );
   if (!fs.existsSync(requirementsPath) || !fs.statSync(requirementsPath).isFile()) {
     throw new Error("requirements-runtime.txt is missing.");
   }
-  const text = fs.readFileSync(requirementsPath, "utf8");
+  if (!fs.existsSync(lockPath) || !fs.statSync(lockPath).isFile()) {
+    throw new Error(`${RENDERER_LOCK_FILENAME} is missing.`);
+  }
+  const requirementsText = fs.readFileSync(requirementsPath, "utf8");
+  const lockText = fs.readFileSync(lockPath, "utf8");
+  const pins = parseRendererRequirementsText(requirementsText);
+  const inventoryPins = parseRendererInventoryText(lockText);
+  const incoherentRoots = REQUIRED_DISTRIBUTIONS
+    .map(([name]) => name)
+    .filter((name) => pins[name] !== inventoryPins[name]);
+  if (incoherentRoots.length) {
+    const error = new Error(
+      `requirements-runtime.txt and ${RENDERER_LOCK_FILENAME} disagree (${incoherentRoots.length} root mismatch(es)).`,
+    );
+    error.mismatched = incoherentRoots;
+    throw error;
+  }
   return {
     requirementsPath,
-    requirementsSha256: crypto.createHash("sha256").update(text).digest("hex"),
-    pins: parseRendererRequirementsText(text),
+    requirementsSha256: crypto.createHash("sha256").update(requirementsText).digest("hex"),
+    pins,
+    lockPath,
+    lockSha256: crypto.createHash("sha256").update(lockText).digest("hex"),
+    inventoryPins,
   };
 }
 
@@ -138,7 +198,11 @@ function assertLocalEnvironmentBoundary(rootDir, python, platform = process.plat
     throw new Error("Pantheon's repository renderer environment is missing; run renderer:bootstrap.");
   }
   const rootStats = fs.lstatSync(environmentRoot);
-  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+  if (
+    !rootStats.isDirectory()
+    || rootStats.isSymbolicLink()
+    || !entryPathsEqual(fs.realpathSync(environmentRoot), environmentRoot, platform)
+  ) {
     throw new Error("Pantheon's renderer environment boundary is not a regular repository directory.");
   }
   if (!fs.existsSync(python)) {
@@ -155,6 +219,7 @@ function resolveRendererPython(options = {}) {
   const environment = options.environment || process.env;
   const platform = options.platform || process.platform;
   const canonical = rendererPythonPath(rootDir, platform);
+  const hosted = isHostedGitHubActions(environment, rootDir, platform);
   const preferred = environmentValue(environment, "PANTHEON_PYTHON");
   const legacy = environmentValue(environment, "JARVIS_PYTHON");
   if (Boolean(preferred) !== Boolean(legacy)) {
@@ -170,28 +235,12 @@ function resolveRendererPython(options = {}) {
     }
     if (entryPathsEqual(preferred, canonical, platform)) {
       assertLocalEnvironmentBoundary(rootDir, canonical, platform);
-      return { python: canonical, source: "repository-aliases", rootDir, hosted: false };
+      return { python: canonical, source: "repository-aliases", rootDir, hosted };
     }
-    const hostedSetupPython = hostedSetupPythonPath(environment, platform);
-    if (
-      !isHostedGitHubActions(environment, rootDir, platform)
-      || !hostedSetupPython
-      || !entryPathsEqual(preferred, hostedSetupPython, platform)
-    ) {
-      throw new Error("Pantheon rejected a foreign renderer interpreter.");
-    }
-    if (!fs.existsSync(preferred) || !fs.statSync(preferred).isFile()) {
-      throw new Error("Pantheon's hosted renderer interpreter is unavailable.");
-    }
-    return {
-      python: path.resolve(preferred),
-      source: "github-hosted-setup-python",
-      rootDir,
-      hosted: true,
-    };
+    throw new Error("Pantheon rejected a foreign renderer interpreter.");
   }
   assertLocalEnvironmentBoundary(rootDir, canonical, platform);
-  return { python: canonical, source: "repository-default", rootDir, hosted: false };
+  return { python: canonical, source: "repository-default", rootDir, hosted };
 }
 
 function sanitizedPythonEnvironment({ python, tempRoot, network = false } = {}) {
@@ -276,14 +325,14 @@ function validateRendererEnvironment(options = {}) {
       tempRoot: probeRoot,
       network: false,
     });
-    const distributionNames = REQUIRED_DISTRIBUTIONS.map(([name]) => name);
-    const importNames = REQUIRED_DISTRIBUTIONS.map(([, importName]) => importName);
+    const distributionNames = RENDERER_INVENTORY_DISTRIBUTIONS.map(([name]) => name);
+    const importNames = RENDERER_INVENTORY_DISTRIBUTIONS.map(([, importName]) => importName);
     const probeScript = [
       "import importlib.metadata,json,os,site,sys",
       "distribution_names=json.loads(sys.argv[1])",
       "import_names=json.loads(sys.argv[2])",
       "[__import__(name) for name in import_names]",
-      "inventory=sorted([{'name':(item.metadata.get('Name') or item.name),'version':item.version} for item in importlib.metadata.distributions()],key=lambda item:item['name'].lower())",
+      "inventory=sorted([{'name':str(item.metadata.get('Name') or item.name or ''),'version':str(item.version or '')} for item in importlib.metadata.distributions()],key=lambda item:item['name'].lower())",
       "print(json.dumps({'implementation':sys.implementation.name,'version':list(sys.version_info[:3]),'executable':os.path.abspath(sys.executable),'prefix':os.path.abspath(sys.prefix),'base_prefix':os.path.abspath(sys.base_prefix),'user_site_enabled':bool(site.ENABLE_USER_SITE),'packages':{name:importlib.metadata.version(name) for name in distribution_names},'inventory':inventory}))",
     ].join("\n");
     const metadata = JSON.parse(runChecked(
@@ -302,43 +351,61 @@ function validateRendererEnvironment(options = {}) {
     if (!entryPathsEqual(metadata.executable, resolved.python, options.platform || process.platform)) {
       throw new Error("The renderer process did not preserve its exact interpreter provenance.");
     }
-    if (!resolved.hosted) {
-      const environmentRoot = rendererEnvironmentRoot(resolved.rootDir);
-      if (
-        !entryPathsEqual(metadata.prefix, environmentRoot, options.platform || process.platform)
-        || entryPathsEqual(metadata.prefix, metadata.base_prefix, options.platform || process.platform)
-      ) {
-        throw new Error("Pantheon's renderer interpreter is outside the canonical virtual environment boundary.");
-      }
-      const configurationPath = path.join(environmentRoot, "pyvenv.cfg");
-      const configuration = fs.existsSync(configurationPath)
-        ? fs.readFileSync(configurationPath, "utf8")
-        : "";
-      if (!/^include-system-site-packages\s*=\s*false\s*$/im.test(configuration)) {
-        throw new Error("Pantheon's renderer environment inherits system packages.");
-      }
+    const environmentRoot = rendererEnvironmentRoot(resolved.rootDir);
+    if (
+      !entryPathsEqual(metadata.prefix, environmentRoot, options.platform || process.platform)
+      || entryPathsEqual(metadata.prefix, metadata.base_prefix, options.platform || process.platform)
+    ) {
+      throw new Error("Pantheon's renderer interpreter is outside the canonical virtual environment boundary.");
+    }
+    const configurationPath = path.join(environmentRoot, "pyvenv.cfg");
+    const configuration = fs.existsSync(configurationPath)
+      ? fs.readFileSync(configurationPath, "utf8")
+      : "";
+    if (!/^include-system-site-packages\s*=\s*false\s*$/im.test(configuration)) {
+      throw new Error("Pantheon's renderer environment inherits system packages.");
     }
     if (metadata.user_site_enabled) {
       throw new Error("Pantheon's renderer process has user-site packages enabled.");
     }
-    const versionMismatches = distributionNames.filter(
-      (name) => String(metadata.packages?.[name] || "") !== contract.pins[name],
-    );
-    const directInventory = new Map(distributionNames.map((name) => [
+    const expectedByNormalizedName = new Map(distributionNames.map((name) => [
       normalizeDistributionName(name),
-      [],
+      { name, version: contract.inventoryPins[name] },
     ]));
+    const actualByNormalizedName = new Map();
     for (const item of Array.isArray(metadata.inventory) ? metadata.inventory : []) {
-      const entries = directInventory.get(normalizeDistributionName(item?.name));
-      if (entries) entries.push(String(item?.version || ""));
+      const normalized = normalizeDistributionName(item?.name || "");
+      const entries = actualByNormalizedName.get(normalized) || [];
+      entries.push({
+        name: String(item?.name || ""),
+        version: String(item?.version || ""),
+      });
+      actualByNormalizedName.set(normalized, entries);
     }
-    const metadataMismatches = distributionNames.filter((name) => {
-      const entries = directInventory.get(normalizeDistributionName(name));
-      return entries.length !== 1 || entries[0] !== contract.pins[name];
+    const unexpected = [...actualByNormalizedName.keys()]
+      .filter((name) => !expectedByNormalizedName.has(name))
+      .map((name) => name || "(unnamed)")
+      .sort();
+    const missing = [...expectedByNormalizedName.entries()]
+      .filter(([name]) => !actualByNormalizedName.has(name))
+      .map(([, expected]) => expected.name);
+    const duplicates = [...actualByNormalizedName.entries()]
+      .filter(([, entries]) => entries.length !== 1)
+      .map(([name]) => name || "(unnamed)")
+      .sort();
+    const mismatched = distributionNames.filter((name) => {
+      const entries = actualByNormalizedName.get(normalizeDistributionName(name)) || [];
+      return String(metadata.packages?.[name] || "") !== contract.inventoryPins[name]
+        || (entries.length === 1 && entries[0].version !== contract.inventoryPins[name]);
     });
-    const mismatched = [...new Set([...versionMismatches, ...metadataMismatches])];
-    if (mismatched.length) {
-      const error = new Error(`Installed renderer package versions or metadata do not match requirements-runtime.txt (${mismatched.length} mismatch(es)).`);
+    if (unexpected.length || missing.length || duplicates.length || mismatched.length) {
+      const error = new Error(
+        `Installed renderer inventory does not match ${RENDERER_LOCK_FILENAME} `
+        + `(unexpected=${unexpected.length}, missing=${missing.length}, duplicates=${duplicates.length}, mismatched=${mismatched.length}).`,
+      );
+      error.unexpected = unexpected;
+      error.missing = missing;
+      error.duplicates = duplicates;
       error.mismatched = mismatched;
       throw error;
     }
@@ -355,11 +422,14 @@ function validateRendererEnvironment(options = {}) {
       source: resolved.source,
       hosted: resolved.hosted,
       basePrefix: metadata.base_prefix,
-      environmentRoot: resolved.hosted ? null : rendererEnvironmentRoot(resolved.rootDir),
+      environmentRoot,
       requirementsPath: contract.requirementsPath,
       requirementsSha256: contract.requirementsSha256,
+      lockPath: contract.lockPath,
+      lockSha256: contract.lockSha256,
       packages: metadata.packages,
-      pinned: contract.pins,
+      pinned: contract.inventoryPins,
+      runtimePinned: contract.pins,
       inventory: metadata.inventory,
       pipCheck: "pass",
     };
@@ -376,6 +446,9 @@ function rendererReadiness(options = {}) {
       ready: false,
       python: null,
       reason: error.message,
+      unexpected: Array.isArray(error.unexpected) ? [...error.unexpected] : [],
+      missing: Array.isArray(error.missing) ? [...error.missing] : [],
+      duplicates: Array.isArray(error.duplicates) ? [...error.duplicates] : [],
       mismatched: Array.isArray(error.mismatched) ? [...error.mismatched] : [],
     };
   }
@@ -444,7 +517,11 @@ function assertBootstrapTarget(rootDir) {
   }
   if (fs.existsSync(target)) {
     const stats = fs.lstatSync(target);
-    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    if (
+      !stats.isDirectory()
+      || stats.isSymbolicLink()
+      || !entryPathsEqual(fs.realpathSync(target), target)
+    ) {
       throw new Error("Pantheon refused to replace a non-directory renderer environment target.");
     }
   }
@@ -498,12 +575,15 @@ function bootstrapRendererEnvironment(options = {}) {
         "--disable-pip-version-check",
         "--no-input",
         "install",
+        "--upgrade",
+        "--no-deps",
+        "--only-binary=:all:",
         "--index-url",
         "https://pypi.org/simple",
         "--cache-dir",
         installCache,
         "--requirement",
-        contract.requirementsPath,
+        contract.lockPath,
       ],
       {
         cwd: rootDir,
@@ -530,12 +610,16 @@ function bootstrapRendererEnvironment(options = {}) {
 }
 
 module.exports = {
+  RENDERER_INVENTORY_DISTRIBUTIONS,
+  RENDERER_LOCK_FILENAME,
   REQUIRED_DISTRIBUTIONS,
   REPOSITORY_ROOT,
   assertRendererEnvironment,
   bootstrapRendererEnvironment,
   entryPathsEqual,
   isHostedGitHubActions,
+  normalizeDistributionName,
+  parseRendererInventoryText,
   parseRendererRequirementsText,
   readRendererRequirements,
   rendererEnvironmentRoot,

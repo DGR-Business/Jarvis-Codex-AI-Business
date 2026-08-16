@@ -507,6 +507,7 @@ test("ordinary wrapper resolution accepts only the exact validated renderer boun
 
 test("ordinary hosted provenance is preserved, while lifecycle mode never probes Python", () => {
   const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-hosted-child-"));
+  const canonicalRenderer = resolveRendererPython(process.env, workspaceRoot);
   const pythonLocation = path.join(runtimeRoot, "setup-python");
   const setupPython = process.platform === "win32"
     ? path.join(pythonLocation, "python.exe")
@@ -527,11 +528,14 @@ test("ordinary hosted provenance is preserved, while lifecycle mode never probes
       parentEnvironment: hostedOrdinary,
       runtimeRoot,
       mode: { ci: true, lifecycleCi: false, lifecyclePhase: null },
-      rendererPython: setupPython,
+      rendererPython: canonicalRenderer,
     });
     for (const name of ["GITHUB_ACTIONS", "GITHUB_WORKSPACE", "RUNNER_ENVIRONMENT", "RUNNER_OS", "pythonLocation"]) {
       assert.equal(child[name], hostedOrdinary[name]);
     }
+    assert.equal(child.PANTHEON_PYTHON, canonicalRenderer);
+    assert.equal(child.JARVIS_PYTHON, canonicalRenderer);
+    assert.notEqual(child.PANTHEON_PYTHON, setupPython);
   } finally {
     fs.rmSync(runtimeRoot, { recursive: true, force: true });
   }

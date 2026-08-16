@@ -48,10 +48,9 @@ function copyBootableSourceContract(destination) {
       path.join(destination, "public", filename),
     );
   }
-  fs.copyFileSync(
-    path.join(PROJECT_ROOT, "requirements-runtime.txt"),
-    path.join(destination, "requirements-runtime.txt"),
-  );
+  for (const filename of ["requirements-runtime.txt", "requirements-renderer-lock.txt"]) {
+    fs.copyFileSync(path.join(PROJECT_ROOT, filename), path.join(destination, filename));
+  }
   fs.mkdirSync(path.join(destination, "scripts"), { recursive: true });
   for (const filename of [
     "renderer-environment.js",

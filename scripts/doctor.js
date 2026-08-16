@@ -186,6 +186,9 @@ function checkRenderer(options = {}) {
   const requirementsPath = path.resolve(
     options.requirementsPath || path.join(rootDir, "requirements-runtime.txt"),
   );
+  const lockPath = path.resolve(
+    options.lockPath || path.join(rootDir, "requirements-renderer-lock.txt"),
+  );
   const scripts = [
     path.join(rootDir, "scripts", "render-approval-pack.py"),
     path.join(rootDir, "scripts", "render-digital-product-kit.py"),
@@ -203,10 +206,14 @@ function checkRenderer(options = {}) {
   if (!fs.existsSync(requirementsPath)) {
     return result("PDF renderer", "fail", "requirements-runtime.txt is missing.");
   }
+  if (!fs.existsSync(lockPath)) {
+    return result("PDF renderer", "fail", "requirements-renderer-lock.txt is missing.");
+  }
 
   const readiness = rendererReadiness({
     rootDir,
     requirementsPath,
+    lockPath,
     environment: options.environment || process.env,
     spawn: options.spawn,
   });
@@ -218,6 +225,9 @@ function checkRenderer(options = {}) {
         {
           python: readiness.python,
           renderer: readiness.renderer,
+          unexpected: readiness.unexpected || [],
+          missing: readiness.missing || [],
+          duplicates: readiness.duplicates || [],
           mismatched: readiness.mismatched || [],
         },
     );
@@ -262,13 +272,16 @@ function checkRenderer(options = {}) {
     return result(
       "PDF renderer",
       "pass",
-      `Pantheon's exact Python ${readiness.pythonVersion} product renderer and four pinned packages are ready.`,
+      `Pantheon's exact Python ${readiness.pythonVersion} product renderer and seven-distribution inventory are ready.`,
       {
         python: readiness.python,
         scripts: scripts.map((scriptPath) => path.basename(scriptPath)),
         packages: readiness.packages,
         pinned: readiness.pinned,
+        runtimePinned: readiness.runtimePinned,
         inventory: readiness.inventory,
+        requirementsSha256: readiness.requirementsSha256,
+        lockSha256: readiness.lockSha256,
         pipCheck: readiness.pipCheck,
         source: readiness.source,
       },

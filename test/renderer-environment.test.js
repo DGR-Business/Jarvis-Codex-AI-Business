@@ -7,10 +7,15 @@ const test = require("node:test");
 
 const { parseArguments } = require("../scripts/renderer-environment");
 const {
+  RENDERER_INVENTORY_DISTRIBUTIONS,
+  RENDERER_LOCK_FILENAME,
   REQUIRED_DISTRIBUTIONS,
   bootstrapRendererEnvironment,
   isHostedGitHubActions,
+  normalizeDistributionName,
+  parseRendererInventoryText,
   parseRendererRequirementsText,
+  readRendererRequirements,
   rendererEnvironmentRoot,
   rendererPythonPath,
   rendererReadiness,
@@ -37,10 +42,15 @@ function createBootstrapHarness(name, options = {}) {
     path.join(workspaceRoot, "requirements-runtime.txt"),
     path.join(root, "requirements-runtime.txt"),
   );
-  const pins = parseRendererRequirementsText(
-    fs.readFileSync(path.join(root, "requirements-runtime.txt"), "utf8"),
+  fs.copyFileSync(
+    path.join(workspaceRoot, RENDERER_LOCK_FILENAME),
+    path.join(root, RENDERER_LOCK_FILENAME),
+  );
+  const pins = parseRendererInventoryText(
+    fs.readFileSync(path.join(root, RENDERER_LOCK_FILENAME), "utf8"),
   );
   const calls = [];
+  let generation = 0;
   const successful = (stdout = "") => ({ status: 0, stdout, stderr: "" });
   const spawn = (command, args, spawnOptions) => {
     calls.push({ command, args: [...args], options: spawnOptions });
@@ -66,6 +76,7 @@ function createBootstrapHarness(name, options = {}) {
         path.join(target, "pyvenv.cfg"),
         `home = ${basePrefix}\ninclude-system-site-packages = false\n`,
       );
+      generation += 1;
       return successful();
     }
     if (path.resolve(command) === path.resolve(python) && args.includes("install")) {
@@ -76,14 +87,42 @@ function createBootstrapHarness(name, options = {}) {
       return successful("installed synthetic renderer contract");
     }
     if (path.resolve(command) === path.resolve(python) && args[1] === "-c") {
-      const inventory = Object.entries(pins).map(([packageName, version]) => ({
+      let inventory = Object.entries(pins).map(([packageName, version]) => ({
         name: packageName,
         version,
       }));
+      const packages = { ...pins };
+      if (options.unexpectedDistribution && !(options.pollutedBeforeRebuild && generation > 0)) {
+        inventory.push({ name: options.unexpectedDistribution, version: "1.0.0" });
+      }
+      if (options.changedDistribution) {
+        const normalized = normalizeDistributionName(options.changedDistribution);
+        const canonical = Object.keys(pins).find(
+          (name) => normalizeDistributionName(name) === normalized,
+        );
+        inventory = inventory.map((item) => (
+          normalizeDistributionName(item.name) === normalized
+            ? { ...item, version: "0.0.0" }
+            : item
+        ));
+        if (canonical) packages[canonical] = "0.0.0";
+      }
+      if (options.missingDistribution) {
+        const normalized = normalizeDistributionName(options.missingDistribution);
+        const canonical = Object.keys(pins).find(
+          (name) => normalizeDistributionName(name) === normalized,
+        );
+        inventory = inventory.filter((item) => normalizeDistributionName(item.name) !== normalized);
+        if (canonical) delete packages[canonical];
+      }
       if (options.duplicateDistribution) {
+        const normalized = normalizeDistributionName(options.duplicateDistribution);
+        const canonical = Object.keys(pins).find(
+          (name) => normalizeDistributionName(name) === normalized,
+        );
         inventory.push({
-          name: options.duplicateDistribution,
-          version: pins[options.duplicateDistribution],
+          name: options.duplicateAlias || options.duplicateDistribution,
+          version: pins[canonical],
         });
       }
       return successful(JSON.stringify({
@@ -93,7 +132,7 @@ function createBootstrapHarness(name, options = {}) {
         prefix: target,
         base_prefix: basePrefix,
         user_site_enabled: false,
-        packages: pins,
+        packages,
         inventory,
       }));
     }
@@ -124,6 +163,29 @@ test("renderer requirements contain exactly four direct exact roots", () => {
   ]) {
     assert.throws(() => parseRendererRequirementsText(invalid));
   }
+});
+
+test("renderer inventory contract contains exactly seven unique normalized exact pins", () => {
+  const tracked = fs.readFileSync(path.join(workspaceRoot, RENDERER_LOCK_FILENAME), "utf8");
+  const pins = parseRendererInventoryText(tracked);
+  assert.deepEqual(
+    Object.keys(pins),
+    RENDERER_INVENTORY_DISTRIBUTIONS.map(([name]) => name),
+  );
+  for (const invalid of [
+    tracked.replace(/^pip==(.+)$/m, "pip>=$1"),
+    tracked.replace(/^charset-normalizer==.+\r?\n/m, ""),
+    `${tracked}requests==2.0.0\n`,
+    tracked.replace(/^(et_xmlfile)==(.+)$/m, "$1==$2\net-xmlfile==$2"),
+  ]) {
+    assert.throws(() => parseRendererInventoryText(invalid));
+  }
+  const contract = readRendererRequirements({ rootDir: workspaceRoot });
+  assert.deepEqual(contract.pins, Object.fromEntries(
+    REQUIRED_DISTRIBUTIONS.map(([name]) => [name, pins[name]]),
+  ));
+  assert.match(contract.requirementsSha256, /^[a-f0-9]{64}$/);
+  assert.match(contract.lockSha256, /^[a-f0-9]{64}$/);
 });
 
 test("local renderer discovery is canonical and every alias ambiguity fails closed", () => {
@@ -183,6 +245,10 @@ test("missing canonical environment is reported without trying ambient Python", 
       path.join(workspaceRoot, "requirements-runtime.txt"),
       path.join(root, "requirements-runtime.txt"),
     );
+    fs.copyFileSync(
+      path.join(workspaceRoot, RENDERER_LOCK_FILENAME),
+      path.join(root, RENDERER_LOCK_FILENAME),
+    );
     assert.throws(
       () => resolveRendererPython({ rootDir: root, environment: {} }),
       /repository renderer environment is missing/i,
@@ -195,9 +261,12 @@ test("missing canonical environment is reported without trying ambient Python", 
   }
 });
 
-test("only exact GitHub-hosted workspace provenance permits an external coherent interpreter", () => {
+test("GitHub-hosted provenance keeps setup-python bootstrap-only and resolves the canonical local runtime", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-setup-python-"));
   try {
+    const canonical = rendererPythonPath(root);
+    fs.mkdirSync(path.dirname(canonical), { recursive: true });
+    fs.writeFileSync(canonical, "synthetic repository renderer interpreter boundary\n");
     const pythonLocation = path.join(root, "toolcache", "Python", "3.13", "x64");
     const setupPython = process.platform === "win32"
       ? path.join(pythonLocation, "python.exe")
@@ -207,41 +276,60 @@ test("only exact GitHub-hosted workspace provenance permits an external coherent
     const hosted = {
       CI: "true",
       GITHUB_ACTIONS: "true",
-      GITHUB_WORKSPACE: workspaceRoot,
-      JARVIS_PYTHON: setupPython,
-      PANTHEON_PYTHON: setupPython,
+      GITHUB_WORKSPACE: root,
+      JARVIS_PYTHON: canonical,
+      PANTHEON_PYTHON: canonical,
       RUNNER_ENVIRONMENT: "github-hosted",
       RUNNER_OS: process.platform === "win32" ? "Windows" : process.platform === "darwin" ? "macOS" : "Linux",
       pythonLocation,
     };
-    assert.equal(isHostedGitHubActions(hosted, workspaceRoot), true);
-    const resolved = resolveRendererPython({ rootDir: workspaceRoot, environment: hosted });
-    assert.equal(resolved.python, setupPython);
+    assert.equal(isHostedGitHubActions(hosted, root), true);
+    const resolved = resolveRendererPython({ rootDir: root, environment: hosted });
+    assert.equal(resolved.python, canonical);
     assert.equal(resolved.hosted, true);
-    assert.equal(resolved.source, "github-hosted-setup-python");
+    assert.equal(resolved.source, "repository-aliases");
+    const defaultResolved = resolveRendererPython({
+      rootDir: root,
+      environment: { ...hosted, PANTHEON_PYTHON: undefined, JARVIS_PYTHON: undefined },
+    });
+    assert.equal(defaultResolved.python, canonical);
+    assert.equal(defaultResolved.hosted, true);
+    assert.equal(defaultResolved.source, "repository-default");
+    assert.throws(
+      () => resolveRendererPython({
+        rootDir: root,
+        environment: { ...hosted, PANTHEON_PYTHON: setupPython, JARVIS_PYTHON: setupPython },
+      }),
+      /foreign renderer interpreter/i,
+    );
     for (const environment of [
       { ...hosted, RUNNER_ENVIRONMENT: "self-hosted" },
-      { ...hosted, GITHUB_WORKSPACE: path.dirname(workspaceRoot) },
-      { ...hosted, PANTHEON_PYTHON: process.execPath, JARVIS_PYTHON: process.execPath },
+      { ...hosted, GITHUB_WORKSPACE: path.dirname(root) },
       { ...hosted, pythonLocation: undefined },
     ]) {
-      assert.throws(
-        () => resolveRendererPython({ rootDir: workspaceRoot, environment }),
-        /foreign renderer interpreter/i,
-      );
+      assert.equal(isHostedGitHubActions(environment, root), false);
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("exact validation proves CPython, pins, transitives, and pip health without caching drift", () => {
+test("exact validation proves CPython, the full inventory, and pip health without caching drift", () => {
   const validation = validateRendererEnvironment({ rootDir: workspaceRoot, environment: process.env });
   assert.equal(validation.ready, true);
   assert.match(validation.pythonVersion, /^3\.13\./);
   assert.deepEqual(validation.packages, validation.pinned);
   assert.equal(validation.pipCheck, "pass");
-  assert.ok(validation.inventory.some((item) => item.name.toLowerCase() === "pip"));
+  assert.deepEqual(
+    validation.inventory.map((item) => ({
+      name: normalizeDistributionName(item.name),
+      version: item.version,
+    })).sort((left, right) => left.name.localeCompare(right.name)),
+    Object.entries(validation.pinned)
+      .map(([name, version]) => ({ name: normalizeDistributionName(name), version }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+  );
+  assert.equal(validation.pinned.pip, "26.2.1");
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pantheon-renderer-contract-"));
   try {
@@ -257,7 +345,7 @@ test("exact validation proves CPython, pins, transitives, and pip health without
       environment: process.env,
     });
     assert.equal(mismatch.ready, false);
-    assert.match(mismatch.reason, /do not match requirements-runtime/i);
+    assert.match(mismatch.reason, /requirements-runtime.*requirements-renderer-lock.*disagree/i);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -315,13 +403,16 @@ test("bootstrap is isolated, environment-local, and idempotently reuses one exac
     const install = installCalls[0];
     assert.equal(install.command, harness.python);
     assert.ok(install.args.includes("--isolated"));
+    assert.ok(install.args.includes("--upgrade"));
+    assert.ok(install.args.includes("--no-deps"));
+    assert.ok(install.args.includes("--only-binary=:all:"));
     assert.deepEqual(
       install.args.slice(install.args.indexOf("--index-url"), install.args.indexOf("--index-url") + 2),
       ["--index-url", "https://pypi.org/simple"],
     );
     assert.deepEqual(
       install.args.slice(install.args.indexOf("--requirement"), install.args.indexOf("--requirement") + 2),
-      ["--requirement", path.join(harness.root, "requirements-runtime.txt")],
+      ["--requirement", path.join(harness.root, RENDERER_LOCK_FILENAME)],
     );
     assert.equal(install.options.env.PIP_CACHE_DIR, path.join(harness.target, ".pip-cache"));
     assert.equal(install.options.env.PIP_CONFIG_FILE, process.platform === "win32" ? "nul" : "/dev/null");
@@ -337,6 +428,8 @@ test("bootstrap is isolated, environment-local, and idempotently reuses one exac
     assert.equal(second.ready, true);
     assert.equal(second.reused, true);
     assert.equal(second.basePrefix, harness.basePrefix);
+    assert.deepEqual(second.packages, second.pinned);
+    assert.equal(second.inventory.length, 7);
     assert.equal(harness.calls.filter(({ args }) => args.includes("install")).length, 1);
     assert.equal(harness.calls.filter(({ args }) => args[2] === "venv").length, 1);
   } finally {
@@ -399,21 +492,96 @@ test("bootstrap rejects unauthorized contracts and targets, and cleans failed in
     fs.rmSync(failed.root, { recursive: true, force: true });
   }
 
-  const duplicate = createBootstrapHarness("duplicate-metadata", {
-    duplicateDistribution: "pypdfium2",
+});
+
+test("full inventory validation rejects extras, transitive drift, missing metadata, normalized duplicates, and pip drift", () => {
+  const cases = [
+    {
+      name: "unexpected",
+      options: { unexpectedDistribution: "requests" },
+      field: "unexpected",
+      expected: "requests",
+    },
+    {
+      name: "changed-transitive",
+      options: { changedDistribution: "charset-normalizer" },
+      field: "mismatched",
+      expected: "charset-normalizer",
+    },
+    {
+      name: "missing-transitive",
+      options: { missingDistribution: "et_xmlfile" },
+      field: "missing",
+      expected: "et_xmlfile",
+    },
+    {
+      name: "duplicate-normalized",
+      options: { duplicateDistribution: "et_xmlfile", duplicateAlias: "et-xmlfile" },
+      field: "duplicates",
+      expected: "et-xmlfile",
+    },
+    {
+      name: "pip-mismatch",
+      options: { changedDistribution: "pip" },
+      field: "mismatched",
+      expected: "pip",
+    },
+  ];
+  for (const fixture of cases) {
+    const harness = createBootstrapHarness(fixture.name, fixture.options);
+    try {
+      assert.throws(
+        () => bootstrapRendererEnvironment({
+          rootDir: harness.root,
+          basePython: harness.basePython,
+          spawn: harness.spawn,
+        }),
+        (error) => {
+          assert.match(error.message, /inventory does not match requirements-renderer-lock/i);
+          assert.ok(error[fixture.field].includes(fixture.expected));
+          return true;
+        },
+      );
+      assert.equal(fs.existsSync(harness.target), false);
+    } finally {
+      fs.rmSync(harness.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a polluted existing environment is rebuilt and only the repaired inventory is reused", () => {
+  const harness = createBootstrapHarness("polluted-rebuild", {
+    unexpectedDistribution: "requests",
+    pollutedBeforeRebuild: true,
   });
   try {
-    assert.throws(
-      () => bootstrapRendererEnvironment({
-        rootDir: duplicate.root,
-        basePython: duplicate.basePython,
-        spawn: duplicate.spawn,
-      }),
-      /versions or metadata do not match requirements-runtime/i,
+    fs.mkdirSync(path.dirname(harness.python), { recursive: true });
+    fs.writeFileSync(harness.python, "synthetic polluted renderer interpreter boundary\n");
+    fs.writeFileSync(
+      path.join(harness.target, "pyvenv.cfg"),
+      `home = ${harness.basePrefix}\ninclude-system-site-packages = false\n`,
     );
-    assert.equal(fs.existsSync(duplicate.target), false);
+    const repaired = bootstrapRendererEnvironment({
+      rootDir: harness.root,
+      basePython: harness.basePython,
+      spawn: harness.spawn,
+    });
+    assert.equal(repaired.ready, true);
+    assert.equal(repaired.reused, false);
+    assert.equal(harness.calls.filter(({ args }) => args[2] === "venv").length, 1);
+    assert.equal(harness.calls.filter(({ args }) => args.includes("install")).length, 1);
+
+    const reused = bootstrapRendererEnvironment({
+      rootDir: harness.root,
+      basePython: harness.basePython,
+      spawn: harness.spawn,
+    });
+    assert.equal(reused.ready, true);
+    assert.equal(reused.reused, true);
+    assert.equal(harness.calls.filter(({ args }) => args[2] === "venv").length, 1);
+    assert.equal(harness.calls.filter(({ args }) => args.includes("install")).length, 1);
   } finally {
-    fs.rmSync(duplicate.root, { recursive: true, force: true });
+    fs.rmSync(harness.root, { recursive: true, force: true });
   }
 });
 
@@ -425,6 +593,19 @@ test("renderer environment CLI accepts only the documented check and bootstrap f
   );
   assert.throws(() => parseArguments(["check", "--recreate"]), /Usage:/);
   assert.throws(() => parseArguments(["bootstrap"]), /Usage:/);
+});
+
+test("hosted ordinary CI bootstraps and checks the checkout-local exact inventory", () => {
+  const workflow = fs.readFileSync(path.join(workspaceRoot, ".github", "workflows", "ci.yml"), "utf8");
+  assert.match(
+    workflow,
+    /renderer:bootstrap -- --python "\$env:pythonLocation\\python\.exe" --recreate/,
+  );
+  assert.match(workflow, /run: npm\.cmd run renderer:check/);
+  assert.match(workflow, /requirements-renderer-lock\.txt/);
+  assert.doesNotMatch(workflow, /pip install[^\r\n]*requirements-runtime\.txt/);
+  assert.doesNotMatch(workflow, /PANTHEON_PYTHON:\s*\$\{\{ env\.pythonLocation \}\}/);
+  assert.doesNotMatch(workflow, /JARVIS_PYTHON:\s*\$\{\{ env\.pythonLocation \}\}/);
 });
 
 test("configuration never manufactures a coherent pair from one Python alias", () => {
